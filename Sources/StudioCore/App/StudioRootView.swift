@@ -1,3 +1,4 @@
+import AppKit
 import Observation
 import SwiftUI
 
@@ -15,6 +16,10 @@ public struct StudioRootView: View {
             if session.hasOpenDatabase {
                 if session.showAllGraphTableCards {
                     SchemaGraphView(session: session)
+                        .padding(16)
+                } else if let maximizedPane = session.maximizedPane {
+                    // Show maximized pane
+                    MaximizedPaneView(session: session, kind: maximizedPane)
                         .padding(16)
                 } else {
                     ZStack(alignment: .top) {
@@ -121,28 +126,35 @@ private struct WorkspacePaneContainer: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            paneHeader
-
-            Group {
-                switch paneState.kind {
-                case .schema:
-                    SchemaGraphView(session: session)
-                case .tables:
-                    TableWorkspaceView(session: session)
-                case .query:
-                    QueryWorkspaceView(session: session)
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                Spacer()
+                    .frame(height: 58) // Reserve space for header
+                
+                Group {
+                    switch paneState.kind {
+                    case .schema:
+                        SchemaGraphView(session: session)
+                    case .tables:
+                        TableWorkspaceView(session: session)
+                    case .query:
+                        QueryWorkspaceView(session: session)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .fill(StudioPalette.chromeFill.opacity(0.88))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
+            .background(
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .fill(StudioPalette.chromeFill.opacity(0.88))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+            
+            paneHeader
+                .zIndex(100)
         }
         .contentShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
         .onTapGesture {
@@ -164,6 +176,17 @@ private struct WorkspacePaneContainer: View {
                 .foregroundStyle(StudioPalette.primaryText)
 
             Spacer()
+
+            Button {
+                session.toggleMaximizePane(paneState.kind)
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Maximize")
 
             Text(session.databaseDisplayName)
                 .font(.caption.weight(.medium))
@@ -304,43 +327,196 @@ private struct EmptyDatabaseView: View {
     @Bindable var session: AppSession
 
     var body: some View {
-        VStack(spacing: 22) {
-            Image(systemName: "cylinder.split.1x2")
-                .font(.system(size: 44, weight: .medium))
-                .foregroundStyle(StudioPalette.primaryText)
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(spacing: 14) {
+                StudioAppLogoView()
 
-            VStack(spacing: 8) {
-                Text("Open a SQLite database")
-                    .font(.system(size: 30, weight: .semibold))
-                Text("Browse to a `.sqlite`, `.sqlite3`, or `.db` file to explore the schema, edit rows, and run SQL.")
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 520)
-            }
+                VStack(spacing: 8) {
+                    Text("Open a SQLite database")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(StudioPalette.primaryText)
+                    Text("Choose a `.sqlite`, `.sqlite3`, or `.db` file to explore the schema, edit rows, and run SQL.")
+                        .foregroundStyle(StudioPalette.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 520)
+                }
 
-            HStack(spacing: 12) {
                 Button {
                     session.presentOpenDatabasePanel()
                 } label: {
                     Label("Choose Database", systemImage: "folder")
-                        .frame(minWidth: 180)
+                        .frame(minWidth: 200)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(StudioPalette.accent)
                 .controlSize(.large)
+            }
+            .frame(maxWidth: .infinity)
 
-                Button {
-                    session.presentOpenDatabasePanel()
-                } label: {
-                    Label("Browse Files", systemImage: "magnifyingglass")
+            if !session.recentDatabaseURLs.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Recent")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(StudioPalette.primaryText)
+
+                    VStack(spacing: 10) {
+                        ForEach(session.recentDatabaseURLs, id: \.path) { url in
+                            Button {
+                                session.openRecentDatabase(url)
+                            } label: {
+                                RecentDatabaseRow(url: url)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
-                .buttonStyle(.bordered)
-                .tint(StudioPalette.accent)
-                .controlSize(.large)
+                .frame(maxWidth: 560, alignment: .leading)
             }
         }
+        .frame(maxWidth: 620)
         .padding(.horizontal, 36)
         .padding(.vertical, 42)
         .studioGlassCard(cornerRadius: 30, tint: Color.white, strokeOpacity: 0.14)
+    }
+}
+
+private struct StudioAppLogoView: View {
+    private let appIcon = NSApplication.shared.applicationIconImage
+        ?? NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+
+    var body: some View {
+        Image(nsImage: appIcon)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: 76, height: 76)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(color: StudioPalette.shadow.opacity(0.18), radius: 18, y: 10)
+    }
+}
+
+private struct RecentDatabaseRow: View {
+    let url: URL
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(StudioPalette.secondaryText)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(url.lastPathComponent)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .lineLimit(1)
+
+                Text(url.deletingLastPathComponent().path)
+                    .font(.caption)
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "arrow.up.forward.app")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(StudioPalette.tertiaryText)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(StudioPalette.chromeFillStrong.opacity(0.72))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(StudioPalette.borderSoft)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct MaximizedPaneView: View {
+    @Bindable var session: AppSession
+    let kind: PaneContentKind
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                Spacer()
+                    .frame(height: 58) // Reserve space for header
+
+                Group {
+                    switch kind {
+                    case .schema:
+                        SchemaGraphView(session: session)
+                    case .tables:
+                        TableWorkspaceView(session: session)
+                    case .query:
+                        QueryWorkspaceView(session: session)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .fill(StudioPalette.chromeFill.opacity(0.88))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .stroke(StudioPalette.border, lineWidth: 1.4)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+            
+            maximizedHeader
+                .zIndex(100)
+        }
+    }
+
+    private var maximizedHeader: some View {
+        HStack(spacing: 12) {
+            Label(kind.title, systemImage: kind.systemImage)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(StudioPalette.primaryText)
+
+            Spacer()
+
+            Button {
+                session.exitMaximizedMode()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.caption.weight(.semibold))
+                    Text("Exit Full Screen")
+                        .font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(StudioPalette.primaryText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill(StudioPalette.chromeFillStrong)
+                )
+                .overlay {
+                    Capsule()
+                        .stroke(StudioPalette.border, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Text(session.databaseDisplayName)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(StudioPalette.secondaryText)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(StudioPalette.chromeFillStrong)
+        )
+        .padding(.horizontal, 18)
+        .padding(.top, 18)
+        .padding(.bottom, 4)
     }
 }

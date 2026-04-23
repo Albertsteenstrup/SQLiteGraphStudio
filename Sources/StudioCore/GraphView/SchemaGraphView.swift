@@ -17,6 +17,9 @@ public struct SchemaGraphView: View {
     @State private var hoveredNodeID: String?
     @State private var layoutRevision = 0
     @State private var pendingExpansionNodeID: String?
+    @State private var selectionRectStart: CGPoint?
+    @State private var selectionRectCurrent: CGPoint?
+    @State private var isShiftPressed = false
 
     public init(session: AppSession) {
         self.session = session
@@ -151,7 +154,7 @@ public struct SchemaGraphView: View {
                     previewColumns: previewColumns,
                     outgoingEdges: outgoingEdges,
                     incomingEdges: incomingEdges,
-                    isSelected: node.id == session.selectedGraphNodeID,
+                    isSelected: session.selectedGraphNodeIDs.contains(node.id),
                     displayStyle: displayStyle,
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
@@ -180,13 +183,42 @@ public struct SchemaGraphView: View {
                 .position(screenCenter(for: node.id, in: size))
                 .shadow(
                     color: StudioPalette.shadow.opacity(draggedNodeID == node.id ? 1.0 : 0.8),
-                    radius: draggedNodeID == node.id ? 26 : (node.id == session.selectedGraphNodeID ? 22 : 12),
+                    radius: draggedNodeID == node.id ? 26 : (session.selectedGraphNodeIDs.contains(node.id) ? 22 : 12),
                     y: draggedNodeID == node.id ? 16 : 10
                 )
+                .overlay {
+                    // Multi-selection indicator
+                    if session.selectedGraphNodeIDs.contains(node.id) && session.selectedGraphNodeIDs.count > 1 {
+                        RoundedRectangle(cornerRadius: displayStyle == .collapsed ? 18 : 22, style: .continuous)
+                            .stroke(StudioPalette.accent, lineWidth: 3)
+                            .padding(-2)
+                    }
+                }
                 .zIndex(zIndex(for: node.id))
+            }
+            
+            // Selection rectangle visualization
+            if let start = selectionRectStart, let current = selectionRectCurrent {
+                let rect = CGRect(
+                    x: min(start.x, current.x),
+                    y: min(start.y, current.y),
+                    width: abs(current.x - start.x),
+                    height: abs(current.y - start.y)
+                )
+                Rectangle()
+                    .stroke(StudioPalette.accent, lineWidth: 2)
+                    .background(StudioPalette.accent.opacity(0.1))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+                    .allowsHitTesting(false)
+                    .zIndex(1000)
             }
         }
         .coordinateSpace(name: "graphViewport")
+        .onTapGesture {
+            // Deselect all nodes when clicking empty space
+            session.clearGraphSelection()
+        }
         .animation(.snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
     }
@@ -222,7 +254,42 @@ public struct SchemaGraphView: View {
                     lineJoin: .round
                 )
             )
+            
+            // Draw directional arrow at the end (target side)
+            if isHighlighted {
+                drawArrowhead(in: &context, at: anchors.target, direction: edgeDirection(from: anchors.source, to: anchors.target), color: StudioPalette.edgeHighlight)
+            }
         }
+    }
+    
+    private func edgeDirection(from start: CGPoint, to end: CGPoint) -> CGFloat {
+        return atan2(end.y - start.y, end.x - start.x)
+    }
+    
+    private func drawArrowhead(in context: inout GraphicsContext, at point: CGPoint, direction: CGFloat, color: Color) {
+        let arrowSize: CGFloat = 8
+        let arrowAngle: CGFloat = .pi / 6  // 30 degrees
+        
+        // Calculate the two points of the arrowhead
+        let point1 = CGPoint(
+            x: point.x - arrowSize * cos(direction - arrowAngle),
+            y: point.y - arrowSize * sin(direction - arrowAngle)
+        )
+        let point2 = CGPoint(
+            x: point.x - arrowSize * cos(direction + arrowAngle),
+            y: point.y - arrowSize * sin(direction + arrowAngle)
+        )
+        
+        var arrowPath = Path()
+        arrowPath.move(to: point1)
+        arrowPath.addLine(to: point)
+        arrowPath.addLine(to: point2)
+        
+        context.stroke(
+            arrowPath,
+            with: .color(color),
+            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+        )
     }
 
     private func edgePath(from start: CGPoint, to end: CGPoint) -> Path {
@@ -244,65 +311,218 @@ public struct SchemaGraphView: View {
     }
 
     private func graphOverlayControls(size: CGSize) -> some View {
-        VStack(alignment: .trailing, spacing: 12) {
-            HStack(spacing: 10) {
+        ZStack {
+            // Main controls (top right)
+            VStack(alignment: .trailing, spacing: 12) {
+                HStack(spacing: 10) {
+                    Button {
+                        fitGraph(in: size)
+                    } label: {
+                        Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                    .tint(StudioPalette.accent)
+
+                    Button {
+                        rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
+                    } label: {
+                        Label("Relayout", systemImage: "sparkles.rectangle.stack")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+                    .tint(StudioPalette.accent)
+                }
+
+                Toggle(
+                    "Show All Table Cards",
+                    isOn: Binding(
+                        get: { session.showAllGraphTableCards },
+                        set: { session.setShowAllGraphTableCards($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .font(.subheadline)
+                .foregroundStyle(StudioPalette.primaryText)
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(StudioPalette.chromeFill)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(StudioPalette.border, lineWidth: 1)
+            }
+            .shadow(color: StudioPalette.shadow.opacity(0.75), radius: 18, y: 12)
+            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            
+            // Back to Content button (center, shown when no nodes visible)
+            if shouldShowBackToContent(in: size) {
                 Button {
                     fitGraph(in: size)
                 } label: {
-                    Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass")
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Back to Content")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .tint(StudioPalette.accent)
-
-                Button {
-                    rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
-                } label: {
-                    Label("Relayout", systemImage: "sparkles.rectangle.stack")
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .tint(StudioPalette.accent)
-            }
-
-            Toggle(
-                "Show All Table Cards",
-                isOn: Binding(
-                    get: { session.showAllGraphTableCards },
-                    set: { session.setShowAllGraphTableCards($0) }
+                .buttonStyle(.plain)
+                .background(
+                    Capsule()
+                        .fill(StudioPalette.chromeFill)
                 )
+                .overlay {
+                    Capsule()
+                        .stroke(StudioPalette.border, lineWidth: 1.5)
+                }
+                .shadow(color: StudioPalette.shadow.opacity(0.8), radius: 20, y: 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
+            
+            // Minimap (bottom right)
+            GraphMinimapView(
+                session: session,
+                viewportSize: size,
+                zoom: zoom,
+                pan: pan,
+                onViewportTap: { minimapPoint in
+                    // Convert minimap tap to graph coordinates and pan there
+                    let contentBounds = graphContentBounds()
+                    let minimapSize = CGSize(width: 180, height: 120)
+                    
+                    // Calculate what graph point this minimap point represents
+                    let scaleX = minimapSize.width / contentBounds.width
+                    let scaleY = minimapSize.height / contentBounds.height
+                    let scale = min(scaleX, scaleY) * 0.9
+                    
+                    let graphX = (minimapPoint.x - minimapSize.width / 2) / scale + contentBounds.midX
+                    let graphY = (minimapPoint.y - minimapSize.height / 2) / scale + contentBounds.midY
+                    
+                    // Pan to center this point
+                    let targetTransform = GraphViewportTransform(
+                        zoom: zoom,
+                        pan: CGSize(width: -graphX * zoom, height: -graphY * zoom)
+                    )
+                    setViewport(targetTransform, animated: true)
+                }
             )
-            .toggleStyle(.switch)
-            .font(.subheadline)
-            .foregroundStyle(StudioPalette.primaryText)
+            .frame(width: 180, height: 120)
+            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(StudioPalette.chromeFill)
+    }
+    
+    private func shouldShowBackToContent(in size: CGSize) -> Bool {
+        guard !session.graph.nodes.isEmpty else { return false }
+        
+        // Check if any nodes are visible in the current viewport
+        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
+        let viewportRect = CGRect(origin: .zero, size: size)
+        
+        for node in session.graph.nodes {
+            let nodePos = session.graphLayout.position(for: node.id)
+            let screenPos = transform.point(for: nodePos, in: size)
+            
+            // Add some margin for node size
+            let margin: CGFloat = 200
+            let expandedViewport = viewportRect.insetBy(dx: -margin, dy: -margin)
+            
+            if expandedViewport.contains(screenPos) {
+                return false
+            }
+        }
+        
+        return true
+    }
+    
+    private func graphContentBounds() -> CGRect {
+        guard !session.graph.nodes.isEmpty else { return .zero }
+        
+        var minX = Double.infinity
+        var minY = Double.infinity
+        var maxX = -Double.infinity
+        var maxY = -Double.infinity
+        
+        for node in session.graph.nodes {
+            let pos = session.graphLayout.position(for: node.id)
+            minX = min(minX, pos.x)
+            minY = min(minY, pos.y)
+            maxX = max(maxX, pos.x)
+            maxY = max(maxY, pos.y)
+        }
+        
+        let padding: CGFloat = 100
+        return CGRect(
+            x: minX - padding,
+            y: minY - padding,
+            width: maxX - minX + padding * 2,
+            height: maxY - minY + padding * 2
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(StudioPalette.border, lineWidth: 1)
-        }
-        .shadow(color: StudioPalette.shadow.opacity(0.75), radius: 18, y: 12)
-        .padding(18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     private var backgroundPanGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("graphViewport"))
             .onChanged { value in
                 guard draggedNodeID == nil else { return }
-                pan = CGSize(
-                    width: panStart.width + value.translation.width,
-                    height: panStart.height + value.translation.height
-                )
+                
+                // Check if shift is pressed for selection rectangle
+                if NSEvent.modifierFlags.contains(.shift) {
+                    if selectionRectStart == nil {
+                        selectionRectStart = value.startLocation
+                    }
+                    selectionRectCurrent = value.location
+                    updateSelectionFromRect(in: viewportSize)
+                } else {
+                    // Normal panning
+                    pan = CGSize(
+                        width: panStart.width + value.translation.width,
+                        height: panStart.height + value.translation.height
+                    )
+                }
             }
             .onEnded { _ in
                 guard draggedNodeID == nil else { return }
-                panStart = pan
+                
+                if selectionRectStart != nil {
+                    // Finish selection
+                    selectionRectStart = nil
+                    selectionRectCurrent = nil
+                } else {
+                    panStart = pan
+                }
             }
+    }
+    
+    private func updateSelectionFromRect(in canvasSize: CGSize) {
+        guard let start = selectionRectStart, let current = selectionRectCurrent else { return }
+        
+        let rect = CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(current.x - start.x),
+            height: abs(current.y - start.y)
+        )
+        
+        var selectedNodes: Set<String> = []
+        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
+        
+        for node in session.graph.nodes {
+            let nodePos = session.graphLayout.position(for: node.id)
+            let screenPos = transform.point(for: nodePos, in: canvasSize)
+            
+            if rect.contains(screenPos) {
+                selectedNodes.insert(node.id)
+            }
+        }
+        
+        session.setGraphSelection(selectedNodes)
     }
 
     private func nodeDragGesture(nodeID: String, in canvasSize: CGSize) -> some Gesture {
@@ -320,7 +540,11 @@ public struct SchemaGraphView: View {
                         )
                     }
                     hoveredNodeID = nil
-                    session.selectGraphNode(nodeID)
+                    
+                    // If node is not in selection, select only this node
+                    if !session.selectedGraphNodeIDs.contains(nodeID) {
+                        session.selectGraphNode(nodeID)
+                    }
                 }
 
                 guard draggedNodeID == nodeID else { return }
@@ -330,7 +554,27 @@ public struct SchemaGraphView: View {
                     x: currentGraphPoint.x - (nodeDragPointerOffset?.width ?? 0),
                     y: currentGraphPoint.y - (nodeDragPointerOffset?.height ?? 0)
                 )
-                session.graphLayout.pin(nodeID: nodeID, at: moved)
+                
+                // If multiple nodes selected, move them all together
+                if session.selectedGraphNodeIDs.count > 1 {
+                    let delta = CGPoint(
+                        x: moved.x - (nodeDragOrigin?.x ?? moved.x),
+                        y: moved.y - (nodeDragOrigin?.y ?? moved.y)
+                    )
+                    
+                    for selectedNodeID in session.selectedGraphNodeIDs {
+                        let originalPos = session.graphLayout.position(for: selectedNodeID)
+                        let newPos = CGPoint(
+                            x: originalPos.x + delta.x,
+                            y: originalPos.y + delta.y
+                        )
+                        session.graphLayout.pin(nodeID: selectedNodeID, at: newPos)
+                    }
+                    nodeDragOrigin = moved
+                } else {
+                    session.graphLayout.pin(nodeID: nodeID, at: moved)
+                }
+                
                 layoutRevision &+= 1
             }
             .onEnded { _ in
@@ -584,13 +828,15 @@ public struct SchemaGraphView: View {
         viewportRestorePoint = GraphViewportTransform(zoom: zoom, pan: pan)
         viewportRestoreNodeID = nodeID
         session.setExpandedGraphNode(nodeID)
-        stabilizeLayout(in: size, refit: false, persistLayout: false)
+        // Don't stabilize - just update layout revision to reflect size changes
+        layoutRevision &+= 1
         focusExpandedNode(nodeID, in: size)
     }
 
     private func collapseExpandedNode(_ nodeID: String, in size: CGSize) {
         session.setExpandedGraphNode(nil)
-        stabilizeLayout(in: size, refit: false, persistLayout: false)
+        // Don't stabilize - just update layout revision to reflect size changes
+        layoutRevision &+= 1
         restoreViewport(from: nodeID)
     }
 
@@ -650,9 +896,11 @@ public struct SchemaGraphView: View {
     }
 
     private func applyTrackpadPan(_ delta: CGSize) {
+        // IMPORTANT: Natural scrolling - moving fingers right pans viewport right (like moving the canvas)
+        // DO NOT change the + signs to - signs - this has been intentionally set for natural scrolling
         pan = CGSize(
-            width: pan.width - delta.width,
-            height: pan.height - delta.height
+            width: pan.width + delta.width,
+            height: pan.height + delta.height
         )
         panStart = pan
     }
@@ -786,7 +1034,8 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         let isPrimaryKey = column.primaryKeyOrdinal > 0
         let isForeignKey = outgoingEdges.contains(where: { $0.sourceColumn == column.name })
         let isReferenced = incomingEdges.contains(where: { $0.targetColumn == column.name })
-        let relationStyle = highlightState.style(for: column.name)
+        // Only highlight PK/FK when THIS node is hovered, not when related nodes are hovered
+        let relationStyle: GraphNodeColumnHighlightStyle = isHovered ? highlightState.style(for: column.name) : .none
 
         return HStack(spacing: 8) {
             Text(column.name)
@@ -1095,5 +1344,154 @@ private final class GraphTrackpadInputView: NSView {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
         }
+    }
+}
+
+private struct GraphMinimapView: View {
+    @Bindable var session: AppSession
+    let viewportSize: CGSize
+    let zoom: CGFloat
+    let pan: CGSize
+    let onViewportTap: (CGPoint) -> Void
+    
+    var body: some View {
+        ZStack {
+            // Background
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(StudioPalette.chromeFill.opacity(0.95))
+            
+            // Graph content
+            Canvas { context, size in
+                let contentBounds = graphContentBounds()
+                guard !contentBounds.isEmpty else { return }
+                
+                let minimapTransform = calculateMinimapTransform(contentBounds: contentBounds, minimapSize: size)
+                
+                // Draw edges first (behind nodes)
+                for edge in session.graph.edges {
+                    let sourcePos = session.graphLayout.position(for: edge.sourceID)
+                    let targetPos = session.graphLayout.position(for: edge.targetID)
+                    let minimapSource = minimapTransform.point(for: sourcePos, in: size)
+                    let minimapTarget = minimapTransform.point(for: targetPos, in: size)
+                    
+                    var path = Path()
+                    path.move(to: minimapSource)
+                    path.addLine(to: minimapTarget)
+                    context.stroke(
+                        path,
+                        with: .color(StudioPalette.edgeNeutral.opacity(0.3)),
+                        lineWidth: 0.5
+                    )
+                }
+                
+                // Draw nodes
+                for node in session.graph.nodes {
+                    let nodePos = session.graphLayout.position(for: node.id)
+                    let minimapPos = minimapTransform.point(for: nodePos, in: size)
+                    let nodeRect = CGRect(
+                        x: minimapPos.x - 2,
+                        y: minimapPos.y - 2,
+                        width: 4,
+                        height: 4
+                    )
+                    context.fill(
+                        Path(roundedRect: nodeRect, cornerRadius: 1),
+                        with: .color(StudioPalette.primaryText.opacity(0.6))
+                    )
+                }
+                
+                // Draw viewport indicator
+                let viewportRect = calculateViewportRect(
+                    contentBounds: contentBounds,
+                    minimapSize: size,
+                    minimapTransform: minimapTransform
+                )
+                context.stroke(
+                    Path(roundedRect: viewportRect, cornerRadius: 2),
+                    with: .color(StudioPalette.accent),
+                    lineWidth: 1.5
+                )
+                context.fill(
+                    Path(roundedRect: viewportRect, cornerRadius: 2),
+                    with: .color(StudioPalette.accent.opacity(0.15))
+                )
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                onViewportTap(location)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(StudioPalette.border, lineWidth: 1)
+        }
+        .shadow(color: StudioPalette.shadow.opacity(0.5), radius: 12, y: 8)
+    }
+    
+    private func graphContentBounds() -> CGRect {
+        guard !session.graph.nodes.isEmpty else { return .zero }
+        
+        var minX = Double.infinity
+        var minY = Double.infinity
+        var maxX = -Double.infinity
+        var maxY = -Double.infinity
+        
+        for node in session.graph.nodes {
+            let pos = session.graphLayout.position(for: node.id)
+            minX = min(minX, pos.x)
+            minY = min(minY, pos.y)
+            maxX = max(maxX, pos.x)
+            maxY = max(maxY, pos.y)
+        }
+        
+        let padding: CGFloat = 100
+        return CGRect(
+            x: minX - padding,
+            y: minY - padding,
+            width: maxX - minX + padding * 2,
+            height: maxY - minY + padding * 2
+        )
+    }
+    
+    private func calculateMinimapTransform(contentBounds: CGRect, minimapSize: CGSize) -> GraphViewportTransform {
+        guard !contentBounds.isEmpty else { return .identity }
+        
+        let scaleX = minimapSize.width / contentBounds.width
+        let scaleY = minimapSize.height / contentBounds.height
+        let scale = min(scaleX, scaleY) * 0.9
+        
+        let centerX = contentBounds.midX
+        let centerY = contentBounds.midY
+        
+        return GraphViewportTransform(
+            zoom: scale,
+            pan: CGSize(width: -centerX * scale, height: -centerY * scale)
+        )
+    }
+    
+    private func calculateViewportRect(
+        contentBounds: CGRect,
+        minimapSize: CGSize,
+        minimapTransform: GraphViewportTransform
+    ) -> CGRect {
+        let currentTransform = GraphViewportTransform(zoom: zoom, pan: pan)
+        
+        // Calculate the four corners of the current viewport in graph space
+        let topLeft = currentTransform.graphPoint(for: .zero, in: viewportSize)
+        let bottomRight = currentTransform.graphPoint(
+            for: CGPoint(x: viewportSize.width, y: viewportSize.height),
+            in: viewportSize
+        )
+        
+        // Transform to minimap space
+        let minimapTopLeft = minimapTransform.point(for: topLeft, in: minimapSize)
+        let minimapBottomRight = minimapTransform.point(for: bottomRight, in: minimapSize)
+        
+        return CGRect(
+            x: minimapTopLeft.x,
+            y: minimapTopLeft.y,
+            width: minimapBottomRight.x - minimapTopLeft.x,
+            height: minimapBottomRight.y - minimapTopLeft.y
+        )
     }
 }

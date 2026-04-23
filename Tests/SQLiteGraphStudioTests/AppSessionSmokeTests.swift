@@ -54,6 +54,44 @@ struct AppSessionSmokeTests {
         userDefaults.removePersistentDomain(forName: defaultsSuiteName)
     }
 
+    @Test
+    func sessionOpensAndRunsTopRowsQueryFromGraphAction() async throws {
+        let url = try TestSupport.createFixture(named: "top-rows-query")
+        let service = DatabaseService()
+        let session = AppSession(databaseService: service)
+
+        await session.openDatabase(url: url)
+        session.runTopRowsQuery(for: "authors")
+
+        #expect(session.leftPane.kind == .query || session.rightPane.kind == .query)
+        #expect(session.queryWorkspace.queries.count >= 2)
+        #expect(session.queryWorkspace.activeQuery?.sqlText.contains("LIMIT 10") == true)
+        #expect(session.queryWorkspace.activeQuery?.title == "authors Top 10")
+
+        try await waitFor {
+            (session.queryWorkspace.activeQuery?.result.rows.count ?? 0) > 0
+        }
+    }
+
+    @Test
+    func sessionPersistsRecentDatabases() async throws {
+        let url = try TestSupport.createFixture(named: "recent-databases")
+        let defaultsSuiteName = "SQLiteGraphStudioTests.recents.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+
+        do {
+            let firstSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
+            await firstSession.openDatabase(url: url)
+            #expect(firstSession.recentDatabaseURLs.first == url.standardizedFileURL)
+
+            let secondSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
+            #expect(secondSession.recentDatabaseURLs.first == url.standardizedFileURL)
+        }
+
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
+
     private func waitFor(
         timeoutNanoseconds: UInt64 = 2_000_000_000,
         stepNanoseconds: UInt64 = 50_000_000,

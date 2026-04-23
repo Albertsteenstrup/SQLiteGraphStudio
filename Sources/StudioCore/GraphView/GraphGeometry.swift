@@ -112,6 +112,7 @@ enum GraphCardLayout {
     static let expandedVerticalPadding: CGFloat = 12
     static let expandedBodyTopPadding: CGFloat = 10
     static let expandedWidth: CGFloat = 308
+    static let maxExpandedVisibleRows = 7
     static let floatingHeaderHeight: CGFloat = 52
     static let floatingSummaryHeight: CGFloat = 28
     static let floatingSectionSpacing: CGFloat = 12
@@ -144,7 +145,7 @@ enum GraphCardLayout {
             let columnCount = descriptor?.columns.count ?? 0
             return CGSize(
                 width: expandedWidth,
-                height: expandedHeaderHeight + expandedBodyTopPadding + expandedVerticalPadding + CGFloat(columnCount) * expandedRowHeight
+                height: expandedHeaderHeight + expandedBodyTopPadding + expandedVerticalPadding + CGFloat(min(columnCount, maxExpandedVisibleRows)) * expandedRowHeight
             )
         }
     }

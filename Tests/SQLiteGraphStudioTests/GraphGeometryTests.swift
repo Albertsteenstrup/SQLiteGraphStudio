@@ -108,6 +108,27 @@ struct GraphGeometryTests {
     }
 
     @Test
+    func expandedCardsCapVisibleRowsAtSeven() {
+        let columns = (0..<12).map { index in
+            makeColumn(name: "column_\(index)", type: "TEXT")
+        }
+        let descriptor = makeDescriptor(name: "large_table", columns: columns)
+
+        let size = GraphCardLayout.nodeSize(
+            title: "large_table",
+            descriptor: descriptor,
+            style: .expanded
+        )
+
+        let expectedHeight = GraphCardLayout.expandedHeaderHeight
+            + GraphCardLayout.expandedBodyTopPadding
+            + GraphCardLayout.expandedVerticalPadding
+            + CGFloat(GraphCardLayout.maxExpandedVisibleRows) * GraphCardLayout.expandedRowHeight
+
+        #expect(size.height == expectedHeight)
+    }
+
+    @Test
     func previewGeometryOnlyExposesRequestedColumns() throws {
         let descriptor = makeDescriptor(name: "post_tags", columns: [
             makeColumn(name: "post_id", type: "INTEGER"),

@@ -10,60 +10,175 @@ public struct QueryWorkspaceView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("SQL Query")
-                        .font(.headline)
-                        .foregroundStyle(StudioPalette.primaryText)
-                    Text("Read-only query mode for `SELECT`, `WITH`, `PRAGMA`, and `EXPLAIN`.")
-                        .font(.caption)
-                        .foregroundStyle(StudioPalette.secondaryText)
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            queryTabStrip
 
-                Spacer()
+            if let activeQuery = session.queryWorkspace.activeQuery {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            TextField(
+                                "Query Title",
+                                text: Binding(
+                                    get: { session.queryWorkspace.activeQuery?.title ?? "" },
+                                    set: { session.queryWorkspace.updateActiveTitle($0) }
+                                )
+                            )
+                            .textFieldStyle(.plain)
+                            .font(.headline)
+                            .foregroundStyle(StudioPalette.primaryText)
 
-                Button {
-                    session.queryWorkspace.run()
-                } label: {
-                    Label("Run Query", systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .tint(StudioPalette.accent)
+                            Text("Read-only query mode for `SELECT`, `WITH`, `PRAGMA`, and `EXPLAIN`.")
+                                .font(.caption)
+                                .foregroundStyle(StudioPalette.secondaryText)
 
-                if session.queryWorkspace.isRunning {
-                    ProgressView()
-                        .controlSize(.small)
+                            Text(activeQuery.isSaved ? "Saved with this database" : "Unsaved query")
+                                .font(.caption2)
+                                .foregroundStyle(StudioPalette.secondaryText)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            session.queryWorkspace.setActiveQuerySaved(!activeQuery.isSaved)
+                        } label: {
+                            Label(
+                                activeQuery.isSaved ? "Saved" : "Save Query",
+                                systemImage: activeQuery.isSaved ? "bookmark.fill" : "bookmark"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
                         .tint(StudioPalette.accent)
+
+                        Button {
+                            session.queryWorkspace.run()
+                        } label: {
+                            Label("Run Query", systemImage: "play.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                        .tint(StudioPalette.accent)
+
+                        if activeQuery.isRunning {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(StudioPalette.accent)
+                        }
+                    }
+
+                    TextEditor(
+                        text: Binding(
+                            get: { session.queryWorkspace.activeQuery?.sqlText ?? "" },
+                            set: { session.queryWorkspace.updateActiveSQL($0) }
+                        )
+                    )
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .padding(14)
+                    .scrollContentBackground(.hidden)
+                    .background(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(StudioPalette.editorSurface)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(StudioPalette.borderSoft)
+                    }
+                    .frame(minHeight: 150)
+
+                    if let errorMessage = activeQuery.errorMessage {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundStyle(Color.red.opacity(0.92))
+                    }
+
+                    QueryResultsView(result: activeQuery.result)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            }
-
-            TextEditor(text: $session.queryWorkspace.sqlText)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(StudioPalette.primaryText)
-                .padding(14)
-                .scrollContentBackground(.hidden)
-                .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(StudioPalette.editorSurface)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(StudioPalette.borderSoft)
+            } else {
+                VStack(spacing: 14) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 30))
+                        .foregroundStyle(StudioPalette.secondaryText)
+                    Text("Create a query to inspect tables and views.")
+                        .foregroundStyle(StudioPalette.secondaryText)
+                    Button {
+                        session.queryWorkspace.createQuery()
+                    } label: {
+                        Label("New Query", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+                    .tint(StudioPalette.accent)
                 }
-                .frame(minHeight: 150)
-
-            if let errorMessage = session.queryWorkspace.errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(Color.red.opacity(0.92))
-            }
-
-            QueryResultsView(result: session.queryWorkspace.result)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .padding(20)
+    }
+
+    private var queryTabStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(session.queryWorkspace.queries) { query in
+                    Button {
+                        session.queryWorkspace.selectQuery(id: query.id)
+                    } label: {
+                        HStack(spacing: 8) {
+                            if query.isSaved {
+                                Image(systemName: "bookmark.fill")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(StudioPalette.secondaryText)
+                            }
+
+                            Text(query.title)
+                                .lineLimit(1)
+                                .foregroundStyle(StudioPalette.primaryText)
+
+                            Button {
+                                session.queryWorkspace.closeQuery(id: query.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(StudioPalette.secondaryText)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(session.queryWorkspace.activeQueryID == query.id ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(session.queryWorkspace.activeQueryID == query.id ? StudioPalette.border : StudioPalette.borderSoft)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    session.queryWorkspace.createQuery()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(StudioPalette.primaryText)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(StudioPalette.headerSurface.opacity(0.84))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(StudioPalette.borderSoft)
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 4)
+        }
     }
 }
 

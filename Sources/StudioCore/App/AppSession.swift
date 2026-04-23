@@ -6,13 +6,16 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 public final class AppSession {
+    public var recentDatabaseURLs: [URL] = []
     public var databaseURL: URL?
     public var tables: [TableSummary] = []
     public var graph: SchemaGraph = .empty
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
+    public var maximizedPane: PaneContentKind?
     public var selectedGraphNodeID: String?
+    public var selectedGraphNodeIDs: Set<String> = []
     public var expandedGraphNodeIDs: Set<String> = []
     public var floatingDetailsCardTableID: String?
     public var floatingDetailsCardPosition: CGPoint?
@@ -29,6 +32,15 @@ public final class AppSession {
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
+    private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
+    private static let allowedDatabaseExtensions: Set<String> = [
+        "sqlite",
+        "sqlite3",
+        "db",
+        "sqlite-db",
+        "sqlitedb",
+    ]
+    private static let maxRecentDatabaseCount = 6
 
     public init(
         databaseService: DatabaseService = DatabaseService(),
@@ -36,7 +48,11 @@ public final class AppSession {
     ) {
         self.databaseService = databaseService
         self.userDefaults = userDefaults
-        self.queryWorkspace = QueryWorkspaceModel(databaseService: databaseService)
+        self.queryWorkspace = QueryWorkspaceModel(
+            databaseService: databaseService,
+            userDefaults: userDefaults
+        )
+        self.recentDatabaseURLs = Self.loadRecentDatabaseURLs(from: userDefaults)
     }
 
     public var activeTab: TableTabModel? {
@@ -78,10 +94,16 @@ public final class AppSession {
             try await databaseService.open(url: url)
             let snapshot = try await databaseService.loadCatalogSnapshot()
             apply(snapshot: snapshot, url: url)
+            rememberRecentDatabase(url)
             StudioLog.ui.info("Loaded database session for \(url.lastPathComponent, privacy: .public)")
         } catch {
             presentedError = SQLiteUserError.from(error)
         }
+    }
+
+    public func openRecentDatabase(_ url: URL) {
+        guard recentDatabaseURLs.contains(url.standardizedFileURL) else { return }
+        Task { await openDatabase(url: url) }
     }
 
     public func closeDatabase() {
@@ -166,8 +188,27 @@ public final class AppSession {
         guard nodeID == nil || graph.contains(nodeID: nodeID!) else { return }
         selectedGraphNodeID = nodeID
         if let nodeID {
+            selectedGraphNodeIDs = [nodeID]
             StudioLog.ui.debug("Selected graph node: \(nodeID, privacy: .public)")
+        } else {
+            selectedGraphNodeIDs = []
         }
+    }
+    
+    public func addToGraphSelection(_ nodeID: String) {
+        guard graph.contains(nodeID: nodeID) else { return }
+        selectedGraphNodeIDs.insert(nodeID)
+        selectedGraphNodeID = nodeID
+    }
+    
+    public func setGraphSelection(_ nodeIDs: Set<String>) {
+        selectedGraphNodeIDs = nodeIDs.filter { graph.contains(nodeID: $0) }
+        selectedGraphNodeID = selectedGraphNodeIDs.first
+    }
+    
+    public func clearGraphSelection() {
+        selectedGraphNodeID = nil
+        selectedGraphNodeIDs = []
     }
 
     public func showFloatingDetails(for tableID: String, preferredPosition: CGPoint? = nil) {
@@ -232,6 +273,43 @@ public final class AppSession {
     public func openSelectedGraphNode() {
         guard let selectedGraphNodeID else { return }
         openTable(named: selectedGraphNodeID)
+    }
+
+    public func openQuery(
+        title: String? = nil,
+        sqlText: String,
+        runImmediately: Bool = false,
+        isSaved: Bool = false
+    ) {
+        ensurePaneVisible(.query)
+        if let queryPaneSide = side(containing: .query) {
+            activePaneSide = queryPaneSide
+        }
+
+        queryWorkspace.createQuery(
+            title: title,
+            sqlText: sqlText,
+            activate: true,
+            runImmediately: runImmediately,
+            isSaved: isSaved
+        )
+    }
+
+    public func runTopRowsQuery(for tableName: String) {
+        guard tableDescriptors[tableName] != nil else {
+            presentedError = SQLiteUserError(kind: .notFound, message: "Table \(tableName) was not found.")
+            return
+        }
+
+        openQuery(
+            title: "\(tableName) Top 10",
+            sqlText: """
+            SELECT *
+            FROM \(quoteIdentifier(tableName))
+            LIMIT 10;
+            """,
+            runImmediately: true
+        )
     }
 
     public func dismissError() {
@@ -318,6 +396,45 @@ public final class AppSession {
     public func applyDockItem(_ item: WorkspaceDockItem, to side: WorkspacePaneSide) {
         setPaneContent(item.kind, for: side)
     }
+    
+    public func toggleMaximizePane(_ kind: PaneContentKind) {
+        if maximizedPane == kind {
+            maximizedPane = nil
+        } else {
+            maximizedPane = kind
+        }
+    }
+    
+    public func isMaximized(_ kind: PaneContentKind) -> Bool {
+        maximizedPane == kind
+    }
+    
+    public func exitMaximizedMode() {
+        maximizedPane = nil
+    }
+
+    private func rememberRecentDatabase(_ url: URL) {
+        let normalizedURL = url.standardizedFileURL
+        var urls = recentDatabaseURLs.filter { $0 != normalizedURL }
+        urls.insert(normalizedURL, at: 0)
+        recentDatabaseURLs = Array(urls.prefix(Self.maxRecentDatabaseCount))
+        userDefaults.set(recentDatabaseURLs.map(\.path), forKey: Self.recentDatabaseStorageKey)
+    }
+
+    private static func loadRecentDatabaseURLs(from userDefaults: UserDefaults) -> [URL] {
+        let paths = userDefaults.stringArray(forKey: recentDatabaseStorageKey) ?? []
+        return paths.compactMap { path in
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            guard allowedDatabaseExtensions.contains(url.pathExtension.lowercased()),
+                  FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue
+            else {
+                return nil
+            }
+            return url
+        }
+    }
 
     private func apply(snapshot: CatalogSnapshot, url: URL) {
         databaseURL = url
@@ -332,7 +449,7 @@ public final class AppSession {
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
         showAllGraphTableCards = false
-        queryWorkspace.reset()
+        queryWorkspace.loadSavedQueries(for: url)
         openTabs = openTabs.compactMap { existingTab in
             guard let descriptor = tableDescriptors[existingTab.descriptor.name] else { return nil }
             let replacement = TableTabModel(

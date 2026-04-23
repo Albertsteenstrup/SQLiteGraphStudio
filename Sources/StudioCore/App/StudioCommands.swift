@@ -14,6 +14,19 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("o")
 
+            Menu("Open Recent") {
+                if session.recentDatabaseURLs.isEmpty {
+                    Text("No Recent Databases")
+                } else {
+                    ForEach(session.recentDatabaseURLs, id: \.path) { url in
+                        Button(url.lastPathComponent) {
+                            session.openRecentDatabase(url)
+                        }
+                    }
+                }
+            }
+            .disabled(session.recentDatabaseURLs.isEmpty)
+
             Button("Close Database") {
                 session.closeDatabase()
             }

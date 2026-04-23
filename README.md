@@ -13,6 +13,32 @@ Native macOS SQLite browser/editor with:
 ./script/build_and_run.sh
 ```
 
+Open a specific database directly from Terminal:
+
+```bash
+swift run SQLiteGraphStudio /absolute/path/to/database.sqlite
+```
+
+If you have a built app bundle, you can open a file with:
+
+```bash
+open -a /path/to/SQLiteGraphStudio.app /absolute/path/to/database.sqlite
+```
+
+For another user downloading the repo, the simplest flow is:
+
+```bash
+git clone <repo-url>
+cd sql_gui
+swift run SQLiteGraphStudio /absolute/path/to/database.sqlite
+```
+
+For another user downloading a release app, they can drag `SQLiteGraphStudio.app` to `/Applications` and run:
+
+```bash
+open -a /Applications/SQLiteGraphStudio.app /absolute/path/to/database.sqlite
+```
+
 ## Targets
 
 - `SQLiteGraphStudio`: the macOS app entrypoint
