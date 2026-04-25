@@ -6,7 +6,7 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 
 <p>
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/github/v/release/Albertsteenstrup/SQLiteGraphStudio?label=Download&style=for-the-badge" alt="Download latest release">
+    <img src="https://img.shields.io/github/v/release/Albertsteenstrup/SQLiteGraphStudio?label=Download&amp;style=for-the-badge" alt="Download latest release">
   </a>
 </p>
 
