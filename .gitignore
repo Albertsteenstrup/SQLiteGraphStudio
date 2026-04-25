@@ -22,3 +22,4 @@ Fixtures/*.sqlite-wal
 
 # Built app bundles
 *.app
+.kiro
