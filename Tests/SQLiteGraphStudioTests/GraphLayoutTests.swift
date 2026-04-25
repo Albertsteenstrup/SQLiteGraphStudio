@@ -131,6 +131,56 @@ struct GraphLayoutTests {
         #expect(restored.hasRestoredSnapshot)
         #expect(!restored.isAnimating)
     }
+
+    @Test
+    func allCardsRelayoutStartsFromCompactPositionsWithoutKeepingPins() {
+        let authors = makeDescriptor(name: "authors", columnCount: 8)
+        let posts = makeDescriptor(name: "posts", columnCount: 9)
+        let graph = SchemaGraph(
+            nodes: [
+                GraphNode(id: "authors", title: "authors", isEditable: true),
+                GraphNode(id: "posts", title: "posts", isEditable: true),
+            ],
+            edges: [
+                GraphEdge(id: "posts-authors", sourceID: "posts", targetID: "authors", sourceColumn: "column_2", targetColumn: "column_1"),
+            ]
+        )
+        let descriptors = ["authors": authors, "posts": posts]
+
+        let layout = GraphLayoutModel()
+        layout.reset(for: graph, presentation: .compact, descriptorLookup: { descriptors[$0] })
+        layout.pin(nodeID: "authors", at: CGPoint(x: -72, y: 20))
+        layout.pin(nodeID: "posts", at: CGPoint(x: 88, y: 20))
+
+        layout.relayoutPreservingCurrentPositions(
+            for: graph,
+            presentation: .allCards,
+            descriptorLookup: { descriptors[$0] }
+        )
+
+        #expect(layout.position(for: "authors") == CGPoint(x: -72, y: 20))
+        #expect(layout.position(for: "posts") == CGPoint(x: 88, y: 20))
+
+        layout.stabilize(
+            graph: graph,
+            presentation: .allCards,
+            descriptorLookup: { descriptors[$0] },
+            nodeSizeLookup: {
+                guard let descriptor = descriptors[$0] else { return .zero }
+                return GraphCardLayout.nodeSize(title: descriptor.name, descriptor: descriptor, style: .expanded)
+            },
+            maxIterations: 420
+        )
+
+        let authorsSize = GraphCardLayout.nodeSize(title: "authors", descriptor: authors, style: .expanded)
+        let postsSize = GraphCardLayout.nodeSize(title: "posts", descriptor: posts, style: .expanded)
+        let authorsCenter = layout.position(for: "authors")
+        let postsCenter = layout.position(for: "posts")
+        let authorsFrame = CGRect(x: authorsCenter.x - authorsSize.width / 2, y: authorsCenter.y - authorsSize.height / 2, width: authorsSize.width, height: authorsSize.height)
+        let postsFrame = CGRect(x: postsCenter.x - postsSize.width / 2, y: postsCenter.y - postsSize.height / 2, width: postsSize.width, height: postsSize.height)
+
+        #expect(!authorsFrame.insetBy(dx: -24, dy: -24).intersects(postsFrame))
+    }
 }
 
 private func makeDescriptor(name: String, columnCount: Int) -> EditableTableDescriptor {

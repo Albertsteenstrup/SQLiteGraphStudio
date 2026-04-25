@@ -126,24 +126,100 @@ public struct TableColumn: Identifiable, Sendable, Hashable {
     }
 }
 
+public struct SchemaIndex: Identifiable, Sendable, Hashable, Codable {
+    public let id: String
+    public let name: String
+    public let columns: [String]
+    public let isUnique: Bool
+    public let origin: String
+    public let isPartial: Bool
+    public let sql: String?
+
+    public init(name: String, columns: [String], isUnique: Bool, origin: String, isPartial: Bool, sql: String?) {
+        self.id = name
+        self.name = name
+        self.columns = columns
+        self.isUnique = isUnique
+        self.origin = origin
+        self.isPartial = isPartial
+        self.sql = sql
+    }
+}
+
+public struct SchemaTrigger: Identifiable, Sendable, Hashable, Codable {
+    public let id: String
+    public let name: String
+    public let tableName: String
+    public let sql: String
+
+    public init(name: String, tableName: String, sql: String) {
+        self.id = name
+        self.name = name
+        self.tableName = tableName
+        self.sql = sql
+    }
+}
+
+public enum SchemaConstraintKind: String, Sendable, Hashable, Codable {
+    case primaryKey
+    case foreignKey
+    case unique
+    case notNull
+    case defaultValue
+    case check
+}
+
+public struct SchemaConstraint: Identifiable, Sendable, Hashable, Codable {
+    public let id: String
+    public let kind: SchemaConstraintKind
+    public let name: String?
+    public let columns: [String]
+    public let detail: String
+
+    public init(id: String, kind: SchemaConstraintKind, name: String? = nil, columns: [String], detail: String) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.columns = columns
+        self.detail = detail
+    }
+}
+
+public struct GeneratedColumnInfo: Identifiable, Sendable, Hashable, Codable {
+    public let id: String
+    public let name: String
+    public let declaredType: String
+    public let storedKind: String
+
+    public init(name: String, declaredType: String, storedKind: String) {
+        self.id = name
+        self.name = name
+        self.declaredType = declaredType
+        self.storedKind = storedKind
+    }
+}
+
 public struct TableSummary: Identifiable, Sendable, Hashable {
     public let id: String
     public let name: String
     public let objectType: SQLiteObjectType
     public let isEditable: Bool
     public let columnCount: Int
+    public let rowCount: Int?
 
     public init(
         name: String,
         objectType: SQLiteObjectType,
         isEditable: Bool,
-        columnCount: Int
+        columnCount: Int,
+        rowCount: Int? = nil
     ) {
         self.id = name
         self.name = name
         self.objectType = objectType
         self.isEditable = isEditable
         self.columnCount = columnCount
+        self.rowCount = rowCount
     }
 }
 
@@ -156,6 +232,11 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
     public let rowIdentityStrategy: RowIdentityStrategy
     public let isWithoutRowID: Bool
     public let isEditable: Bool
+    public let rowCount: Int?
+    public let indexes: [SchemaIndex]
+    public let triggers: [SchemaTrigger]
+    public let constraints: [SchemaConstraint]
+    public let generatedColumns: [GeneratedColumnInfo]
 
     public init(
         name: String,
@@ -164,7 +245,12 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         primaryKeyColumns: [String],
         rowIdentityStrategy: RowIdentityStrategy,
         isWithoutRowID: Bool,
-        isEditable: Bool
+        isEditable: Bool,
+        rowCount: Int? = nil,
+        indexes: [SchemaIndex] = [],
+        triggers: [SchemaTrigger] = [],
+        constraints: [SchemaConstraint] = [],
+        generatedColumns: [GeneratedColumnInfo] = []
     ) {
         self.id = name
         self.name = name
@@ -174,6 +260,11 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         self.rowIdentityStrategy = rowIdentityStrategy
         self.isWithoutRowID = isWithoutRowID
         self.isEditable = isEditable
+        self.rowCount = rowCount
+        self.indexes = indexes
+        self.triggers = triggers
+        self.constraints = constraints
+        self.generatedColumns = generatedColumns
     }
 
     public var summary: TableSummary {
@@ -181,7 +272,8 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
             name: name,
             objectType: objectType,
             isEditable: isEditable,
-            columnCount: columns.count
+            columnCount: columns.count,
+            rowCount: rowCount
         )
     }
 
@@ -198,6 +290,32 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         case .readOnly:
             return columns.map(\.name)
         }
+    }
+}
+
+public struct DatabaseConnectionProfile: Identifiable, Sendable, Hashable, Codable {
+    public let id: UUID
+    public var name: String
+    public var filePath: String
+    public var bookmarkData: Data?
+    public var lastOpenedAt: Date?
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        filePath: String,
+        bookmarkData: Data? = nil,
+        lastOpenedAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.filePath = filePath
+        self.bookmarkData = bookmarkData
+        self.lastOpenedAt = lastOpenedAt
+    }
+
+    public var url: URL {
+        URL(fileURLWithPath: filePath).standardizedFileURL
     }
 }
 
@@ -335,6 +453,112 @@ public struct QueryResult: Sendable, Hashable {
     }
 
     public static let empty = QueryResult(columns: [], rows: [], isTruncated: false, rowLimit: 0)
+}
+
+public struct ExplainPlanRow: Identifiable, Sendable, Hashable {
+    public let id: Int
+    public let parent: Int
+    public let notUsed: Int
+    public let detail: String
+
+    public init(id: Int, parent: Int, notUsed: Int, detail: String) {
+        self.id = id
+        self.parent = parent
+        self.notUsed = notUsed
+        self.detail = detail
+    }
+}
+
+public struct QueryHistoryEntry: Identifiable, Sendable, Hashable, Codable {
+    public let id: UUID
+    public let title: String
+    public let sqlText: String
+    public let executedAt: Date
+    public let durationMilliseconds: Double
+    public let rowCount: Int
+    public let succeeded: Bool
+    public let message: String?
+
+    public init(
+        id: UUID = UUID(),
+        title: String,
+        sqlText: String,
+        executedAt: Date = Date(),
+        durationMilliseconds: Double,
+        rowCount: Int,
+        succeeded: Bool,
+        message: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.sqlText = sqlText
+        self.executedAt = executedAt
+        self.durationMilliseconds = durationMilliseconds
+        self.rowCount = rowCount
+        self.succeeded = succeeded
+        self.message = message
+    }
+}
+
+public enum DataTransferFormat: String, CaseIterable, Identifiable, Sendable, Hashable {
+    case csv
+    case json
+
+    public var id: String { rawValue }
+
+    public var fileExtension: String {
+        switch self {
+        case .csv: return "csv"
+        case .json: return "json"
+        }
+    }
+}
+
+public struct ImportRowsResult: Sendable, Hashable {
+    public let insertedRowCount: Int
+    public let skippedRowCount: Int
+    public let messages: [String]
+
+    public init(insertedRowCount: Int, skippedRowCount: Int, messages: [String] = []) {
+        self.insertedRowCount = insertedRowCount
+        self.skippedRowCount = skippedRowCount
+        self.messages = messages
+    }
+}
+
+public struct TableColumnDraft: Identifiable, Sendable, Hashable {
+    public let id: UUID
+    public var name: String
+    public var type: String
+    public var isPrimaryKey: Bool
+    public var isNotNull: Bool
+    public var defaultValueSQL: String
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "",
+        type: String = "TEXT",
+        isPrimaryKey: Bool = false,
+        isNotNull: Bool = false,
+        defaultValueSQL: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.isPrimaryKey = isPrimaryKey
+        self.isNotNull = isNotNull
+        self.defaultValueSQL = defaultValueSQL
+    }
+}
+
+public struct TableCreateDraft: Sendable, Hashable {
+    public var tableName: String
+    public var columns: [TableColumnDraft]
+
+    public init(tableName: String = "", columns: [TableColumnDraft] = [TableColumnDraft(name: "id", type: "INTEGER", isPrimaryKey: true)]) {
+        self.tableName = tableName
+        self.columns = columns
+    }
 }
 
 public struct TableRow: Sendable, Hashable {

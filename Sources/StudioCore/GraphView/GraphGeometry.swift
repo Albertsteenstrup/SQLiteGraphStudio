@@ -152,9 +152,9 @@ enum GraphCardLayout {
 
     static func collapsedWidth(title: String, hovered: Bool) -> CGFloat {
         let characterWidth: CGFloat = hovered ? 10.8 : 9.8
-        let chromeWidth: CGFloat = hovered ? 144 : 118
-        let minWidth: CGFloat = hovered ? 220 : 164
-        let maxWidth: CGFloat = hovered ? 420 : 320
+        let chromeWidth: CGFloat = hovered ? 208 : 182
+        let minWidth: CGFloat = hovered ? 282 : 226
+        let maxWidth: CGFloat = hovered ? 480 : 380
         return min(max(minWidth, CGFloat(title.count) * characterWidth + chromeWidth), maxWidth)
     }
 
@@ -234,7 +234,7 @@ struct GraphCardGeometry: Sendable, Equatable {
 
         var rowFrames: [String: CGRect] = [:]
         if let descriptor {
-            let visibleColumnNames = displayedColumns ?? descriptor.columns.map(\.name)
+            let visibleColumnNames = displayedColumns ?? Self.defaultDisplayedColumns(for: descriptor, role: role)
             for (index, columnName) in visibleColumnNames.enumerated() {
                 if let rowFrame = GraphCardLayout.rowFrame(columnIndex: index, in: frame, role: role, scale: scale) {
                     rowFrames[columnName] = rowFrame
@@ -244,8 +244,29 @@ struct GraphCardGeometry: Sendable, Equatable {
         self.rowFrames = rowFrames
     }
 
+    private static func defaultDisplayedColumns(for descriptor: EditableTableDescriptor, role: GraphCardRole) -> [String] {
+        switch role {
+        case .expandedNode:
+            return descriptor.columns.prefix(GraphCardLayout.maxExpandedVisibleRows).map(\.name)
+        case .collapsedNode, .previewNode, .floatingDetails:
+            return descriptor.columns.map(\.name)
+        }
+    }
+
     var center: CGPoint {
         CGPoint(x: frame.midX, y: frame.midY)
+    }
+
+    func columnName(at point: CGPoint) -> String? {
+        rowFrames
+            .filter { $0.value.contains(point) }
+            .min { lhs, rhs in
+                if lhs.value.minY == rhs.value.minY {
+                    return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+                }
+                return lhs.value.minY < rhs.value.minY
+            }?
+            .key
     }
 
     func anchor(for columnName: String, toward point: CGPoint) -> CGPoint? {
@@ -303,5 +324,68 @@ struct GraphAnchorMap: Sendable, Equatable {
         let target = targetCard.anchor(for: edge.targetColumn, toward: source) ?? targetCard.nearestSideMidpoint(toward: source)
 
         return GraphEdgeAnchors(source: source, target: target)
+    }
+}
+
+// MARK: - Bézier helpers
+
+/// Returns the point on a cubic Bézier curve at parameter `t` ∈ [0, 1].
+///
+/// Formula: B(t) = (1-t)³·P0 + 3(1-t)²t·P1 + 3(1-t)t²·P2 + t³·P3
+func bezierPoint(
+    start: CGPoint,
+    control1: CGPoint,
+    control2: CGPoint,
+    end: CGPoint,
+    t: CGFloat
+) -> CGPoint {
+    let u = 1 - t
+    let uu = u * u
+    let uuu = uu * u
+    let tt = t * t
+    let ttt = tt * t
+
+    return CGPoint(
+        x: uuu * start.x + 3 * uu * t * control1.x + 3 * u * tt * control2.x + ttt * end.x,
+        y: uuu * start.y + 3 * uu * t * control1.y + 3 * u * tt * control2.y + ttt * end.y
+    )
+}
+
+/// Returns the tangent vector (not normalized) of a cubic Bézier curve at parameter `t` ∈ [0, 1].
+///
+/// Formula: B'(t) = 3(1-t)²·(P1-P0) + 6(1-t)t·(P2-P1) + 3t²·(P3-P2)
+func bezierTangent(
+    start: CGPoint,
+    control1: CGPoint,
+    control2: CGPoint,
+    end: CGPoint,
+    t: CGFloat
+) -> CGVector {
+    let u = 1 - t
+    let uu = u * u
+    let tt = t * t
+
+    let dx = 3 * uu * (control1.x - start.x)
+           + 6 * u * t * (control2.x - control1.x)
+           + 3 * tt * (end.x - control2.x)
+    let dy = 3 * uu * (control1.y - start.y)
+           + 6 * u * t * (control2.y - control1.y)
+           + 3 * tt * (end.y - control2.y)
+
+    return CGVector(dx: dx, dy: dy)
+}
+
+/// Returns the display string for the given `EdgeCardinality`.
+///
+/// - `.oneToOne`  → `"1:1"`
+/// - `.oneToMany` → `"1:N"`
+/// - `.manyToOne` → `"N:1"`
+/// - `.manyToMany` → `"N:M"`
+func cardinalityDisplayString(for cardinality: EdgeCardinality) -> String {
+    switch cardinality {
+    case .oneToOne:   return "1:1"
+    case .oneToMany:  return "1:N"
+    case .manyToOne:  return "N:1"
+    case .manyToMany: return "N:M"
     }
 }

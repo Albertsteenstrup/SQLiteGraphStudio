@@ -7,13 +7,14 @@ import UniformTypeIdentifiers
 @Observable
 public final class AppSession {
     public var recentDatabaseURLs: [URL] = []
+    public var connectionProfiles: [DatabaseConnectionProfile] = []
     public var databaseURL: URL?
     public var tables: [TableSummary] = []
     public var graph: SchemaGraph = .empty
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
-    public var maximizedPane: PaneContentKind?
+    public var maximizedPaneSide: WorkspacePaneSide?
     public var selectedGraphNodeID: String?
     public var selectedGraphNodeIDs: Set<String> = []
     public var expandedGraphNodeIDs: Set<String> = []
@@ -24,6 +25,12 @@ public final class AppSession {
     public var activeTabID: UUID?
     public var isRefreshing = false
     public var isTablePickerPresented = false
+    public var isProfileManagerPresented = false
+    public var isCreateTablePresented = false
+    public var isAlterTablePresented = false
+    // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary
+    public var graphZoom: CGFloat = 1.0
+    public var graphPan: CGSize = .zero
     public var presentedError: SQLiteUserError?
 
     public let graphLayout = GraphLayoutModel()
@@ -33,6 +40,7 @@ public final class AppSession {
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
+    private static let profileStorageKey = "SQLiteGraphStudio.connection-profiles"
     private static let allowedDatabaseExtensions: Set<String> = [
         "sqlite",
         "sqlite3",
@@ -53,6 +61,7 @@ public final class AppSession {
             userDefaults: userDefaults
         )
         self.recentDatabaseURLs = Self.loadRecentDatabaseURLs(from: userDefaults)
+        self.connectionProfiles = Self.loadConnectionProfiles(from: userDefaults)
     }
 
     public var activeTab: TableTabModel? {
@@ -116,6 +125,7 @@ public final class AppSession {
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
         activePaneSide = .right
+        maximizedPaneSide = nil
         selectedGraphNodeID = nil
         expandedGraphNodeIDs = []
         floatingDetailsCardTableID = nil
@@ -130,6 +140,7 @@ public final class AppSession {
 
     public func refreshSchema() {
         guard let databaseURL else { return }
+        persistCurrentGraphLayout()
         Task { await openDatabase(url: databaseURL) }
     }
 
@@ -140,6 +151,32 @@ public final class AppSession {
 
     public func dismissTablePicker() {
         isTablePickerPresented = false
+    }
+
+    public func showProfileManager() {
+        isProfileManagerPresented = true
+    }
+
+    public func dismissProfileManager() {
+        isProfileManagerPresented = false
+    }
+
+    public func showCreateTable() {
+        guard hasOpenDatabase else { return }
+        isCreateTablePresented = true
+    }
+
+    public func dismissCreateTable() {
+        isCreateTablePresented = false
+    }
+
+    public func showAlterTable() {
+        guard activeTab != nil else { return }
+        isAlterTablePresented = true
+    }
+
+    public func dismissAlterTable() {
+        isAlterTablePresented = false
     }
 
     @discardableResult
@@ -230,6 +267,9 @@ public final class AppSession {
     }
 
     public func setShowAllGraphTableCards(_ isPresented: Bool) {
+        if isPresented, !showAllGraphTableCards {
+            persistCurrentGraphLayout()
+        }
         showAllGraphTableCards = isPresented
         if isPresented {
             closeFloatingDetails()
@@ -268,6 +308,11 @@ public final class AppSession {
         let persistedLayout = PersistedGraphLayout(snapshot: snapshot)
         guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
         userDefaults.set(data, forKey: graphLayoutStorageKey(for: databaseURL))
+    }
+
+    public func restoreCompactGraphLayoutForCurrentDatabase() {
+        guard let databaseURL else { return }
+        restorePersistedGraphLayoutIfAvailable(for: databaseURL, graph: graph)
     }
 
     public func openSelectedGraphNode() {
@@ -310,6 +355,173 @@ public final class AppSession {
             """,
             runImmediately: true
         )
+    }
+
+    public func openConnectionProfile(_ profile: DatabaseConnectionProfile) {
+        let url = resolvedURL(for: profile)
+        Task { await openDatabase(url: url) }
+        touchConnectionProfile(id: profile.id)
+    }
+
+    public func saveCurrentConnectionProfile(name rawName: String? = nil) {
+        guard let databaseURL else { return }
+        let normalizedURL = databaseURL.standardizedFileURL
+        let fallbackName = normalizedURL.deletingPathExtension().lastPathComponent
+        let name = rawName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? rawName!.trimmingCharacters(in: .whitespacesAndNewlines) : fallbackName
+        let bookmarkData = try? normalizedURL.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+
+        if let existingIndex = connectionProfiles.firstIndex(where: { $0.url == normalizedURL }) {
+            connectionProfiles[existingIndex].name = name
+            connectionProfiles[existingIndex].bookmarkData = bookmarkData
+            connectionProfiles[existingIndex].lastOpenedAt = Date()
+        } else {
+            connectionProfiles.insert(
+                DatabaseConnectionProfile(
+                    name: name,
+                    filePath: normalizedURL.path,
+                    bookmarkData: bookmarkData,
+                    lastOpenedAt: Date()
+                ),
+                at: 0
+            )
+        }
+        persistConnectionProfiles()
+    }
+
+    public func renameConnectionProfile(_ profile: DatabaseConnectionProfile, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let index = connectionProfiles.firstIndex(where: { $0.id == profile.id })
+        else {
+            return
+        }
+
+        connectionProfiles[index].name = name
+        persistConnectionProfiles()
+    }
+
+    public func deleteConnectionProfile(_ profile: DatabaseConnectionProfile) {
+        connectionProfiles.removeAll { $0.id == profile.id }
+        persistConnectionProfiles()
+    }
+
+    public func createTable(_ draft: TableCreateDraft) {
+        Task {
+            do {
+                try await databaseService.createTable(draft)
+                dismissCreateTable()
+                refreshSchema()
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func renameActiveTable(to newName: String) {
+        guard let descriptor = activeTab?.descriptor else { return }
+        Task {
+            do {
+                try await databaseService.renameTable(from: descriptor.name, to: newName)
+                dismissAlterTable()
+                refreshSchema()
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func addColumnToActiveTable(_ draft: TableColumnDraft) {
+        guard let descriptor = activeTab?.descriptor else { return }
+        Task {
+            do {
+                try await databaseService.addColumn(draft, to: descriptor)
+                dismissAlterTable()
+                refreshSchema()
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func renameColumnInActiveTable(from oldName: String, to newName: String) {
+        guard let descriptor = activeTab?.descriptor else { return }
+        Task {
+            do {
+                try await databaseService.renameColumn(from: oldName, to: newName, in: descriptor)
+                dismissAlterTable()
+                refreshSchema()
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func dropColumnFromActiveTable(_ columnName: String) {
+        guard let tab = activeTab else { return }
+        Task {
+            do {
+                try await tab.dropColumn(columnName)
+                dismissAlterTable()
+                refreshSchema()
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func createTableSQLPreview(for draft: TableCreateDraft) -> String {
+        (try? databaseService.makeCreateTableSQL(draft)) ?? ""
+    }
+
+    public func exportActiveTableRows(format: DataTransferFormat) {
+        guard let activeTab else { return }
+        Task {
+            do {
+                let text = try await databaseService.serializeTableRows(
+                    descriptor: activeTab.descriptor,
+                    rows: activeTab.chunk.rows,
+                    format: format
+                )
+                try presentExportPanel(defaultName: activeTab.title, format: format, text: text)
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func exportActiveQueryResult(format: DataTransferFormat) {
+        guard let activeQuery = queryWorkspace.activeQuery else { return }
+        Task {
+            do {
+                let text = try await databaseService.serializeQueryResult(activeQuery.result, format: format)
+                try presentExportPanel(defaultName: activeQuery.title, format: format, text: text)
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    public func importRowsIntoActiveTable(format: DataTransferFormat) {
+        guard let activeTab else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [format == .csv ? .commaSeparatedText : .json]
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        Task {
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let result = try await databaseService.importRows(into: activeTab.descriptor, text: text, format: format)
+                activeTab.inlineErrorMessage = result.messages.first
+                await activeTab.reload()
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
     }
 
     public func dismissError() {
@@ -397,20 +609,20 @@ public final class AppSession {
         setPaneContent(item.kind, for: side)
     }
     
-    public func toggleMaximizePane(_ kind: PaneContentKind) {
-        if maximizedPane == kind {
-            maximizedPane = nil
+    public func toggleMaximizePane(_ side: WorkspacePaneSide) {
+        if maximizedPaneSide == side {
+            maximizedPaneSide = nil
         } else {
-            maximizedPane = kind
+            maximizedPaneSide = side
         }
     }
     
-    public func isMaximized(_ kind: PaneContentKind) -> Bool {
-        maximizedPane == kind
+    public func isMaximized(_ side: WorkspacePaneSide) -> Bool {
+        maximizedPaneSide == side
     }
     
     public func exitMaximizedMode() {
-        maximizedPane = nil
+        maximizedPaneSide = nil
     }
 
     private func rememberRecentDatabase(_ url: URL) {
@@ -419,6 +631,57 @@ public final class AppSession {
         urls.insert(normalizedURL, at: 0)
         recentDatabaseURLs = Array(urls.prefix(Self.maxRecentDatabaseCount))
         userDefaults.set(recentDatabaseURLs.map(\.path), forKey: Self.recentDatabaseStorageKey)
+    }
+
+    private func touchConnectionProfile(id: UUID) {
+        guard let index = connectionProfiles.firstIndex(where: { $0.id == id }) else { return }
+        connectionProfiles[index].lastOpenedAt = Date()
+        persistConnectionProfiles()
+    }
+
+    private func persistConnectionProfiles() {
+        guard let data = try? JSONEncoder().encode(connectionProfiles) else { return }
+        userDefaults.set(data, forKey: Self.profileStorageKey)
+    }
+
+    private static func loadConnectionProfiles(from userDefaults: UserDefaults) -> [DatabaseConnectionProfile] {
+        guard let data = userDefaults.data(forKey: profileStorageKey),
+              let profiles = try? JSONDecoder().decode([DatabaseConnectionProfile].self, from: data)
+        else {
+            return []
+        }
+
+        return profiles.filter { profile in
+            FileManager.default.fileExists(atPath: profile.filePath)
+        }
+    }
+
+    private func resolvedURL(for profile: DatabaseConnectionProfile) -> URL {
+        guard let bookmarkData = profile.bookmarkData else {
+            return profile.url
+        }
+
+        var isStale = false
+        if let url = try? URL(
+            resolvingBookmarkData: bookmarkData,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) {
+            return url.standardizedFileURL
+        }
+
+        return profile.url
+    }
+
+    private func presentExportPanel(defaultName: String, format: DataTransferFormat, text: String) throws {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [format == .csv ? .commaSeparatedText : .json]
+        panel.nameFieldStringValue = "\(defaultName).\(format.fileExtension)"
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     private static func loadRecentDatabaseURLs(from userDefaults: UserDefaults) -> [URL] {

@@ -13,8 +13,15 @@ public struct SchemaGraphView: View {
     @State private var hasPerformedSettledInitialLayout = false
     @State private var nodeDragOrigin: CGPoint?
     @State private var nodeDragPointerOffset: CGSize?
+    @State private var multiNodeDragOrigins: [String: CGPoint] = [:]
     @State private var draggedNodeID: String?
     @State private var hoveredNodeID: String?
+    @State private var hoveredRelationTarget: GraphRelationHoverTarget?
+    @State private var hoveredEdgeID: String?
+    @State private var hoveredEdgeMidpoints: [String: CGPoint] = [:]
+    @State private var activeRelationHoverTargets: [GraphRelationHoverSource: GraphRelationHoverTarget] = [:]
+    @State private var clearRelationHoverTasks: [GraphRelationHoverSource: Task<Void, Never>] = [:]
+    @State private var clearNodeHoverTask: Task<Void, Never>?
     @State private var layoutRevision = 0
     @State private var pendingExpansionNodeID: String?
     @State private var selectionRectStart: CGPoint?
@@ -30,7 +37,11 @@ public struct SchemaGraphView: View {
     }
 
     private var focusNodeID: String? {
-        manuallyExpandedNodeID ?? hoveredNodeID ?? session.selectedGraphNodeID
+        guard hoveredRelationTarget == nil else { return nil }
+        if session.showAllGraphTableCards {
+            return hoveredNodeID ?? (session.selectedGraphNodeIDs.count <= 1 ? session.selectedGraphNodeID : nil)
+        }
+        return manuallyExpandedNodeID ?? hoveredNodeID ?? (session.selectedGraphNodeIDs.count <= 1 ? session.selectedGraphNodeID : nil)
     }
 
     private var manuallyExpandedNodeID: String? {
@@ -87,8 +98,12 @@ public struct SchemaGraphView: View {
                 viewportRestorePoint = nil
                 viewportRestoreNodeID = nil
                 pendingExpansionNodeID = nil
-                rebuildLayout(in: geometry.size, refit: isPresented, clearPinnedState: true, persistLayout: false)
+                hoveredNodeID = nil
+                clearRelationHoverState()
+                switchPresentationMode(isShowingAllCards: isPresented, in: geometry.size)
             }
+            .onChange(of: zoom) { _, newZoom in session.graphZoom = newZoom }
+            .onChange(of: pan) { _, newPan in session.graphPan = newPan }
         }
     }
 
@@ -117,7 +132,15 @@ public struct SchemaGraphView: View {
     @ViewBuilder
     private func graphScene(size: CGSize) -> some View {
         let anchorMap = viewportAnchorMap(in: size)
-        let relationHighlight = GraphRelationHighlight(graph: session.graph, focusNodeID: focusNodeID)
+        let currentFocusNodeID = focusNodeID
+        let currentHoverTarget = hoveredRelationTarget
+        let relationHighlight = GraphRelationHighlight(
+            graph: session.graph,
+            focusNodeID: currentFocusNodeID,
+            hoverTarget: currentHoverTarget
+        )
+        let edgeLookup = GraphEdgeLookup(edges: session.graph.edges)
+        let renderedNodes = renderedGraphNodes(anchorMap: anchorMap, viewportSize: size)
         let _ = layoutRevision
 
         ZStack {
@@ -131,8 +154,12 @@ public struct SchemaGraphView: View {
                 },
                 onMagnify: { magnification, anchor in
                     applyTrackpadMagnification(magnification, anchor: anchor, in: size)
+                },
+                onPointerMove: { point in
+                    handleViewportPointerMove(point, anchorMap: anchorMap, edgeLookup: edgeLookup)
                 }
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
 
             Canvas { context, _ in
@@ -140,10 +167,10 @@ public struct SchemaGraphView: View {
             }
             .allowsHitTesting(false)
 
-            ForEach(session.graph.nodes) { node in
+            ForEach(renderedNodes) { node in
                 let descriptor = session.descriptor(named: node.id)
-                let outgoingEdges = session.outgoingEdges(for: node.id)
-                let incomingEdges = session.incomingEdges(for: node.id)
+                let outgoingEdges = edgeLookup.outgoingEdges(for: node.id)
+                let incomingEdges = edgeLookup.incomingEdges(for: node.id)
                 let previewColumns = previewColumns(for: node.id)
                 let displayStyle = nodeDisplayStyle(for: node.id, previewColumns: previewColumns)
                 let cardSize = nodeSize(for: node.id)
@@ -173,8 +200,18 @@ public struct SchemaGraphView: View {
                         }
                         _ = session.openTable(named: node.id)
                     },
+                    showTopRows: {
+                        withAnimation(.snappy(duration: 0.16)) {
+                            session.selectGraphNode(node.id)
+                        }
+                        session.runTopRowsQuery(for: node.id)
+                    },
+                    usesViewportHoverTracking: session.showAllGraphTableCards,
                     hoverChanged: { isHovered in
                         handleHoverChange(isHovered, for: node.id)
+                    },
+                    relationHoverChanged: { target, source, isHovered in
+                        handleRelationHoverChange(target, source: source, isHovered: isHovered)
                     },
                     headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
                 )
@@ -182,18 +219,10 @@ public struct SchemaGraphView: View {
                 .scaleEffect(zoom)
                 .position(screenCenter(for: node.id, in: size))
                 .shadow(
-                    color: StudioPalette.shadow.opacity(draggedNodeID == node.id ? 1.0 : 0.8),
-                    radius: draggedNodeID == node.id ? 26 : (session.selectedGraphNodeIDs.contains(node.id) ? 22 : 12),
-                    y: draggedNodeID == node.id ? 16 : 10
+                    color: StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8),
+                    radius: shadowRadius(for: node.id),
+                    y: session.showAllGraphTableCards ? 5 : (draggedNodeID == node.id ? 16 : 10)
                 )
-                .overlay {
-                    // Multi-selection indicator
-                    if session.selectedGraphNodeIDs.contains(node.id) && session.selectedGraphNodeIDs.count > 1 {
-                        RoundedRectangle(cornerRadius: displayStyle == .collapsed ? 18 : 22, style: .continuous)
-                            .stroke(StudioPalette.accent, lineWidth: 3)
-                            .padding(-2)
-                    }
-                }
                 .zIndex(zIndex(for: node.id))
             }
             
@@ -213,13 +242,18 @@ public struct SchemaGraphView: View {
                     .allowsHitTesting(false)
                     .zIndex(1000)
             }
+
+            // Cardinality labels are drawn directly in the Canvas (see drawEdges)
         }
         .coordinateSpace(name: "graphViewport")
         .onTapGesture {
-            // Deselect all nodes when clicking empty space
+            // Deselect all nodes and collapse any expanded card when clicking empty space
+            if let expandedID = manuallyExpandedNodeID {
+                toggleExpandedState(for: expandedID, in: viewportSize)
+            }
             session.clearGraphSelection()
         }
-        .animation(.snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
+        .animation(session.showAllGraphTableCards ? nil : .snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
     }
 
@@ -235,7 +269,7 @@ public struct SchemaGraphView: View {
             let path = edgePath(from: anchors.source, to: anchors.target)
             let strokeColor = isHighlighted
                 ? StudioPalette.edgeHighlight
-                : StudioPalette.edgeNeutral.opacity(session.showAllGraphTableCards ? 0.32 : 0.18)
+                : StudioPalette.edgeNeutral.opacity(session.showAllGraphTableCards ? 0.48 : 0.34)
 
             if isHighlighted {
                 context.stroke(
@@ -246,53 +280,92 @@ public struct SchemaGraphView: View {
             }
 
             context.stroke(
-                path,
-                with: .color(strokeColor),
-                style: StrokeStyle(
-                    lineWidth: isHighlighted ? 1.85 : (session.showAllGraphTableCards ? 1.15 : 0.9),
+                    path,
+                    with: .color(strokeColor),
+                    style: StrokeStyle(
+                    lineWidth: isHighlighted ? 1.85 : (session.showAllGraphTableCards ? 1.25 : 1.05),
                     lineCap: .round,
                     lineJoin: .round
                 )
             )
             
-            // Draw directional arrow at the end (target side)
             if isHighlighted {
-                drawArrowhead(in: &context, at: anchors.target, direction: edgeDirection(from: anchors.source, to: anchors.target), color: StudioPalette.edgeHighlight)
+                let (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
+                drawDirectionMarker(in: &context, from: anchors.source, control1: control1, control2: control2, to: anchors.target, color: StudioPalette.edgeHighlight)
+                if hoveredEdgeID == edge.id {
+                    drawCardinalityLabels(in: &context, edge: edge, start: anchors.source, control1: control1, control2: control2, end: anchors.target)
+                }
             }
         }
     }
-    
-    private func edgeDirection(from start: CGPoint, to end: CGPoint) -> CGFloat {
-        return atan2(end.y - start.y, end.x - start.x)
-    }
-    
-    private func drawArrowhead(in context: inout GraphicsContext, at point: CGPoint, direction: CGFloat, color: Color) {
-        let arrowSize: CGFloat = 8
-        let arrowAngle: CGFloat = .pi / 6  // 30 degrees
-        
-        // Calculate the two points of the arrowhead
-        let point1 = CGPoint(
-            x: point.x - arrowSize * cos(direction - arrowAngle),
-            y: point.y - arrowSize * sin(direction - arrowAngle)
-        )
-        let point2 = CGPoint(
-            x: point.x - arrowSize * cos(direction + arrowAngle),
-            y: point.y - arrowSize * sin(direction + arrowAngle)
-        )
-        
-        var arrowPath = Path()
-        arrowPath.move(to: point1)
-        arrowPath.addLine(to: point)
-        arrowPath.addLine(to: point2)
-        
+
+    private func drawDirectionMarker(
+        in context: inout GraphicsContext,
+        from start: CGPoint,
+        control1: CGPoint,
+        control2: CGPoint,
+        to end: CGPoint,
+        color: Color
+    ) {
+        let tangent = bezierTangent(start: start, control1: control1, control2: control2, end: end, t: 0.5)
+        let dx = tangent.dx
+        let dy = tangent.dy
+        guard dx != 0 || dy != 0 else { return }
+
+        let angle = atan2(dy, dx)
+        let markerCenter = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.5)
+        let markerSize: CGFloat = 4.8
+        let markerAngle: CGFloat = .pi / 5
+
+        var path = Path()
+        path.move(to: CGPoint(
+            x: markerCenter.x - markerSize * cos(angle - markerAngle),
+            y: markerCenter.y - markerSize * sin(angle - markerAngle)
+        ))
+        path.addLine(to: markerCenter)
+        path.addLine(to: CGPoint(
+            x: markerCenter.x - markerSize * cos(angle + markerAngle),
+            y: markerCenter.y - markerSize * sin(angle + markerAngle)
+        ))
+
         context.stroke(
-            arrowPath,
-            with: .color(color),
-            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+            path,
+            with: .color(color.opacity(0.72)),
+            style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round)
         )
     }
 
-    private func edgePath(from start: CGPoint, to end: CGPoint) -> Path {
+    private func drawCardinalityLabels(
+        in context: inout GraphicsContext,
+        edge: GraphEdge,
+        start: CGPoint,
+        control1: CGPoint,
+        control2: CGPoint,
+        end: CGPoint
+    ) {
+        let (sourceSymbol, targetSymbol): (String, String) = {
+            switch edge.cardinality {
+            case .oneToOne:   return ("1", "1")
+            case .oneToMany:  return ("1", "*")
+            case .manyToOne:  return ("*", "1")
+            case .manyToMany: return ("*", "*")
+            }
+        }()
+
+        let sourcePoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.18)
+        let targetPoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.82)
+
+        let labelFont = Font.system(size: 11, weight: .bold, design: .monospaced)
+        let labelColor = StudioPalette.edgeHighlight
+
+        let sourceText = Text(sourceSymbol).font(labelFont).foregroundStyle(labelColor)
+        let targetText = Text(targetSymbol).font(labelFont).foregroundStyle(labelColor)
+
+        context.draw(sourceText, at: sourcePoint, anchor: .center)
+        context.draw(targetText, at: targetPoint, anchor: .center)
+    }
+
+    private func edgeControlPoints(from start: CGPoint, to end: CGPoint) -> (control1: CGPoint, control2: CGPoint) {
         let horizontalDelta = end.x - start.x
         let controlOffset = max(32, abs(horizontalDelta) * 0.34)
         let control1 = CGPoint(
@@ -303,11 +376,24 @@ public struct SchemaGraphView: View {
             x: end.x - (horizontalDelta >= 0 ? controlOffset : -controlOffset),
             y: end.y
         )
+        return (control1, control2)
+    }
+
+    private func edgePath(from start: CGPoint, to end: CGPoint) -> Path {
+        let (control1, control2) = edgeControlPoints(from: start, to: end)
 
         var path = Path()
         path.move(to: start)
         path.addCurve(to: end, control1: control1, control2: control2)
         return path
+    }
+
+    private func edgeMidpoint(for edge: GraphEdge, anchorMap: GraphAnchorMap) -> CGPoint {
+        guard let anchors = anchorMap.edgeAnchors(for: edge) else {
+            return .zero
+        }
+        let (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
+        return bezierPoint(start: anchors.source, control1: control1, control2: control2, end: anchors.target, t: 0.5)
     }
 
     private func graphOverlayControls(size: CGSize) -> some View {
@@ -323,6 +409,7 @@ public struct SchemaGraphView: View {
                     .buttonStyle(.bordered)
                     .buttonBorderShape(.capsule)
                     .tint(StudioPalette.accent)
+                    .help("Fit graph")
 
                     Button {
                         rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
@@ -332,6 +419,7 @@ public struct SchemaGraphView: View {
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.capsule)
                     .tint(StudioPalette.accent)
+                    .help("Relayout graph")
                 }
 
                 Toggle(
@@ -344,6 +432,7 @@ public struct SchemaGraphView: View {
                 .toggleStyle(.switch)
                 .font(.subheadline)
                 .foregroundStyle(StudioPalette.primaryText)
+                .help("Show all table cards")
             }
             .padding(14)
             .background(
@@ -385,43 +474,11 @@ public struct SchemaGraphView: View {
                 .shadow(color: StudioPalette.shadow.opacity(0.8), radius: 20, y: 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
-            
-            // Minimap (bottom right)
-            GraphMinimapView(
-                session: session,
-                viewportSize: size,
-                zoom: zoom,
-                pan: pan,
-                onViewportTap: { minimapPoint in
-                    // Convert minimap tap to graph coordinates and pan there
-                    let contentBounds = graphContentBounds()
-                    let minimapSize = CGSize(width: 180, height: 120)
-                    
-                    // Calculate what graph point this minimap point represents
-                    let scaleX = minimapSize.width / contentBounds.width
-                    let scaleY = minimapSize.height / contentBounds.height
-                    let scale = min(scaleX, scaleY) * 0.9
-                    
-                    let graphX = (minimapPoint.x - minimapSize.width / 2) / scale + contentBounds.midX
-                    let graphY = (minimapPoint.y - minimapSize.height / 2) / scale + contentBounds.midY
-                    
-                    // Pan to center this point
-                    let targetTransform = GraphViewportTransform(
-                        zoom: zoom,
-                        pan: CGSize(width: -graphX * zoom, height: -graphY * zoom)
-                    )
-                    setViewport(targetTransform, animated: true)
-                }
-            )
-            .frame(width: 180, height: 120)
-            .padding(18)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
     }
     
     private func shouldShowBackToContent(in size: CGSize) -> Bool {
-        guard !session.graph.nodes.isEmpty else { return false }
-        
+
         // Check if any nodes are visible in the current viewport
         let transform = GraphViewportTransform(zoom: zoom, pan: pan)
         let viewportRect = CGRect(origin: .zero, size: size)
@@ -465,6 +522,33 @@ public struct SchemaGraphView: View {
             width: maxX - minX + padding * 2,
             height: maxY - minY + padding * 2
         )
+    }
+
+    private func renderedGraphNodes(anchorMap: GraphAnchorMap, viewportSize: CGSize) -> [GraphNode] {
+        guard session.showAllGraphTableCards else { return session.graph.nodes }
+
+        let renderViewport = CGRect(origin: .zero, size: viewportSize).insetBy(dx: -420, dy: -420)
+        return session.graph.nodes.filter { node in
+            if node.id == draggedNodeID || node.id == hoveredNodeID || session.selectedGraphNodeIDs.contains(node.id) {
+                return true
+            }
+
+            guard let frame = anchorMap.nodeCards[node.id]?.frame else {
+                return true
+            }
+
+            return frame.intersects(renderViewport)
+        }
+    }
+
+    private func shadowRadius(for nodeID: String) -> CGFloat {
+        if draggedNodeID == nodeID {
+            return session.showAllGraphTableCards ? 14 : 26
+        }
+        if session.showAllGraphTableCards {
+            return hoveredNodeID == nodeID ? 8 : 3
+        }
+        return 12
     }
 
     private var backgroundPanGesture: some Gesture {
@@ -540,11 +624,15 @@ public struct SchemaGraphView: View {
                         )
                     }
                     hoveredNodeID = nil
+                    clearRelationHoverState()
                     
                     // If node is not in selection, select only this node
                     if !session.selectedGraphNodeIDs.contains(nodeID) {
                         session.selectGraphNode(nodeID)
                     }
+                    multiNodeDragOrigins = Dictionary(
+                        uniqueKeysWithValues: session.selectedGraphNodeIDs.map { ($0, session.graphLayout.position(for: $0)) }
+                    )
                 }
 
                 guard draggedNodeID == nodeID else { return }
@@ -563,14 +651,13 @@ public struct SchemaGraphView: View {
                     )
                     
                     for selectedNodeID in session.selectedGraphNodeIDs {
-                        let originalPos = session.graphLayout.position(for: selectedNodeID)
+                        let originalPos = multiNodeDragOrigins[selectedNodeID] ?? session.graphLayout.position(for: selectedNodeID)
                         let newPos = CGPoint(
                             x: originalPos.x + delta.x,
                             y: originalPos.y + delta.y
                         )
                         session.graphLayout.pin(nodeID: selectedNodeID, at: newPos)
                     }
-                    nodeDragOrigin = moved
                 } else {
                     session.graphLayout.pin(nodeID: nodeID, at: moved)
                 }
@@ -581,6 +668,7 @@ public struct SchemaGraphView: View {
                 draggedNodeID = nil
                 nodeDragOrigin = nil
                 nodeDragPointerOffset = nil
+                multiNodeDragOrigins = [:]
                 layoutRevision &+= 1
                 if !session.showAllGraphTableCards {
                     session.persistCurrentGraphLayout()
@@ -647,7 +735,10 @@ public struct SchemaGraphView: View {
         case .preview:
             return previewColumns(for: nodeID).map(\.name)
         case .expanded:
-            return nil
+            return session.descriptor(named: nodeID)?
+                .columns
+                .prefix(GraphCardLayout.maxExpandedVisibleRows)
+                .map(\.name)
         }
     }
 
@@ -733,7 +824,10 @@ public struct SchemaGraphView: View {
         guard !session.graph.nodes.isEmpty else { return }
 
         if session.graphLayout.hasRestoredSnapshot {
-            stabilizeLayout(in: size, refit: true, persistLayout: false)
+            // Positions are already settled — do not run physics.
+            // Only fit the viewport on the very first appearance (size was zero before).
+            // Re-mounts from full-screen toggle must not disturb node positions.
+            return
         } else {
             rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
         }
@@ -754,7 +848,7 @@ public struct SchemaGraphView: View {
             presentation: presentationMode,
             descriptorLookup: { session.descriptor(named: $0) },
             nodeSizeLookup: { nodeSize(for: $0) },
-            maxIterations: presentationMode == .allCards ? 360 : 260
+            maxIterations: presentationMode == .allCards ? 140 : 260
         )
         layoutRevision &+= 1
 
@@ -767,13 +861,40 @@ public struct SchemaGraphView: View {
         }
     }
 
+    private func switchPresentationMode(isShowingAllCards: Bool, in size: CGSize) {
+        if isShowingAllCards {
+            session.graphLayout.relayoutPreservingCurrentPositions(
+                for: session.graph,
+                presentation: presentationMode,
+                descriptorLookup: { session.descriptor(named: $0) }
+            )
+            // Use maxIterations: 0 to skip force-directed ticks entirely.
+            // Only the post-physics overlap resolution and spread-limiting passes run,
+            // which is sufficient to handle the larger card sizes without re-arranging nodes.
+            session.graphLayout.stabilize(
+                graph: session.graph,
+                presentation: presentationMode,
+                descriptorLookup: { session.descriptor(named: $0) },
+                nodeSizeLookup: { nodeSize(for: $0) },
+                maxIterations: 0
+            )
+            layoutRevision &+= 1
+            fitGraph(in: size)
+        } else {
+            // Restore the saved compact layout — don't stabilize, just refit
+            session.restoreCompactGraphLayoutForCurrentDatabase()
+            layoutRevision &+= 1
+            fitGraph(in: size)
+        }
+    }
+
     private func stabilizeLayout(in size: CGSize, refit: Bool, persistLayout: Bool) {
         session.graphLayout.stabilize(
             graph: session.graph,
             presentation: presentationMode,
             descriptorLookup: { session.descriptor(named: $0) },
             nodeSizeLookup: { nodeSize(for: $0) },
-            maxIterations: presentationMode == .allCards ? 360 : 260
+            maxIterations: presentationMode == .allCards ? 140 : 260
         )
         layoutRevision &+= 1
 
@@ -787,15 +908,154 @@ public struct SchemaGraphView: View {
     }
 
     private func handleHoverChange(_ isHovered: Bool, for nodeID: String) {
+        guard !session.showAllGraphTableCards else { return }
         guard draggedNodeID == nil else { return }
 
-        withAnimation(.snappy(duration: 0.16)) {
-            if isHovered {
+        if isHovered {
+            clearNodeHoverTask?.cancel()
+            clearNodeHoverTask = nil
+            withAnimation(.snappy(duration: 0.16)) {
                 hoveredNodeID = nodeID
-            } else if hoveredNodeID == nodeID {
-                hoveredNodeID = nil
+            }
+        } else if hoveredNodeID == nodeID {
+            // Debounce the clear — moving from card header into a row briefly fires false
+            clearNodeHoverTask?.cancel()
+            clearNodeHoverTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled else { return }
+                withAnimation(.snappy(duration: 0.16)) {
+                    if self.hoveredNodeID == nodeID {
+                        self.hoveredNodeID = nil
+                    }
+                }
+                self.clearNodeHoverTask = nil
             }
         }
+    }
+
+    private func handleViewportPointerMove(
+        _ point: CGPoint?,
+        anchorMap: GraphAnchorMap,
+        edgeLookup: GraphEdgeLookup
+    ) {
+        guard session.showAllGraphTableCards else { return }
+        guard draggedNodeID == nil, let point else {
+            updateViewportHover(nodeID: nil, relationTarget: nil)
+            return
+        }
+
+        guard let card = graphCard(at: point, anchorMap: anchorMap) else {
+            updateViewportHover(nodeID: nil, relationTarget: nil)
+            return
+        }
+
+        let relationTarget = relationHoverTarget(at: point, in: card, edgeLookup: edgeLookup)
+        updateViewportHover(nodeID: card.tableID, relationTarget: relationTarget)
+    }
+
+    private func graphCard(at point: CGPoint, anchorMap: GraphAnchorMap) -> GraphCardGeometry? {
+        var bestHit: (index: Int, zIndex: Double, card: GraphCardGeometry)?
+
+        for (index, node) in session.graph.nodes.enumerated() {
+            guard let card = anchorMap.nodeCards[node.id], card.frame.contains(point) else { continue }
+            let candidate = (index: index, zIndex: zIndex(for: node.id), card: card)
+            if let current = bestHit {
+                if candidate.zIndex > current.zIndex || (candidate.zIndex == current.zIndex && candidate.index > current.index) {
+                    bestHit = candidate
+                }
+            } else {
+                bestHit = candidate
+            }
+        }
+
+        return bestHit?.card
+    }
+
+    private func relationHoverTarget(
+        at point: CGPoint,
+        in card: GraphCardGeometry,
+        edgeLookup: GraphEdgeLookup
+    ) -> GraphRelationHoverTarget? {
+        guard let columnName = card.columnName(at: point) else { return nil }
+        let hasOutgoingRelation = edgeLookup.outgoingEdges(for: card.tableID).contains { $0.sourceColumn == columnName }
+        let hasIncomingRelation = edgeLookup.incomingEdges(for: card.tableID).contains { $0.targetColumn == columnName }
+        guard hasOutgoingRelation || hasIncomingRelation else { return nil }
+
+        return GraphRelationHoverTarget(
+            tableID: card.tableID,
+            columnName: columnName,
+            endpointKind: .column
+        )
+    }
+
+    private func updateViewportHover(nodeID: String?, relationTarget: GraphRelationHoverTarget?) {
+        if hoveredNodeID != nodeID {
+            hoveredNodeID = nodeID
+        }
+
+        guard hoveredRelationTarget != relationTarget else { return }
+        for task in clearRelationHoverTasks.values {
+            task.cancel()
+        }
+        clearRelationHoverTasks.removeAll()
+        activeRelationHoverTargets.removeAll()
+        if let relationTarget {
+            let source = GraphRelationHoverSource(
+                tableID: relationTarget.tableID,
+                columnName: relationTarget.columnName,
+                area: .row
+            )
+            activeRelationHoverTargets[source] = relationTarget
+        }
+        hoveredRelationTarget = relationTarget
+    }
+
+    private func handleRelationHoverChange(
+        _ target: GraphRelationHoverTarget,
+        source: GraphRelationHoverSource,
+        isHovered: Bool
+    ) {
+        guard draggedNodeID == nil else { return }
+
+        if isHovered {
+            clearRelationHoverTasks[source]?.cancel()
+            clearRelationHoverTasks[source] = nil
+            activeRelationHoverTargets[source] = target
+            hoveredRelationTarget = target
+        } else {
+            // Hover ended — delay the clear slightly so a re-render doesn't flicker it away
+            clearRelationHoverTasks[source]?.cancel()
+            clearRelationHoverTasks[source] = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled else { return }
+                if activeRelationHoverTargets[source] == target {
+                    activeRelationHoverTargets.removeValue(forKey: source)
+                    hoveredRelationTarget = preferredRelationHoverTarget()
+                }
+                clearRelationHoverTasks[source] = nil
+            }
+        }
+    }
+
+    private func preferredRelationHoverTarget() -> GraphRelationHoverTarget? {
+        activeRelationHoverTargets
+            .sorted { lhs, rhs in
+                if lhs.key.priority != rhs.key.priority {
+                    return lhs.key.priority > rhs.key.priority
+                }
+                return lhs.key.stableSortKey < rhs.key.stableSortKey
+            }
+            .first?
+            .value
+    }
+
+    private func clearRelationHoverState() {
+        for task in clearRelationHoverTasks.values {
+            task.cancel()
+        }
+        clearRelationHoverTasks.removeAll()
+        activeRelationHoverTargets.removeAll()
+        hoveredRelationTarget = nil
     }
 
     private func toggleExpandedState(for nodeID: String, in size: CGSize) {
@@ -947,7 +1207,10 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let selectNode: () -> Void
     let toggleExpanded: () -> Void
     let openTable: () -> Void
+    let showTopRows: () -> Void
+    let usesViewportHoverTracking: Bool
     let hoverChanged: (Bool) -> Void
+    let relationHoverChanged: (GraphRelationHoverTarget, GraphRelationHoverSource, Bool) -> Void
     let headerDragGesture: HeaderGesture
 
     var body: some View {
@@ -983,10 +1246,14 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .onTapGesture(count: 2) {
             openTable()
         }
-        .onHover(perform: hoverChanged)
+        .onHover { isHovered in
+            guard !usesViewportHoverTracking else { return }
+            hoverChanged(isHovered)
+        }
         .contextMenu {
             Button(isExpanded ? "Collapse Card" : "Expand Card", action: toggleExpanded)
             Button("Open Table", action: openTable)
+            Button("Show Top 10", action: showTopRows)
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.84), value: displayStyle)
     }
@@ -1008,20 +1275,30 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                 .padding(.vertical, 3)
                 .background(StudioPalette.headerSurface, in: Capsule())
 
+            if let rowCountLabel {
+                Text(rowCountLabel)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(StudioPalette.headerSurface.opacity(0.74), in: Capsule())
+            }
+
             if isHovered || showsDetailRows {
                 Button {
                     toggleExpanded()
                 } label: {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(StudioPalette.secondaryText)
-                        .frame(width: 22, height: 22)
+                        .frame(width: 20, height: 20)
                         .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(StudioPalette.headerSurface.opacity(0.92))
+                            Circle()
+                                .fill(StudioPalette.headerSurface.opacity(0.82))
                         )
                 }
                 .buttonStyle(.plain)
+                .help(isExpanded ? "Collapse card" : "Expand card")
             }
         }
         .padding(.horizontal, GraphCardLayout.horizontalInset)
@@ -1034,8 +1311,17 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         let isPrimaryKey = column.primaryKeyOrdinal > 0
         let isForeignKey = outgoingEdges.contains(where: { $0.sourceColumn == column.name })
         let isReferenced = incomingEdges.contains(where: { $0.targetColumn == column.name })
-        // Only highlight PK/FK when THIS node is hovered, not when related nodes are hovered
-        let relationStyle: GraphNodeColumnHighlightStyle = isHovered ? highlightState.style(for: column.name) : .none
+        let relationStyle: GraphNodeColumnHighlightStyle = highlightState.style(for: column.name)
+
+        // Row hover follows every relationship for the column; badge hover below can still
+        // narrow this to the PK/REF or FK side when a mixed key column needs disambiguation.
+        let rowHoverTarget: GraphRelationHoverTarget? = {
+            if isForeignKey || isReferenced {
+                return GraphRelationHoverTarget(tableID: node.id, columnName: column.name, endpointKind: .column)
+            }
+            return nil
+        }()
+        let rowHoverSource = GraphRelationHoverSource(tableID: node.id, columnName: column.name, area: .row)
 
         return HStack(spacing: 8) {
             Text(column.name)
@@ -1049,21 +1335,24 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                 graphBadge(
                     "PK",
                     tint: StudioPalette.primaryKeyTint,
-                    emphasis: relationStyle == .primary || relationStyle == .both
+                    emphasis: relationStyle == .primary || relationStyle == .both,
+                    hoverTarget: GraphRelationHoverTarget(tableID: node.id, columnName: column.name, endpointKind: .primary)
                 )
             }
             if isForeignKey {
                 graphBadge(
                     "FK",
                     tint: StudioPalette.foreignKeyTint,
-                    emphasis: relationStyle == .foreign || relationStyle == .both
+                    emphasis: relationStyle == .foreign || relationStyle == .both,
+                    hoverTarget: GraphRelationHoverTarget(tableID: node.id, columnName: column.name, endpointKind: .foreign)
                 )
             }
             if isReferenced {
                 graphBadge(
                     "REF",
                     tint: StudioPalette.referenceTint,
-                    emphasis: relationStyle == .primary || relationStyle == .both
+                    emphasis: relationStyle == .primary || relationStyle == .both,
+                    hoverTarget: GraphRelationHoverTarget(tableID: node.id, columnName: column.name, endpointKind: .primary)
                 )
             }
         }
@@ -1073,6 +1362,13 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(rowHighlightFill(for: relationStyle))
         )
+        .contentShape(Rectangle())
+        .onHover { isHovered in
+            guard !usesViewportHoverTracking else { return }
+            if let rowHoverTarget {
+                relationHoverChanged(rowHoverTarget, rowHoverSource, isHovered)
+            }
+        }
     }
 
     private var backgroundShape: RoundedRectangle {
@@ -1082,6 +1378,11 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     private var fieldCountLabel: String {
         let fieldCount = descriptor?.columns.count ?? 0
         return fieldCount == 1 ? "1 field" : "\(fieldCount) fields"
+    }
+
+    private var rowCountLabel: String? {
+        guard let rowCount = descriptor?.rowCount else { return nil }
+        return rowCount == 1 ? "1 row" : "\(rowCount.formatted()) rows"
     }
 
     private var backgroundFill: some ShapeStyle {
@@ -1110,7 +1411,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         return StudioPalette.borderSoft
     }
 
-    private func graphBadge(_ title: String, tint: Color, emphasis: Bool) -> some View {
+    private func graphBadge(_ title: String, tint: Color, emphasis: Bool, hoverTarget: GraphRelationHoverTarget) -> some View {
         Text(title)
             .font(.caption2.weight(.bold))
             .foregroundStyle(tint.opacity(emphasis ? 0.98 : 0.8))
@@ -1123,6 +1424,15 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 999, style: .continuous)
                     .stroke(tint.opacity(emphasis ? 0.32 : 0.18), lineWidth: 1)
+            }
+            .onHover { isHovered in
+                guard !usesViewportHoverTracking else { return }
+                let source = GraphRelationHoverSource(
+                    tableID: hoverTarget.tableID,
+                    columnName: hoverTarget.columnName,
+                    area: .badge(hoverTarget.endpointKind)
+                )
+                relationHoverChanged(hoverTarget, source, isHovered)
             }
     }
 
@@ -1146,7 +1456,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         case .preview:
             return previewColumns
         case .expanded:
-            return descriptor?.columns ?? []
+            return Array((descriptor?.columns ?? []).prefix(GraphCardLayout.maxExpandedVisibleRows))
         }
     }
 
@@ -1196,14 +1506,42 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 }
 
-private struct GraphRelationHighlight {
+struct GraphRelationHighlight {
     let focusNodeID: String?
+    let hoverTarget: GraphRelationHoverTarget?
     let highlightedEdgeIDs: Set<String>
     let foreignKeyColumnsByTable: [String: Set<String>]
     let primaryKeyColumnsByTable: [String: Set<String>]
 
-    init(graph: SchemaGraph, focusNodeID: String?) {
+    init(graph: SchemaGraph, focusNodeID: String?, hoverTarget: GraphRelationHoverTarget? = nil) {
         self.focusNodeID = focusNodeID
+        self.hoverTarget = hoverTarget
+
+        if let hoverTarget {
+            let highlightedEdges = graph.edges.filter { edge in
+                switch hoverTarget.endpointKind {
+                case .column:
+                    return (edge.sourceID == hoverTarget.tableID && edge.sourceColumn == hoverTarget.columnName)
+                        || (edge.targetID == hoverTarget.tableID && edge.targetColumn == hoverTarget.columnName)
+                case .primary:
+                    return edge.targetID == hoverTarget.tableID && edge.targetColumn == hoverTarget.columnName
+                case .foreign:
+                    return edge.sourceID == hoverTarget.tableID && edge.sourceColumn == hoverTarget.columnName
+                }
+            }
+
+            var foreignKeyColumnsByTable: [String: Set<String>] = [:]
+            var primaryKeyColumnsByTable: [String: Set<String>] = [:]
+            for edge in highlightedEdges {
+                foreignKeyColumnsByTable[edge.sourceID, default: []].insert(edge.sourceColumn)
+                primaryKeyColumnsByTable[edge.targetID, default: []].insert(edge.targetColumn)
+            }
+
+            self.highlightedEdgeIDs = Set(highlightedEdges.map(\.id))
+            self.foreignKeyColumnsByTable = foreignKeyColumnsByTable
+            self.primaryKeyColumnsByTable = primaryKeyColumnsByTable
+            return
+        }
 
         guard let focusNodeID else {
             self.highlightedEdgeIDs = []
@@ -1213,20 +1551,14 @@ private struct GraphRelationHighlight {
         }
 
         var highlightedEdgeIDs: Set<String> = []
-        var foreignKeyColumnsByTable: [String: Set<String>] = [:]
-        var primaryKeyColumnsByTable: [String: Set<String>] = [:]
 
         for edge in graph.edges where edge.sourceID == focusNodeID || edge.targetID == focusNodeID {
             highlightedEdgeIDs.insert(edge.id)
-            primaryKeyColumnsByTable[edge.targetID, default: []].insert(edge.targetColumn)
-            if edge.sourceID != focusNodeID {
-                foreignKeyColumnsByTable[edge.sourceID, default: []].insert(edge.sourceColumn)
-            }
         }
 
         self.highlightedEdgeIDs = highlightedEdgeIDs
-        self.foreignKeyColumnsByTable = foreignKeyColumnsByTable
-        self.primaryKeyColumnsByTable = primaryKeyColumnsByTable
+        self.foreignKeyColumnsByTable = [:]
+        self.primaryKeyColumnsByTable = [:]
     }
 
     func highlightState(for tableID: String) -> GraphNodeHighlightState {
@@ -1237,6 +1569,18 @@ private struct GraphRelationHighlight {
     }
 }
 
+struct GraphRelationHoverTarget: Sendable, Hashable {
+    let tableID: String
+    let columnName: String
+    let endpointKind: GraphRelationEndpointKind
+}
+
+enum GraphRelationEndpointKind: Sendable, Hashable {
+    case column
+    case primary
+    case foreign
+}
+
 private struct GraphNodeRelationPreview {
     var foreignKeyColumns: Set<String> = []
     var primaryKeyColumns: Set<String> = []
@@ -1244,9 +1588,86 @@ private struct GraphNodeRelationPreview {
     static let empty = GraphNodeRelationPreview()
 }
 
-private struct GraphNodeHighlightState {
+private struct GraphEdgeLookup {
+    private let outgoingEdgesByTable: [String: [GraphEdge]]
+    private let incomingEdgesByTable: [String: [GraphEdge]]
+
+    init(edges: [GraphEdge]) {
+        outgoingEdgesByTable = Dictionary(grouping: edges, by: \.sourceID)
+            .mapValues(Self.sortedOutgoingEdges)
+        incomingEdgesByTable = Dictionary(grouping: edges, by: \.targetID)
+            .mapValues(Self.sortedIncomingEdges)
+    }
+
+    func outgoingEdges(for tableID: String) -> [GraphEdge] {
+        outgoingEdgesByTable[tableID, default: []]
+    }
+
+    func incomingEdges(for tableID: String) -> [GraphEdge] {
+        incomingEdgesByTable[tableID, default: []]
+    }
+
+    private static func sortedOutgoingEdges(_ edges: [GraphEdge]) -> [GraphEdge] {
+        edges.sorted { lhs, rhs in
+            if lhs.sourceColumn == rhs.sourceColumn {
+                return lhs.targetID.localizedStandardCompare(rhs.targetID) == .orderedAscending
+            }
+            return lhs.sourceColumn.localizedStandardCompare(rhs.sourceColumn) == .orderedAscending
+        }
+    }
+
+    private static func sortedIncomingEdges(_ edges: [GraphEdge]) -> [GraphEdge] {
+        edges.sorted { lhs, rhs in
+            if lhs.sourceID == rhs.sourceID {
+                return lhs.sourceColumn.localizedStandardCompare(rhs.sourceColumn) == .orderedAscending
+            }
+            return lhs.sourceID.localizedStandardCompare(rhs.sourceID) == .orderedAscending
+        }
+    }
+}
+
+struct GraphRelationHoverSource: Sendable, Hashable {
+    let tableID: String
+    let columnName: String
+    let area: GraphRelationHoverArea
+
+    var priority: Int {
+        area.priority
+    }
+
+    var stableSortKey: String {
+        "\(tableID)|\(columnName)|\(area.stableSortKey)"
+    }
+}
+
+enum GraphRelationHoverArea: Sendable, Hashable {
+    case row
+    case badge(GraphRelationEndpointKind)
+
+    var priority: Int {
+        switch self {
+        case .badge:
+            return 2
+        case .row:
+            return 1
+        }
+    }
+
+    var stableSortKey: String {
+        switch self {
+        case .row:
+            return "row"
+        case .badge(let endpointKind):
+            return "badge-\(endpointKind)"
+        }
+    }
+}
+
+struct GraphNodeHighlightState: Equatable {
     let primaryKeyColumns: Set<String>
     let foreignKeyColumns: Set<String>
+
+    static let empty = GraphNodeHighlightState(primaryKeyColumns: [], foreignKeyColumns: [])
 
     func style(for columnName: String) -> GraphNodeColumnHighlightStyle {
         let isPrimary = primaryKeyColumns.contains(columnName)
@@ -1265,7 +1686,7 @@ private struct GraphNodeHighlightState {
     }
 }
 
-private enum GraphNodeColumnHighlightStyle {
+enum GraphNodeColumnHighlightStyle: Equatable {
     case none
     case primary
     case foreign
@@ -1276,17 +1697,20 @@ private enum GraphNodeColumnHighlightStyle {
 private struct GraphTrackpadInputSurface: NSViewRepresentable {
     let onPan: (CGSize) -> Void
     let onMagnify: (CGFloat, CGPoint) -> Void
+    let onPointerMove: (CGPoint?) -> Void
 
     func makeNSView(context: Context) -> GraphTrackpadInputView {
         let view = GraphTrackpadInputView()
         view.onPan = onPan
         view.onMagnify = onMagnify
+        view.onPointerMove = onPointerMove
         return view
     }
 
     func updateNSView(_ nsView: GraphTrackpadInputView, context: Context) {
         nsView.onPan = onPan
         nsView.onMagnify = onMagnify
+        nsView.onPointerMove = onPointerMove
     }
 }
 
@@ -1294,8 +1718,13 @@ private struct GraphTrackpadInputSurface: NSViewRepresentable {
 private final class GraphTrackpadInputView: NSView {
     var onPan: ((CGSize) -> Void)?
     var onMagnify: ((CGFloat, CGPoint) -> Void)?
+    var onPointerMove: ((CGPoint?) -> Void)?
 
     private var eventMonitor: Any?
+
+    override var isFlipped: Bool {
+        true
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1308,6 +1737,7 @@ private final class GraphTrackpadInputView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
         installMonitorIfNeeded()
     }
 
@@ -1320,19 +1750,24 @@ private final class GraphTrackpadInputView: NSView {
 
     private func installMonitorIfNeeded() {
         guard eventMonitor == nil else { return }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .mouseMoved]) { [weak self] event in
             guard let self, self.window != nil else { return event }
             let point = self.convert(event.locationInWindow, from: nil)
-            guard self.bounds.contains(point) else { return event }
+            let isInside = self.bounds.contains(point)
 
             switch event.type {
             case .scrollWheel:
+                guard isInside else { return event }
                 guard event.hasPreciseScrollingDeltas else { return event }
                 self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
                 return nil
             case .magnify:
+                guard isInside else { return event }
                 self.onMagnify?(event.magnification, point)
                 return nil
+            case .mouseMoved:
+                self.onPointerMove?(isInside ? point : nil)
+                return event
             default:
                 return event
             }
@@ -1347,7 +1782,7 @@ private final class GraphTrackpadInputView: NSView {
     }
 }
 
-private struct GraphMinimapView: View {
+struct GraphMinimapView: View {
     @Bindable var session: AppSession
     let viewportSize: CGSize
     let zoom: CGFloat

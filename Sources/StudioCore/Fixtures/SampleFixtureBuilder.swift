@@ -121,6 +121,24 @@ public enum SampleFixtureBuilder {
             """)
 
             try db.execute(sql: """
+            CREATE TABLE generated_metrics (
+                id INTEGER PRIMARY KEY,
+                base_value INTEGER NOT NULL,
+                doubled_value INTEGER GENERATED ALWAYS AS (base_value * 2) STORED
+            )
+            """)
+
+            try db.execute(sql: "CREATE INDEX idx_posts_status ON posts(status)")
+
+            try db.execute(sql: """
+            CREATE TRIGGER posts_touch_updated_at
+            AFTER UPDATE ON posts
+            BEGIN
+                SELECT 1;
+            END
+            """)
+
+            try db.execute(sql: """
             CREATE VIEW author_profiles AS
             SELECT
                 authors.id,
@@ -256,6 +274,8 @@ public enum SampleFixtureBuilder {
                     arguments: [marker.0, marker.1, marker.2]
                 )
             }
+
+            try db.execute(sql: "INSERT INTO generated_metrics (id, base_value) VALUES (1, 7)")
 
             try db.inTransaction {
                 for eventID in 1...100_000 {

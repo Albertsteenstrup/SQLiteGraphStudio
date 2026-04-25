@@ -41,6 +41,8 @@ public struct TableGridRepresentable: NSViewRepresentable {
         private var revision = -1
         private var headerPopover: NSPopover?
         private var hoveredColumnName: String?
+        private var contextMenuRow: Int?
+        private var contextMenuColumnName: String?
 
         init(tab: TableTabModel, requestColumnDrop: @escaping (TableColumn) -> Void) {
             self.tab = tab
@@ -60,7 +62,16 @@ public struct TableGridRepresentable: NSViewRepresentable {
             scrollView.autohidesScrollers = true
             scrollView.scrollerStyle = .overlay
 
-            let tableView = NSTableView()
+            let tableView = CopyPasteTableView()
+            tableView.keyHandler = { [weak self] event in
+                self?.handleKeyEvent(event) ?? false
+            }
+            tableView.hoverHandler = { [weak self] point, isInside in
+                _ = (self, point, isInside) // reserved for future use
+            }
+            tableView.contextMenuHandler = { [weak self] event in
+                self?.buildContextMenu(for: event)
+            }
             let headerView = InteractiveTableHeaderView()
             headerView.coordinator = self
             headerView.frame.size.height = 58
@@ -68,6 +79,8 @@ public struct TableGridRepresentable: NSViewRepresentable {
             tableView.headerView = headerView
             tableView.usesAlternatingRowBackgroundColors = false
             tableView.selectionHighlightStyle = .none
+            tableView.allowsMultipleSelection = true
+            tableView.allowsColumnSelection = true
             tableView.backgroundColor = .clear
             tableView.gridStyleMask = []
             tableView.intercellSpacing = .zero
@@ -290,6 +303,231 @@ public struct TableGridRepresentable: NSViewRepresentable {
             guard let tableView else { return }
             tableView.window?.makeFirstResponder(tableView)
         }
+
+        private func handleKeyEvent(_ event: NSEvent) -> Bool {
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+                  let key = event.charactersIgnoringModifiers?.lowercased()
+            else {
+                return false
+            }
+
+            switch key {
+            case "c":
+                copySelection()
+                return true
+            case "v":
+                pasteSelection()
+                return true
+            default:
+                return false
+            }
+        }
+
+        fileprivate func copySelection() {
+            guard let tableView else { return }
+            let selectedRows = tableView.selectedRowIndexes
+            guard !selectedRows.isEmpty else { return }
+            let selectedColumns = tableView.selectedColumnIndexes.isEmpty
+                ? IndexSet(integersIn: tab.descriptor.columns.indices)
+                : tableView.selectedColumnIndexes
+
+            var lines: [String] = []
+            let header = selectedColumns.compactMap { index in
+                tab.descriptor.columns.indices.contains(index) ? tab.descriptor.columns[index].name : nil
+            }
+            lines.append(header.joined(separator: "\t"))
+
+            for row in selectedRows {
+                guard let tableRow = tab.row(at: row) else { continue }
+                let values = selectedColumns.compactMap { index in
+                    tableRow.values.indices.contains(index) ? tableRow.values[index].displayText : nil
+                }
+                lines.append(values.joined(separator: "\t"))
+            }
+
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        }
+
+        fileprivate func pasteSelection() {
+            guard let tableView,
+                  tab.isEditable,
+                  let text = NSPasteboard.general.string(forType: .string)
+            else {
+                return
+            }
+
+            let startRow = tableView.selectedRowIndexes.first ?? 0
+            let startColumn = tableView.selectedColumnIndexes.first ?? max(tableView.clickedColumn, 0)
+            guard startColumn >= 0 else { return }
+
+            let rows = text
+                .split(whereSeparator: \.isNewline)
+                .map { line in line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+
+            for (rowOffset, values) in rows.enumerated() {
+                let targetRow = startRow + rowOffset
+                guard tab.row(at: targetRow) != nil else { continue }
+
+                for (columnOffset, value) in values.enumerated() {
+                    let columnIndex = startColumn + columnOffset
+                    guard tab.descriptor.columns.indices.contains(columnIndex) else { continue }
+                    let column = tab.descriptor.columns[columnIndex]
+                    guard column.isEditable else { continue }
+                    tab.commitEdit(row: targetRow, columnName: column.name, rawValue: value)
+                }
+            }
+        }
+
+        // MARK: - Context Menu
+
+        func buildContextMenu(for event: NSEvent) -> NSMenu? {
+            guard let tableView else { return nil }
+
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            let clickedRow = tableView.row(at: point)
+            let clickedColumnIndex = tableView.column(at: point)
+
+            let clickedColumn: TableColumn? = {
+                guard clickedColumnIndex >= 0,
+                      tab.descriptor.columns.indices.contains(clickedColumnIndex)
+                else { return nil }
+                return tab.descriptor.columns[clickedColumnIndex]
+            }()
+
+            let isRowLoaded = clickedRow >= 0 && tab.row(at: clickedRow) != nil
+
+            // Store context for action methods
+            contextMenuRow = clickedRow >= 0 ? clickedRow : nil
+            contextMenuColumnName = clickedColumn?.name
+
+            let state = ContextMenuState(
+                isTableEditable: tab.isEditable,
+                clickedColumn: clickedColumn,
+                isRowLoaded: isRowLoaded
+            )
+            let itemStates = contextMenuItemStates(for: state)
+
+            let menu = NSMenu()
+
+            let setNullItem = NSMenuItem(title: "Set Null", action: #selector(contextMenuSetNull(_:)), keyEquivalent: "")
+            setNullItem.target = self
+            setNullItem.isEnabled = itemStates.setNullEnabled
+            menu.addItem(setNullItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            let copyItem = NSMenuItem(title: "Copy", action: #selector(contextMenuCopy(_:)), keyEquivalent: "")
+            copyItem.target = self
+            copyItem.isEnabled = itemStates.copyEnabled
+            menu.addItem(copyItem)
+
+            let pasteItem = NSMenuItem(title: "Paste", action: #selector(contextMenuPaste(_:)), keyEquivalent: "")
+            pasteItem.target = self
+            pasteItem.isEnabled = itemStates.pasteEnabled
+            menu.addItem(pasteItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            let addRowItem = NSMenuItem(title: "Add row", action: #selector(contextMenuAddRow(_:)), keyEquivalent: "")
+            addRowItem.target = self
+            addRowItem.isEnabled = itemStates.addRowEnabled
+            menu.addItem(addRowItem)
+
+            let cloneRowItem = NSMenuItem(title: "Clone row", action: #selector(contextMenuCloneRow(_:)), keyEquivalent: "")
+            cloneRowItem.target = self
+            cloneRowItem.isEnabled = itemStates.cloneRowEnabled
+            menu.addItem(cloneRowItem)
+
+            let deleteRowItem = NSMenuItem(title: "Delete row", action: #selector(contextMenuDeleteRow(_:)), keyEquivalent: "")
+            deleteRowItem.target = self
+            deleteRowItem.isEnabled = itemStates.deleteRowEnabled
+            menu.addItem(deleteRowItem)
+
+            return menu
+        }
+
+        @objc func contextMenuSetNull(_ sender: Any?) {
+            guard let row = contextMenuRow, let columnName = contextMenuColumnName else { return }
+            tab.commitEdit(row: row, columnName: columnName, rawValue: "NULL")
+        }
+
+        @objc func contextMenuCopy(_ sender: Any?) {
+            guard let tableView else { return }
+            let selectedRows = tableView.selectedRowIndexes
+            if !selectedRows.isEmpty {
+                copySelection()
+            } else if let row = contextMenuRow, let columnName = contextMenuColumnName {
+                // Single cell copy
+                guard let columnIndex = tab.descriptor.columns.firstIndex(where: { $0.name == columnName }) else { return }
+                let text = tab.displayedValue(row: row, column: columnIndex)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+        }
+
+        @objc func contextMenuPaste(_ sender: Any?) {
+            pasteSelection()
+        }
+
+        @objc func contextMenuAddRow(_ sender: Any?) {
+            tab.insertEmptyRow()
+        }
+
+        @objc func contextMenuCloneRow(_ sender: Any?) {
+            guard let row = contextMenuRow else { return }
+            tab.cloneRow(at: row)
+        }
+
+        @objc func contextMenuDeleteRow(_ sender: Any?) {
+            guard let row = contextMenuRow else { return }
+            tab.deleteRow(at: row)
+        }
+
+    }
+}
+
+@MainActor
+private final class CopyPasteTableView: NSTableView {
+    var keyHandler: ((NSEvent) -> Bool)?
+    var hoverHandler: ((CGPoint, Bool) -> Void)?
+    var contextMenuHandler: ((NSEvent) -> NSMenu?)?
+    private var trackingAreaReference: NSTrackingArea?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        contextMenuHandler?(event)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaReference = trackingArea
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        hoverHandler?(convert(event.locationInWindow, from: nil), true)
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverHandler?(.zero, false)
+        super.mouseExited(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true {
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
@@ -374,7 +612,7 @@ final class InteractiveTableHeaderView: NSTableHeaderView {
 }
 
 @MainActor
-final class GridRowView: NSTableRowView {
+class GridRowView: NSTableRowView {
     var rowIndex = 0
 
     override var isEmphasized: Bool {
@@ -429,7 +667,7 @@ final class MetadataHeaderCell: NSTableHeaderCell {
     }
 
     func chevronRect(for cellFrame: NSRect) -> NSRect {
-        NSRect(x: cellFrame.maxX - 32, y: cellFrame.midY - 10, width: 20, height: 20)
+        NSRect(x: cellFrame.maxX - 30, y: cellFrame.midY - 9, width: 18, height: 18)
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
@@ -463,13 +701,13 @@ final class MetadataHeaderCell: NSTableHeaderCell {
         )
 
         if showsChevron, (isHovered || isSortActive || hasFilter) {
-            let buttonPath = NSBezierPath(roundedRect: chevronRect, xRadius: 8, yRadius: 8)
-            let buttonFillAlpha = isSortActive || hasFilter ? 0.08 : 0.04
+            let buttonPath = NSBezierPath(ovalIn: chevronRect)
+            let buttonFillAlpha = isSortActive || hasFilter ? 0.075 : 0.035
             NSColor(calibratedWhite: 0, alpha: buttonFillAlpha).setFill()
             buttonPath.fill()
 
             if let image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil) {
-                let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+                let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
                 let tinted = image.withSymbolConfiguration(configuration) ?? image
                 tinted.isTemplate = true
                 let tint = isSortActive || hasFilter
@@ -478,10 +716,10 @@ final class MetadataHeaderCell: NSTableHeaderCell {
                 tint.set()
                 tinted.draw(
                     in: NSRect(
-                        x: chevronRect.minX + 4,
-                        y: chevronRect.minY + 4,
-                        width: 12,
-                        height: 12
+                        x: chevronRect.minX + 4.5,
+                        y: chevronRect.minY + 4.5,
+                        width: 9,
+                        height: 9
                     )
                 )
             }
@@ -659,7 +897,10 @@ private final class EditableTableCellView: NSTableCellView {
     ) {
         field.originalValue = value == "…" ? "" : value
         field.stringValue = value
-        field.isEditable = editable
+        // Always start non-editable; double-click activates editing
+        field.isEditable = false
+        field.isSelectable = false
+        field.canBecomeEditable = editable
         field.textColor = dimmed ? NSColor.secondaryLabelColor : NSColor.labelColor
         field.commitHandler = commitHandler
     }
@@ -669,6 +910,8 @@ private final class EditableTableCellView: NSTableCellView {
 private final class EditableTextField: NSTextField, NSTextFieldDelegate {
     var commitHandler: ((String) -> Void)?
     var originalValue = ""
+    /// Whether this field is allowed to enter editing mode on double-click.
+    var canBecomeEditable = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -682,12 +925,58 @@ private final class EditableTextField: NSTextField, NSTextFieldDelegate {
         font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textColor = .labelColor
         usesSingleLineMode = true
-        isSelectable = true
+        isSelectable = false
+        isEditable = false
     }
 
     required init?(coder: NSCoder) {
         nil
     }
+
+    // MARK: - Cursor
+
+    /// Always show the arrow cursor — the I-beam only appears once editing is active.
+    override func resetCursorRects() {
+        if !isEditable {
+            addCursorRect(bounds, cursor: .arrow)
+        } else {
+            super.resetCursorRects()
+        }
+    }
+
+    // MARK: - Double-click to edit
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2, canBecomeEditable {
+            activateEditing()
+            return
+        }
+        // Single click: pass to super so the table row selection still works
+        super.mouseDown(with: event)
+    }
+
+    private func activateEditing() {
+        isEditable = true
+        isSelectable = true
+        window?.makeFirstResponder(self)
+        // Select all text so the user can immediately type a replacement
+        currentEditor()?.selectAll(nil)
+        resetCursorRects()
+    }
+
+    private func deactivateEditing() {
+        isEditable = false
+        isSelectable = false
+        resetCursorRects()
+    }
+
+    // MARK: - Context menu suppression
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        nil
+    }
+
+    // MARK: - First responder styling
 
     override func becomeFirstResponder() -> Bool {
         let didBecomeFirstResponder = super.becomeFirstResponder()
@@ -704,14 +993,18 @@ private final class EditableTextField: NSTextField, NSTextFieldDelegate {
         return didBecomeFirstResponder
     }
 
+    // MARK: - Commit / cancel
+
     func controlTextDidEndEditing(_ notification: Notification) {
         let movement = notification.userInfo?["NSTextMovement"] as? Int
         if movement == NSCancelTextMovement {
             stringValue = originalValue
+            deactivateEditing()
             return
         }
 
-        guard isEditable else { return }
+        defer { deactivateEditing() }
+        guard canBecomeEditable else { return }
         guard stringValue != originalValue else { return }
         commitHandler?(stringValue)
         originalValue = stringValue

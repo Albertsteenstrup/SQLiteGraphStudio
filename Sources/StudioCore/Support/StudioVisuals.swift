@@ -33,7 +33,7 @@ public enum StudioPalette {
     public static let borderSoft = Color.black.opacity(0.05)
     public static let divider = Color.black.opacity(0.08)
     public static let shadow = Color.black.opacity(0.12)
-    public static let edgeNeutral = Color.black.opacity(0.16)
+    public static let edgeNeutral = Color.black.opacity(0.22)
     public static let edgeHighlight = Color.black.opacity(0.56)
 
     public static let primaryKeyTint = Color(red: 0.95, green: 0.56, blue: 0.22)

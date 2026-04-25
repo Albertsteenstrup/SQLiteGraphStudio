@@ -10,3 +10,15 @@ DerivedData/
 .codex/
 Fixtures/*.sqlite-shm
 Fixtures/*.sqlite-wal
+
+# Kiro spec configs (optional — remove this line to include specs in repo)
+# .kiro/
+
+# macOS extended attributes
+*.DS_Store
+
+# Swift Package Manager
+.swiftpm/xcode/
+
+# Built app bundles
+*.app

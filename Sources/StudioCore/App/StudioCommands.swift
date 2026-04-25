@@ -27,6 +27,23 @@ public struct StudioCommands: Commands {
             }
             .disabled(session.recentDatabaseURLs.isEmpty)
 
+            Menu("Open Profile") {
+                if session.connectionProfiles.isEmpty {
+                    Text("No Saved Profiles")
+                } else {
+                    ForEach(session.connectionProfiles) { profile in
+                        Button(profile.name) {
+                            session.openConnectionProfile(profile)
+                        }
+                    }
+                }
+            }
+            .disabled(session.connectionProfiles.isEmpty)
+
+            Button("Connection Profiles…") {
+                session.showProfileManager()
+            }
+
             Button("Close Database") {
                 session.closeDatabase()
             }
@@ -46,6 +63,48 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("t")
             .disabled(session.tables.isEmpty)
+
+            Button("Create Table…") {
+                session.showCreateTable()
+            }
+            .disabled(!session.hasOpenDatabase)
+
+            Button("Alter Active Table…") {
+                session.showAlterTable()
+            }
+            .disabled(session.activeTab == nil)
+
+            Divider()
+
+            Menu("Import Rows") {
+                Button("CSV…") {
+                    session.importRowsIntoActiveTable(format: .csv)
+                }
+                Button("JSON…") {
+                    session.importRowsIntoActiveTable(format: .json)
+                }
+            }
+            .disabled(session.activeTab?.isEditable != true)
+
+            Menu("Export Active Table") {
+                Button("CSV…") {
+                    session.exportActiveTableRows(format: .csv)
+                }
+                Button("JSON…") {
+                    session.exportActiveTableRows(format: .json)
+                }
+            }
+            .disabled(session.activeTab == nil)
+
+            Menu("Export Query Results") {
+                Button("CSV…") {
+                    session.exportActiveQueryResult(format: .csv)
+                }
+                Button("JSON…") {
+                    session.exportActiveQueryResult(format: .json)
+                }
+            }
+            .disabled(session.queryWorkspace.activeQuery?.result.columns.isEmpty != false)
         }
     }
 }
