@@ -6,11 +6,11 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 
 <p>
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/github/v/release/albertsteenstrup/sql_gui?label=Download&style=for-the-badge" alt="Download latest release">
+    <img src="https://img.shields.io/github/v/release/Albertsteenstrup/SQLiteGraphStudio?label=Download&style=for-the-badge" alt="Download latest release">
   </a>
 </p>
 
-> **No Xcode or Swift required.** Download the DMG, drag to Applications, open.
+> **No Xcode or Swift required.** Download the zip, drag to Applications, open.
 
 ---
 
@@ -25,15 +25,16 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 ## Install
 
 1. Go to [Releases](../../releases/latest)
-2. Download `SQLiteGraphStudio.dmg`
-3. Open the DMG and drag `SQLiteGraphStudio.app` to `/Applications`
+2. Download `SQLiteGraphStudio.zip`
+3. Unzip and drag `SQLiteGraphStudio.app` to `/Applications`
 4. Open a `.sqlite` file with it
 
-> **First launch:** macOS may show a warning for unsigned apps. If you see **"damaged and can't be opened"**, run this in Terminal:
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/SQLiteGraphStudio.app
-> ```
-> Then open the app normally. This is a Gatekeeper warning — the app is not actually damaged.
+> **First launch:** macOS may block the app since it isn't notarized. If you see a Gatekeeper warning:
+> 1. Open **System Settings → Privacy & Security**
+> 2. Scroll down and click **"Open Anyway"** next to the app name
+> 3. Confirm in the dialog that appears
+>
+> You only need to do this once.
 
 ## Build from source
 
