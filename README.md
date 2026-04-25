@@ -41,8 +41,8 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 Requires Xcode 15+ or the Swift toolchain. Built in Swift/SwiftUI — not because it's the obvious choice for a database tool, but because it was the fastest way to build something native on macOS that felt good to use.
 
 ```bash
-git clone https://github.com/albertsteenstrup/sql_gui.git
-cd sql_gui
+git clone https://github.com/Albertsteenstrup/SQLiteGraphStudio.git
+cd SQLiteGraphStudio
 swift run SQLiteGraphStudio /path/to/database.sqlite
 ```
 
