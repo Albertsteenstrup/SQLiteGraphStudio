@@ -82,4 +82,20 @@ struct WorkspaceStateTests {
         session.collapseExpandedGraphNodes()
         #expect(!session.isGraphNodeExpanded("authors"))
     }
+
+    @Test
+    func maximizedPaneTracksThePaneSide() {
+        let session = AppSession(databaseService: DatabaseService())
+
+        session.toggleMaximizePane(.left)
+        #expect(session.maximizedPaneSide == .left)
+        #expect(session.isMaximized(.left))
+        #expect(!session.isMaximized(.right))
+
+        session.toggleMaximizePane(.right)
+        #expect(session.maximizedPaneSide == .right)
+
+        session.toggleMaximizePane(.right)
+        #expect(session.maximizedPaneSide == nil)
+    }
 }

@@ -27,17 +27,40 @@ public struct QueryWorkspaceView: View {
                             .textFieldStyle(.plain)
                             .font(.headline)
                             .foregroundStyle(StudioPalette.primaryText)
-
-                            Text("Read-only query mode for `SELECT`, `WITH`, `PRAGMA`, and `EXPLAIN`.")
-                                .font(.caption)
-                                .foregroundStyle(StudioPalette.secondaryText)
-
-                            Text(activeQuery.isSaved ? "Saved with this database" : "Unsaved query")
-                                .font(.caption2)
-                                .foregroundStyle(StudioPalette.secondaryText)
                         }
 
                         Spacer()
+
+                        if !session.queryWorkspace.history.isEmpty {
+                            Menu {
+                                ForEach(session.queryWorkspace.history) { entry in
+                                    Menu(entry.title) {
+                                        Button("Open") {
+                                            session.queryWorkspace.createQuery(
+                                                title: entry.title,
+                                                sqlText: entry.sqlText,
+                                                activate: true,
+                                                runImmediately: false,
+                                                isSaved: false
+                                            )
+                                        }
+                                        Button("Remove", role: .destructive) {
+                                            session.queryWorkspace.removeHistoryEntry(id: entry.id)
+                                        }
+                                    }
+                                }
+                                Divider()
+                                Button("Clear History", role: .destructive) {
+                                    session.queryWorkspace.clearHistory()
+                                }
+                            } label: {
+                                Label("History", systemImage: "clock.arrow.circlepath")
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .tint(StudioPalette.accent)
+                            .help("Query history")
+                        }
 
                         Button {
                             session.queryWorkspace.setActiveQuerySaved(!activeQuery.isSaved)
@@ -50,6 +73,17 @@ public struct QueryWorkspaceView: View {
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.capsule)
                         .tint(StudioPalette.accent)
+                        .help(activeQuery.isSaved ? "Unsave query" : "Save query")
+
+                        Button {
+                            session.queryWorkspace.explain()
+                        } label: {
+                            Label("Explain", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .tint(StudioPalette.accent)
+                        .help("Explain query plan")
 
                         Button {
                             session.queryWorkspace.run()
@@ -59,12 +93,29 @@ public struct QueryWorkspaceView: View {
                         .buttonStyle(.borderedProminent)
                         .buttonBorderShape(.capsule)
                         .tint(StudioPalette.accent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Run Query (Command-Enter)")
 
                         if activeQuery.isRunning {
                             ProgressView()
                                 .controlSize(.small)
                                 .tint(StudioPalette.accent)
                         }
+
+                        Menu {
+                            Button("Export CSV") {
+                                session.exportActiveQueryResult(format: .csv)
+                            }
+                            Button("Export JSON") {
+                                session.exportActiveQueryResult(format: .json)
+                            }
+                        } label: {
+                            Label("Export", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .tint(StudioPalette.accent)
+                        .help("Export query results")
                     }
 
                     TextEditor(
@@ -93,8 +144,29 @@ public struct QueryWorkspaceView: View {
                             .foregroundStyle(Color.red.opacity(0.92))
                     }
 
-                    QueryResultsView(result: activeQuery.result)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker(
+                            "Output",
+                            selection: Binding(
+                                get: { session.queryWorkspace.activeQuery?.selectedOutput ?? .results },
+                                set: { session.queryWorkspace.selectActiveOutput($0) }
+                            )
+                        ) {
+                            Text("Results").tag(QueryOutputKind.results)
+                            Text("Plan").tag(QueryOutputKind.plan)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 180)
+
+                        switch activeQuery.selectedOutput {
+                        case .results:
+                            QueryResultsView(result: activeQuery.result)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        case .plan:
+                            QueryPlanView(plan: activeQuery.explainPlan)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
                 }
             } else {
                 VStack(spacing: 14) {
@@ -122,41 +194,13 @@ public struct QueryWorkspaceView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(session.queryWorkspace.queries) { query in
-                    Button {
-                        session.queryWorkspace.selectQuery(id: query.id)
-                    } label: {
-                        HStack(spacing: 8) {
-                            if query.isSaved {
-                                Image(systemName: "bookmark.fill")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(StudioPalette.secondaryText)
-                            }
-
-                            Text(query.title)
-                                .lineLimit(1)
-                                .foregroundStyle(StudioPalette.primaryText)
-
-                            Button {
-                                session.queryWorkspace.closeQuery(id: query.id)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(StudioPalette.secondaryText)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(session.queryWorkspace.activeQueryID == query.id ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(session.queryWorkspace.activeQueryID == query.id ? StudioPalette.border : StudioPalette.borderSoft)
-                        }
-                    }
-                    .buttonStyle(.plain)
+                    QueryTabView(
+                        query: query,
+                        isActive: session.queryWorkspace.activeQueryID == query.id,
+                        onSelect: { session.queryWorkspace.selectQuery(id: query.id) },
+                        onClose: { session.queryWorkspace.closeQuery(id: query.id) },
+                        onRename: { session.queryWorkspace.updateTitle($0, for: query.id) }
+                    )
                 }
 
                 Button {
@@ -178,6 +222,143 @@ public struct QueryWorkspaceView: View {
                 .buttonStyle(.plain)
             }
             .padding(.bottom, 4)
+        }
+    }
+}
+
+private struct QueryTabView: View {
+    let query: QueryDocument
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+    let onRename: (String) -> Void
+
+    @State private var isEditing = false
+    @State private var editingTitle = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if query.isSaved {
+                Image(systemName: "bookmark.fill")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+            }
+
+            if isEditing {
+                TextField("", text: $editingTitle)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .focused($fieldFocused)
+                    .frame(minWidth: 60)
+                    .onSubmit { commitRename() }
+                    .onExitCommand { cancelRename() }
+            } else {
+                Text(query.title)
+                    .lineLimit(1)
+                    .foregroundStyle(StudioPalette.primaryText)
+            }
+
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.bold())
+                    .foregroundStyle(StudioPalette.secondaryText)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isActive ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isActive ? StudioPalette.border : StudioPalette.borderSoft)
+        }
+        .onTapGesture { onSelect() }
+        .onTapGesture(count: 2) { startEditing() }
+    }
+
+    private func startEditing() {
+        editingTitle = query.title
+        isEditing = true
+        fieldFocused = true
+    }
+
+    private func commitRename() {
+        let trimmed = editingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            onRename(trimmed)
+        }
+        isEditing = false
+    }
+
+    private func cancelRename() {
+        isEditing = false
+    }
+}
+
+private struct QueryPlanView: View {
+    let plan: [ExplainPlanRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Explain Plan")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(StudioPalette.primaryText)
+                Spacer()
+                Text("\(plan.count.formatted()) steps")
+                    .font(.caption)
+                    .foregroundStyle(StudioPalette.secondaryText)
+            }
+
+            if plan.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                        .font(.system(size: 28))
+                        .foregroundStyle(StudioPalette.secondaryText)
+                    Text("Run Explain to inspect SQLite's query plan.")
+                        .foregroundStyle(StudioPalette.secondaryText)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(StudioPalette.gridSurface)
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(plan) { row in
+                            HStack(spacing: 12) {
+                                Text("\(row.id)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(StudioPalette.secondaryText)
+                                    .frame(width: 36, alignment: .trailing)
+                                Text(row.detail)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(StudioPalette.primaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+
+                            Divider()
+                                .overlay(StudioPalette.divider)
+                        }
+                    }
+                }
+                .background(StudioPalette.gridSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(StudioPalette.borderSoft)
+                }
+            }
         }
     }
 }
@@ -263,13 +444,21 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             scrollView.autohidesScrollers = true
             scrollView.scrollerStyle = .overlay
 
-            let tableView = NSTableView()
+            let tableView = CopyOnlyQueryTableView()
+            tableView.keyHandler = { [weak self] event in
+                self?.handleKeyEvent(event) ?? false
+            }
+            tableView.contextMenuHandler = { [weak self] event in
+                self?.buildContextMenu(for: event)
+            }
             let headerView = QueryResultsHeaderView()
             headerView.frame.size.height = 58
 
             tableView.headerView = headerView
             tableView.usesAlternatingRowBackgroundColors = false
             tableView.selectionHighlightStyle = .none
+            tableView.allowsMultipleSelection = true
+            tableView.allowsColumnSelection = true
             tableView.backgroundColor = .clear
             tableView.gridStyleMask = []
             tableView.intercellSpacing = .zero
@@ -343,6 +532,107 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
                 tableView.addTableColumn(tableColumn)
             }
         }
+
+        private func handleKeyEvent(_ event: NSEvent) -> Bool {
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+                  event.charactersIgnoringModifiers?.lowercased() == "c"
+            else {
+                return false
+            }
+
+            copySelection()
+            return true
+        }
+
+        func buildContextMenu(for event: NSEvent) -> NSMenu? {
+            guard let tableView else { return nil }
+
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            let clickedRow = tableView.row(at: point)
+            let clickedColumnIndex = tableView.column(at: point)
+
+            let menu = NSMenu()
+
+            // Copy cell value
+            let copyCellItem = NSMenuItem(title: "Copy Cell", action: #selector(contextMenuCopyCell(_:)), keyEquivalent: "")
+            copyCellItem.target = self
+            copyCellItem.representedObject = [clickedRow, clickedColumnIndex] as [Int]
+            copyCellItem.isEnabled = clickedRow >= 0 && result.rows.indices.contains(clickedRow)
+                && clickedColumnIndex >= 0 && result.columns.indices.contains(clickedColumnIndex)
+            menu.addItem(copyCellItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            // Copy selected rows
+            let copyRowsItem = NSMenuItem(title: "Copy", action: #selector(contextMenuCopyRows(_:)), keyEquivalent: "")
+            copyRowsItem.target = self
+            copyRowsItem.isEnabled = true
+            menu.addItem(copyRowsItem)
+
+            return menu
+        }
+
+        @objc func contextMenuCopyCell(_ sender: NSMenuItem) {
+            guard let indices = sender.representedObject as? [Int],
+                  indices.count == 2
+            else { return }
+            let row = indices[0]
+            let col = indices[1]
+            guard result.rows.indices.contains(row),
+                  result.columns.indices.contains(col)
+            else { return }
+            let text = result.rows[row].values[col].displayText
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+
+        @objc func contextMenuCopyRows(_ sender: Any?) {
+            copySelection()
+        }
+
+        private func copySelection() {
+            guard let tableView else { return }
+            let selectedRows = tableView.selectedRowIndexes
+            guard !selectedRows.isEmpty else { return }
+            let selectedColumns = tableView.selectedColumnIndexes.isEmpty
+                ? IndexSet(integersIn: result.columns.indices)
+                : tableView.selectedColumnIndexes
+
+            var lines: [String] = []
+            let header = selectedColumns.compactMap { index in
+                result.columns.indices.contains(index) ? result.columns[index].name : nil
+            }
+            lines.append(header.joined(separator: "\t"))
+
+            for rowIndex in selectedRows {
+                guard result.rows.indices.contains(rowIndex) else { continue }
+                let row = result.rows[rowIndex]
+                let values = selectedColumns.compactMap { columnIndex in
+                    row.values.indices.contains(columnIndex) ? row.values[columnIndex].displayText : nil
+                }
+                lines.append(values.joined(separator: "\t"))
+            }
+
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        }
+    }
+}
+
+@MainActor
+private final class CopyOnlyQueryTableView: NSTableView {
+    var keyHandler: ((NSEvent) -> Bool)?
+    var contextMenuHandler: ((NSEvent) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        contextMenuHandler?(event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true {
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
@@ -369,7 +659,7 @@ private final class QueryResultsHeaderView: NSTableHeaderView {
 
 @MainActor
 private final class QueryResultCellView: NSTableCellView {
-    private let field = NSTextField(labelWithString: "")
+    private let field = QueryResultLabel(frame: .zero)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -377,6 +667,7 @@ private final class QueryResultCellView: NSTableCellView {
         field.translatesAutoresizingMaskIntoConstraints = false
         field.lineBreakMode = .byTruncatingTail
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.isSelectable = false
         addSubview(field)
 
         NSLayoutConstraint.activate([
@@ -394,5 +685,32 @@ private final class QueryResultCellView: NSTableCellView {
     func configure(value: String, dimmed: Bool) {
         field.stringValue = value
         field.textColor = dimmed ? NSColor.secondaryLabelColor : NSColor.labelColor
+    }
+}
+
+/// A non-selectable, non-editable label that suppresses the system context menu
+/// so right-clicks bubble up to the table view's custom menu.
+@MainActor
+private final class QueryResultLabel: NSTextField {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        isBezeled = false
+        drawsBackground = false
+        focusRingType = .none
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        nil
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
     }
 }

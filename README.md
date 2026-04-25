@@ -1,46 +1,54 @@
 # SQLite Graph Studio
 
-Native macOS SQLite browser/editor with:
+A macOS app for browsing and editing SQLite databases. Open a file, explore the schema as an interactive graph, and edit rows directly in the table view.
 
-- a read-only foreign-key schema graph
-- a dark table workspace with paged inspection and inline edits
-- a local fixture generator and sample database
+![SQLite Graph Studio in use](docs/demo.gif)
 
-## Local workflow
+<p>
+  <a href="../../releases/latest">
+    <img src="https://img.shields.io/github/v/release/albertsteenstrup/sql_gui?label=Download&style=for-the-badge" alt="Download latest release">
+  </a>
+</p>
+
+> **No Xcode or Swift required.** Download the DMG, drag to Applications, open.
+
+---
+
+## Features
+
+- Interactive schema graph showing foreign-key relationships and cardinality
+- Inline row editing with right-click row actions (add, clone, delete)
+- Column sorting, filtering, and search
+- SQL query runner with explain plan
+- Connection profiles for quick re-opening
+
+## Install
+
+1. Go to [Releases](../../releases/latest)
+2. Download `SQLiteGraphStudio.dmg`
+3. Open the DMG and drag `SQLiteGraphStudio.app` to `/Applications`
+4. Open a `.sqlite` file with it
+
+> **First launch:** macOS may show a warning for unsigned apps. If you see **"damaged and can't be opened"**, run this in Terminal:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/SQLiteGraphStudio.app
+> ```
+> Then open the app normally. This is a Gatekeeper warning — the app is not actually damaged.
+
+## Build from source
+
+Requires Xcode 15+ or the Swift toolchain. Built in Swift/SwiftUI — not because it's the obvious choice for a database tool, but because it was the fastest way to build something native on macOS that felt good to use.
 
 ```bash
-./Fixtures/build_fixture.sh
-./script/build_and_run.sh
-```
-
-Open a specific database directly from Terminal:
-
-```bash
-swift run SQLiteGraphStudio /absolute/path/to/database.sqlite
-```
-
-If you have a built app bundle, you can open a file with:
-
-```bash
-open -a /path/to/SQLiteGraphStudio.app /absolute/path/to/database.sqlite
-```
-
-For another user downloading the repo, the simplest flow is:
-
-```bash
-git clone <repo-url>
+git clone https://github.com/albertsteenstrup/sql_gui.git
 cd sql_gui
-swift run SQLiteGraphStudio /absolute/path/to/database.sqlite
+swift run SQLiteGraphStudio /path/to/database.sqlite
 ```
 
-For another user downloading a release app, they can drag `SQLiteGraphStudio.app` to `/Applications` and run:
+## Reporting issues
 
-```bash
-open -a /Applications/SQLiteGraphStudio.app /absolute/path/to/database.sqlite
-```
+Open a [GitHub Issue](../../issues) — include your macOS version and what you were doing when it broke.
 
-## Targets
+## License
 
-- `SQLiteGraphStudio`: the macOS app entrypoint
-- `StudioCore`: shared app, database, graph, and table-editor logic
-- `FixtureBuilder`: generates `Fixtures/sample.sqlite`
+MIT — see [LICENSE](LICENSE).

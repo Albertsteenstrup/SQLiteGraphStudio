@@ -59,6 +59,30 @@ public final class GraphLayoutModel {
         generateInitialPositions(for: graph, presentation: presentation, descriptorLookup: descriptorLookup)
     }
 
+    func relayoutPreservingCurrentPositions(
+        for graph: SchemaGraph,
+        presentation: GraphPresentationMode,
+        descriptorLookup: ((String) -> EditableTableDescriptor?)?
+    ) {
+        let currentPositions = positions
+        layoutSeedOffset &+= 1
+        latestGraphSignature = graph.hashValue
+        latestPresentationMode = presentation
+        generateInitialPositions(for: graph, presentation: presentation, descriptorLookup: descriptorLookup)
+
+        for node in graph.nodes {
+            if let position = currentPositions[node.id] {
+                positions[node.id] = position
+            }
+            velocities[node.id] = .zero
+        }
+
+        pinnedPositions.removeAll()
+        settledSteps = 0
+        tickCount = 0
+        isAnimating = !graph.nodes.isEmpty
+    }
+
     public func allPositions(for graph: SchemaGraph) -> [String: CGPoint] {
         Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, position(for: $0.id)) })
     }
@@ -123,6 +147,17 @@ public final class GraphLayoutModel {
             )
         }
 
+        resolveRemainingOverlaps(
+            graph: graph,
+            nodeSizeLookup: nodeSizeLookup,
+            gap: layoutParameters(for: presentation).nodeGap
+        )
+        limitSpreadIfNeeded(graph: graph, presentation: presentation, nodeSizeLookup: nodeSizeLookup)
+        resolveRemainingOverlaps(
+            graph: graph,
+            nodeSizeLookup: nodeSizeLookup,
+            gap: layoutParameters(for: presentation).nodeGap * 0.72
+        )
         isAnimating = false
         velocities = Dictionary(uniqueKeysWithValues: velocities.keys.map { ($0, .zero) })
     }
@@ -167,7 +202,8 @@ public final class GraphLayoutModel {
         let layerSpacing: Double = presentation == .allCards ? 75 : 35
         let minNodeSpacing: Double = presentation == .allCards ? 82 : 40
 
-        for (clusterID, nodesInCluster) in clusterNodes {
+        for clusterID in clusterNodes.keys.sorted() {
+            let nodesInCluster = clusterNodes[clusterID] ?? []
             let clusterAngle = Double(clusterID) * (2.0 * .pi / Double(clusterCount))
             let clusterCenter = CGPoint(
                 x: cos(clusterAngle) * clusterSpacing,
@@ -288,7 +324,7 @@ public final class GraphLayoutModel {
             var nextLayer: [String] = []
             
             // Find nodes connected to the current layer
-            for nodeID in remaining {
+            for nodeID in remaining.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
                 let neighbors = graph.neighbors(of: nodeID)
                 if neighbors.intersection(placed).isEmpty {
                     continue
@@ -297,9 +333,14 @@ public final class GraphLayoutModel {
             }
             
             // If no connected nodes found, add the most connected remaining node
-            if nextLayer.isEmpty, let nextNode = remaining.max(by: { 
-                (weights[$0] ?? 0) < (weights[$1] ?? 0)
-            }) {
+            if nextLayer.isEmpty, let nextNode = remaining.sorted(by: { lhs, rhs in
+                let lhsWeight = weights[lhs] ?? 0
+                let rhsWeight = weights[rhs] ?? 0
+                if lhsWeight == rhsWeight {
+                    return lhs.localizedStandardCompare(rhs) == .orderedAscending
+                }
+                return lhsWeight > rhsWeight
+            }).first {
                 nextLayer.append(nextNode)
             }
             
@@ -351,7 +392,7 @@ public final class GraphLayoutModel {
                 let current = queue[queueIndex]
                 queueIndex += 1
                 
-                for neighbor in adjacency[current, default: []] {
+                for neighbor in adjacency[current, default: []].sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
                     guard !visited.contains(neighbor) else { continue }
                     visited.insert(neighbor)
                     clusters[neighbor] = clusterID
@@ -407,23 +448,26 @@ public final class GraphLayoutModel {
         }
 
         let nodes = graph.nodes
+        let defaultNodeSize = CGSize(
+            width: parameters.baseCollisionRadius * 2,
+            height: parameters.baseCollisionRadius * 2
+        )
+        let nodeSizes = Dictionary(uniqueKeysWithValues: nodes.map { node in
+            (node.id, nodeSizeLookup?(node.id) ?? defaultNodeSize)
+        })
+        let shouldRepelNodesFromEdgePaths = presentation != .allCards || nodes.count <= 24
+
         for leftIndex in 0..<nodes.count {
             let leftID = nodes[leftIndex].id
             let leftPosition = positions[leftID] ?? .zero
-            let leftSize = nodeSizeLookup?(leftID) ?? CGSize(
-                width: parameters.baseCollisionRadius * 2,
-                height: parameters.baseCollisionRadius * 2
-            )
+            let leftSize = nodeSizes[leftID] ?? defaultNodeSize
             let leftHalfWidth = Double(leftSize.width * 0.5)
             let leftHalfHeight = Double(leftSize.height * 0.5)
 
             for rightIndex in (leftIndex + 1)..<nodes.count {
                 let rightID = nodes[rightIndex].id
                 let rightPosition = positions[rightID] ?? .zero
-                let rightSize = nodeSizeLookup?(rightID) ?? CGSize(
-                    width: parameters.baseCollisionRadius * 2,
-                    height: parameters.baseCollisionRadius * 2
-                )
+                let rightSize = nodeSizes[rightID] ?? defaultNodeSize
                 let rightHalfWidth = Double(rightSize.width * 0.5)
                 let rightHalfHeight = Double(rightSize.height * 0.5)
                 var delta = CGVector(dx: rightPosition.x - leftPosition.x, dy: rightPosition.y - leftPosition.y)
@@ -454,7 +498,9 @@ public final class GraphLayoutModel {
                     let overlapMagnitude = sqrt(overlapX * overlapX + overlapY * overlapY)
                     let separationStrength = overlapMagnitude * parameters.overlapCorrectionStrength
                     
-                    if overlapX < overlapY {
+                    // Prefer horizontal separation to avoid vertical stacking bias.
+                    // When overlaps are nearly equal (within 4 pt), always separate on X.
+                    if overlapX <= overlapY + 4.0 {
                         let sign = rightPosition.x >= leftPosition.x ? 1.0 : -1.0
                         forces[leftID, default: .zero].dx -= sign * separationStrength
                         forces[rightID, default: .zero].dx += sign * separationStrength
@@ -470,14 +516,8 @@ public final class GraphLayoutModel {
         for edge in graph.edges {
             let source = positions[edge.sourceID] ?? .zero
             let target = positions[edge.targetID] ?? .zero
-            let sourceSize = nodeSizeLookup?(edge.sourceID) ?? CGSize(
-                width: parameters.baseCollisionRadius * 2,
-                height: parameters.baseCollisionRadius * 2
-            )
-            let targetSize = nodeSizeLookup?(edge.targetID) ?? CGSize(
-                width: parameters.baseCollisionRadius * 2,
-                height: parameters.baseCollisionRadius * 2
-            )
+            let sourceSize = nodeSizes[edge.sourceID] ?? defaultNodeSize
+            let targetSize = nodeSizes[edge.targetID] ?? defaultNodeSize
             var delta = CGVector(dx: target.x - source.x, dy: target.y - source.y)
             let distance = max(sqrt(delta.dx * delta.dx + delta.dy * delta.dy), 0.01)
             delta.dx /= distance
@@ -494,36 +534,36 @@ public final class GraphLayoutModel {
             forces[edge.targetID, default: .zero].dx -= delta.dx * pull
             forces[edge.targetID, default: .zero].dy -= delta.dy * pull
 
-            // Push unrelated nodes away from edge paths
-            for node in nodes where node.id != edge.sourceID && node.id != edge.targetID {
-                let nodePos = positions[node.id] ?? .zero
-                let nodeSize = nodeSizeLookup?(node.id) ?? CGSize(
-                    width: parameters.baseCollisionRadius * 2,
-                    height: parameters.baseCollisionRadius * 2
-                )
-                
-                // Calculate closest point on edge line segment
-                let edgeVec = CGVector(dx: target.x - source.x, dy: target.y - source.y)
-                let nodeVec = CGVector(dx: nodePos.x - source.x, dy: nodePos.y - source.y)
-                let edgeLengthSquared = max(edgeVec.dx * edgeVec.dx + edgeVec.dy * edgeVec.dy, 0.01)
-                let t = max(0, min(1, (nodeVec.dx * edgeVec.dx + nodeVec.dy * edgeVec.dy) / edgeLengthSquared))
-                
-                let closestPoint = CGPoint(
-                    x: source.x + t * edgeVec.dx,
-                    y: source.y + t * edgeVec.dy
-                )
-                
-                let distToEdge = hypot(nodePos.x - closestPoint.x, nodePos.y - closestPoint.y)
-                let clearanceNeeded = max(nodeSize.width, nodeSize.height) * 0.5 + parameters.edgeClearance
-                
-                if distToEdge < clearanceNeeded {
-                    let pushStrength = (clearanceNeeded - distToEdge) * parameters.edgeRepelStrength
-                    let pushDir = CGVector(
-                        dx: (nodePos.x - closestPoint.x) / max(distToEdge, 0.01),
-                        dy: (nodePos.y - closestPoint.y) / max(distToEdge, 0.01)
+            if shouldRepelNodesFromEdgePaths {
+                // Push unrelated nodes away from edge paths. This is expensive on dense
+                // all-card graphs, where card overlap correction gives a better payoff.
+                for node in nodes where node.id != edge.sourceID && node.id != edge.targetID {
+                    let nodePos = positions[node.id] ?? .zero
+                    let nodeSize = nodeSizes[node.id] ?? defaultNodeSize
+                    
+                    // Calculate closest point on edge line segment
+                    let edgeVec = CGVector(dx: target.x - source.x, dy: target.y - source.y)
+                    let nodeVec = CGVector(dx: nodePos.x - source.x, dy: nodePos.y - source.y)
+                    let edgeLengthSquared = max(edgeVec.dx * edgeVec.dx + edgeVec.dy * edgeVec.dy, 0.01)
+                    let t = max(0, min(1, (nodeVec.dx * edgeVec.dx + nodeVec.dy * edgeVec.dy) / edgeLengthSquared))
+                    
+                    let closestPoint = CGPoint(
+                        x: source.x + t * edgeVec.dx,
+                        y: source.y + t * edgeVec.dy
                     )
-                    forces[node.id, default: .zero].dx += pushDir.dx * pushStrength
-                    forces[node.id, default: .zero].dy += pushDir.dy * pushStrength
+                    
+                    let distToEdge = hypot(nodePos.x - closestPoint.x, nodePos.y - closestPoint.y)
+                    let clearanceNeeded = max(nodeSize.width, nodeSize.height) * 0.5 + parameters.edgeClearance
+                    
+                    if distToEdge < clearanceNeeded {
+                        let pushStrength = (clearanceNeeded - distToEdge) * parameters.edgeRepelStrength
+                        let pushDir = CGVector(
+                            dx: (nodePos.x - closestPoint.x) / max(distToEdge, 0.01),
+                            dy: (nodePos.y - closestPoint.y) / max(distToEdge, 0.01)
+                        )
+                        forces[node.id, default: .zero].dx += pushDir.dx * pushStrength
+                        forces[node.id, default: .zero].dy += pushDir.dy * pushStrength
+                    }
                 }
             }
 
@@ -634,6 +674,119 @@ public final class GraphLayoutModel {
                 edgeClearance: 58,
                 edgeRepelStrength: 0.28,
                 overlapCorrectionStrength: 2.2
+            )
+        }
+    }
+
+    private func resolveRemainingOverlaps(
+        graph: SchemaGraph,
+        nodeSizeLookup: ((String) -> CGSize)?,
+        gap: Double,
+        maxIterations: Int = 80
+    ) {
+        let orderedNodes = graph.nodes.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+        guard orderedNodes.count > 1 else { return }
+
+        for _ in 0..<maxIterations {
+            var moved = false
+
+            for leftIndex in 0..<orderedNodes.count {
+                let leftID = orderedNodes[leftIndex].id
+                let leftPosition = positions[leftID] ?? .zero
+                let leftSize = nodeSizeLookup?(leftID) ?? CGSize(width: 120, height: 80)
+
+                for rightIndex in (leftIndex + 1)..<orderedNodes.count {
+                    let rightID = orderedNodes[rightIndex].id
+                    let rightPosition = positions[rightID] ?? .zero
+                    let rightSize = nodeSizeLookup?(rightID) ?? CGSize(width: 120, height: 80)
+
+                    let overlapX = Double(leftSize.width + rightSize.width) * 0.5 + gap - abs(rightPosition.x - leftPosition.x)
+                    let overlapY = Double(leftSize.height + rightSize.height) * 0.5 + gap - abs(rightPosition.y - leftPosition.y)
+                    guard overlapX > 0, overlapY > 0 else { continue }
+
+                    let leftPinned = pinnedPositions[leftID] != nil
+                    let rightPinned = pinnedPositions[rightID] != nil
+                    guard !(leftPinned && rightPinned) else { continue }
+
+                    // Prefer horizontal separation to avoid vertical stacking bias.
+                    // When overlaps are nearly equal (within 4 pt), always separate on X.
+                    let separateOnX = overlapX <= overlapY + 4.0
+                    let sign = separateOnX
+                        ? (rightPosition.x >= leftPosition.x ? 1.0 : -1.0)
+                        : (rightPosition.y >= leftPosition.y ? 1.0 : -1.0)
+                    let distance = (separateOnX ? overlapX : overlapY) * 0.5 + 1
+
+                    if leftPinned || rightPinned {
+                        let movableID = leftPinned ? rightID : leftID
+                        let direction = leftPinned ? sign : -sign
+                        var movablePosition = positions[movableID] ?? .zero
+                        if separateOnX {
+                            movablePosition.x += direction * distance * 2
+                        } else {
+                            movablePosition.y += direction * distance * 2
+                        }
+                        positions[movableID] = movablePosition
+                    } else {
+                        var nextLeft = leftPosition
+                        var nextRight = rightPosition
+                        if separateOnX {
+                            nextLeft.x -= sign * distance
+                            nextRight.x += sign * distance
+                        } else {
+                            nextLeft.y -= sign * distance
+                            nextRight.y += sign * distance
+                        }
+                        positions[leftID] = nextLeft
+                        positions[rightID] = nextRight
+                    }
+
+                    moved = true
+                }
+            }
+
+            if !moved {
+                break
+            }
+        }
+    }
+
+    private func limitSpreadIfNeeded(
+        graph: SchemaGraph,
+        presentation: GraphPresentationMode,
+        nodeSizeLookup: ((String) -> CGSize)?
+    ) {
+        guard pinnedPositions.isEmpty, graph.nodes.count > 2 else { return }
+
+        let frames = graph.nodes.map { node -> CGRect in
+            let position = positions[node.id] ?? .zero
+            let size = nodeSizeLookup?(node.id) ?? CGSize(width: 160, height: 80)
+            return CGRect(
+                x: position.x - size.width / 2,
+                y: position.y - size.height / 2,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        let bounds = frames.reduce(into: CGRect.null) { partial, frame in
+            partial = partial.union(frame)
+        }
+        guard !bounds.isNull, !bounds.isEmpty else { return }
+
+        let nodeFactor = sqrt(Double(graph.nodes.count))
+        let maxWidth = presentation == .allCards ? max(1_400, nodeFactor * 420) : max(900, nodeFactor * 200)
+        let maxHeight = presentation == .allCards ? max(1_100, nodeFactor * 380) : max(700, nodeFactor * 180)
+        let widthScale = maxWidth / max(bounds.width, 1)
+        let heightScale = maxHeight / max(bounds.height, 1)
+        let scale = min(1, max(0.62, min(widthScale, heightScale)))
+        guard scale < 0.995 else { return }
+
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        for node in graph.nodes {
+            let position = positions[node.id] ?? .zero
+            positions[node.id] = CGPoint(
+                x: center.x + (position.x - center.x) * scale,
+                y: center.y + (position.y - center.y) * scale
             )
         }
     }

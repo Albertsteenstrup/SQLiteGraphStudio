@@ -34,7 +34,10 @@ let package = Package(
         .executableTarget(
             name: "SQLiteGraphStudio",
             dependencies: ["StudioCore"],
-            path: "Sources/SQLiteGraphStudio"
+            path: "Sources/SQLiteGraphStudio",
+            resources: [
+                .process("App/Assets.xcassets"),
+            ]
         ),
         .executableTarget(
             name: "FixtureBuilder",

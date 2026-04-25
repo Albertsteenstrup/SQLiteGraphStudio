@@ -9,6 +9,8 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
     public var isRunning: Bool
     public var errorMessage: String?
     public var isSaved: Bool
+    public var explainPlan: [ExplainPlanRow]
+    public var selectedOutput: QueryOutputKind
 
     public init(
         id: UUID = UUID(),
@@ -17,7 +19,9 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
         result: QueryResult = .empty,
         isRunning: Bool = false,
         errorMessage: String? = nil,
-        isSaved: Bool = false
+        isSaved: Bool = false,
+        explainPlan: [ExplainPlanRow] = [],
+        selectedOutput: QueryOutputKind = .results
     ) {
         self.id = id
         self.title = title
@@ -26,7 +30,16 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
         self.isRunning = isRunning
         self.errorMessage = errorMessage
         self.isSaved = isSaved
+        self.explainPlan = explainPlan
+        self.selectedOutput = selectedOutput
     }
+}
+
+public enum QueryOutputKind: String, CaseIterable, Identifiable, Sendable, Hashable {
+    case results
+    case plan
+
+    public var id: String { rawValue }
 }
 
 @MainActor
@@ -34,11 +47,14 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
 public final class QueryWorkspaceModel {
     public var queries: [QueryDocument] = []
     public var activeQueryID: UUID?
+    public var history: [QueryHistoryEntry] = []
 
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var currentDatabaseStorageKey: String?
+    private var currentHistoryStorageKey: String?
     private var requestTokens: [UUID: Int] = [:]
+    private static let maxHistoryCount = 7
 
     public init(
         databaseService: DatabaseService,
@@ -60,6 +76,8 @@ public final class QueryWorkspaceModel {
     public func loadSavedQueries(for databaseURL: URL?) {
         requestTokens.removeAll()
         currentDatabaseStorageKey = databaseURL.map(storageKey(for:))
+        currentHistoryStorageKey = databaseURL.map(historyStorageKey(for:))
+        loadHistory()
 
         guard let currentDatabaseStorageKey,
               let data = userDefaults.data(forKey: currentDatabaseStorageKey),
@@ -90,6 +108,8 @@ public final class QueryWorkspaceModel {
         queries = []
         activeQueryID = nil
         currentDatabaseStorageKey = nil
+        currentHistoryStorageKey = nil
+        history = []
         requestTokens.removeAll()
     }
 
@@ -161,6 +181,14 @@ public final class QueryWorkspaceModel {
         }
     }
 
+    public func updateTitle(_ title: String, for queryID: UUID) {
+        guard let index = queries.firstIndex(where: { $0.id == queryID }) else { return }
+        queries[index].title = title
+        if queries[index].isSaved {
+            persistSavedQueries()
+        }
+    }
+
     public func updateActiveSQL(_ sqlText: String) {
         guard let activeQueryIndex else { return }
         queries[activeQueryIndex].sqlText = sqlText
@@ -185,7 +213,86 @@ public final class QueryWorkspaceModel {
         run(queryID: queryID)
     }
 
+    public func explain() {
+        guard let queryID = activeQuery?.id else { return }
+        explain(queryID: queryID)
+    }
+
+    public func selectActiveOutput(_ output: QueryOutputKind) {
+        guard let activeQueryIndex else { return }
+        queries[activeQueryIndex].selectedOutput = output
+    }
+
+    public func removeHistoryEntry(id: UUID) {
+        history.removeAll { $0.id == id }
+        persistHistory()
+    }
+
+    public func clearHistory() {
+        history = []
+        persistHistory()
+    }
+
     private func run(queryID: UUID) {
+        guard let queryIndex = index(for: queryID) else { return }
+
+        let requestToken = (requestTokens[queryID] ?? 0) + 1
+        requestTokens[queryID] = requestToken
+
+        queries[queryIndex].isRunning = true
+        queries[queryIndex].errorMessage = nil
+        let sqlText = queries[queryIndex].sqlText
+        let title = queries[queryIndex].title
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        Task {
+            do {
+                let result = try await databaseService.executeReadOnlyQuery(sql: sqlText)
+                let elapsed = startedAt.duration(to: clock.now).milliseconds
+                guard requestTokens[queryID] == requestToken,
+                      let queryIndex = index(for: queryID)
+                else {
+                    return
+                }
+                queries[queryIndex].result = result
+                queries[queryIndex].isRunning = false
+                queries[queryIndex].selectedOutput = .results
+                recordHistory(
+                    QueryHistoryEntry(
+                        title: title,
+                        sqlText: sqlText,
+                        durationMilliseconds: elapsed,
+                        rowCount: result.rows.count,
+                        succeeded: true,
+                        message: result.isTruncated ? "Showing first \(result.rowLimit) rows" : nil
+                    )
+                )
+            } catch {
+                let elapsed = startedAt.duration(to: clock.now).milliseconds
+                guard requestTokens[queryID] == requestToken,
+                      let queryIndex = index(for: queryID)
+                else {
+                    return
+                }
+                let message = SQLiteUserError.from(error).message
+                queries[queryIndex].errorMessage = message
+                queries[queryIndex].isRunning = false
+                recordHistory(
+                    QueryHistoryEntry(
+                        title: title,
+                        sqlText: sqlText,
+                        durationMilliseconds: elapsed,
+                        rowCount: 0,
+                        succeeded: false,
+                        message: message
+                    )
+                )
+            }
+        }
+    }
+
+    private func explain(queryID: UUID) {
         guard let queryIndex = index(for: queryID) else { return }
 
         let requestToken = (requestTokens[queryID] ?? 0) + 1
@@ -197,13 +304,14 @@ public final class QueryWorkspaceModel {
 
         Task {
             do {
-                let result = try await databaseService.executeReadOnlyQuery(sql: sqlText)
+                let plan = try await databaseService.explainQueryPlan(sql: sqlText)
                 guard requestTokens[queryID] == requestToken,
                       let queryIndex = index(for: queryID)
                 else {
                     return
                 }
-                queries[queryIndex].result = result
+                queries[queryIndex].explainPlan = plan
+                queries[queryIndex].selectedOutput = .plan
                 queries[queryIndex].isRunning = false
             } catch {
                 guard requestTokens[queryID] == requestToken,
@@ -259,8 +367,39 @@ public final class QueryWorkspaceModel {
         userDefaults.set(data, forKey: currentDatabaseStorageKey)
     }
 
+    private func loadHistory() {
+        guard let currentHistoryStorageKey,
+              let data = userDefaults.data(forKey: currentHistoryStorageKey),
+              let entries = try? JSONDecoder().decode([QueryHistoryEntry].self, from: data)
+        else {
+            history = []
+            return
+        }
+
+        history = Array(entries.prefix(Self.maxHistoryCount))
+    }
+
+    private func recordHistory(_ entry: QueryHistoryEntry) {
+        history.insert(entry, at: 0)
+        history = Array(history.prefix(Self.maxHistoryCount))
+        persistHistory()
+    }
+
+    private func persistHistory() {
+        guard let currentHistoryStorageKey,
+              let data = try? JSONEncoder().encode(history)
+        else {
+            return
+        }
+        userDefaults.set(data, forKey: currentHistoryStorageKey)
+    }
+
     private func storageKey(for databaseURL: URL) -> String {
         "SQLiteGraphStudio.saved-queries.\(databaseURL.path)"
+    }
+
+    private func historyStorageKey(for databaseURL: URL) -> String {
+        "SQLiteGraphStudio.query-history.\(databaseURL.path)"
     }
 
     private static let defaultSQL = """

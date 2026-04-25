@@ -1,5 +1,12 @@
 import Foundation
 
+public enum EdgeCardinality: String, Sendable, Hashable, Codable {
+    case oneToOne    // source unique, target unique
+    case oneToMany   // source unique, target not unique
+    case manyToOne   // source not unique, target unique
+    case manyToMany  // neither unique
+}
+
 public struct GraphNode: Identifiable, Sendable, Hashable {
     public let id: String
     public let title: String
@@ -18,13 +25,22 @@ public struct GraphEdge: Identifiable, Sendable, Hashable {
     public let targetID: String
     public let sourceColumn: String
     public let targetColumn: String
+    public let cardinality: EdgeCardinality
 
-    public init(id: String, sourceID: String, targetID: String, sourceColumn: String, targetColumn: String) {
+    public init(
+        id: String,
+        sourceID: String,
+        targetID: String,
+        sourceColumn: String,
+        targetColumn: String,
+        cardinality: EdgeCardinality = .manyToOne
+    ) {
         self.id = id
         self.sourceID = sourceID
         self.targetID = targetID
         self.sourceColumn = sourceColumn
         self.targetColumn = targetColumn
+        self.cardinality = cardinality
     }
 }
 

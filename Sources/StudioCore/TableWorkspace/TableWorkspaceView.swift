@@ -40,11 +40,19 @@ public struct TableWorkspaceView: View {
                 .foregroundStyle(StudioPalette.secondaryText)
 
             if session.hasOpenDatabase {
-                Button("Open Table") {
-                    session.showTablePicker()
+                HStack(spacing: 10) {
+                    Button("Open Table") {
+                        session.showTablePicker()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(StudioPalette.accent)
+
+                    Button("Create Table") {
+                        session.showCreateTable()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(StudioPalette.accent)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(StudioPalette.accent)
             }
         }
     }
@@ -92,6 +100,7 @@ public struct TableWorkspaceView: View {
     private func tableContent(for activeTab: TableTabModel) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             header(for: activeTab)
+            schemaMetadataStrip(for: activeTab.descriptor)
 
             if let error = activeTab.inlineErrorMessage {
                 Text(error)
@@ -186,7 +195,7 @@ public struct TableWorkspaceView: View {
 
             Spacer()
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 TextField(
                     "Search rows",
                     text: Binding(
@@ -195,9 +204,14 @@ public struct TableWorkspaceView: View {
                     )
                 )
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 240)
                 .onSubmit {
                     activeTab.updateSearch(activeTab.queryState.searchText)
+                }
+
+                if activeTab.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(StudioPalette.accent)
                 }
 
                 Button {
@@ -208,12 +222,7 @@ public struct TableWorkspaceView: View {
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .tint(StudioPalette.accent)
-
-                if activeTab.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(StudioPalette.accent)
-                }
+                .help("Search rows")
 
                 Button {
                     Task { await activeTab.reload() }
@@ -223,7 +232,101 @@ public struct TableWorkspaceView: View {
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .tint(StudioPalette.accent)
+                .help("Refresh table")
+
+                Menu {
+                    Button {
+                        session.showAlterTable()
+                    } label: {
+                        Label("Alter Table", systemImage: "slider.horizontal.3")
+                    }
+
+                    Divider()
+
+                    Button {
+                        session.importRowsIntoActiveTable(format: .csv)
+                    } label: {
+                        Label("Import CSV", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(!activeTab.isEditable)
+
+                    Button {
+                        session.importRowsIntoActiveTable(format: .json)
+                    } label: {
+                        Label("Import JSON", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(!activeTab.isEditable)
+
+                    Divider()
+
+                    Button {
+                        session.exportActiveTableRows(format: .csv)
+                    } label: {
+                        Label("Export CSV", systemImage: "square.and.arrow.up")
+                    }
+
+                    Button {
+                        session.exportActiveTableRows(format: .json)
+                    } label: {
+                        Label("Export JSON", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .tint(StudioPalette.accent)
+                .help("More actions")
             }
         }
+    }
+
+    private func schemaMetadataStrip(for descriptor: EditableTableDescriptor) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                metadataMenu(
+                    "\(descriptor.indexes.count) indexes",
+                    systemImage: "list.bullet.rectangle",
+                    items: descriptor.indexes.map { "\($0.name): \($0.columns.joined(separator: ", "))" }
+                )
+                metadataMenu(
+                    "\(descriptor.triggers.count) triggers",
+                    systemImage: "bolt",
+                    items: descriptor.triggers.map(\.name)
+                )
+                metadataMenu(
+                    "\(descriptor.constraints.count) constraints",
+                    systemImage: "checkmark.seal",
+                    items: descriptor.constraints.map(\.detail)
+                )
+                metadataMenu(
+                    "\(descriptor.generatedColumns.count) generated",
+                    systemImage: "function",
+                    items: descriptor.generatedColumns.map { "\($0.name): \($0.storedKind)" }
+                )
+            }
+            .padding(.bottom, 2)
+        }
+    }
+
+    private func metadataMenu(_ title: String, systemImage: String, items: [String]) -> some View {
+        Menu {
+            if items.isEmpty {
+                Text("None")
+            } else {
+                ForEach(items, id: \.self) { item in
+                    Text(item)
+                }
+            }
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(StudioPalette.secondaryText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(StudioPalette.headerSurface.opacity(0.72), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 }

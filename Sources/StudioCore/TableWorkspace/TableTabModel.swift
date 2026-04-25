@@ -193,4 +193,42 @@ public final class TableTabModel: Identifiable {
     public func dropColumn(_ columnName: String) async throws {
         try await databaseService.dropColumn(columnName: columnName, from: descriptor)
     }
+
+    public func insertEmptyRow() {
+        Task {
+            do {
+                try await databaseService.insertDefaultRow(into: descriptor)
+                inlineErrorMessage = nil
+                await reload(centeringRow: 0)
+            } catch {
+                inlineErrorMessage = SQLiteUserError.from(error).message
+            }
+        }
+    }
+
+    public func cloneRow(at absoluteRow: Int) {
+        guard let row = row(at: absoluteRow) else { return }
+        Task {
+            do {
+                try await databaseService.insertClonedRow(from: row, into: descriptor)
+                inlineErrorMessage = nil
+                await reload(centeringRow: 0)
+            } catch {
+                inlineErrorMessage = SQLiteUserError.from(error).message
+            }
+        }
+    }
+
+    public func deleteRow(at absoluteRow: Int) {
+        guard let row = row(at: absoluteRow) else { return }
+        Task {
+            do {
+                try await databaseService.deleteRow(row.identity, from: descriptor)
+                inlineErrorMessage = nil
+                await reload(centeringRow: max(0, absoluteRow - 1))
+            } catch {
+                inlineErrorMessage = SQLiteUserError.from(error).message
+            }
+        }
+    }
 }
