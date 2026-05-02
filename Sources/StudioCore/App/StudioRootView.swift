@@ -24,27 +24,8 @@ public struct StudioRootView: View {
             rootBackground
 
             if session.hasOpenDatabase {
-                if session.showAllGraphTableCards {
-                    SchemaGraphView(session: session)
-                        .padding(16)
-                } else if let maximizedPaneSide = session.maximizedPaneSide {
-                    MaximizedPaneView(session: session, side: maximizedPaneSide)
-                        .padding(16)
-                } else {
-                    ZStack(alignment: .bottom) {
-                        HSplitView {
-                            WorkspacePaneContainer(session: session, side: .left)
-                                .frame(minWidth: 380)
-
-                            WorkspacePaneContainer(session: session, side: .right)
-                                .frame(minWidth: 420)
-                        }
-                        .padding(16)
-
-                        WorkspaceDockView(session: session)
-                            .padding(.bottom, 18)
-                    }
-                }
+                WorkspaceLayoutView(session: session)
+                    .padding(16)
             } else {
                 EmptyDatabaseView(session: session)
                     .padding(24)
@@ -187,6 +168,165 @@ public struct StudioRootView: View {
                 .offset(x: -92, y: 118)
         }
         .ignoresSafeArea()
+    }
+}
+
+/// Keeps SchemaGraphView, TableWorkspaceView, and QueryWorkspaceView alive at all times.
+/// PaneShell instances are given explicit stable `.id()` values so SwiftUI never
+/// recreates them when the surrounding layout changes between split and fullscreen.
+private struct WorkspaceLayoutView: View {
+    @Bindable var session: AppSession
+
+    private var isFullscreen: Bool {
+        session.maximizedPaneSide != nil || session.showAllGraphTableCards
+    }
+
+    var body: some View {
+        if isFullscreen {
+            fullscreenLayout
+        } else {
+            splitLayout
+        }
+    }
+
+    private var splitLayout: some View {
+        ZStack(alignment: .bottom) {
+            HSplitView {
+                PaneShell(session: session, side: .left)
+                    .id("split-pane-left")
+                    .frame(minWidth: 380)
+                PaneShell(session: session, side: .right)
+                    .id("split-pane-right")
+                    .frame(minWidth: 420)
+            }
+            WorkspaceDockView(session: session)
+                .padding(.bottom, 18)
+        }
+    }
+
+    @ViewBuilder
+    private var fullscreenLayout: some View {
+        if session.showAllGraphTableCards {
+            PaneShell(session: session, side: .left)
+                .id("full-pane-left")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let side = session.maximizedPaneSide {
+            PaneShell(session: session, side: side)
+                .id(side == .left ? "full-pane-left" : "full-pane-right")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+/// A pane with its chrome (header, border, background). Keeps content views alive.
+private struct PaneShell: View {
+    @Bindable var session: AppSession
+    let side: WorkspacePaneSide
+    @State private var isDropTargeted = false
+
+    private var paneState: WorkspacePaneState { session.paneState(for: side) }
+    private var isMaximized: Bool { session.maximizedPaneSide == side }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                Spacer().frame(height: 58)
+                PaneContentView(session: session, kind: paneState.kind, side: side)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(RoundedRectangle(cornerRadius: 32, style: .continuous)
+                .fill(StudioPalette.chromeFill.opacity(0.88)))
+            .overlay {
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+
+            paneHeader
+        }
+        .dropDestination(for: WorkspaceDockItem.self) { items, _ in
+            guard let item = items.first else { return false }
+            session.applyDockItem(item, to: side)
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+    }
+
+    private var paneHeader: some View {
+        HStack(spacing: 12) {
+            if isMaximized {
+                Label(paneState.kind.title, systemImage: paneState.kind.systemImage)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(StudioPalette.primaryText)
+            } else if paneState.kind != .schema {
+                Label(paneState.kind.title, systemImage: paneState.kind.systemImage)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(StudioPalette.primaryText)
+            }
+            Spacer()
+            if isMaximized {
+                Button {
+                    session.exitMaximizedMode()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.caption.weight(.semibold))
+                        Text("Exit Full Screen")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(StudioPalette.chromeFillStrong))
+                    .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
+                }
+                .buttonStyle(.plain)
+            } else {
+                PaneHeaderIconButton(systemImage: "arrow.up.left.and.arrow.down.right", title: "Maximize pane") {
+                    session.toggleMaximizePane(side)
+                }
+            }
+            Text(session.databaseDisplayName)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(StudioPalette.secondaryText)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(isMaximized || (isDropTargeted || session.activePaneSide == side)
+                  ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill))
+        .padding(.horizontal, 18)
+        .padding(.top, 18)
+        .padding(.bottom, 4)
+        // Use contentShape so only the visible pill intercepts events,
+        // not the transparent padding area where graph controls live.
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onTapGesture { session.setActivePaneSide(side) }
+    }
+
+    private var borderColor: Color {
+        if isDropTargeted { return StudioPalette.borderStrong }
+        if session.activePaneSide == side { return StudioPalette.border }
+        return StudioPalette.borderSoft
+    }
+}
+
+/// Renders the actual content for a pane kind. Each kind is always instantiated
+/// and kept alive — visibility is controlled by the parent layout, not by
+/// conditional branches here.
+private struct PaneContentView: View {
+    @Bindable var session: AppSession
+    let kind: PaneContentKind
+    let side: WorkspacePaneSide
+
+    var body: some View {
+        switch kind {
+        case .schema:
+            SchemaGraphView(session: session)
+        case .tables:
+            TableWorkspaceView(session: session)
+        case .query:
+            QueryWorkspaceView(session: session)
+        }
     }
 }
 

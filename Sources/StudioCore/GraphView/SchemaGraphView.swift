@@ -28,6 +28,7 @@ public struct SchemaGraphView: View {
     @State private var selectionRectCurrent: CGPoint?
     @State private var isShiftPressed = false
     @State private var showCardinals = true
+    @State private var isFeaturesOpen = false
 
     public init(session: AppSession) {
         self.session = session
@@ -79,19 +80,22 @@ public struct SchemaGraphView: View {
             }
             .onAppear {
                 viewportSize = geometry.size
+                StudioLog.graph.debug("SchemaGraphView.onAppear settled=\(session.graphLayout.hasSettledLayout, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
                 // If layout is already settled (e.g. remount from fullscreen toggle),
                 // restore the saved viewport instead of re-fitting.
                 if session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout {
-                    zoom = session.graphZoom
-                    baseZoom = session.graphZoom
-                    pan = session.graphPan
-                    panStart = session.graphPan
+                    Task { @MainActor in
+                        zoom = session.graphZoom
+                        baseZoom = session.graphZoom
+                        pan = session.graphPan
+                        panStart = session.graphPan
+                    }
                     return
                 }
-                performInitialLayout(in: geometry.size)
-                guard !hasPerformedSettledInitialLayout else { return }
-                hasPerformedSettledInitialLayout = true
-                DispatchQueue.main.async {
+                Task { @MainActor in
+                    performInitialLayout(in: geometry.size)
+                    guard !hasPerformedSettledInitialLayout else { return }
+                    hasPerformedSettledInitialLayout = true
                     performInitialLayout(in: geometry.size)
                 }
             }
@@ -102,7 +106,9 @@ public struct SchemaGraphView: View {
                 }
             }
             .onChange(of: session.graph) { _, _ in
-                performInitialLayout(in: geometry.size)
+                Task { @MainActor in
+                    performInitialLayout(in: geometry.size)
+                }
             }
             .onChange(of: session.showAllGraphTableCards) { _, isPresented in
                 viewportRestorePoint = nil
@@ -112,8 +118,12 @@ public struct SchemaGraphView: View {
                 clearRelationHoverState()
                 switchPresentationMode(isShowingAllCards: isPresented, in: geometry.size)
             }
-            .onChange(of: zoom) { _, newZoom in session.graphZoom = newZoom }
-            .onChange(of: pan) { _, newPan in session.graphPan = newPan }
+            .onChange(of: zoom) { _, newZoom in
+                Task { @MainActor in session.graphZoom = newZoom }
+            }
+            .onChange(of: pan) { _, newPan in
+                Task { @MainActor in session.graphPan = newPan }
+            }
         }
     }
 
@@ -262,6 +272,9 @@ public struct SchemaGraphView: View {
                 toggleExpandedState(for: expandedID, in: viewportSize)
             }
             session.clearGraphSelection()
+            withAnimation(.snappy(duration: 0.18)) {
+                isFeaturesOpen = false
+            }
         }
         .animation(session.showAllGraphTableCards ? nil : .snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
@@ -427,6 +440,7 @@ public struct SchemaGraphView: View {
                 HStack(alignment: .center, spacing: 10) {
                     // Features button with flyout menu
                     FeaturesMenuButton(
+                        isOpen: $isFeaturesOpen,
                         showCardinals: $showCardinals
                     )
 
@@ -976,15 +990,33 @@ public struct SchemaGraphView: View {
             return
         }
 
+        StudioLog.graph.debug("viewportPointerMove: found card=\(card.tableID, privacy: .public) at point=\(point.x, privacy: .public),\(point.y, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
+
         if session.showAllGraphTableCards {
             let relationTarget = relationHoverTarget(at: point, in: card, edgeLookup: edgeLookup)
             updateViewportHover(nodeID: card.tableID, relationTarget: relationTarget)
         } else {
-            if hoveredNodeID != card.tableID {
-                clearNodeHoverTask?.cancel()
-                clearNodeHoverTask = nil
-                withAnimation(.snappy(duration: 0.16)) {
+            // In compact mode, use viewport-based relation hover too (same as allCards),
+            // so badge/row hover works even when .scaleEffect breaks SwiftUI .onHover.
+            let relationTarget = relationHoverTarget(at: point, in: card, edgeLookup: edgeLookup)
+            if let relationTarget {
+                // Relation hover — update both nodeID and relation target
+                if hoveredNodeID != card.tableID {
+                    clearNodeHoverTask?.cancel()
+                    clearNodeHoverTask = nil
                     hoveredNodeID = card.tableID
+                }
+                updateViewportHover(nodeID: card.tableID, relationTarget: relationTarget)
+            } else {
+                // Plain node hover — only update hoveredNodeID, don't clear relation target
+                // (relation target is cleared when pointer leaves the column area)
+                updateViewportHover(nodeID: card.tableID, relationTarget: nil)
+                if hoveredNodeID != card.tableID {
+                    clearNodeHoverTask?.cancel()
+                    clearNodeHoverTask = nil
+                    withAnimation(.snappy(duration: 0.16)) {
+                        hoveredNodeID = card.tableID
+                    }
                 }
             }
         }
@@ -1054,11 +1086,14 @@ public struct SchemaGraphView: View {
     ) {
         guard draggedNodeID == nil else { return }
 
+        StudioLog.graph.debug("relationHover: \(target.tableID, privacy: .public).\(target.columnName, privacy: .public) kind=\(String(describing: target.endpointKind), privacy: .public) isHovered=\(isHovered, privacy: .public) showAllCards=\(session.showAllGraphTableCards, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
+
         if isHovered {
             clearRelationHoverTasks[source]?.cancel()
             clearRelationHoverTasks[source] = nil
             activeRelationHoverTargets[source] = target
             hoveredRelationTarget = target
+            layoutRevision &+= 1
         } else {
             // Hover ended — delay the clear slightly so a re-render doesn't flicker it away
             clearRelationHoverTasks[source]?.cancel()
@@ -1068,6 +1103,7 @@ public struct SchemaGraphView: View {
                 if activeRelationHoverTargets[source] == target {
                     activeRelationHoverTargets.removeValue(forKey: source)
                     hoveredRelationTarget = preferredRelationHoverTarget()
+                    layoutRevision &+= 1
                 }
                 clearRelationHoverTasks[source] = nil
             }
@@ -1231,12 +1267,8 @@ public struct SchemaGraphView: View {
 }
 
 private struct FeaturesMenuButton: View {
+    @Binding var isOpen: Bool
     @Binding var showCardinals: Bool
-
-    @State private var isButtonHovered = false
-    @State private var isCardHovered = false
-    @State private var isOpen = false
-    @State private var closeTask: Task<Void, Never>? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -1252,30 +1284,26 @@ private struct FeaturesMenuButton: View {
     }
 
     private var buttonLabel: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 8, weight: .semibold))
-                .rotationEffect(.degrees(isOpen ? 180 : 0))
-                .animation(.snappy(duration: 0.22), value: isOpen)
-            Text("Features")
-                .font(.subheadline.weight(.medium))
-        }
-        .foregroundStyle(StudioPalette.primaryText)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Capsule().fill(isButtonHovered ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill))
-        .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
-        .contentShape(Capsule())
-        .onHover { hovering in
-            withAnimation(.snappy(duration: 0.18)) { isButtonHovered = hovering }
-            if hovering {
-                // Open immediately on hover
-                closeTask?.cancel()
-                isOpen = true
-            } else {
-                scheduleClose()
+        Button {
+            withAnimation(.snappy(duration: 0.18)) {
+                isOpen.toggle()
             }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 8, weight: .semibold))
+                    .rotationEffect(.degrees(isOpen ? 180 : 0))
+                    .animation(.snappy(duration: 0.22), value: isOpen)
+                Text("Features")
+                    .font(.subheadline.weight(.medium))
+            }
+            .foregroundStyle(StudioPalette.primaryText)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Capsule().fill(isOpen ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill))
+            .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
         }
+        .buttonStyle(.plain)
     }
 
     private var featuresCard: some View {
@@ -1296,32 +1324,6 @@ private struct FeaturesMenuButton: View {
         }
         .buttonStyle(.plain)
         .background(.clear)
-        .onHover { hovering in
-            isCardHovered = hovering
-            if hovering {
-                // Mouse reached the card — cancel any pending close
-                closeTask?.cancel()
-            } else {
-                // Mouse left the card — close immediately, no debounce needed
-                withAnimation(.snappy(duration: 0.18)) {
-                    isOpen = false
-                }
-            }
-        }
-    }
-
-    private func scheduleClose() {
-        closeTask?.cancel()
-        closeTask = Task { @MainActor in
-            // Wait long enough for the mouse to travel from button to card
-            try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled else { return }
-            // Only close if the mouse never reached the card
-            guard !isCardHovered else { return }
-            withAnimation(.snappy(duration: 0.18)) {
-                isOpen = false
-            }
-        }
     }
 }
 
@@ -1580,6 +1582,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                     .stroke(tint.opacity(emphasis ? 0.32 : 0.18), lineWidth: 1)
             }
             .onHover { isHovered in
+                StudioLog.graph.debug("badge.onHover: \(hoverTarget.tableID, privacy: .public).\(hoverTarget.columnName, privacy: .public) isHovered=\(isHovered, privacy: .public)")
                 let source = GraphRelationHoverSource(
                     tableID: hoverTarget.tableID,
                     columnName: hoverTarget.columnName,
@@ -1957,7 +1960,13 @@ private final class GraphTrackpadInputView: NSView {
     private func installMonitorIfNeeded() {
         guard eventMonitor == nil else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .mouseMoved]) { [weak self] event in
-            guard let self, self.window != nil else { return event }
+            guard let self else { return event }
+            guard self.window != nil else {
+                if event.type == .mouseMoved {
+                    StudioLog.graph.debug("trackpad.mouseMoved: window is nil, skipping")
+                }
+                return event
+            }
             let point = self.convert(event.locationInWindow, from: nil)
             let isInside = self.bounds.contains(point)
 
@@ -1972,7 +1981,10 @@ private final class GraphTrackpadInputView: NSView {
                 self.onMagnify?(event.magnification, point)
                 return nil
             case .mouseMoved:
-                self.publishPointerMove(isInside ? point : nil)
+                let inside = self.bounds.contains(point)
+                let frameInWindow = self.convert(self.bounds, to: nil)
+                StudioLog.graph.debug("trackpad.mouseMoved point=\(point.x, privacy: .public),\(point.y, privacy: .public) bounds=\(self.bounds.width, privacy: .public)x\(self.bounds.height, privacy: .public) frameInWindow=\(frameInWindow.origin.x, privacy: .public),\(frameInWindow.origin.y, privacy: .public) inside=\(inside, privacy: .public)")
+                self.publishPointerMove(inside ? point : nil)
                 return event
             default:
                 return event
