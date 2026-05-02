@@ -5,6 +5,7 @@ let package = Package(
     name: "SQLiteGraphStudio",
     platforms: [
         .macOS(.v15),
+        .iOS(.v13),
     ],
     products: [
         .library(
