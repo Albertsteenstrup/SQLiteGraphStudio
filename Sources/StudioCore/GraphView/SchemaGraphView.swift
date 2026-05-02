@@ -27,6 +27,7 @@ public struct SchemaGraphView: View {
     @State private var selectionRectStart: CGPoint?
     @State private var selectionRectCurrent: CGPoint?
     @State private var isShiftPressed = false
+    @State private var showCardinals = true
 
     public init(session: AppSession) {
         self.session = session
@@ -292,7 +293,9 @@ public struct SchemaGraphView: View {
             if isHighlighted {
                 let (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
                 drawDirectionMarker(in: &context, from: anchors.source, control1: control1, control2: control2, to: anchors.target, color: StudioPalette.edgeHighlight)
-                drawCardinalityLabels(in: &context, edge: edge, start: anchors.source, control1: control1, control2: control2, end: anchors.target)
+                if showCardinals {
+                    drawCardinalityLabels(in: &context, edge: edge, start: anchors.source, control1: control1, control2: control2, end: anchors.target)
+                }
             }
         }
     }
@@ -353,11 +356,25 @@ public struct SchemaGraphView: View {
         let sourcePoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.18)
         let targetPoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.82)
 
-        let labelFont = Font.system(size: 11, weight: .medium, design: .monospaced)
-        let labelColor = Color(white: 0.62, opacity: 1.0)
+        let labelFont = Font.system(size: 11, weight: .bold, design: .monospaced)
+        let strokeColor = Color.white
+        let fillColor = Color.black
 
-        let sourceText = Text(sourceSymbol).font(labelFont).foregroundStyle(labelColor)
-        let targetText = Text(targetSymbol).font(labelFont).foregroundStyle(labelColor)
+        // Draw white stroke by offsetting copies in 8 directions
+        let offsets: [(CGFloat, CGFloat)] = [
+            (-1, -1), (0, -1), (1, -1),
+            (-1,  0),          (1,  0),
+            (-1,  1), (0,  1), (1,  1),
+        ]
+        for (dx, dy) in offsets {
+            let strokeText = Text(sourceSymbol).font(labelFont).foregroundStyle(strokeColor)
+            context.draw(strokeText, at: CGPoint(x: sourcePoint.x + dx, y: sourcePoint.y + dy), anchor: .center)
+            let strokeText2 = Text(targetSymbol).font(labelFont).foregroundStyle(strokeColor)
+            context.draw(strokeText2, at: CGPoint(x: targetPoint.x + dx, y: targetPoint.y + dy), anchor: .center)
+        }
+
+        let sourceText = Text(sourceSymbol).font(labelFont).foregroundStyle(fillColor)
+        let targetText = Text(targetSymbol).font(labelFont).foregroundStyle(fillColor)
 
         context.draw(sourceText, at: sourcePoint, anchor: .center)
         context.draw(targetText, at: targetPoint, anchor: .center)
@@ -398,16 +415,11 @@ public struct SchemaGraphView: View {
         ZStack {
             // Main controls (top right)
             VStack(alignment: .trailing, spacing: 12) {
-                HStack(spacing: 10) {
-                    Button {
-                        fitGraph(in: size)
-                    } label: {
-                        Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass")
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .tint(StudioPalette.accent)
-                    .help("Fit graph")
+                HStack(alignment: .center, spacing: 10) {
+                    // Features button with flyout menu
+                    FeaturesMenuButton(
+                        showCardinals: $showCardinals
+                    )
 
                     Button {
                         rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
@@ -1208,6 +1220,102 @@ public struct SchemaGraphView: View {
         panStart = nextPan
     }
 }
+
+private struct FeaturesMenuButton: View {
+    @Binding var showCardinals: Bool
+
+    @State private var isButtonHovered = false
+    @State private var isCardHovered = false
+    @State private var isOpen = false
+    @State private var closeTask: Task<Void, Never>? = nil
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            featuresCard
+                .frame(width: isOpen ? nil : 0)
+                .clipped()
+                .opacity(isOpen ? 1 : 0)
+                .allowsHitTesting(isOpen)
+                .animation(.snappy(duration: 0.18), value: isOpen)
+
+            buttonLabel
+        }
+    }
+
+    private var buttonLabel: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 8, weight: .semibold))
+                .rotationEffect(.degrees(isOpen ? 180 : 0))
+                .animation(.snappy(duration: 0.22), value: isOpen)
+            Text("Features")
+                .font(.subheadline.weight(.medium))
+        }
+        .foregroundStyle(StudioPalette.primaryText)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Capsule().fill(isButtonHovered ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill))
+        .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
+        .contentShape(Capsule())
+        .onHover { hovering in
+            withAnimation(.snappy(duration: 0.18)) { isButtonHovered = hovering }
+            if hovering {
+                // Open immediately on hover
+                closeTask?.cancel()
+                isOpen = true
+            } else {
+                scheduleClose()
+            }
+        }
+    }
+
+    private var featuresCard: some View {
+        Button {
+            showCardinals.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: showCardinals ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(showCardinals ? StudioPalette.accent : StudioPalette.secondaryText)
+                Text("Cardinals")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(StudioPalette.primaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .background(.clear)
+        .onHover { hovering in
+            isCardHovered = hovering
+            if hovering {
+                // Mouse reached the card — cancel any pending close
+                closeTask?.cancel()
+            } else {
+                // Mouse left the card — close immediately, no debounce needed
+                withAnimation(.snappy(duration: 0.18)) {
+                    isOpen = false
+                }
+            }
+        }
+    }
+
+    private func scheduleClose() {
+        closeTask?.cancel()
+        closeTask = Task { @MainActor in
+            // Wait long enough for the mouse to travel from button to card
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            // Only close if the mouse never reached the card
+            guard !isCardHovered else { return }
+            withAnimation(.snappy(duration: 0.18)) {
+                isOpen = false
+            }
+        }
+    }
+}
+
 
 private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let node: GraphNode
