@@ -1,9 +1,9 @@
 #!/bin/bash
-# Builds SQLiteGraphStudio.app and creates a DMG for distribution.
+# Builds a universal SQLiteGraphStudio.app and creates a DMG for distribution.
 # Usage: ./script/build_app.sh
 # Output: dist/SQLiteGraphStudio.dmg
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -13,12 +13,53 @@ APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 STAGING_DIR="$DIST_DIR/dmg_staging"
 ICNS_PATH="$SCRIPT_DIR/AppIcon.icns"
+MIN_MACOS_VERSION="15.0"
+ARCHS=("arm64" "x86_64")
+UNIVERSAL_BINARY="$DIST_DIR/$APP_NAME.universal"
 
-echo "==> Building release binary..."
+echo "==> Building universal release binary (${ARCHS[*]})..."
 cd "$PROJECT_DIR"
-swift build -c release --product SQLiteGraphStudio
 
-BINARY_PATH="$PROJECT_DIR/.build/release/SQLiteGraphStudio"
+rm -f "$UNIVERSAL_BINARY"
+mkdir -p "$DIST_DIR"
+
+BINARY_PATHS=()
+RESOURCE_BUILD_DIR=""
+
+for arch in "${ARCHS[@]}"; do
+    triple="$arch-apple-macosx$MIN_MACOS_VERSION"
+
+    echo "    Building $arch ($triple)..."
+    swift build -c release --product "$APP_NAME" --triple "$triple"
+
+    build_dir="$(swift build -c release --triple "$triple" --show-bin-path)"
+    binary_path="$build_dir/$APP_NAME"
+
+    if [ ! -f "$binary_path" ]; then
+        echo "Error: Expected binary not found at $binary_path"
+        exit 1
+    fi
+
+    if ! lipo -archs "$binary_path" | grep -qw "$arch"; then
+        echo "Error: $binary_path does not contain expected architecture $arch"
+        exit 1
+    fi
+
+    BINARY_PATHS+=("$binary_path")
+
+    if [ "$arch" = "arm64" ]; then
+        RESOURCE_BUILD_DIR="$build_dir"
+    fi
+done
+
+lipo -create "${BINARY_PATHS[@]}" -output "$UNIVERSAL_BINARY"
+
+if ! lipo -archs "$UNIVERSAL_BINARY" | grep -qw "arm64" || ! lipo -archs "$UNIVERSAL_BINARY" | grep -qw "x86_64"; then
+    echo "Error: Universal binary is missing arm64 or x86_64"
+    exit 1
+fi
+
+echo "    Architectures: $(lipo -archs "$UNIVERSAL_BINARY")"
 
 echo "==> Assembling .app bundle..."
 rm -rf "$APP_BUNDLE"
@@ -26,7 +67,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 # Copy binary
-cp "$BINARY_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$UNIVERSAL_BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # Copy icon
 if [ -f "$ICNS_PATH" ]; then
@@ -37,7 +78,7 @@ else
 fi
 
 # Copy all resource bundles produced by the build
-for bundle in "$PROJECT_DIR/.build/release/"*.bundle; do
+for bundle in "$RESOURCE_BUILD_DIR/"*.bundle; do
     if [ -d "$bundle" ]; then
         cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/"
         echo "    Resources: $(basename "$bundle")"

@@ -35,6 +35,7 @@ let package = Package(
             name: "SQLiteGraphStudio",
             dependencies: ["StudioCore"],
             path: "Sources/SQLiteGraphStudio",
+            exclude: ["App/Info.plist"],
             resources: [
                 .process("App/Assets.xcassets"),
             ]
