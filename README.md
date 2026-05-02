@@ -29,12 +29,16 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 3. Unzip and drag `SQLiteGraphStudio.app` to `/Applications`
 4. Open a `.sqlite` file with it
 
-> **First launch:** macOS may block the app since it isn't notarized. If you see a Gatekeeper warning:
+> **First launch:** macOS may block the app since it isn't notarized. If you see a "damaged" or Gatekeeper warning, run this once in Terminal:
+>
+> ```bash
+> xattr -cr /Applications/SQLiteGraphStudio.app
+> ```
+>
+> Then open the app normally. Alternatively:
 > 1. Open **System Settings → Privacy & Security**
 > 2. Scroll down and click **"Open Anyway"** next to the app name
 > 3. Confirm in the dialog that appears
->
-> You only need to do this once.
 
 ## Build from source
 
