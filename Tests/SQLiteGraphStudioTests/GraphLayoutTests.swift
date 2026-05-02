@@ -181,6 +181,61 @@ struct GraphLayoutTests {
 
         #expect(!authorsFrame.insetBy(dx: -24, dy: -24).intersects(postsFrame))
     }
+
+    @Test
+    func largeCompactLayoutsStayDenseAndBalanced() {
+        let hubIDs = (0..<4).map { "hub_\($0)" }
+        let leafIDs = (0..<60).map { "leaf_\($0)" }
+        let isolatedIDs = (0..<48).map { "isolated_\($0)" }
+
+        let nodes = (hubIDs + leafIDs + isolatedIDs).map {
+            GraphNode(id: $0, title: $0, isEditable: true)
+        }
+
+        var edges: [GraphEdge] = []
+        for (index, leafID) in leafIDs.enumerated() {
+            let hubID = hubIDs[index % hubIDs.count]
+            edges.append(GraphEdge(
+                id: "\(leafID)-\(hubID)",
+                sourceID: leafID,
+                targetID: hubID,
+                sourceColumn: "hub_id",
+                targetColumn: "id"
+            ))
+        }
+        for index in 0..<(hubIDs.count - 1) {
+            edges.append(GraphEdge(
+                id: "\(hubIDs[index])-\(hubIDs[index + 1])",
+                sourceID: hubIDs[index],
+                targetID: hubIDs[index + 1],
+                sourceColumn: "parent_id",
+                targetColumn: "id"
+            ))
+        }
+
+        let graph = SchemaGraph(nodes: nodes, edges: edges)
+        let layout = GraphLayoutModel()
+        layout.reset(for: graph, presentation: .compact, descriptorLookup: nil)
+        layout.stabilize(
+            graph: graph,
+            presentation: .compact,
+            descriptorLookup: nil,
+            nodeSizeLookup: nil,
+            maxIterations: 260
+        )
+
+        let positions = layout.allPositions(for: graph)
+        let xs = positions.values.map(\.x)
+        let ys = positions.values.map(\.y)
+        let width = Double((xs.max() ?? 0) - (xs.min() ?? 0))
+        let height = Double((ys.max() ?? 0) - (ys.min() ?? 0))
+        let longerAxis = max(width, height)
+        let shorterAxis = max(min(width, height), 1)
+
+        #expect(longerAxis / shorterAxis <= 1.55)
+        #expect(width <= 1_900)
+        #expect(height <= 1_700)
+    }
 }
 
 private func makeDescriptor(name: String, columnCount: Int) -> EditableTableDescriptor {

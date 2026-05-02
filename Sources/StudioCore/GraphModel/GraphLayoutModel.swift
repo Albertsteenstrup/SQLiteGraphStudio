@@ -24,6 +24,7 @@ public final class GraphLayoutModel {
 
     public private(set) var isAnimating = false
     public private(set) var hasRestoredSnapshot = false
+    public private(set) var hasSettledLayout = false
 
     public init() {}
 
@@ -121,6 +122,7 @@ public final class GraphLayoutModel {
         tickCount = 0
         isAnimating = false
         hasRestoredSnapshot = true
+        hasSettledLayout = true
     }
 
     func stabilize(
@@ -149,17 +151,20 @@ public final class GraphLayoutModel {
 
         resolveRemainingOverlaps(
             graph: graph,
+            presentation: presentation,
             nodeSizeLookup: nodeSizeLookup,
             gap: layoutParameters(for: presentation).nodeGap
         )
         limitSpreadIfNeeded(graph: graph, presentation: presentation, nodeSizeLookup: nodeSizeLookup)
         resolveRemainingOverlaps(
             graph: graph,
+            presentation: presentation,
             nodeSizeLookup: nodeSizeLookup,
             gap: layoutParameters(for: presentation).nodeGap * 0.72
         )
         isAnimating = false
         velocities = Dictionary(uniqueKeysWithValues: velocities.keys.map { ($0, .zero) })
+        hasSettledLayout = true
     }
 
     private func generateInitialPositions(
@@ -173,6 +178,7 @@ public final class GraphLayoutModel {
         settledSteps = 0
         tickCount = 0
         hasRestoredSnapshot = false
+        hasSettledLayout = false
 
         // Build clusters based on shared connections
         let clusters = buildClusters(for: graph)
@@ -453,9 +459,13 @@ public final class GraphLayoutModel {
             height: parameters.baseCollisionRadius * 2
         )
         let nodeSizes = Dictionary(uniqueKeysWithValues: nodes.map { node in
-            (node.id, nodeSizeLookup?(node.id) ?? defaultNodeSize)
+            (node.id,
+             effectiveLayoutSize(nodeSizeLookup?(node.id) ?? defaultNodeSize,
+                                 presentation: presentation,
+                                 nodeCount: nodes.count))
         })
         let shouldRepelNodesFromEdgePaths = presentation != .allCards || nodes.count <= 24
+        let centroid = positionsCentroid(for: nodes)
 
         for leftIndex in 0..<nodes.count {
             let leftID = nodes[leftIndex].id
@@ -588,9 +598,13 @@ public final class GraphLayoutModel {
         for node in nodes {
             let current = positions[node.id] ?? .zero
             let centered = CGVector(dx: -current.x * parameters.centerStrength, dy: -current.y * parameters.centerStrength)
+            let compacted = CGVector(
+                dx: (centroid.x - current.x) * parameters.compactionStrength,
+                dy: (centroid.y - current.y) * parameters.compactionStrength
+            )
             let applied = CGVector(
-                dx: forces[node.id, default: .zero].dx + centered.dx,
-                dy: forces[node.id, default: .zero].dy + centered.dy
+                dx: forces[node.id, default: .zero].dx + centered.dx + compacted.dx,
+                dy: forces[node.id, default: .zero].dy + centered.dy + compacted.dy
             )
 
             if let pinned = pinnedPositions[node.id] {
@@ -654,8 +668,9 @@ public final class GraphLayoutModel {
                 linkRadiusFactor: 0.22,
                 damping: 0.86,
                 columnAlignmentStrength: 0,
-                clusterAttractionStrength: 0.024,
-                edgeClearance: 22,
+                clusterAttractionStrength: 0.010,
+                compactionStrength: 0.008,
+                edgeClearance: 58,
                 edgeRepelStrength: 0.25,
                 overlapCorrectionStrength: 2.6
             )
@@ -671,6 +686,7 @@ public final class GraphLayoutModel {
                 damping: 0.84,
                 columnAlignmentStrength: 0.014,
                 clusterAttractionStrength: 0.010,
+                compactionStrength: 0.004,
                 edgeClearance: 58,
                 edgeRepelStrength: 0.28,
                 overlapCorrectionStrength: 2.2
@@ -680,6 +696,7 @@ public final class GraphLayoutModel {
 
     private func resolveRemainingOverlaps(
         graph: SchemaGraph,
+        presentation: GraphPresentationMode,
         nodeSizeLookup: ((String) -> CGSize)?,
         gap: Double,
         maxIterations: Int = 80
@@ -693,12 +710,20 @@ public final class GraphLayoutModel {
             for leftIndex in 0..<orderedNodes.count {
                 let leftID = orderedNodes[leftIndex].id
                 let leftPosition = positions[leftID] ?? .zero
-                let leftSize = nodeSizeLookup?(leftID) ?? CGSize(width: 120, height: 80)
+                let leftSize = effectiveLayoutSize(
+                    nodeSizeLookup?(leftID) ?? CGSize(width: 120, height: 80),
+                    presentation: presentation,
+                    nodeCount: orderedNodes.count
+                )
 
                 for rightIndex in (leftIndex + 1)..<orderedNodes.count {
                     let rightID = orderedNodes[rightIndex].id
                     let rightPosition = positions[rightID] ?? .zero
-                    let rightSize = nodeSizeLookup?(rightID) ?? CGSize(width: 120, height: 80)
+                    let rightSize = effectiveLayoutSize(
+                        nodeSizeLookup?(rightID) ?? CGSize(width: 120, height: 80),
+                        presentation: presentation,
+                        nodeCount: orderedNodes.count
+                    )
 
                     let overlapX = Double(leftSize.width + rightSize.width) * 0.5 + gap - abs(rightPosition.x - leftPosition.x)
                     let overlapY = Double(leftSize.height + rightSize.height) * 0.5 + gap - abs(rightPosition.y - leftPosition.y)
@@ -759,7 +784,11 @@ public final class GraphLayoutModel {
 
         let frames = graph.nodes.map { node -> CGRect in
             let position = positions[node.id] ?? .zero
-            let size = nodeSizeLookup?(node.id) ?? CGSize(width: 160, height: 80)
+            let size = effectiveLayoutSize(
+                nodeSizeLookup?(node.id) ?? CGSize(width: 160, height: 80),
+                presentation: presentation,
+                nodeCount: graph.nodes.count
+            )
             return CGRect(
                 x: position.x - size.width / 2,
                 y: position.y - size.height / 2,
@@ -774,21 +803,63 @@ public final class GraphLayoutModel {
         guard !bounds.isNull, !bounds.isEmpty else { return }
 
         let nodeFactor = sqrt(Double(graph.nodes.count))
-        let maxWidth = presentation == .allCards ? max(1_400, nodeFactor * 420) : max(900, nodeFactor * 200)
-        let maxHeight = presentation == .allCards ? max(1_100, nodeFactor * 380) : max(700, nodeFactor * 180)
-        let widthScale = maxWidth / max(bounds.width, 1)
-        let heightScale = maxHeight / max(bounds.height, 1)
-        let scale = min(1, max(0.62, min(widthScale, heightScale)))
-        guard scale < 0.995 else { return }
+        let maxWidth = presentation == .allCards ? max(1_400, nodeFactor * 390) : max(820, nodeFactor * 130)
+        let maxHeight = presentation == .allCards ? max(1_100, nodeFactor * 360) : max(620, nodeFactor * 115)
+        let maxAspectRatio = presentation == .allCards ? 1.55 : 1.36
+
+        var targetWidth = min(Double(bounds.width), maxWidth)
+        var targetHeight = min(Double(bounds.height), maxHeight)
+
+        if bounds.width > bounds.height * maxAspectRatio {
+            targetWidth = min(targetWidth, Double(bounds.height) * maxAspectRatio)
+        }
+        if bounds.height > bounds.width * maxAspectRatio {
+            targetHeight = min(targetHeight, Double(bounds.width) * maxAspectRatio)
+        }
+
+        let minimumScale = presentation == .allCards ? 0.72 : 0.50
+        let scaleX = min(1, max(minimumScale, targetWidth / max(Double(bounds.width), 1)))
+        let scaleY = min(1, max(minimumScale, targetHeight / max(Double(bounds.height), 1)))
+        guard scaleX < 0.995 || scaleY < 0.995 else { return }
 
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         for node in graph.nodes {
             let position = positions[node.id] ?? .zero
             positions[node.id] = CGPoint(
-                x: center.x + (position.x - center.x) * scale,
-                y: center.y + (position.y - center.y) * scale
+                x: center.x + (position.x - center.x) * scaleX,
+                y: center.y + (position.y - center.y) * scaleY
             )
         }
+    }
+
+    private func effectiveLayoutSize(
+        _ size: CGSize,
+        presentation: GraphPresentationMode,
+        nodeCount: Int
+    ) -> CGSize {
+        guard presentation == .compact else { return size }
+        if nodeCount > 80 {
+            return CGSize(width: min(size.width, 96), height: min(size.height, 38))
+        }
+        if nodeCount > 24 {
+            return CGSize(width: min(size.width, 132), height: min(size.height, 42))
+        }
+        return size
+    }
+
+    private func positionsCentroid(for nodes: [GraphNode]) -> CGPoint {
+        guard !nodes.isEmpty else { return .zero }
+        var sumX: CGFloat = 0
+        var sumY: CGFloat = 0
+        for node in nodes {
+            let position = positions[node.id] ?? .zero
+            sumX += position.x
+            sumY += position.y
+        }
+        return CGPoint(
+            x: sumX / CGFloat(nodes.count),
+            y: sumY / CGFloat(nodes.count)
+        )
     }
 }
 
@@ -803,6 +874,7 @@ private struct LayoutParameters {
     let damping: Double
     let columnAlignmentStrength: Double
     let clusterAttractionStrength: Double
+    let compactionStrength: Double
     let edgeClearance: Double
     let edgeRepelStrength: Double
     let overlapCorrectionStrength: Double

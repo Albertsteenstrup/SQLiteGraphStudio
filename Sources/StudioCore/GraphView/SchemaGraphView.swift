@@ -206,7 +206,7 @@ public struct SchemaGraphView: View {
                         }
                         session.runTopRowsQuery(for: node.id)
                     },
-                    usesViewportHoverTracking: session.showAllGraphTableCards,
+                    usesViewportHoverTracking: true,
                     hoverChanged: { isHovered in
                         handleHoverChange(isHovered, for: node.id)
                     },
@@ -292,9 +292,7 @@ public struct SchemaGraphView: View {
             if isHighlighted {
                 let (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
                 drawDirectionMarker(in: &context, from: anchors.source, control1: control1, control2: control2, to: anchors.target, color: StudioPalette.edgeHighlight)
-                if hoveredEdgeID == edge.id {
-                    drawCardinalityLabels(in: &context, edge: edge, start: anchors.source, control1: control1, control2: control2, end: anchors.target)
-                }
+                drawCardinalityLabels(in: &context, edge: edge, start: anchors.source, control1: control1, control2: control2, end: anchors.target)
             }
         }
     }
@@ -355,8 +353,8 @@ public struct SchemaGraphView: View {
         let sourcePoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.18)
         let targetPoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.82)
 
-        let labelFont = Font.system(size: 11, weight: .bold, design: .monospaced)
-        let labelColor = StudioPalette.edgeHighlight
+        let labelFont = Font.system(size: 11, weight: .medium, design: .monospaced)
+        let labelColor = Color(white: 0.62, opacity: 1.0)
 
         let sourceText = Text(sourceSymbol).font(labelFont).foregroundStyle(labelColor)
         let targetText = Text(targetSymbol).font(labelFont).foregroundStyle(labelColor)
@@ -823,10 +821,11 @@ public struct SchemaGraphView: View {
     private func performInitialLayout(in size: CGSize) {
         guard !session.graph.nodes.isEmpty else { return }
 
-        if session.graphLayout.hasRestoredSnapshot {
+        if session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout {
             // Positions are already settled — do not run physics.
+            // This covers both restored snapshots and layouts that have already been
+            // stabilized in this session (e.g. after toggling full-screen / maximized pane).
             // Only fit the viewport on the very first appearance (size was zero before).
-            // Re-mounts from full-screen toggle must not disturb node positions.
             return
         } else {
             rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
@@ -908,7 +907,8 @@ public struct SchemaGraphView: View {
     }
 
     private func handleHoverChange(_ isHovered: Bool, for nodeID: String) {
-        guard !session.showAllGraphTableCards else { return }
+        // This is only called when usesViewportHoverTracking is false.
+        // Since we now always use viewport tracking, this is a no-op safety fallback.
         guard draggedNodeID == nil else { return }
 
         if isHovered {
@@ -918,7 +918,6 @@ public struct SchemaGraphView: View {
                 hoveredNodeID = nodeID
             }
         } else if hoveredNodeID == nodeID {
-            // Debounce the clear — moving from card header into a row briefly fires false
             clearNodeHoverTask?.cancel()
             clearNodeHoverTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(80))
@@ -938,19 +937,36 @@ public struct SchemaGraphView: View {
         anchorMap: GraphAnchorMap,
         edgeLookup: GraphEdgeLookup
     ) {
-        guard session.showAllGraphTableCards else { return }
         guard draggedNodeID == nil, let point else {
-            updateViewportHover(nodeID: nil, relationTarget: nil)
+            if session.showAllGraphTableCards {
+                updateViewportHover(nodeID: nil, relationTarget: nil)
+            } else {
+                withAnimation(.snappy(duration: 0.16)) { hoveredNodeID = nil }
+            }
             return
         }
 
         guard let card = graphCard(at: point, anchorMap: anchorMap) else {
-            updateViewportHover(nodeID: nil, relationTarget: nil)
+            if session.showAllGraphTableCards {
+                updateViewportHover(nodeID: nil, relationTarget: nil)
+            } else {
+                withAnimation(.snappy(duration: 0.16)) { hoveredNodeID = nil }
+            }
             return
         }
 
-        let relationTarget = relationHoverTarget(at: point, in: card, edgeLookup: edgeLookup)
-        updateViewportHover(nodeID: card.tableID, relationTarget: relationTarget)
+        if session.showAllGraphTableCards {
+            let relationTarget = relationHoverTarget(at: point, in: card, edgeLookup: edgeLookup)
+            updateViewportHover(nodeID: card.tableID, relationTarget: relationTarget)
+        } else {
+            if hoveredNodeID != card.tableID {
+                clearNodeHoverTask?.cancel()
+                clearNodeHoverTask = nil
+                withAnimation(.snappy(duration: 0.16)) {
+                    hoveredNodeID = card.tableID
+                }
+            }
+        }
     }
 
     private func graphCard(at point: CGPoint, anchorMap: GraphAnchorMap) -> GraphCardGeometry? {
@@ -1711,6 +1727,7 @@ private struct GraphTrackpadInputSurface: NSViewRepresentable {
         nsView.onPan = onPan
         nsView.onMagnify = onMagnify
         nsView.onPointerMove = onPointerMove
+        nsView.refreshTrackingState()
     }
 }
 
@@ -1720,7 +1737,10 @@ private final class GraphTrackpadInputView: NSView {
     var onMagnify: ((CGFloat, CGPoint) -> Void)?
     var onPointerMove: ((CGPoint?) -> Void)?
 
-    private var eventMonitor: Any?
+    private nonisolated(unsafe) var eventMonitor: Any?
+    private var trackingAreaReference: NSTrackingArea?
+    private var lastPublishedPointerPoint: CGPoint?
+    private var isPointerInside = false
 
     override var isFlipped: Bool {
         true
@@ -1735,17 +1755,66 @@ private final class GraphTrackpadInputView: NSView {
         nil
     }
 
+    deinit {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
+        refreshTrackingState()
         installMonitorIfNeeded()
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil {
+            publishPointerMove(nil)
             removeMonitor()
         }
         super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        refreshTrackingState()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeAlways, .inVisibleRect, .mouseMoved, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaReference = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        publishPointerMove(pointInBounds(for: event))
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        publishPointerMove(pointInBounds(for: event))
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        publishPointerMove(nil)
+        super.mouseExited(with: event)
+    }
+
+    func refreshTrackingState() {
+        window?.acceptsMouseMovedEvents = true
+        updateTrackingAreas()
+        refreshPointerFromWindowLocation(force: true)
     }
 
     private func installMonitorIfNeeded() {
@@ -1766,7 +1835,7 @@ private final class GraphTrackpadInputView: NSView {
                 self.onMagnify?(event.magnification, point)
                 return nil
             case .mouseMoved:
-                self.onPointerMove?(isInside ? point : nil)
+                self.publishPointerMove(isInside ? point : nil)
                 return event
             default:
                 return event
@@ -1779,6 +1848,27 @@ private final class GraphTrackpadInputView: NSView {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
         }
+    }
+
+    private func refreshPointerFromWindowLocation(force: Bool = false) {
+        guard let window else {
+            publishPointerMove(nil, force: force)
+            return
+        }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        publishPointerMove(bounds.contains(point) ? point : nil, force: force)
+    }
+
+    private func pointInBounds(for event: NSEvent) -> CGPoint? {
+        let point = convert(event.locationInWindow, from: nil)
+        return bounds.contains(point) ? point : nil
+    }
+
+    private func publishPointerMove(_ point: CGPoint?, force: Bool = false) {
+        guard force || point != lastPublishedPointerPoint || (point != nil) != isPointerInside else { return }
+        lastPublishedPointerPoint = point
+        isPointerInside = point != nil
+        onPointerMove?(point)
     }
 }
 
