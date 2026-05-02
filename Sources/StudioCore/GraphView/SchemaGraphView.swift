@@ -1497,7 +1497,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         )
         .contentShape(Rectangle())
         .onHover { isHovered in
-            guard !usesViewportHoverTracking else { return }
             if let rowHoverTarget {
                 relationHoverChanged(rowHoverTarget, rowHoverSource, isHovered)
             }
@@ -1581,7 +1580,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                     .stroke(tint.opacity(emphasis ? 0.32 : 0.18), lineWidth: 1)
             }
             .onHover { isHovered in
-                guard !usesViewportHoverTracking else { return }
                 let source = GraphRelationHoverSource(
                     tableID: hoverTarget.tableID,
                     columnName: hoverTarget.columnName,
