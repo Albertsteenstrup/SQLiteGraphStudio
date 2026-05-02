@@ -79,6 +79,15 @@ public struct SchemaGraphView: View {
             }
             .onAppear {
                 viewportSize = geometry.size
+                // If layout is already settled (e.g. remount from fullscreen toggle),
+                // restore the saved viewport instead of re-fitting.
+                if session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout {
+                    zoom = session.graphZoom
+                    baseZoom = session.graphZoom
+                    pan = session.graphPan
+                    panStart = session.graphPan
+                    return
+                }
                 performInitialLayout(in: geometry.size)
                 guard !hasPerformedSettledInitialLayout else { return }
                 hasPerformedSettledInitialLayout = true
@@ -462,26 +471,20 @@ public struct SchemaGraphView: View {
                 Button {
                     fitGraph(in: size)
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: 8, weight: .semibold))
                         Text("Back to Content")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.subheadline.weight(.medium))
                     }
                     .foregroundStyle(StudioPalette.primaryText)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
                 }
                 .buttonStyle(.plain)
-                .background(
-                    Capsule()
-                        .fill(StudioPalette.chromeFill)
-                )
-                .overlay {
-                    Capsule()
-                        .stroke(StudioPalette.border, lineWidth: 1.5)
-                }
-                .shadow(color: StudioPalette.shadow.opacity(0.8), radius: 20, y: 12)
+                .background(Capsule().fill(StudioPalette.chromeFill))
+                .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
+                .shadow(color: StudioPalette.shadow.opacity(0.75), radius: 18, y: 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }
@@ -873,6 +876,10 @@ public struct SchemaGraphView: View {
     }
 
     private func switchPresentationMode(isShowingAllCards: Bool, in size: CGSize) {
+        // Capture current viewport so we can restore it after the layout switch
+        let savedZoom = zoom
+        let savedPan = pan
+
         if isShowingAllCards {
             session.graphLayout.relayoutPreservingCurrentPositions(
                 for: session.graph,
@@ -890,12 +897,14 @@ public struct SchemaGraphView: View {
                 maxIterations: 0
             )
             layoutRevision &+= 1
-            fitGraph(in: size)
+            // Restore the same zoom/pan instead of fitting
+            setViewport(GraphViewportTransform(zoom: savedZoom, pan: savedPan), animated: false)
         } else {
             // Restore the saved compact layout — don't stabilize, just refit
             session.restoreCompactGraphLayoutForCurrentDatabase()
             layoutRevision &+= 1
-            fitGraph(in: size)
+            // Restore the same zoom/pan instead of fitting
+            setViewport(GraphViewportTransform(zoom: savedZoom, pan: savedPan), animated: false)
         }
     }
 
@@ -1197,7 +1206,7 @@ public struct SchemaGraphView: View {
         guard size.width > 0, size.height > 0 else { return }
 
         let oldZoom = max(zoom, 0.01)
-        let newZoom = max(0.42, min(oldZoom * (1 + magnification), 2.4))
+        let newZoom = max(0.12, min(oldZoom * (1 + magnification), 2.4))
         guard abs(newZoom - oldZoom) > 0.0001 else { return }
 
         let centeredAnchor = CGPoint(
@@ -1506,7 +1515,29 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
 
     private var rowCountLabel: String? {
         guard let rowCount = descriptor?.rowCount else { return nil }
-        return rowCount == 1 ? "1 row" : "\(rowCount.formatted()) rows"
+        return rowCount == 1 ? "1 row" : "\(compactRowCount(rowCount)) rows"
+    }
+
+    private func compactRowCount(_ count: Int) -> String {
+        switch count {
+        case 0..<1_000:
+            return "\(count)"
+        case 1_000..<10_000:
+            let k = Double(count) / 1_000
+            return k.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(k))K" : String(format: "%.1fK", k)
+        case 10_000..<1_000_000:
+            return "\(count / 1_000)K"
+        case 1_000_000..<10_000_000:
+            let m = Double(count) / 1_000_000
+            return m.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(m))M" : String(format: "%.1fM", m)
+        case 10_000_000..<1_000_000_000:
+            return "\(count / 1_000_000)M"
+        case 1_000_000_000..<10_000_000_000:
+            let b = Double(count) / 1_000_000_000
+            return b.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(b))B" : String(format: "%.1fB", b)
+        default:
+            return "\(count / 1_000_000_000)B"
+        }
     }
 
     private var backgroundFill: some ShapeStyle {
