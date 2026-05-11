@@ -31,6 +31,10 @@ public struct SchemaGraphView: View {
     @State private var isFeaturesOpen = false
     @State private var haloCache = HaloCache()
     @State private var descriptionHover: DescriptionHover? = nil
+    @State private var cardScrollOffsets: [String: CGFloat] = [:]
+    @State private var scrollTargetCardID: String? = nil
+    @State private var pulledGraphPositions: [String: CGPoint] = [:]
+    @State private var tappedRelationTarget: GraphRelationHoverTarget? = nil
 
     public init(session: AppSession) {
         self.session = session
@@ -155,7 +159,7 @@ public struct SchemaGraphView: View {
     private func graphScene(size: CGSize) -> some View {
         let anchorMap = viewportAnchorMap(in: size)
         let currentFocusNodeID = focusNodeID
-        let currentHoverTarget = hoveredRelationTarget
+        let currentHoverTarget = tappedRelationTarget ?? hoveredRelationTarget
         let relationHighlight = GraphRelationHighlight(
             graph: session.graph,
             focusNodeID: currentFocusNodeID,
@@ -169,6 +173,21 @@ public struct SchemaGraphView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(backgroundPanGesture)
+                .onTapGesture {
+                    if !pulledGraphPositions.isEmpty {
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                            pulledGraphPositions.removeAll()
+                        }
+                        tappedRelationTarget = nil
+                    }
+                    if let expandedID = manuallyExpandedNodeID {
+                        toggleExpandedState(for: expandedID, in: viewportSize)
+                    }
+                    session.clearGraphSelection()
+                    withAnimation(.snappy(duration: 0.18)) {
+                        isFeaturesOpen = false
+                    }
+                }
 
             GraphTrackpadInputSurface(
                 onPan: { delta in
@@ -201,6 +220,7 @@ public struct SchemaGraphView: View {
                 let previewColumns = previewColumns(for: node.id)
                 let displayStyle = nodeDisplayStyle(for: node.id, previewColumns: previewColumns)
                 let cardSize = nodeSize(for: node.id)
+                let scrollOffset = cardScrollOffsets[node.id] ?? 0
 
                 GraphNodeCardView(
                     node: node,
@@ -213,10 +233,17 @@ public struct SchemaGraphView: View {
                     incomingEdges: incomingEdges,
                     isSelected: session.selectedGraphNodeIDs.contains(node.id),
                     displayStyle: displayStyle,
+                    scrollOffset: scrollOffset,
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
                     highlightState: relationHighlight.highlightState(for: node.id),
                     selectNode: {
+                        if !pulledGraphPositions.isEmpty {
+                            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                                pulledGraphPositions.removeAll()
+                            }
+                            tappedRelationTarget = nil
+                        }
                         withAnimation(.snappy(duration: 0.16)) {
                             session.selectGraphNode(node.id)
                         }
@@ -242,6 +269,9 @@ public struct SchemaGraphView: View {
                     },
                     relationHoverChanged: { target, source, isHovered in
                         handleRelationHoverChange(target, source: source, isHovered: isHovered)
+                    },
+                    relationTapped: { target in
+                        pullConnectedNodesIntoView(for: target)
                     },
                     headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
                 )
@@ -285,16 +315,6 @@ public struct SchemaGraphView: View {
             // Cardinality labels are drawn directly in the Canvas (see drawEdges)
         }
         .coordinateSpace(name: "graphViewport")
-        .onTapGesture {
-            // Deselect all nodes and collapse any expanded card when clicking empty space
-            if let expandedID = manuallyExpandedNodeID {
-                toggleExpandedState(for: expandedID, in: viewportSize)
-            }
-            session.clearGraphSelection()
-            withAnimation(.snappy(duration: 0.18)) {
-                isFeaturesOpen = false
-            }
-        }
         .animation(session.showAllGraphTableCards ? nil : .snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
     }
@@ -312,24 +332,19 @@ public struct SchemaGraphView: View {
         // Rebuild union paths in graph space only when positions change.
         // Pan/zoom are applied cheaply via affine transform at render time.
         if haloCache.layoutRevision != layoutRevision {
-            let cardHalfWidth: CGFloat = presentationMode == .allCards ? 154 : 80
-            let cardHalfHeight: CGFloat = presentationMode == .allCards ? 60 : 23
-            let pad: CGFloat = 20  // graph-space padding (scales proportionally with zoom)
-            let hw = cardHalfWidth + pad
-            let hh = cardHalfHeight + pad
-            let cornerRadius = hh
+            let pad: CGFloat = 22  // graph-space padding around each card
 
             haloCache.entries = clusters.compactMap { cluster in
                 guard let color = Color(studioHex: cluster.color ?? "") else { return nil }
-                let positions: [CGPoint] = cluster.tables.compactMap { name in
-                    guard session.graph.contains(nodeID: name) else { return nil }
-                    return session.graphLayout.position(for: name)
-                }
-                guard !positions.isEmpty else { return nil }
                 var merged: Path? = nil
-                for pt in positions {
+                for name in cluster.tables {
+                    guard session.graph.contains(nodeID: name) else { continue }
+                    let pt = session.graphLayout.position(for: name)
+                    let sz = nodeSize(for: name)
+                    let hw = sz.width  / 2 + pad
+                    let hh = sz.height / 2 + pad
                     let rect = CGRect(x: pt.x - hw, y: pt.y - hh, width: hw * 2, height: hh * 2)
-                    let bubble = Path(roundedRect: rect, cornerRadius: cornerRadius)
+                    let bubble = Path(roundedRect: rect, cornerRadius: hh)
                     merged = merged.map { $0.union(bubble) } ?? bubble
                 }
                 guard let path = merged else { return nil }
@@ -796,6 +811,8 @@ public struct SchemaGraphView: View {
                     }
                     hoveredNodeID = nil
                     clearRelationHoverState()
+                    if !pulledGraphPositions.isEmpty { pulledGraphPositions.removeAll() }
+                    tappedRelationTarget = nil
                     
                     // If node is not in selection, select only this node
                     if !session.selectedGraphNodeIDs.contains(nodeID) {
@@ -906,10 +923,13 @@ public struct SchemaGraphView: View {
         case .preview:
             return previewColumns(for: nodeID).map(\.name)
         case .expanded:
-            return session.descriptor(named: nodeID)?
-                .columns
-                .prefix(GraphCardLayout.maxExpandedVisibleRows)
-                .map(\.name)
+            // Return only the 7 currently-visible columns (scroll-aware) so rowFrames reflects
+            // actual screen positions — used for both edge anchors and hover hit detection.
+            let allColumns = session.descriptor(named: nodeID)?.columns ?? []
+            let scrollOffset = cardScrollOffsets[nodeID] ?? 0
+            let scrollIndex = Int(scrollOffset / GraphCardLayout.expandedRowHeight)
+            let endIndex = min(scrollIndex + GraphCardLayout.maxExpandedVisibleRows, allColumns.count)
+            return allColumns[scrollIndex..<endIndex].map(\.name)
         }
     }
 
@@ -925,8 +945,8 @@ public struct SchemaGraphView: View {
     }
 
     private func screenCenter(for nodeID: String, in canvasSize: CGSize) -> CGPoint {
-        GraphViewportTransform(zoom: zoom, pan: pan)
-            .point(for: session.graphLayout.position(for: nodeID), in: canvasSize)
+        let graphPos = pulledGraphPositions[nodeID] ?? session.graphLayout.position(for: nodeID)
+        return GraphViewportTransform(zoom: zoom, pan: pan).point(for: graphPos, in: canvasSize)
     }
 
     private func viewportAnchorMap(in canvasSize: CGSize) -> GraphAnchorMap {
@@ -1129,6 +1149,7 @@ public struct SchemaGraphView: View {
                 withAnimation(.snappy(duration: 0.16)) { hoveredNodeID = nil }
             }
             updateDescriptionHover(nil, for: "")
+            scrollTargetCardID = nil
             return
         }
 
@@ -1139,11 +1160,20 @@ public struct SchemaGraphView: View {
                 withAnimation(.snappy(duration: 0.16)) { hoveredNodeID = nil }
             }
             updateDescriptionHover(nil, for: "")
+            scrollTargetCardID = nil
             return
         }
 
         StudioLog.graph.debug("viewportPointerMove: found card=\(card.tableID, privacy: .public) at point=\(point.x, privacy: .public),\(point.y, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
 
+        // Determine if cursor is in the scrollable body of an expanded card with >7 columns.
+        let totalColumns = session.descriptor(named: card.tableID)?.columns.count ?? 0
+        let isScrollableExpanded = card.role == .expandedNode && totalColumns > GraphCardLayout.maxExpandedVisibleRows
+        let newScrollTarget: String? = isScrollableExpanded && point.y > card.headerFrame.maxY ? card.tableID : nil
+        if scrollTargetCardID != newScrollTarget { scrollTargetCardID = newScrollTarget }
+
+        // rowFrames are scroll-aware (reflect actual screen positions of visible columns),
+        // so use the raw point for all hit-detection.
         updateDescriptionHover(descriptionInfo(at: point, in: card), for: card.tableID)
 
         if session.showAllGraphTableCards {
@@ -1328,6 +1358,105 @@ public struct SchemaGraphView: View {
         hoveredRelationTarget = nil
     }
 
+    // MARK: - Viewport pull for off-screen related nodes
+
+    /// Temporarily moves off-screen connected nodes adjacent to the source node within the
+    /// current viewport. The viewport itself never changes; source node never leaves the screen.
+    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget) {
+        guard draggedNodeID == nil else { return }
+
+        let connectedIDs = relatedNodeIDs(for: target)
+        guard !connectedIDs.isEmpty else { return }
+
+        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
+        let viewport = CGRect(origin: .zero, size: viewportSize)
+
+        let offScreenIDs = connectedIDs.filter { id in
+            let center = transform.point(for: session.graphLayout.position(for: id), in: viewportSize)
+            return !viewport.contains(center)
+        }
+        guard !offScreenIDs.isEmpty else {
+            if !pulledGraphPositions.isEmpty {
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { pulledGraphPositions.removeAll() }
+                tappedRelationTarget = nil
+            }
+            return
+        }
+
+        let sourceGraphPos = session.graphLayout.position(for: target.tableID)
+        let sourceScreenCenter = transform.point(for: sourceGraphPos, in: viewportSize)
+        let sourceSize = nodeSize(for: target.tableID)
+        let sourceHalfW = sourceSize.width * zoom / 2
+        let sourceHalfH = sourceSize.height * zoom / 2
+
+        // Screen-space gap between source card edge and each connected card edge.
+        let gap: CGFloat = 70
+        // Minimum screen-space gap to enforce between adjacent pulled cards in the ring.
+        let interCardGap: CGFloat = 30
+        let n = offScreenIDs.count
+
+        // Compute the minimum ring radius that prevents adjacent cards from overlapping.
+        // For N cards on a circle of radius R, the chord between neighbours = 2R·sin(π/N).
+        // Use max(halfW, halfH) so tall expanded cards don't overlap vertically either.
+        let maxConnectedHalfExtent = offScreenIDs.map { id -> CGFloat in
+            let sz = nodeSize(for: id)
+            return max(sz.width, sz.height) * zoom / 2
+        }.max() ?? 0
+        let minRadiusForSpacing: CGFloat = n > 1
+            ? (maxConnectedHalfExtent + interCardGap / 2) / sin(.pi / CGFloat(n))
+            : 0
+
+        var newPositions: [String: CGPoint] = [:]
+
+        for (index, connectedID) in offScreenIDs.enumerated() {
+            // Evenly distribute angles starting from east (right), going counter-clockwise.
+            let angle = (2.0 * .pi * CGFloat(index)) / CGFloat(n)
+            let cosA = cos(angle)
+            let sinA = sin(angle)
+
+            let connectedSize = nodeSize(for: connectedID)
+            let connectedHalfW = connectedSize.width * zoom / 2
+            let connectedHalfH = connectedSize.height * zoom / 2
+
+            // Bounding-box support in the radial direction (halfW·|cos|+halfH·|sin|).
+            let srcExtent = sourceHalfW * abs(cosA) + sourceHalfH * abs(sinA)
+            let dstExtent = connectedHalfW * abs(cosA) + connectedHalfH * abs(sinA)
+            // Use whichever radius is larger: natural gap from source, or ring-spacing requirement.
+            let naturalRadius = srcExtent + gap + dstExtent
+            let radius = max(naturalRadius, minRadiusForSpacing)
+
+            let candidateX = sourceScreenCenter.x + radius * cosA
+            let candidateY = sourceScreenCenter.y + radius * sinA
+
+            // Clamp to viewport so the pulled card is fully on screen.
+            let clampedX = min(max(connectedHalfW + 8, candidateX), viewportSize.width  - connectedHalfW - 8)
+            let clampedY = min(max(connectedHalfH + 8, candidateY), viewportSize.height - connectedHalfH - 8)
+
+            newPositions[connectedID] = transform.graphPoint(for: CGPoint(x: clampedX, y: clampedY), in: viewportSize)
+        }
+
+        tappedRelationTarget = GraphRelationHoverTarget(
+            tableID: target.tableID,
+            columnName: target.columnName,
+            endpointKind: .column
+        )
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+            pulledGraphPositions = newPositions
+        }
+    }
+
+    private func relatedNodeIDs(for target: GraphRelationHoverTarget) -> [String] {
+        session.graph.edges.compactMap { edge in
+            if edge.sourceID == target.tableID && edge.sourceColumn == target.columnName {
+                return edge.targetID == target.tableID ? nil : edge.targetID
+            }
+            if edge.targetID == target.tableID && edge.targetColumn == target.columnName {
+                return edge.sourceID == target.tableID ? nil : edge.sourceID
+            }
+            return nil
+        }
+    }
+
     private func toggleExpandedState(for nodeID: String, in size: CGSize) {
         withAnimation(.snappy(duration: 0.18)) {
             session.selectGraphNode(nodeID)
@@ -1365,6 +1494,7 @@ public struct SchemaGraphView: View {
 
     private func collapseExpandedNode(_ nodeID: String, in size: CGSize) {
         session.setExpandedGraphNode(nil)
+        cardScrollOffsets.removeValue(forKey: nodeID)
         // Don't stabilize - just update layout revision to reflect size changes
         layoutRevision &+= 1
         restoreViewport(from: nodeID)
@@ -1426,6 +1556,17 @@ public struct SchemaGraphView: View {
     }
 
     private func applyTrackpadPan(_ delta: CGSize) {
+        if let targetID = scrollTargetCardID {
+            let totalColumns = session.descriptor(named: targetID)?.columns.count ?? 0
+            if totalColumns > GraphCardLayout.maxExpandedVisibleRows {
+                let maxOffset = CGFloat(totalColumns - GraphCardLayout.maxExpandedVisibleRows) * GraphCardLayout.expandedRowHeight
+                let current = cardScrollOffsets[targetID] ?? 0
+                // delta.height from scrollWheel: negative = fingers moving up = scroll content up = offset increases.
+                let newOffset = max(0, min(maxOffset, current - delta.height / zoom))
+                cardScrollOffsets[targetID] = newOffset
+                return
+            }
+        }
         // IMPORTANT: Natural scrolling - moving fingers right pans viewport right (like moving the canvas)
         // DO NOT change the + signs to - signs - this has been intentionally set for natural scrolling
         pan = CGSize(
@@ -1562,6 +1703,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let incomingEdges: [GraphEdge]
     let isSelected: Bool
     let displayStyle: GraphNodeCardStyle
+    let scrollOffset: CGFloat
     let isHovered: Bool
     let isDragging: Bool
     let highlightState: GraphNodeHighlightState
@@ -1572,6 +1714,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let usesViewportHoverTracking: Bool
     let hoverChanged: (Bool) -> Void
     let relationHoverChanged: (GraphRelationHoverTarget, GraphRelationHoverSource, Bool) -> Void
+    let relationTapped: (GraphRelationHoverTarget) -> Void
     let headerDragGesture: HeaderGesture
 
     var body: some View {
@@ -1583,21 +1726,18 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                     .fill(StudioPalette.divider)
                     .frame(height: 1)
 
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(displayedColumns) { column in
-                        row(for: column)
-                    }
-                }
-                .padding(.horizontal, GraphCardLayout.horizontalInset)
-                .padding(.top, bodyTopPadding)
-                .padding(.bottom, bodyBottomPadding)
+                columnBody
+                    .padding(.horizontal, GraphCardLayout.horizontalInset)
+                    .padding(.top, bodyTopPadding)
+                    .padding(.bottom, bodyBottomPadding)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(backgroundShape.fill(backgroundFill))
+        .clipShape(backgroundShape)
         .overlay {
             backgroundShape
-                .stroke(borderColor, lineWidth: isSelected || isHovered ? 1.4 : 1)
+                .strokeBorder(borderColor, lineWidth: isSelected || isHovered ? 1.5 : 1.0)
         }
         .scaleEffect(isDragging ? 1.012 : (isHovered ? 1.004 : 1))
         .contentShape(backgroundShape)
@@ -1728,6 +1868,13 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                 .fill(rowHighlightFill(for: relationStyle))
         )
         .contentShape(Rectangle())
+        .onTapGesture {
+            if let rowHoverTarget {
+                relationTapped(rowHoverTarget)   // pull only; card tap won't fire (tap consumed)
+            } else {
+                selectNode()                     // restore + select
+            }
+        }
         .onHover { isHovered in
             if let rowHoverTarget {
                 relationHoverChanged(rowHoverTarget, rowHoverSource, isHovered)
@@ -1788,13 +1935,10 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var borderColor: Color {
-        if isHovered {
-            return StudioPalette.borderStrong
-        }
-        if isSelected {
-            return StudioPalette.border
-        }
-        return StudioPalette.borderSoft
+        if isHovered                { return Color.black.opacity(0.26) }
+        if highlightState != .empty { return Color.black.opacity(0.22) }
+        if isSelected               { return Color.black.opacity(0.20) }
+        return Color.black.opacity(0.11)
     }
 
     private func graphBadge(_ title: String, tint: Color, emphasis: Bool, hoverTarget: GraphRelationHoverTarget) -> some View {
@@ -1810,6 +1954,9 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 999, style: .continuous)
                     .stroke(tint.opacity(emphasis ? 0.32 : 0.18), lineWidth: 1)
+            }
+            .onTapGesture {
+                relationTapped(hoverTarget)     // pull only; badge tap consumed, card tap won't fire
             }
             .onHover { isHovered in
                 StudioLog.graph.debug("badge.onHover: \(hoverTarget.tableID, privacy: .public).\(hoverTarget.columnName, privacy: .public) isHovered=\(isHovered, privacy: .public)")
@@ -1842,7 +1989,40 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         case .preview:
             return previewColumns
         case .expanded:
-            return Array((descriptor?.columns ?? []).prefix(GraphCardLayout.maxExpandedVisibleRows))
+            let allColumns = descriptor?.columns ?? []
+            let total = allColumns.count
+            if total <= GraphCardLayout.maxExpandedVisibleRows { return allColumns }
+            // Show maxRows + 1 for smooth fractional scroll (partial bottom row when mid-row).
+            let scrollIndex = Int(scrollOffset / GraphCardLayout.expandedRowHeight)
+            let endIndex = min(scrollIndex + GraphCardLayout.maxExpandedVisibleRows + 1, total)
+            return Array(allColumns[scrollIndex..<endIndex])
+        }
+    }
+
+    private var scrollFractionalOffset: CGFloat {
+        guard isExpanded else { return 0 }
+        let total = descriptor?.columns.count ?? 0
+        guard total > GraphCardLayout.maxExpandedVisibleRows else { return 0 }
+        return scrollOffset.truncatingRemainder(dividingBy: GraphCardLayout.expandedRowHeight)
+    }
+
+    @ViewBuilder private var columnBody: some View {
+        let isScrollableExpanded = isExpanded && (descriptor?.columns.count ?? 0) > GraphCardLayout.maxExpandedVisibleRows
+        if isScrollableExpanded {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(displayedColumns) { column in
+                    row(for: column)
+                }
+            }
+            .offset(y: -scrollFractionalOffset)
+            .frame(height: CGFloat(GraphCardLayout.maxExpandedVisibleRows) * GraphCardLayout.expandedRowHeight, alignment: .top)
+            .clipped()
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(displayedColumns) { column in
+                    row(for: column)
+                }
+            }
         }
     }
 
