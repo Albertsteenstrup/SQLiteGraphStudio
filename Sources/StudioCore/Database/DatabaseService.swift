@@ -107,6 +107,8 @@ public actor DatabaseService {
                         isEditable = false
                     }
 
+                    let parsedDoc = DDLCommentParser.parse(tableSQL)
+
                     let descriptor = EditableTableDescriptor(
                         name: name,
                         objectType: objectType,
@@ -126,7 +128,9 @@ public actor DatabaseService {
                             tableSQL: tableSQL,
                             database: db
                         ),
-                        generatedColumns: generatedColumns
+                        generatedColumns: generatedColumns,
+                        description: parsedDoc.description,
+                        columnDescriptions: parsedDoc.columnDescriptions
                     )
                     descriptors.append(descriptor)
 

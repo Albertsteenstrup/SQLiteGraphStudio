@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "clusters": [
+    {
+      "id": "authoring",
+      "label": "Authoring",
+      "tables": ["authors", "author_profiles", "posts", "comments", "attachments"],
+      "color": "#7CC3FF"
+    },
+    {
+      "id": "taxonomy",
+      "label": "Taxonomy",
+      "tables": ["tags", "categories", "post_tags", "post_categories"],
+      "color": "#A8E6A3"
+    },
+    {
+      "id": "ops",
+      "label": "Ops & Sync",
+      "tables": ["event_log", "sync_markers"],
+      "color": "#F8B26A"
+    }
+  ]
+}

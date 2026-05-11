@@ -11,6 +11,7 @@ public final class AppSession {
     public var databaseURL: URL?
     public var tables: [TableSummary] = []
     public var graph: SchemaGraph = .empty
+    public var schemaSidecar: SchemaSidecar = .empty
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
@@ -21,6 +22,7 @@ public final class AppSession {
     public var floatingDetailsCardTableID: String?
     public var floatingDetailsCardPosition: CGPoint?
     public var showAllGraphTableCards = false
+    public var showClusterHalos = true
     public var openTabs: [TableTabModel] = []
     public var activeTabID: UUID?
     public var isRefreshing = false
@@ -28,6 +30,7 @@ public final class AppSession {
     public var isProfileManagerPresented = false
     public var isCreateTablePresented = false
     public var isAlterTablePresented = false
+    public var isSkillsPresented = false
     // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary
     public var graphZoom: CGFloat = 1.0
     public var graphPan: CGSize = .zero
@@ -122,6 +125,7 @@ public final class AppSession {
         databaseURL = nil
         tables = []
         graph = .empty
+        schemaSidecar = .empty
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
         activePaneSide = .right
@@ -132,10 +136,51 @@ public final class AppSession {
         floatingDetailsCardPosition = nil
         showAllGraphTableCards = false
         openTabs = []
+
         activeTabID = nil
         tableDescriptors = [:]
+        graphLayout.setClusterHints([:])
         graphLayout.reset(for: .empty)
         queryWorkspace.reset()
+    }
+
+    /// Re-reads `<db>.sqlite.studio.json` from disk and updates cluster hints. Does **not**
+    /// touch node positions — call alongside a layout rebuild to actually re-position nodes.
+    public func reloadSchemaSidecarFromDisk() {
+        guard let databaseURL else { return }
+        let sidecar = SchemaSidecarStore.load(for: databaseURL)
+        schemaSidecar = sidecar
+        graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
+    }
+
+    /// Removes the cached layout snapshot for the open database from UserDefaults so the
+    /// next layout pass regenerates fresh from cluster hints instead of restoring stale
+    /// at-origin positions left over from earlier app builds.
+    public func clearPersistedGraphLayout() {
+        guard let databaseURL else { return }
+        userDefaults.removeObject(forKey: graphLayoutStorageKey(for: databaseURL))
+    }
+
+    public func tableDescription(for tableName: String) -> String? {
+        let raw = tableDescriptors[tableName]?.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (raw?.isEmpty ?? true) ? nil : raw
+    }
+
+    public func columnDescription(for tableName: String, column columnName: String) -> String? {
+        let raw = tableDescriptors[tableName]?.columnDescriptions[columnName]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (raw?.isEmpty ?? true) ? nil : raw
+    }
+
+    public var hasAnyDescriptions: Bool {
+        tableDescriptors.values.contains { descriptor in
+            descriptor.description?.isEmpty == false || !descriptor.columnDescriptions.isEmpty
+        }
+    }
+
+    public func clusterLabel(for tableName: String) -> String? {
+        guard let groupID = schemaSidecar.nodeToClusterGroup[tableName] else { return nil }
+        return schemaSidecar.clusters.first(where: { $0.id == groupID })?.label ?? groupID
     }
 
     public func refreshSchema() {
@@ -177,6 +222,24 @@ public final class AppSession {
 
     public func dismissAlterTable() {
         isAlterTablePresented = false
+    }
+
+    public func showSkills() { isSkillsPresented = true }
+    public func dismissSkills() { isSkillsPresented = false }
+
+    public var skillsDirectory: URL? {
+        guard let dbDir = databaseURL?.deletingLastPathComponent() else { return nil }
+        return StudioSkills.gitRoot(from: dbDir) ?? dbDir
+    }
+
+    public var skillsInstalled: Bool {
+        guard let dir = skillsDirectory else { return false }
+        return StudioSkills.areInstalled(in: dir)
+    }
+
+    public func installSkills() {
+        guard let dir = skillsDirectory else { return }
+        try? StudioSkills.install(StudioSkills.all, to: dir)
     }
 
     @discardableResult
@@ -704,6 +767,9 @@ public final class AppSession {
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
         tables = snapshot.descriptors.map(\.summary)
         graph = snapshot.graph
+        let sidecar = SchemaSidecarStore.load(for: url)
+        schemaSidecar = sidecar
+        graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
         graphLayout.reset(for: snapshot.graph)
         restorePersistedGraphLayoutIfAvailable(for: url, graph: snapshot.graph)
         activePaneSide = .right
@@ -711,7 +777,7 @@ public final class AppSession {
         expandedGraphNodeIDs = []
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
-        showAllGraphTableCards = false
+        showAllGraphTableCards = snapshot.graph.nodes.count < 14
         queryWorkspace.loadSavedQueries(for: url)
         openTabs = openTabs.compactMap { existingTab in
             guard let descriptor = tableDescriptors[existingTab.descriptor.name] else { return nil }

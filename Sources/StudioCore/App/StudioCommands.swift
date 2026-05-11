@@ -105,6 +105,13 @@ public struct StudioCommands: Commands {
                 }
             }
             .disabled(session.queryWorkspace.activeQuery?.result.columns.isEmpty != false)
+
+            Divider()
+
+            Button("AI Skills…") {
+                session.showSkills()
+            }
+            .disabled(!session.hasOpenDatabase)
         }
     }
 }

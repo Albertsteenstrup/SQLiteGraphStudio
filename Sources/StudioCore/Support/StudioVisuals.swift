@@ -78,3 +78,17 @@ public extension View {
         modifier(StudioGlassCardModifier(cornerRadius: cornerRadius, tint: tint, strokeOpacity: strokeOpacity))
     }
 }
+
+public extension Color {
+    /// Parses 6-digit `#RRGGBB` (or `RRGGBB`) hex strings used in sidecar cluster colors.
+    init?(studioHex: String) {
+        let stripped = studioHex
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        guard stripped.count == 6, let value = UInt32(stripped, radix: 16) else { return nil }
+        let r = Double((value >> 16) & 0xFF) / 255.0
+        let g = Double((value >> 8) & 0xFF) / 255.0
+        let b = Double(value & 0xFF) / 255.0
+        self.init(red: r, green: g, blue: b)
+    }
+}

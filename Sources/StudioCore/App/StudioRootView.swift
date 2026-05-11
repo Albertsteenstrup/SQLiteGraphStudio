@@ -5,6 +5,9 @@ import SwiftUI
 public struct StudioRootView: View {
     @Bindable private var session: AppSession
     @State private var isMinimapHovered = false
+    @State private var skillsToastVisible = false
+    @State private var skillsRepeatTask: Task<Void, Never>? = nil
+    @State private var skillsToastDismissedForURL: URL? = nil
 
     public init(session: AppSession) {
         self.session = session
@@ -50,6 +53,49 @@ public struct StudioRootView: View {
                     .zIndex(isMinimapHovered ? 1000 : 1)
                 }
             }
+        }
+        .overlay(alignment: .bottom) {
+            if skillsToastVisible {
+                SkillsToastView {
+                    // "Get Skills" — stop repeat loop and open panel
+                    skillsRepeatTask?.cancel()
+                    skillsRepeatTask = nil
+                    withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+                    session.showSkills()
+                } onDismiss: {
+                    // "×" — user explicitly hides; suppress for this database
+                    skillsToastDismissedForURL = session.databaseURL
+                    skillsRepeatTask?.cancel()
+                    skillsRepeatTask = nil
+                    withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+                }
+                .padding(.bottom, 20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.3), value: skillsToastVisible)
+        .onChange(of: session.tables) { _, newTables in
+            guard newTables.count > 10,
+                  !session.skillsInstalled,
+                  skillsToastDismissedForURL != session.databaseURL,
+                  skillsRepeatTask == nil
+            else { return }
+            skillsRepeatTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    guard !session.skillsInstalled else { break }
+                    withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = true }
+                    try? await Task.sleep(for: .seconds(20))
+                    guard !Task.isCancelled else { break }
+                    withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+                    try? await Task.sleep(for: .seconds(5 * 60))
+                }
+                withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+            }
+        }
+        .onChange(of: session.databaseURL) { _, _ in
+            skillsRepeatTask?.cancel()
+            skillsRepeatTask = nil
+            withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
         }
         .containerBackground(.thinMaterial, for: .window)
         .toolbar {
@@ -113,6 +159,9 @@ public struct StudioRootView: View {
         }
         .sheet(isPresented: $session.isTablePickerPresented) {
             OpenTablePickerView(session: session)
+        }
+        .sheet(isPresented: $session.isSkillsPresented) {
+            SkillsPickerView(session: session)
         }
         .sheet(isPresented: $session.isProfileManagerPresented) {
             ConnectionProfileManagerView(session: session)
@@ -495,15 +544,56 @@ private struct OpenTablePickerView: View {
     @Bindable var session: AppSession
     @State private var searchText = ""
     @State private var selection: String?
+    @State private var expandedGroups: Set<String>
+    @State private var expandedTables: Set<String> = []
 
-    var filteredTables: [TableSummary] {
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return session.tables
-        }
+    init(session: AppSession) {
+        self.session = session
+        // All groups start expanded
+        _expandedGroups = State(initialValue: Set(session.schemaSidecar.clusters.map(\.id)))
+    }
 
-        return session.tables.filter { table in
-            table.name.localizedCaseInsensitiveContains(searchText)
+    // FK source columns per table derived from graph edges
+    private var fkColumnsByTable: [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        for edge in session.graph.edges {
+            result[edge.sourceID, default: []].insert(edge.sourceColumn)
         }
+        return result
+    }
+
+    private struct PickerGroup: Identifiable {
+        let id: String
+        let label: String
+        let color: Color?
+        let tables: [TableSummary]
+    }
+
+    private var groups: [PickerGroup] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = session.tables.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+        let clusters = session.schemaSidecar.clusters
+        let groupedNames = Set(clusters.flatMap(\.tables))
+
+        var result: [PickerGroup] = clusters.compactMap { cluster -> PickerGroup? in
+            let tables = filtered.filter { cluster.tables.contains($0.name) }
+            guard !tables.isEmpty else { return nil }
+            return PickerGroup(
+                id: cluster.id,
+                label: cluster.label ?? cluster.id,
+                color: cluster.color.flatMap { Color(studioHex: $0) },
+                tables: tables
+            )
+        }
+        let ungrouped = filtered.filter { !groupedNames.contains($0.name) }
+        if !ungrouped.isEmpty {
+            result.append(PickerGroup(id: "__ungrouped__", label: "Other", color: nil, tables: ungrouped))
+        }
+        // If no clusters defined just show everything as one flat group
+        if clusters.isEmpty {
+            return [PickerGroup(id: "__all__", label: "Tables", color: nil, tables: filtered)]
+        }
+        return result
     }
 
     var body: some View {
@@ -514,58 +604,36 @@ private struct OpenTablePickerView: View {
             TextField("Search tables", text: $searchText)
                 .textFieldStyle(.roundedBorder)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(filteredTables) { table in
-                        Button {
-                            selection = table.name
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(table.name)
-                                        .foregroundStyle(StudioPalette.primaryText)
-                                    Text(table.isEditable ? "Editable" : "Read-only")
-                                        .font(.caption)
-                                        .foregroundStyle(StudioPalette.secondaryText)
-                                }
-                                Spacer()
-                                if selection == table.name {
-                                    Image(systemName: "checkmark")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundStyle(StudioPalette.primaryText)
-                                }
+            List {
+                ForEach(groups) { group in
+                    Section {
+                        if expandedGroups.contains(group.id) {
+                            ForEach(group.tables) { table in
+                                tableRow(table, fk: fkColumnsByTable)
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(selection == table.name ? StudioPalette.selectionSurfaceTop : Color.clear)
-                            )
                         }
-                        .buttonStyle(.plain)
+                    } header: {
+                        groupHeader(group)
                     }
                 }
-                .padding(4)
             }
-            .frame(minWidth: 420, minHeight: 320, maxHeight: 420)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(StudioPalette.borderSoft)
             }
+            .frame(minWidth: 460, minHeight: 340, maxHeight: 480)
 
             HStack {
                 Spacer()
-
                 Button("Cancel") {
                     session.dismissTablePicker()
                     dismiss()
                 }
-
                 Button("Open") {
-                    if let selection {
-                        session.openTable(named: selection)
-                    }
+                    if let selection { session.openTable(named: selection) }
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -574,10 +642,129 @@ private struct OpenTablePickerView: View {
         }
         .padding(20)
         .onChange(of: session.isTablePickerPresented) { _, isPresented in
-            if !isPresented {
-                dismiss()
+            if !isPresented { dismiss() }
+        }
+    }
+
+    @ViewBuilder
+    private func groupHeader(_ group: PickerGroup) -> some View {
+        Button {
+            if expandedGroups.contains(group.id) { expandedGroups.remove(group.id) }
+            else { expandedGroups.insert(group.id) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expandedGroups.contains(group.id) ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .frame(width: 10)
+                if let color = group.color {
+                    Circle().fill(color.opacity(0.75)).frame(width: 7, height: 7)
+                }
+                Text(group.label.uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                Spacer()
+                Text("\(group.tables.count)")
+                    .font(.caption2)
+                    .foregroundStyle(StudioPalette.secondaryText.opacity(0.5))
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func tableRow(_ table: TableSummary, fk: [String: Set<String>]) -> some View {
+        let isSelected = selection == table.name
+        let isExpanded = expandedTables.contains(table.name)
+        let descriptor = session.descriptor(named: table.name)
+        let hasColumns = !(descriptor?.columns.isEmpty ?? true)
+
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                selection = table.name
+                if hasColumns {
+                    if isExpanded { expandedTables.remove(table.name) }
+                    else { expandedTables.insert(table.name) }
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: hasColumns
+                          ? (isExpanded ? "chevron.down" : "chevron.right")
+                          : "minus")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(StudioPalette.secondaryText.opacity(0.5))
+                        .frame(width: 10)
+                    Image(systemName: table.objectType == .view ? "eye" : "tablecells")
+                        .font(.system(size: 11))
+                        .foregroundStyle(isSelected ? StudioPalette.accent : StudioPalette.secondaryText)
+                    Text(table.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(StudioPalette.primaryText)
+                    Spacer(minLength: 8)
+                    if let count = table.rowCount {
+                        Text("\(count)")
+                            .font(.caption2)
+                            .foregroundStyle(StudioPalette.secondaryText.opacity(0.5))
+                    }
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(StudioPalette.accent)
+                    }
+                }
+                .padding(.vertical, 7)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isSelected ? StudioPalette.selectionSurfaceTop : .clear)
+                )
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded, let descriptor {
+                ForEach(descriptor.columns) { column in
+                    pickerColumnRow(column, tableName: table.name, fk: fk)
+                }
             }
         }
+        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private func pickerColumnRow(_ column: TableColumn, tableName: String, fk: [String: Set<String>]) -> some View {
+        let isPK = column.primaryKeyOrdinal > 0
+        let isFK = fk[tableName]?.contains(column.name) ?? false
+        HStack(spacing: 5) {
+            Spacer().frame(width: 26)
+            Text(column.name)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(StudioPalette.primaryText.opacity(0.8))
+            Spacer(minLength: 6)
+            Text(column.typeLabel)
+                .font(.system(size: 10))
+                .foregroundStyle(StudioPalette.secondaryText)
+            if isPK { pickerBadge("PK", tint: StudioPalette.primaryKeyTint) }
+            if isFK { pickerBadge("FK", tint: StudioPalette.foreignKeyTint) }
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 8)
+        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private func pickerBadge(_ label: String, tint: Color) -> some View {
+        Text(label)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1.5)
+            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
     }
 }
 
@@ -1062,5 +1249,199 @@ private struct AlterTableSheetView: View {
                 renamedColumn = selectedColumn
             }
         }
+    }
+}
+
+// MARK: - SkillsToastView
+
+private struct SkillsToastView: View {
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(StudioPalette.accent)
+
+            Text("AI skills available for this database")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(StudioPalette.primaryText)
+
+            Spacer(minLength: 8)
+
+            Button("Get Skills") {
+                onOpen()
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .tint(StudioPalette.accent)
+            .controlSize(.small)
+
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .frame(width: 20, height: 20)
+                    .background(StudioPalette.chromeFillStrong, in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .studioGlassCard(cornerRadius: 24, tint: Color.white, strokeOpacity: 0.12)
+    }
+}
+
+// MARK: - SkillsPickerView
+
+private struct SkillsPickerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var session: AppSession
+    @State private var expandedSkillIDs: Set<String> = []
+    @State private var didInstall = false
+    @State private var autoCloseTask: Task<Void, Never>? = nil
+
+    private var isInstalled: Bool {
+        didInstall || session.skillsInstalled
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("AI Skills")
+                    .font(.title2.weight(.semibold))
+                Text("Install skills into your database directory for AI coding agents.")
+                    .font(.subheadline)
+                    .foregroundStyle(StudioPalette.secondaryText)
+            }
+
+            List {
+                ForEach(StudioSkills.all) { skill in
+                    skillRow(skill)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(StudioPalette.borderSoft)
+            }
+            .frame(minWidth: 500, minHeight: 240, maxHeight: 420)
+
+            if let dir = session.skillsDirectory {
+                Text("Installing to: \(dir.path)")
+                    .font(.caption)
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            HStack {
+                if isInstalled {
+                    Label("Installed", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(Color.green)
+                        .font(.subheadline.weight(.medium))
+                }
+                Spacer()
+                Button("Cancel") {
+                    session.dismissSkills()
+                    dismiss()
+                }
+                Button("Install All") {
+                    session.installSkills()
+                    didInstall = true
+                    scheduleAutoClose()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(StudioPalette.accent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(isInstalled)
+            }
+        }
+        .padding(20)
+        .onChange(of: session.isSkillsPresented) { _, isPresented in
+            if !isPresented { dismiss() }
+        }
+    }
+
+    private func scheduleAutoClose() {
+        autoCloseTask?.cancel()
+        autoCloseTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            session.dismissSkills()
+            dismiss()
+        }
+    }
+
+    @ViewBuilder
+    private func skillRow(_ skill: StudioSkill) -> some View {
+        let isExpanded = expandedSkillIDs.contains(skill.id)
+
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if isExpanded { expandedSkillIDs.remove(skill.id) }
+                else { expandedSkillIDs.insert(skill.id) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(StudioPalette.secondaryText)
+                        .frame(width: 10)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(skill.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(StudioPalette.primaryText)
+                        Text(skill.shortDescription)
+                            .font(.caption)
+                            .foregroundStyle(StudioPalette.secondaryText)
+                            .multilineTextAlignment(.leading)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if isInstalled {
+                        Label("Installed", systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.green)
+                    } else {
+                        Button("Install") {
+                            session.installSkills()
+                            didInstall = true
+                            scheduleAutoClose()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(StudioPalette.accent)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                ScrollView {
+                    Text(skill.fullContent)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(StudioPalette.primaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .frame(maxHeight: 200)
+                .background(StudioPalette.editorSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 }

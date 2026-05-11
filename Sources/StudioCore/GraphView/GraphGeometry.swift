@@ -257,6 +257,14 @@ struct GraphCardGeometry: Sendable, Equatable {
         CGPoint(x: frame.midX, y: frame.midY)
     }
 
+    /// Returns the header region (above the first column row). For collapsed cards this is the entire frame.
+    var headerFrame: CGRect {
+        if let firstRowMinY = rowFrames.values.map(\.minY).min() {
+            return CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: firstRowMinY - frame.minY)
+        }
+        return frame
+    }
+
     func columnName(at point: CGPoint) -> String? {
         rowFrames
             .filter { $0.value.contains(point) }

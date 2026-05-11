@@ -22,24 +22,32 @@ public enum SampleFixtureBuilder {
 
             try db.execute(sql: """
             CREATE TABLE authors (
+                -- People who can write or edit posts. One row per identity.
+
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
-                email TEXT UNIQUE,
+                email TEXT UNIQUE, -- lowercased, NULL for anonymous-import rows
                 bio TEXT,
+                -- 0 = soft-deleted, 1 = active. Inactive authors stay referenced from old posts.
                 is_active INTEGER NOT NULL DEFAULT 1
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE posts (
+                -- Content unit. Lifecycle: draft -> published -> archived.
+
                 id INTEGER PRIMARY KEY,
                 author_id INTEGER NOT NULL REFERENCES authors(id),
+                -- Author who last edited; NULL means the original author is the only editor.
                 editor_id INTEGER REFERENCES authors(id),
                 title TEXT NOT NULL,
                 slug TEXT UNIQUE NOT NULL,
                 summary TEXT,
                 body TEXT NOT NULL,
+                -- draft | published | archived (CHECK-constrained)
                 status TEXT NOT NULL CHECK (status IN ('draft', 'published', 'archived')),
+                -- NULL for drafts; ISO8601 timestamp once status flips to published.
                 published_at TEXT,
                 created_at TEXT NOT NULL
             )
@@ -47,43 +55,54 @@ public enum SampleFixtureBuilder {
 
             try db.execute(sql: """
             CREATE TABLE comments (
+                -- Reader comments on posts. Threaded via self-FK on parent_id.
+
                 id INTEGER PRIMARY KEY,
                 post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-                parent_id INTEGER REFERENCES comments(id),
+                parent_id INTEGER REFERENCES comments(id), -- NULL for top-level; self-FK for replies
+                -- Display name from form; not tied to the authors table
                 author_name TEXT NOT NULL,
-                author_email TEXT,
+                author_email TEXT, -- optional; never shown publicly
                 body TEXT NOT NULL,
-                is_flagged INTEGER NOT NULL DEFAULT 0,
+                is_flagged INTEGER NOT NULL DEFAULT 0, -- 1 if moderation flagged this row
                 created_at TEXT NOT NULL
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE tags (
+                -- Flat label vocabulary. One row per unique tag name.
+
                 id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE
+                name TEXT NOT NULL UNIQUE -- lowercase slug, e.g. swift, sqlite
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE post_tags (
+                -- Many-to-many join between posts and tags.
+
                 post_id INTEGER NOT NULL REFERENCES posts(id),
                 tag_id INTEGER NOT NULL REFERENCES tags(id),
-                tagged_by INTEGER REFERENCES authors(id),
+                tagged_by INTEGER REFERENCES authors(id), -- author who applied the tag; NULL if imported
                 PRIMARY KEY (post_id, tag_id)
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE categories (
-                slug TEXT PRIMARY KEY,
-                parent_slug TEXT REFERENCES categories(slug),
-                name TEXT NOT NULL
+                -- Two-level taxonomy. slug is PK; parent_slug enables one level of nesting.
+
+                slug TEXT PRIMARY KEY, -- URL-safe identifier, e.g. swift, sqlite
+                parent_slug TEXT REFERENCES categories(slug), -- NULL for top-level categories
+                name TEXT NOT NULL -- human-readable label
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE post_categories (
+                -- Assigns posts to taxonomy categories. A post can belong to multiple.
+
                 post_id INTEGER NOT NULL REFERENCES posts(id),
                 category_slug TEXT NOT NULL REFERENCES categories(slug),
                 PRIMARY KEY (post_id, category_slug)
@@ -92,39 +111,47 @@ public enum SampleFixtureBuilder {
 
             try db.execute(sql: """
             CREATE TABLE attachments (
+                -- Files attached to posts. preview stores a small BLOB thumbnail.
+
                 id INTEGER PRIMARY KEY,
-                post_id INTEGER REFERENCES posts(id),
+                post_id INTEGER REFERENCES posts(id), -- NULL for orphaned uploads
                 file_name TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                byte_count INTEGER NOT NULL,
-                preview BLOB
+                mime_type TEXT NOT NULL, -- MIME type string, e.g. image/png
+                byte_count INTEGER NOT NULL, -- size of original file in bytes
+                preview BLOB -- optional thumbnail; NULL when not generated
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE sync_markers (
-                namespace TEXT NOT NULL,
-                marker_key TEXT NOT NULL,
-                marker_value TEXT,
+                -- Key-value store for external-sync cursors. WITHOUT ROWID, composite PK.
+
+                namespace TEXT NOT NULL, -- logical grouping, e.g. feed, jobs
+                marker_key TEXT NOT NULL, -- cursor name within the namespace
+                marker_value TEXT, -- opaque string cursor; NULL means unset
                 PRIMARY KEY (namespace, marker_key)
             ) WITHOUT ROWID
             """)
 
             try db.execute(sql: """
             CREATE TABLE event_log (
+                -- Append-only analytics event log. High volume: 100k rows in sample data.
+
                 id INTEGER PRIMARY KEY,
-                post_id INTEGER REFERENCES posts(id),
-                kind TEXT NOT NULL,
-                payload TEXT,
+                post_id INTEGER REFERENCES posts(id), -- NULL for non-post events
+                kind TEXT NOT NULL, -- view | share
+                payload TEXT, -- opaque string or JSON; format varies by kind
                 created_at TEXT NOT NULL
             )
             """)
 
             try db.execute(sql: """
             CREATE TABLE generated_metrics (
+                -- Demo of GENERATED ALWAYS AS columns. One row of synthetic data.
+
                 id INTEGER PRIMARY KEY,
                 base_value INTEGER NOT NULL,
-                doubled_value INTEGER GENERATED ALWAYS AS (base_value * 2) STORED
+                doubled_value INTEGER GENERATED ALWAYS AS (base_value * 2) STORED -- computed; cannot be written
             )
             """)
 
@@ -140,14 +167,15 @@ public enum SampleFixtureBuilder {
 
             try db.execute(sql: """
             CREATE VIEW author_profiles AS
-            SELECT
+              -- Aggregates each author's published post count. Includes authors with zero posts.
+              SELECT
                 authors.id,
                 authors.name,
                 authors.email,
                 COUNT(posts.id) AS post_count
-            FROM authors
-            LEFT JOIN posts ON posts.author_id = authors.id
-            GROUP BY authors.id, authors.name, authors.email
+              FROM authors
+              LEFT JOIN posts ON posts.author_id = authors.id
+              GROUP BY authors.id, authors.name, authors.email
             """)
 
             for authorID in 1...8 {

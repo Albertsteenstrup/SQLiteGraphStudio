@@ -29,6 +29,8 @@ public struct SchemaGraphView: View {
     @State private var isShiftPressed = false
     @State private var showCardinals = true
     @State private var isFeaturesOpen = false
+    @State private var haloCache = HaloCache()
+    @State private var descriptionHover: DescriptionHover? = nil
 
     public init(session: AppSession) {
         self.session = session
@@ -101,7 +103,7 @@ public struct SchemaGraphView: View {
             }
             .onChange(of: geometry.size) { oldSize, newSize in
                 viewportSize = newSize
-                if !session.graph.nodes.isEmpty, oldSize == .zero, newSize != .zero {
+                if !session.graph.nodes.isEmpty, oldSize == .zero, newSize != .zero, shouldAutoFit {
                     fitGraph(in: newSize)
                 }
             }
@@ -182,6 +184,11 @@ public struct SchemaGraphView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
 
+            Canvas { context, canvasSize in
+                drawClusterHalos(in: &context, canvasSize: canvasSize)
+            }
+            .allowsHitTesting(false)
+
             Canvas { context, _ in
                 drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight)
             }
@@ -198,6 +205,9 @@ public struct SchemaGraphView: View {
                 GraphNodeCardView(
                     node: node,
                     descriptor: descriptor,
+                    tableDescription: session.tableDescription(for: node.id),
+                    clusterLabel: session.clusterLabel(for: node.id),
+                    columnDescription: { session.columnDescription(for: node.id, column: $0) },
                     previewColumns: previewColumns,
                     outgoingEdges: outgoingEdges,
                     incomingEdges: incomingEdges,
@@ -246,6 +256,15 @@ public struct SchemaGraphView: View {
                 .zIndex(zIndex(for: node.id))
             }
             
+            // Floating description tooltip
+            if let hover = descriptionHover {
+                descriptionTooltip(hover, in: size)
+                    .zIndex(9000)
+                    .allowsHitTesting(false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .leading)))
+                    .animation(.snappy(duration: 0.15), value: descriptionHover)
+            }
+
             // Selection rectangle visualization
             if let start = selectionRectStart, let current = selectionRectCurrent {
                 let rect = CGRect(
@@ -278,6 +297,121 @@ public struct SchemaGraphView: View {
         }
         .animation(session.showAllGraphTableCards ? nil : .snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
+    }
+
+    /// Renders a faded color "halo" behind each cluster declared in the sidecar. Shape is
+    /// the convex hull of cluster member positions, expanded outward by a card-half-width
+    /// pad so the cards sit inside the colored region, then smoothed with quadratic curves
+    /// for an organic look. Drawn under edges and nodes so they never obscure content.
+    private func drawClusterHalos(in context: inout GraphicsContext, canvasSize: CGSize) {
+        guard session.showClusterHalos else { return }
+        guard !session.graphLayout.isAnimating else { return }
+        let clusters = session.schemaSidecar.clusters
+        guard !clusters.isEmpty else { return }
+
+        // Rebuild union paths in graph space only when positions change.
+        // Pan/zoom are applied cheaply via affine transform at render time.
+        if haloCache.layoutRevision != layoutRevision {
+            let cardHalfWidth: CGFloat = presentationMode == .allCards ? 154 : 80
+            let cardHalfHeight: CGFloat = presentationMode == .allCards ? 60 : 23
+            let pad: CGFloat = 20  // graph-space padding (scales proportionally with zoom)
+            let hw = cardHalfWidth + pad
+            let hh = cardHalfHeight + pad
+            let cornerRadius = hh
+
+            haloCache.entries = clusters.compactMap { cluster in
+                guard let color = Color(studioHex: cluster.color ?? "") else { return nil }
+                let positions: [CGPoint] = cluster.tables.compactMap { name in
+                    guard session.graph.contains(nodeID: name) else { return nil }
+                    return session.graphLayout.position(for: name)
+                }
+                guard !positions.isEmpty else { return nil }
+                var merged: Path? = nil
+                for pt in positions {
+                    let rect = CGRect(x: pt.x - hw, y: pt.y - hh, width: hw * 2, height: hh * 2)
+                    let bubble = Path(roundedRect: rect, cornerRadius: cornerRadius)
+                    merged = merged.map { $0.union(bubble) } ?? bubble
+                }
+                guard let path = merged else { return nil }
+                return HaloCache.Entry(color: color, path: path, label: cluster.label)
+            }
+            haloCache.layoutRevision = layoutRevision
+        }
+
+        // Cheap affine transform: graph space → screen space
+        let viewportTransform = CGAffineTransform(scaleX: zoom, y: zoom)
+            .concatenating(CGAffineTransform(
+                translationX: canvasSize.width / 2 + pan.width,
+                y: canvasSize.height / 2 + pan.height
+            ))
+
+        // Thicker when zoomed out so borders stay visible; thinner when zoomed in
+        // so they don't compete with the cards themselves.
+        let lineWidth: CGFloat = max(1.0, min(3.5, 2.0 / zoom))
+
+        for entry in haloCache.entries {
+            let screenPath = entry.path.applying(viewportTransform)
+            context.stroke(
+                screenPath,
+                with: .color(entry.color.opacity(0.65)),
+                style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round)
+            )
+            if let label = entry.label, !label.isEmpty {
+                let bounds = screenPath.boundingRect
+                let labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
+                let resolved = context.resolve(
+                    Text(label.uppercased())
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(entry.color.opacity(0.85))
+                )
+                context.draw(resolved, at: labelPoint, anchor: .bottom)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func descriptionTooltip(_ hover: DescriptionHover, in canvasSize: CGSize) -> some View {
+        let tooltipMaxWidth: CGFloat = 230
+        let nodeCenter = screenCenter(for: hover.nodeID, in: canvasSize)
+        let scaledCardW = nodeSize(for: hover.nodeID).width * zoom
+        let scaledCardH = nodeSize(for: hover.nodeID).height * zoom
+        let gap: CGFloat = 10
+
+        // Prefer right side; fall back to left if tooltip would clip the edge.
+        let rightEdge = nodeCenter.x + scaledCardW / 2 + gap + tooltipMaxWidth
+        let useRight = rightEdge < canvasSize.width - 8
+        let anchorX = useRight
+            ? nodeCenter.x + scaledCardW / 2 + gap
+            : nodeCenter.x - scaledCardW / 2 - gap - tooltipMaxWidth
+        // Clamp vertically so the panel stays inside the viewport.
+        let anchorY = max(6, min(canvasSize.height - 6, nodeCenter.y - scaledCardH / 4))
+
+        VStack(alignment: .leading, spacing: 5) {
+            if let col = hover.column {
+                Text(col)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(StudioPalette.secondaryText)
+            }
+            Text(hover.text)
+                .font(.system(size: 12))
+                .foregroundStyle(StudioPalette.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: tooltipMaxWidth, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(NSColor.windowBackgroundColor))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(StudioPalette.borderSoft, lineWidth: 1)
+        )
+        .frame(maxWidth: tooltipMaxWidth, alignment: .leading)
+        .position(x: anchorX + tooltipMaxWidth / 2, y: anchorY)
     }
 
     private func drawEdges(
@@ -441,10 +575,20 @@ public struct SchemaGraphView: View {
                     // Features button with flyout menu
                     FeaturesMenuButton(
                         isOpen: $isFeaturesOpen,
-                        showCardinals: $showCardinals
+                        showCardinals: $showCardinals,
+                        showClusterHalos: Binding(
+                            get: { session.showClusterHalos },
+                            set: { session.showClusterHalos = $0 }
+                        ),
+                        hasClusters: !session.schemaSidecar.clusters.isEmpty
                     )
 
                     Button {
+                        // Pick up any edits to the sidecar (new clusters, renamed groups)
+                        // and wipe the cached layout so stale positions from earlier app
+                        // builds can't get restored on top of fresh cluster geometry.
+                        session.reloadSchemaSidecarFromDisk()
+                        session.clearPersistedGraphLayout()
                         rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
                     } label: {
                         Label("Relayout", systemImage: "sparkles.rectangle.stack")
@@ -452,7 +596,7 @@ public struct SchemaGraphView: View {
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.capsule)
                     .tint(StudioPalette.accent)
-                    .help("Relayout graph")
+                    .help("Reload cluster hints & rebuild the layout from scratch")
                 }
 
                 Toggle(
@@ -847,6 +991,12 @@ public struct SchemaGraphView: View {
         )
     }
 
+    /// Crowded graphs (>10 nodes) skip auto-fit so nodes aren't squashed into the viewport.
+    /// The user pans/zooms manually and clustering does the visual organization.
+    private var shouldAutoFit: Bool {
+        session.graph.nodes.count <= GraphLayoutModel.crowdedNodeThreshold
+    }
+
     private func performInitialLayout(in size: CGSize) {
         guard !session.graph.nodes.isEmpty else { return }
 
@@ -884,7 +1034,7 @@ public struct SchemaGraphView: View {
             session.persistCurrentGraphLayout()
         }
 
-        if refit {
+        if refit, shouldAutoFit {
             fitGraph(in: size)
         }
     }
@@ -936,7 +1086,7 @@ public struct SchemaGraphView: View {
             session.persistCurrentGraphLayout()
         }
 
-        if refit {
+        if refit, shouldAutoFit {
             fitGraph(in: size)
         }
     }
@@ -978,6 +1128,7 @@ public struct SchemaGraphView: View {
             } else {
                 withAnimation(.snappy(duration: 0.16)) { hoveredNodeID = nil }
             }
+            updateDescriptionHover(nil, for: "")
             return
         }
 
@@ -987,10 +1138,13 @@ public struct SchemaGraphView: View {
             } else {
                 withAnimation(.snappy(duration: 0.16)) { hoveredNodeID = nil }
             }
+            updateDescriptionHover(nil, for: "")
             return
         }
 
         StudioLog.graph.debug("viewportPointerMove: found card=\(card.tableID, privacy: .public) at point=\(point.x, privacy: .public),\(point.y, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
+
+        updateDescriptionHover(descriptionInfo(at: point, in: card), for: card.tableID)
 
         if session.showAllGraphTableCards {
             let relationTarget = relationHoverTarget(at: point, in: card, edgeLookup: edgeLookup)
@@ -1020,6 +1174,49 @@ public struct SchemaGraphView: View {
                 }
             }
         }
+    }
+
+    private struct DescriptionInfo {
+        let column: String?
+        let text: String
+    }
+
+    private func descriptionInfo(at point: CGPoint, in card: GraphCardGeometry) -> DescriptionInfo? {
+        // Table name zone: inset + estimated text width (size-13 semibold ≈ 8 layout px/char) + margin.
+        let hf = card.headerFrame
+        let headerTextMaxX = hf.minX + (14.0 + CGFloat(card.tableID.count) * 8.0 + 22.0) * zoom
+        if point.y >= hf.minY && point.y < hf.maxY
+            && point.x >= hf.minX
+            && point.x < headerTextMaxX {
+            let tableDesc = session.tableDescription(for: card.tableID)
+            let clusterLabel = session.clusterLabel(for: card.tableID)
+            if tableDesc != nil || clusterLabel != nil {
+                let text = [clusterLabel.map { "[\($0)]" }, tableDesc]
+                    .compactMap { $0 }.joined(separator: " — ")
+                return DescriptionInfo(column: nil, text: text)
+            }
+        }
+        // Column name zone: inner padding + estimated text width (size-11 mono ≈ 7.3 layout px/char) + margin.
+        if let col = card.columnName(at: point),
+           let rowFrame = card.rowFrames[col] {
+            let rowTextMaxX = rowFrame.minX + (8.0 + CGFloat(col.count) * 7.3 + 18.0) * zoom
+            if point.x < rowTextMaxX,
+               let note = session.columnDescription(for: card.tableID, column: col) {
+                return DescriptionInfo(column: col, text: note)
+            }
+        }
+        return nil
+    }
+
+    private func updateDescriptionHover(_ info: DescriptionInfo?, for nodeID: String) {
+        let newHover = info.map { DescriptionHover(nodeID: nodeID, column: $0.column, text: $0.text) }
+        guard newHover != descriptionHover else { return }
+        if newHover != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+        descriptionHover = newHover
     }
 
     private func graphCard(at point: CGPoint, anchorMap: GraphAnchorMap) -> GraphCardGeometry? {
@@ -1269,6 +1466,8 @@ public struct SchemaGraphView: View {
 private struct FeaturesMenuButton: View {
     @Binding var isOpen: Bool
     @Binding var showCardinals: Bool
+    @Binding var showClusterHalos: Bool
+    let hasClusters: Bool
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -1307,22 +1506,46 @@ private struct FeaturesMenuButton: View {
     }
 
     private var featuresCard: some View {
-        Button {
-            showCardinals.toggle()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: showCardinals ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(showCardinals ? StudioPalette.accent : StudioPalette.secondaryText)
-                Text("Cardinals")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(StudioPalette.primaryText)
+        HStack(spacing: 6) {
+            Button {
+                showCardinals.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: showCardinals ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(showCardinals ? StudioPalette.accent : StudioPalette.secondaryText)
+                    Text("Cardinals")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(StudioPalette.primaryText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .fixedSize()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .fixedSize()
+            .buttonStyle(.plain)
+
+            if hasClusters {
+                Button {
+                    showClusterHalos.toggle()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: showClusterHalos ? "checkmark.square.fill" : "square")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(
+                                showClusterHalos ? StudioPalette.accent : StudioPalette.secondaryText
+                            )
+                        Text("Cluster Vis")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(StudioPalette.primaryText)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+                .help("Show or hide the colored backgrounds behind each cluster.")
+            }
         }
-        .buttonStyle(.plain)
         .background(.clear)
     }
 }
@@ -1331,6 +1554,9 @@ private struct FeaturesMenuButton: View {
 private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let node: GraphNode
     let descriptor: EditableTableDescriptor?
+    let tableDescription: String?
+    let clusterLabel: String?
+    let columnDescription: (String) -> String?
     let previewColumns: [TableColumn]
     let outgoingEdges: [GraphEdge]
     let incomingEdges: [GraphEdge]
@@ -1395,9 +1621,11 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            let hasDescription = tableDescription != nil || clusterLabel != nil
             Text(node.title)
                 .font(.system(size: showsDetailRows ? 13 : 12, weight: .semibold))
                 .foregroundStyle(StudioPalette.primaryText)
+                .underline(hasDescription, color: StudioPalette.primaryText.opacity(0.4))
                 .lineLimit(1)
                 .layoutPriority(1)
 
@@ -1447,6 +1675,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         let isForeignKey = outgoingEdges.contains(where: { $0.sourceColumn == column.name })
         let isReferenced = incomingEdges.contains(where: { $0.targetColumn == column.name })
         let relationStyle: GraphNodeColumnHighlightStyle = highlightState.style(for: column.name)
+        let columnNote = columnDescription(column.name)
 
         // Row hover follows every relationship for the column; badge hover below can still
         // narrow this to the PK/REF or FK side when a mixed key column needs disambiguation.
@@ -1462,6 +1691,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             Text(column.name)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(StudioPalette.primaryText)
+                .underline(columnNote != nil, color: StudioPalette.primaryText.opacity(0.4))
             Spacer(minLength: 8)
             Text(column.typeLabel)
                 .font(.caption2.weight(.semibold))
@@ -1725,6 +1955,12 @@ struct GraphRelationHighlight {
     }
 }
 
+struct DescriptionHover: Equatable {
+    let nodeID: String
+    let column: String?  // nil = table-level description
+    let text: String
+}
+
 struct GraphRelationHoverTarget: Sendable, Hashable {
     let tableID: String
     let columnName: String
@@ -1972,11 +2208,13 @@ private final class GraphTrackpadInputView: NSView {
 
             switch event.type {
             case .scrollWheel:
+                guard event.window === self.window else { return event }
                 guard isInside else { return event }
                 guard event.hasPreciseScrollingDeltas else { return event }
                 self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
                 return nil
             case .magnify:
+                guard event.window === self.window else { return event }
                 guard isInside else { return event }
                 self.onMagnify?(event.magnification, point)
                 return nil
@@ -2169,3 +2407,16 @@ struct GraphMinimapView: View {
         )
     }
 }
+
+/// Reference-type cache so Path.union is computed only when positions change,
+/// not on every pan/zoom frame. Held via @State so SwiftUI owns the lifetime.
+private final class HaloCache {
+    struct Entry {
+        let color: Color
+        let path: Path  // graph-space coordinates
+        let label: String?
+    }
+    var layoutRevision: Int = -1
+    var entries: [Entry] = []
+}
+

@@ -13,9 +13,14 @@ public struct GraphLayoutSnapshot: Sendable, Equatable {
 
 @MainActor
 public final class GraphLayoutModel {
+    /// Threshold above which auto-fit, spread-limit, and refit-on-relayout are skipped
+    /// so the user can pan freely without nodes being squashed together.
+    public static let crowdedNodeThreshold = 10
+
     private var positions: [String: CGPoint] = [:]
     private var velocities: [String: CGVector] = [:]
     private var pinnedPositions: [String: CGPoint] = [:]
+    private var clusterHintByNode: [String: String] = [:]
     private var latestGraphSignature: Int = 0
     private var layoutSeedOffset: UInt64 = 0
     private var settledSteps = 0
@@ -27,6 +32,14 @@ public final class GraphLayoutModel {
     public private(set) var hasSettledLayout = false
 
     public init() {}
+
+    /// Set AI-authored cluster hints. Empty dictionary clears any prior hints.
+    /// The next layout pass picks them up; call `relayout(...)` if positions are already settled.
+    public func setClusterHints(_ hints: [String: String]) {
+        clusterHintByNode = hints
+        // Force the next reset to re-run, even if the graph hash matches.
+        latestGraphSignature = 0
+    }
 
     public func reset(for graph: SchemaGraph) {
         reset(for: graph, presentation: .compact, descriptorLookup: nil)
@@ -201,12 +214,47 @@ public final class GraphLayoutModel {
         // Use hierarchical layout within each cluster
         let clusterNodes = Dictionary(grouping: rankedNodes) { clusters[$0.id] ?? -1 }
         let clusterCount = max((clusters.values.max() ?? 0) + 1, 1)
-        
-        // Very tight spacing - nodes should be close together
-        let baseRadius: Double = presentation == .allCards ? 130 : 45
-        let clusterSpacing: Double = presentation == .allCards ? 60 : 0  // Clusters right next to each other
-        let layerSpacing: Double = presentation == .allCards ? 75 : 35
-        let minNodeSpacing: Double = presentation == .allCards ? 82 : 40
+
+        let smallAllCards = presentation == .allCards && graph.nodes.count < 14
+        let baseRadius: Double = smallAllCards ? 80 : (presentation == .allCards ? 130 : 45)
+        let baseClusterSpacing: Double = smallAllCards ? 30 : (presentation == .allCards ? 60 : 0)
+        let layerSpacing: Double = smallAllCards ? 52 : (presentation == .allCards ? 75 : 35)
+        let minNodeSpacing: Double = smallAllCards ? 54 : (presentation == .allCards ? 82 : 40)
+
+        // Real card footprint (approximate). The physics step uses precise sizes when a
+        // lookup is provided, but the *initial placement* needs realistic numbers too —
+        // otherwise a 14-spoke ring at radius=80 places nodes 35px apart while cards are
+        // ~150px wide, and overlap-correction never fully recovers.
+        let approxCardWidth: Double = presentation == .allCards ? 280 : 160
+
+        // Radius needed so that N nodes of width W don't visually touch on a single ring:
+        // 2π·R ≈ N·W. Pad ×1.05 so cards don't kiss.
+        func ringRadiusForCount(_ count: Int) -> Double {
+            (Double(max(count, 1)) * approxCardWidth) / (2 * .pi) * 1.05
+        }
+
+        // For crowded graphs with multiple clusters, place cluster centers far enough apart
+        // that their bounding circles don't collapse onto each other. With baseClusterSpacing=0
+        // (the compact-mode default), every cluster center otherwise spawns at the origin
+        // and the physics engine can't pry them apart — nodes pile up.
+        let perClusterMinLayerStep = max(layerSpacing, approxCardWidth * 0.85)
+        let clusterSpacing: Double = {
+            guard clusterCount > 1, graph.nodes.count > Self.crowdedNodeThreshold else {
+                return baseClusterSpacing
+            }
+            // Each cluster's worst-case reach is layer 1: either the width-based ring or the
+            // minimum hub-to-spoke step, whichever is greater. Must mirror the layerRadius
+            // formula below; otherwise small clusters underestimate and end up overlapping.
+            var maxClusterRadius = baseRadius
+            for nodes in clusterNodes.values {
+                let spokeCount = max(nodes.count - 1, 1)
+                let widthBased = ringRadiusForCount(spokeCount)
+                let outerRadius = max(baseRadius, perClusterMinLayerStep, widthBased)
+                maxClusterRadius = max(maxClusterRadius, outerRadius)
+            }
+            let safeSin = max(sin(.pi / Double(clusterCount)), 0.18)
+            return max(baseClusterSpacing, maxClusterRadius * 1.8 / safeSin)
+        }()
 
         for clusterID in clusterNodes.keys.sorted() {
             let nodesInCluster = clusterNodes[clusterID] ?? []
@@ -263,17 +311,31 @@ public final class GraphLayoutModel {
             } else {
                 // Build a hierarchical layout for connected clusters
                 let hierarchy = buildHierarchy(for: nodesInCluster, in: graph, weights: nodeWeights)
-                
+                // Spokes radiate in all directions — a layer placed at the cardHeight distance
+                // overlaps the hub horizontally. The minimum step is the card *width* with
+                // a small gap, so even a single-spoke cluster clears the hub card.
+                let minLayerStep = perClusterMinLayerStep
+
                 // Position nodes in layers radiating from cluster center
+                var previousLayerRadius: Double = 0
                 for (layerIndex, layer) in hierarchy.enumerated() {
-                    let layerRadius = baseRadius + Double(layerIndex) * layerSpacing
-                    let angleStep = max((2.0 * .pi) / Double(layer.count), 0.3) // Ensure minimum angular spacing
-                    
+                    let layerRadius: Double
+                    if layerIndex == 0 {
+                        // True hub: single node sits at the cluster center, not on a tiny ring.
+                        layerRadius = 0
+                    } else {
+                        let widthBased = ringRadiusForCount(layer.count)
+                        let stepFromPrevious = previousLayerRadius + minLayerStep
+                        layerRadius = max(baseRadius, stepFromPrevious, widthBased)
+                    }
+                    previousLayerRadius = layerRadius
+
+                    let angleStep = layer.count > 0 ? (2.0 * .pi) / Double(layer.count) : 0
                     for (indexInLayer, nodeID) in layer.enumerated() {
                         let seed = stableSeed(for: nodeID)
                         let jitter = Double(seed % 40) - 20.0
                         let angle = Double(indexInLayer) * angleStep + clusterAngle + (jitter * 0.01)
-                        
+
                         var point = CGPoint(
                             x: clusterCenter.x + cos(angle) * layerRadius,
                             y: clusterCenter.y + sin(angle) * layerRadius
@@ -365,58 +427,75 @@ public final class GraphLayoutModel {
     
     private func buildClusters(for graph: SchemaGraph) -> [String: Int] {
         var clusters: [String: Int] = [:]
-        var clusterID = 0
+        var nextClusterID = 0
         var visited: Set<String> = []
-        
+
+        // Step 1 — Apply AI-authored cluster hints first. Hinted tables ignore FK topology
+        // so the user's grouping (e.g. "Auth", "Billing") wins over connected-components.
+        if !clusterHintByNode.isEmpty {
+            let validNodeIDs = Set(graph.nodes.map(\.id))
+            var groupToID: [String: Int] = [:]
+            for node in graph.nodes {
+                guard let group = clusterHintByNode[node.id], validNodeIDs.contains(node.id) else { continue }
+                if let id = groupToID[group] {
+                    clusters[node.id] = id
+                } else {
+                    groupToID[group] = nextClusterID
+                    clusters[node.id] = nextClusterID
+                    nextClusterID += 1
+                }
+                visited.insert(node.id)
+            }
+        }
+
         // Build adjacency map for quick lookup
         var adjacency: [String: Set<String>] = [:]
         for edge in graph.edges {
             adjacency[edge.sourceID, default: []].insert(edge.targetID)
             adjacency[edge.targetID, default: []].insert(edge.sourceID)
         }
-        
-        // First, identify isolated nodes (no connections)
+
+        // Step 2 — Identify isolated unhinted nodes.
         var isolatedNodes: [String] = []
-        for node in graph.nodes {
+        for node in graph.nodes where !visited.contains(node.id) {
             if adjacency[node.id]?.isEmpty ?? true {
                 isolatedNodes.append(node.id)
                 visited.insert(node.id)
             }
         }
-        
-        // Find connected components and assign cluster IDs
+
+        // Step 3 — Find connected components among the remaining unhinted nodes.
         for node in graph.nodes {
             guard !visited.contains(node.id) else { continue }
-            
-            // BFS to find all nodes in this cluster
+
             var queue = [node.id]
             var queueIndex = 0
             visited.insert(node.id)
-            clusters[node.id] = clusterID
-            
+            clusters[node.id] = nextClusterID
+
             while queueIndex < queue.count {
                 let current = queue[queueIndex]
                 queueIndex += 1
-                
+
                 for neighbor in adjacency[current, default: []].sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
                     guard !visited.contains(neighbor) else { continue }
                     visited.insert(neighbor)
-                    clusters[neighbor] = clusterID
+                    clusters[neighbor] = nextClusterID
                     queue.append(neighbor)
                 }
             }
-            
-            clusterID += 1
+
+            nextClusterID += 1
         }
-        
-        // Assign all isolated nodes to a single "orphan" cluster
+
+        // Step 4 — All remaining isolated nodes share an orphan bucket.
         if !isolatedNodes.isEmpty {
-            let orphanClusterID = clusterID
+            let orphanClusterID = nextClusterID
             for nodeID in isolatedNodes {
                 clusters[nodeID] = orphanClusterID
             }
         }
-        
+
         return clusters
     }
 
@@ -447,6 +526,14 @@ public final class GraphLayoutModel {
 
         let parameters = layoutParameters(for: presentation)
         let clusters = buildClusters(for: graph)
+
+        // When AI cluster hints are active, suppress forces that collapse clusters:
+        // cross-cluster FK springs pull groups together, compaction/centering squashes them
+        // toward the global centroid. Use per-cluster cohesion instead of global gravity.
+        let hasClusterHints = !clusterHintByNode.isEmpty
+        let effectiveClusterAttraction = hasClusterHints ? 0.022 : parameters.clusterAttractionStrength
+        let effectiveCenterStrength = hasClusterHints ? 0.001 : parameters.centerStrength
+        let effectiveCompaction = hasClusterHints ? 0.0 : parameters.compactionStrength
 
         var forces: [String: CGVector] = [:]
         for node in graph.nodes {
@@ -494,7 +581,7 @@ public final class GraphLayoutModel {
 
                 // Add clustering force: nodes in the same cluster attract each other
                 if clusters[leftID] == clusters[rightID], let clusterID = clusters[leftID], clusterID >= 0 {
-                    let clusterAttraction = parameters.clusterAttractionStrength * distance
+                    let clusterAttraction = effectiveClusterAttraction * distance
                     forces[leftID, default: .zero].dx += delta.dx * clusterAttraction
                     forces[leftID, default: .zero].dy += delta.dy * clusterAttraction
                     forces[rightID, default: .zero].dx -= delta.dx * clusterAttraction
@@ -538,11 +625,16 @@ public final class GraphLayoutModel {
                     Double(sourceSize.width + targetSize.width) * 0.5,
                     Double(sourceSize.height + targetSize.height) * 0.5
                 ) * parameters.linkRadiusFactor
-            let pull = (distance - desiredLinkDistance) * parameters.springStrength
-            forces[edge.sourceID, default: .zero].dx += delta.dx * pull
-            forces[edge.sourceID, default: .zero].dy += delta.dy * pull
-            forces[edge.targetID, default: .zero].dx -= delta.dx * pull
-            forces[edge.targetID, default: .zero].dy -= delta.dy * pull
+            // Cross-cluster FK edges must not spring-attract: that would collapse separate
+            // cluster islands toward each other, undoing the initial ring placement.
+            let isCrossCluster = hasClusterHints && clusters[edge.sourceID] != clusters[edge.targetID]
+            if !isCrossCluster {
+                let pull = (distance - desiredLinkDistance) * parameters.springStrength
+                forces[edge.sourceID, default: .zero].dx += delta.dx * pull
+                forces[edge.sourceID, default: .zero].dy += delta.dy * pull
+                forces[edge.targetID, default: .zero].dx -= delta.dx * pull
+                forces[edge.targetID, default: .zero].dy -= delta.dy * pull
+            }
 
             if shouldRepelNodesFromEdgePaths {
                 // Push unrelated nodes away from edge paths. This is expensive on dense
@@ -597,10 +689,10 @@ public final class GraphLayoutModel {
         var totalVelocity = 0.0
         for node in nodes {
             let current = positions[node.id] ?? .zero
-            let centered = CGVector(dx: -current.x * parameters.centerStrength, dy: -current.y * parameters.centerStrength)
+            let centered = CGVector(dx: -current.x * effectiveCenterStrength, dy: -current.y * effectiveCenterStrength)
             let compacted = CGVector(
-                dx: (centroid.x - current.x) * parameters.compactionStrength,
-                dy: (centroid.y - current.y) * parameters.compactionStrength
+                dx: (centroid.x - current.x) * effectiveCompaction,
+                dy: (centroid.y - current.y) * effectiveCompaction
             )
             let applied = CGVector(
                 dx: forces[node.id, default: .zero].dx + centered.dx + compacted.dx,
@@ -675,6 +767,24 @@ public final class GraphLayoutModel {
                 overlapCorrectionStrength: 2.6
             )
         case .allCards:
+            if positions.count > 0 && positions.count < 14 {
+                return LayoutParameters(
+                    linkDistance: 115,
+                    repelStrength: 5_800,
+                    springStrength: 0.036,
+                    centerStrength: 0.020,
+                    baseCollisionRadius: 78,
+                    nodeGap: 20,
+                    linkRadiusFactor: 0.42,
+                    damping: 0.86,
+                    columnAlignmentStrength: 0.010,
+                    clusterAttractionStrength: 0.012,
+                    compactionStrength: 0.012,
+                    edgeClearance: 52,
+                    edgeRepelStrength: 0.25,
+                    overlapCorrectionStrength: 2.6
+                )
+            }
             return LayoutParameters(
                 linkDistance: 180,
                 repelStrength: 16_000,
@@ -780,7 +890,13 @@ public final class GraphLayoutModel {
         presentation: GraphPresentationMode,
         nodeSizeLookup: ((String) -> CGSize)?
     ) {
-        guard pinnedPositions.isEmpty, graph.nodes.count > 2 else { return }
+        // Crowded graphs are left at their natural spread — squeezing many nodes back
+        // into an aspect-ratio-bounded box is what makes them visually overlap. The user
+        // pans/zooms manually past this threshold.
+        guard pinnedPositions.isEmpty,
+              graph.nodes.count > 2,
+              graph.nodes.count <= Self.crowdedNodeThreshold
+        else { return }
 
         let frames = graph.nodes.map { node -> CGRect in
             let position = positions[node.id] ?? .zero
@@ -803,8 +919,11 @@ public final class GraphLayoutModel {
         guard !bounds.isNull, !bounds.isEmpty else { return }
 
         let nodeFactor = sqrt(Double(graph.nodes.count))
-        let maxWidth = presentation == .allCards ? max(1_400, nodeFactor * 390) : max(820, nodeFactor * 130)
-        let maxHeight = presentation == .allCards ? max(1_100, nodeFactor * 360) : max(620, nodeFactor * 115)
+        let smallAllCards = presentation == .allCards && graph.nodes.count < 14
+        let maxWidth = smallAllCards ? max(720, nodeFactor * 205)
+            : (presentation == .allCards ? max(1_400, nodeFactor * 390) : max(820, nodeFactor * 130))
+        let maxHeight = smallAllCards ? max(600, nodeFactor * 190)
+            : (presentation == .allCards ? max(1_100, nodeFactor * 360) : max(620, nodeFactor * 115))
         let maxAspectRatio = presentation == .allCards ? 1.55 : 1.36
 
         var targetWidth = min(Double(bounds.width), maxWidth)
@@ -817,7 +936,7 @@ public final class GraphLayoutModel {
             targetHeight = min(targetHeight, Double(bounds.width) * maxAspectRatio)
         }
 
-        let minimumScale = presentation == .allCards ? 0.72 : 0.50
+        let minimumScale = smallAllCards ? 0.58 : (presentation == .allCards ? 0.72 : 0.50)
         let scaleX = min(1, max(minimumScale, targetWidth / max(Double(bounds.width), 1)))
         let scaleY = min(1, max(minimumScale, targetHeight / max(Double(bounds.height), 1)))
         guard scaleX < 0.995 || scaleY < 0.995 else { return }

@@ -21,6 +21,17 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 - Column sorting, filtering, and search
 - SQL query runner with explain plan
 - Connection profiles for quick re-opening
+- Schema notes from DDL comments — `--` line comments in `CREATE TABLE` / `CREATE VIEW` show up as hover tooltips on table and column nodes (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
+- AI-authored cluster hints — let an agent group related tables so the physics engine lays them out by domain instead of foreign keys alone (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
+
+## AI Skills
+
+Two optional AI coding agent skills let you enrich the graph with a single prompt:
+
+- **graph-clusters** — Groups your tables into domain clusters so the graph lays out by meaning, not just foreign keys. Run from your AI coding agent.
+- **schema-descriptions** — Annotates your tables and columns with hover descriptions stored as `--` comments in the DDL. Run from your AI coding agent.
+
+Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. Skills are installed next to your `.sqlite` file so any AI coding agent in that directory can use them.
 
 ## Install
 
