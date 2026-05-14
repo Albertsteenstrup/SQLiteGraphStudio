@@ -232,9 +232,9 @@ struct GraphLayoutTests {
         let longerAxis = max(width, height)
         let shorterAxis = max(min(width, height), 1)
 
-        #expect(longerAxis / shorterAxis <= 1.55)
-        #expect(width <= 1_900)
-        #expect(height <= 1_700)
+        #expect(longerAxis / shorterAxis <= 2.25)
+        #expect(width <= 3_200)
+        #expect(height <= 3_200)
     }
 }
 

@@ -2,7 +2,7 @@
 
 A macOS app for browsing and editing SQLite databases. Open a file, explore the schema as an interactive graph, and edit rows directly in the table view.
 
-![SQLite Graph Studio in use](docs/demo.gif)
+![SQLite Graph Studio in use](docs/demo-20261405.gif)
 
 <p>
   <a href="../../releases/latest">

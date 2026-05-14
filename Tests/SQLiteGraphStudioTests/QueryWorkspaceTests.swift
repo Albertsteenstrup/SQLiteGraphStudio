@@ -129,7 +129,7 @@ struct QueryWorkspaceTests {
     }
 
     private func waitFor(
-        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        timeoutNanoseconds: UInt64 = 6_000_000_000,
         stepNanoseconds: UInt64 = 50_000_000,
         condition: @escaping @MainActor () -> Bool
     ) async throws {

@@ -100,22 +100,13 @@ struct NodePositionStabilityExploratoryTests {
         )
     }
 
-    // MARK: - Bug 3: Physics engine spreads nodes too much vertically
+    // MARK: - Bug 3: Physics engine no longer spreads nodes too much vertically
 
-    /// Calls `reset` + `stabilize` on a graph and measures the horizontal and
-    /// vertical spread of node centers.
-    ///
-    /// The unfixed physics engine has two sources of vertical bias:
-    ///   1. `resolveRemainingOverlaps` uses `separateOnX = overlapX <= overlapY`, which
-    ///      favours Y-axis separation when the vertical overlap is smaller (common on
-    ///      circular initial placements).
-    ///   2. `limitSpreadIfNeeded` uses a much tighter height cap than width cap
-    ///      (`max(480, n*90)` vs `max(900, n*200)`), compressing the layout vertically.
-    ///
-    /// This test is expected to PASS on unfixed code (confirming the bug exists)
-    /// and FAIL on fixed code (where the spread is balanced).
-    @Test("Bug 3: Physics engine spreads nodes too much vertically (expected to pass on unfixed code)")
-    func testBug3_verticalBiasInPhysicsEngine() {
+    /// This used to be an exploratory reproduction test that expected the old vertical-bias
+    /// bug to exist. The current product behavior is the fixed behavior: the star graph may
+    /// be wider than it is tall, but it should not collapse into a narrow vertical column.
+    @Test("Bug 3: Physics engine avoids old vertical-column layout")
+    func testBug3_avoidsOldVerticalColumnLayout() {
         // 1. Create a 6-node graph with a star topology (one hub, five leaves).
         //    The hub is the most-connected node and gets placed at the center.
         //    All leaves are placed in the same layer (ring around the hub).
@@ -163,16 +154,11 @@ struct NodePositionStabilityExploratoryTests {
         let horizontalSpread = Double(maxX - minX)
         let verticalSpread   = Double(maxY - minY)
 
-        // 4. Assert that vertical spread exceeds horizontal spread by more than 2×
-        //    — confirming the vertical bias bug exists on unfixed code.
-        //    On fixed code the spread is balanced (neither axis dominates by more than 2×),
-        //    so this assertion will FAIL (which is the desired outcome after the fix).
         #expect(
-            verticalSpread > horizontalSpread * 2.0,
+            horizontalSpread >= verticalSpread * 0.5,
             """
-            Bug 3 confirmed: vertical spread (\(verticalSpread)) exceeds horizontal spread \
-            (\(horizontalSpread)) by more than 2×, demonstrating the vertical bias in the \
-            unfixed physics engine.
+            Bug 3 regression: horizontal spread (\(horizontalSpread)) should be at least \
+            50% of vertical spread (\(verticalSpread)).
             Node positions: \(positions)
             """
         )
