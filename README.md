@@ -10,7 +10,7 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
   </a>
 </p>
 
-> **No Xcode or Swift required.** Download the zip, drag to Applications, open.
+> **No Xcode or Swift required.** Download the DMG, drag SQLite Graph Studio to Applications, open.
 
 ---
 
@@ -38,8 +38,8 @@ For Codex, create `.agents/skills` in your repo first; the app will install `gra
 ## Install
 
 1. Go to [Releases](../../releases/latest)
-2. Download `SQLiteGraphStudio.zip`
-3. Unzip and drag `SQLiteGraphStudio.app` to `/Applications`
+2. Download `SQLiteGraphStudio.dmg`
+3. Open the DMG and drag `SQLiteGraphStudio.app` to `/Applications`
 4. Open a `.sqlite` file with it
 
 > **First launch:** macOS may block the app since it isn't notarized. If you see a "damaged" or Gatekeeper warning, run this once in Terminal:
@@ -49,6 +49,7 @@ For Codex, create `.agents/skills` in your repo first; the app will install `gra
 > ```
 >
 > Then open the app normally. Alternatively:
+>
 > 1. Open **System Settings → Privacy & Security**
 > 2. Scroll down and click **"Open Anyway"** next to the app name
 > 3. Confirm in the dialog that appears
