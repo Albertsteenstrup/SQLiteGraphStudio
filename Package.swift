@@ -16,8 +16,8 @@ let package = Package(
             targets: ["SQLiteGraphStudio"]
         ),
         .executable(
-            name: "FixtureBuilder",
-            targets: ["FixtureBuilder"]
+            name: "SampleBuilder",
+            targets: ["SampleBuilder"]
         ),
     ],
     dependencies: [
@@ -41,9 +41,9 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "FixtureBuilder",
+            name: "SampleBuilder",
             dependencies: ["StudioCore"],
-            path: "Tools/FixtureBuilder"
+            path: "Tools/SampleBuilder"
         ),
         .testTarget(
             name: "SQLiteGraphStudioTests",

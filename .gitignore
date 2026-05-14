@@ -8,8 +8,8 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 .codex/
-Fixtures/*.sqlite-shm
-Fixtures/*.sqlite-wal
+Samples/*.sqlite-shm
+Samples/*.sqlite-wal
 
 # Kiro spec configs (optional — remove this line to include specs in repo)
 # .kiro/
@@ -23,3 +23,5 @@ Fixtures/*.sqlite-wal
 # Built app bundles
 *.app
 .kiro
+.github
+.vscode

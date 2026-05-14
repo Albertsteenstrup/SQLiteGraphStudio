@@ -1,0 +1,307 @@
+{
+  "version": 1,
+  "tables": {
+    "roles": {
+      "description": "auth.roles -- Role catalog, one row per named access role.",
+      "columns": {
+        "name": "Unique role name."
+      }
+    },
+    "users": {
+      "description": "auth.users -- Login accounts, one row per authenticated user.",
+      "columns": {
+        "email": "Unique login email.",
+        "password_hash": "Stored password hash."
+      }
+    },
+    "user_roles": {
+      "description": "auth.user_roles -- Join rows assigning roles to users.",
+      "columns": {
+        "user_id": "FK -> users.id.",
+        "role_id": "FK -> roles.id."
+      }
+    },
+    "sessions": {
+      "description": "auth.sessions -- Active login sessions keyed by session token.",
+      "columns": {
+        "id": "Session token primary key.",
+        "user_id": "FK -> users.id.",
+        "expires_at": "Session expiry timestamp."
+      }
+    },
+    "permissions": {
+      "description": "auth.permissions -- Action catalog for permission checks.",
+      "columns": {
+        "action": "Permission action name."
+      }
+    },
+    "departments": {
+      "description": "hr.departments -- Company departments for employee assignment.",
+      "columns": {
+        "name": "Department display name."
+      }
+    },
+    "employees": {
+      "description": "hr.employees -- Employee records linked optionally to user accounts.",
+      "columns": {
+        "user_id": "Unique FK -> users.id.",
+        "dept_id": "FK -> departments.id.",
+        "title": "Employee job title."
+      }
+    },
+    "salaries": {
+      "description": "hr.salaries -- Salary history rows for employees.",
+      "columns": {
+        "emp_id": "FK -> employees.id.",
+        "amount": "Salary amount in sample units.",
+        "effective_date": "Date salary became effective."
+      }
+    },
+    "time_off": {
+      "description": "hr.time_off -- Employee leave requests by date range.",
+      "columns": {
+        "emp_id": "FK -> employees.id.",
+        "start_date": "Leave start date.",
+        "end_date": "Leave end date.",
+        "status": "Request workflow status."
+      }
+    },
+    "evaluations": {
+      "description": "hr.evaluations -- Employee performance reviews by reviewer.",
+      "columns": {
+        "emp_id": "FK -> reviewed employee.",
+        "reviewer_id": "FK -> reviewing employee.",
+        "score": "Review score.",
+        "created_at": "Review creation timestamp."
+      }
+    },
+    "customers": {
+      "description": "crm.customers -- Customer organizations, one row per account.",
+      "columns": {
+        "name": "Customer organization name.",
+        "industry": "Customer industry segment."
+      }
+    },
+    "contacts": {
+      "description": "crm.contacts -- People attached to customer accounts.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "name": "Contact display name.",
+        "email": "Contact email address."
+      }
+    },
+    "leads": {
+      "description": "crm.leads -- Prospective customers before account conversion.",
+      "columns": {
+        "email": "Lead contact email.",
+        "source": "Acquisition source.",
+        "status": "Lead pipeline status."
+      }
+    },
+    "deals": {
+      "description": "crm.deals -- Sales opportunities tied to customers.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "amount": "Deal value in sample units.",
+        "close_date": "Expected or actual close date."
+      }
+    },
+    "activities": {
+      "description": "crm.activities -- Logged sales activities for deals.",
+      "columns": {
+        "deal_id": "FK -> deals.id.",
+        "type": "Activity type.",
+        "description": "Activity detail text."
+      }
+    },
+    "categories": {
+      "description": "catalog.categories -- Product category vocabulary.",
+      "columns": {
+        "name": "Category display name."
+      }
+    },
+    "products": {
+      "description": "catalog.products -- Sellable product catalog entries.",
+      "columns": {
+        "name": "Product display name.",
+        "price": "Unit price in sample units."
+      }
+    },
+    "product_categories": {
+      "description": "catalog.product_categories -- Join rows assigning products to categories.",
+      "columns": {
+        "product_id": "FK -> products.id.",
+        "category_id": "FK -> categories.id."
+      }
+    },
+    "suppliers": {
+      "description": "catalog.suppliers -- Supplier organizations for procurement demos.",
+      "columns": {
+        "name": "Supplier organization name."
+      }
+    },
+    "tags": {
+      "description": "catalog.tags -- Standalone tag vocabulary for sample metadata.",
+      "columns": {
+        "name": "Tag display name."
+      }
+    },
+    "orders": {
+      "description": "fulfillment.orders -- Customer purchase orders by placement time.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "placed_at": "Order placement timestamp."
+      }
+    },
+    "order_lines": {
+      "description": "fulfillment.order_lines -- Product line items within orders.",
+      "columns": {
+        "order_id": "FK -> orders.id.",
+        "product_id": "FK -> products.id.",
+        "quantity": "Ordered unit count."
+      }
+    },
+    "warehouses": {
+      "description": "fulfillment.warehouses -- Warehouse locations for inventory storage.",
+      "columns": {
+        "location": "Warehouse location label."
+      }
+    },
+    "bins": {
+      "description": "fulfillment.bins -- Physical storage bins inside warehouses.",
+      "columns": {
+        "warehouse_id": "FK -> warehouses.id.",
+        "label": "Bin location label."
+      }
+    },
+    "stock_levels": {
+      "description": "fulfillment.stock_levels -- Current product quantities by bin.",
+      "columns": {
+        "bin_id": "FK -> bins.id.",
+        "product_id": "FK -> products.id.",
+        "quantity": "On-hand unit count."
+      }
+    },
+    "stock_movements": {
+      "description": "fulfillment.stock_movements -- Inventory adjustments for products over time.",
+      "columns": {
+        "product_id": "FK -> products.id.",
+        "quantity": "Signed movement quantity.",
+        "date": "Movement date."
+      }
+    },
+    "invoices": {
+      "description": "billing.invoices -- Customer invoices generated from orders.",
+      "columns": {
+        "order_id": "FK -> orders.id.",
+        "amount": "Invoice total in sample units.",
+        "due_date": "Payment due date."
+      }
+    },
+    "invoice_lines": {
+      "description": "billing.invoice_lines -- Line-level invoice charges.",
+      "columns": {
+        "invoice_id": "FK -> invoices.id.",
+        "description": "Charge description.",
+        "amount": "Line amount in sample units."
+      }
+    },
+    "payments": {
+      "description": "billing.payments -- Payments recorded against invoices.",
+      "columns": {
+        "invoice_id": "FK -> invoices.id.",
+        "amount": "Payment amount in sample units.",
+        "paid_at": "Payment timestamp."
+      }
+    },
+    "taxes": {
+      "description": "billing.taxes -- Regional tax rates for billing demos.",
+      "columns": {
+        "region": "Tax region code or label.",
+        "rate": "Tax rate as decimal."
+      }
+    },
+    "payment_methods": {
+      "description": "billing.payment_methods -- Stored customer payment instruments.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "type": "Payment method type.",
+        "last_four": "Last four visible digits."
+      }
+    },
+    "tickets": {
+      "description": "support.tickets -- Customer support cases by subject and status.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "subject": "Ticket subject line.",
+        "status": "Support workflow status."
+      }
+    },
+    "ticket_messages": {
+      "description": "support.ticket_messages -- Conversation messages inside support tickets.",
+      "columns": {
+        "ticket_id": "FK -> tickets.id.",
+        "sender_user_id": "FK -> users.id.",
+        "body": "Message body text."
+      }
+    },
+    "articles": {
+      "description": "support.articles -- Knowledge base articles for self-service help.",
+      "columns": {
+        "title": "Article title.",
+        "body": "Article content."
+      }
+    },
+    "feedback": {
+      "description": "support.feedback -- Helpfulness votes for knowledge base articles.",
+      "columns": {
+        "article_id": "FK -> articles.id.",
+        "helpful": "Boolean helpfulness vote."
+      }
+    }
+  },
+  "clusters": [
+    {
+      "id": "auth",
+      "label": "Auth & Access",
+      "tables": ["roles", "users", "user_roles", "sessions", "permissions"],
+      "color": "#7CC3FF"
+    },
+    {
+      "id": "hr",
+      "label": "HR",
+      "tables": ["departments", "employees", "salaries", "time_off", "evaluations"],
+      "color": "#B8A7FF"
+    },
+    {
+      "id": "crm",
+      "label": "CRM",
+      "tables": ["customers", "contacts", "leads", "deals", "activities"],
+      "color": "#A8E6A3"
+    },
+    {
+      "id": "catalog",
+      "label": "Catalog",
+      "tables": ["categories", "products", "product_categories", "suppliers", "tags"],
+      "color": "#FFD166"
+    },
+    {
+      "id": "fulfillment",
+      "label": "Fulfillment",
+      "tables": ["orders", "order_lines", "warehouses", "bins", "stock_levels", "stock_movements"],
+      "color": "#5EC7C2"
+    },
+    {
+      "id": "billing",
+      "label": "Billing",
+      "tables": ["invoices", "invoice_lines", "payments", "taxes", "payment_methods"],
+      "color": "#F8B26A"
+    },
+    {
+      "id": "support",
+      "label": "Support",
+      "tables": ["tickets", "ticket_messages", "articles", "feedback"],
+      "color": "#F497B8"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: graph-clusters
-description: Generate cluster hints for the SQLite Graph Studio physics engine so related tables group together by domain (auth, billing, content, etc.) instead of by foreign-key topology alone. Use when nodes overlap or look like one big blob, when the user asks to "group related tables", "organize the schema", or describes a task that needs a few specific tables clustered together (e.g. "I'm working on auth — pull those together").
+description: Generate cluster hints for the SQLite Graph Studio physics engine so related tables group together by a chosen lens. Default to domain areas (auth, billing, content, etc.) unless the user asks to cluster around another concept such as people, artifacts, departments, workflows, or ownership.
 ---
 
 # graph-clusters
@@ -15,17 +15,20 @@ Before writing the file, gather:
 
 1. **The database path.** Ask the user if not obvious — the sidecar lives next to it (e.g. `app.sqlite` → `app.sqlite.studio.json`).
 2. **The schema.** Run `sqlite3 <db> ".tables"` and `sqlite3 <db> ".schema"` (or `.schema <table>` per table). You need table names and foreign-key columns.
-3. **Task context.** What is the user *working on*? A clustering tuned to "I'm refactoring the billing flow" looks different from "I'm exploring this dump for the first time."
+3. **Task context and clustering lens.** What is the user *working on*, and what do they want the graph organized around? Default to domain areas if they do not say. A clustering tuned to "show me the tables around each department" looks different from "I'm refactoring the billing flow."
 
 If the database has fewer than ~6 tables, clustering rarely helps — recommend skipping the skill and just letting the FK-based default lay out.
 
 ## How to choose clusters
 
-Group tables by **domain concept**, not by FK chains. Foreign keys already create attraction; clusters should add a *second* signal on top, capturing semantic groupings the schema doesn't express.
+Group tables by the user's requested **clustering lens**, not by FK chains. Foreign keys already create attraction; clusters should add a *second* signal on top, capturing semantic groupings the schema doesn't express.
+
+Use **domain area** as the default lens when the user does not specify one. If they do specify a lens, follow it. Valid lenses can be anything that makes the schema easier to reason about: persons, artifacts, departments, workflows, bounded contexts, ownership teams, lifecycle stages, or another concept from the user's task.
 
 Good signals:
 - **Naming prefixes** (`auth_*`, `billing_*`, `event_*`) — strong, usually correct.
 - **Shared subject matter** even without prefixes — `users`, `sessions`, `password_resets` all belong to auth.
+- **Requested lens terms** — if the user asks for departments, cluster around department ownership; if they ask for artifacts, cluster tables by the objects those artifacts represent.
 - **What references what** — a hub table that 8 others reference is the center of its cluster.
 - **The user's task** — if they said "I'm working on the order pipeline", that's a cluster, even if the tables span multiple prefixes.
 

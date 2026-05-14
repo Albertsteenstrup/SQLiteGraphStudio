@@ -237,8 +237,6 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
     public let triggers: [SchemaTrigger]
     public let constraints: [SchemaConstraint]
     public let generatedColumns: [GeneratedColumnInfo]
-    public let description: String?
-    public let columnDescriptions: [String: String]
 
     public init(
         name: String,
@@ -252,9 +250,7 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         indexes: [SchemaIndex] = [],
         triggers: [SchemaTrigger] = [],
         constraints: [SchemaConstraint] = [],
-        generatedColumns: [GeneratedColumnInfo] = [],
-        description: String? = nil,
-        columnDescriptions: [String: String] = [:]
+        generatedColumns: [GeneratedColumnInfo] = []
     ) {
         self.id = name
         self.name = name
@@ -269,8 +265,6 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         self.triggers = triggers
         self.constraints = constraints
         self.generatedColumns = generatedColumns
-        self.description = description
-        self.columnDescriptions = columnDescriptions
     }
 
     public var summary: TableSummary {

@@ -1,165 +1,81 @@
 ---
 name: schema-descriptions
-description: Add `--` line comments to a SQLite database's DDL so SQLite Graph Studio surfaces them as hover tooltips on table and column nodes. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database. The app reads the comments from `sqlite_master.sql` at load time — no sidecar file is involved for descriptions.
+description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
 ---
 
 # schema-descriptions
 
-You add `--` line comments to the DDL stored in `sqlite_master.sql`. SQLite Graph Studio parses those comments at load time and shows them as native macOS hover tooltips, with a tiny accent dot indicating "has description." Layout is unaffected — the cards don't grow, the view doesn't split.
+You write descriptions to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Features -> Schema Notes**. The database DDL is not modified.
 
-The `.studio.json` sidecar is **not** used for descriptions anymore. It is still used for cluster hints (see `graph-clusters`). Descriptions live in the database itself.
+Descriptions are intentionally a sidecar so users can edit them directly without rebuilding SQLite tables.
 
-## How SQLite stores comments — read this first
+## Inputs you need
 
-SQLite's `sqlite_master.sql` contains the CREATE statement as the user wrote it, with one catch:
+Before writing the file, gather:
 
-- ✅ Comments **inside** `CREATE TABLE ( … )` are preserved.
-- ✅ Comments **inside** `CREATE VIEW name AS … SELECT …` are preserved.
-- ❌ Comments **before** `CREATE TABLE` or `CREATE VIEW` are silently dropped. Do not rely on them.
+1. **The database path.** Ask the user if not obvious. The sidecar lives next to it (for example, `app.sqlite` -> `app.sqlite.studio.json`).
+2. **The schema.** Run `sqlite3 <db> ".tables"` and `sqlite3 <db> ".schema"` or inspect existing schema docs. You need exact table and column names.
+3. **Small samples only when useful.** Pull up to 5 rows for unclear tables or columns. Do not inspect more data than needed for documentation.
 
-This determines where you put the comments.
+## Output format
 
-## The placement rules the app parses
+Preserve any existing `clusters` block. Add or replace only the `tables` entries you are documenting.
 
-These rules are enforced by `DDLCommentParser.swift`. Stick to them or your comments won't show up.
-
-**Column description** — one of:
-1. Stacked `--` lines on the line(s) immediately before the column.
-2. A trailing `-- …` comment on the same line as the column.
-
-```sql
-CREATE TABLE users (
-  -- App account id; autoincrement
-  id INTEGER PRIMARY KEY,
-  email TEXT, -- lowercased, verified at signup
-  status TEXT
-);
+```json
+{
+  "version": 1,
+  "tables": {
+    "users": {
+      "description": "App account roster - one row per signed-up user.",
+      "columns": {
+        "email": "Lowercased login email.",
+        "status": "active | suspended | pending"
+      }
+    },
+    "orders": {
+      "description": "Customer purchase record, one row per checkout.",
+      "columns": {
+        "total_cents": "Order total in cents.",
+        "created_at": "UTC timestamp from checkout."
+      }
+    }
+  },
+  "clusters": []
+}
 ```
 
-**Table description** — a `--` comment block at the top of the parens, **separated from the first column by a blank line**. The blank line is mandatory; without it the comments belong to the first column instead.
+Field rules:
 
-```sql
-CREATE TABLE users (
-  -- App account roster - one row per signed-up user.
-  -- Soft-deleted rows kept for 30 days then purged.
-
-  id INTEGER PRIMARY KEY,
-  email TEXT
-);
-```
-
-**View description** — a `--` comment block between `AS` and the SELECT body.
-
-```sql
-CREATE VIEW active_users AS
-  -- Excludes soft-deleted rows and unverified signups.
-  SELECT id, email FROM users WHERE status = 'active';
-```
-
-**Where comments are dropped** — before constraint defs (PRIMARY KEY, FOREIGN KEY, CHECK, UNIQUE, CONSTRAINT, …) and outside the CREATE statement. The parser ignores them.
-
-## How to actually add comments
-
-SQLite has no `COMMENT ON COLUMN …` syntax — and `ALTER TABLE` cannot edit a column definition. To attach a comment to an existing table you must **recreate the table** with the comments embedded. SQLite docs call this the "12-step ALTER TABLE" pattern; here's the safe version:
-
-```sql
-BEGIN;
-
--- 1. Inspect the existing definition.
--- (Look at SELECT sql FROM sqlite_master WHERE name='users' first.)
-
--- 2. Rename the existing table.
-ALTER TABLE users RENAME TO users_old;
-
--- 3. Create the new table with the same columns + your comments.
-CREATE TABLE users (
-  -- App account roster - one row per signed-up user.
-
-  -- Surrogate key. Never reused.
-  id INTEGER PRIMARY KEY,
-  email TEXT UNIQUE, -- lowercased, verified at signup
-  -- active | suspended | pending_verification
-  status TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
--- 4. Copy data across.
-INSERT INTO users (id, email, status, created_at)
-SELECT id, email, status, created_at FROM users_old;
-
--- 5. Drop the old table.
-DROP TABLE users_old;
-
-COMMIT;
-```
-
-Disable foreign keys around the rebuild if other tables reference this one:
-
-```sql
-PRAGMA foreign_keys = OFF;
-BEGIN;
--- … the rebuild …
-COMMIT;
-PRAGMA foreign_keys = ON;
-PRAGMA foreign_key_check;  -- bail if anything is broken
-```
-
-You **must** preserve:
-- All column types, NOT NULL, DEFAULT, CHECK, UNIQUE constraints.
-- The primary key shape (including composite keys and `WITHOUT ROWID`).
-- Foreign keys (re-declare them).
-- Indexes and triggers (drop, recreate after the swap).
-
-When in doubt, dump the table with `.schema <name>` and modify only the comment lines.
-
-## New tables
-
-If you are writing a `CREATE TABLE` that doesn't exist yet, embed the comments directly — no rebuild needed:
-
-```sql
-CREATE TABLE orders (
-  -- One row per customer order. Status transitions: pending → paid → shipped → cancelled.
-
-  id INTEGER PRIMARY KEY,
-  customer_id INTEGER NOT NULL REFERENCES customers(id),
-  -- pending | paid | shipped | cancelled
-  status TEXT NOT NULL DEFAULT 'pending',
-  total_cents INTEGER NOT NULL, -- order total in cents, always > 0
-  created_at TEXT NOT NULL
-);
-```
+- `tables` - object keyed by exact case-sensitive table or view name.
+- `description` - optional table-level description shown when hovering the table name.
+- `columns` - optional object keyed by exact case-sensitive column name.
+- Unknown table or column names are ignored by the app, so verify spelling before writing.
 
 ## Workflow
 
-**Always ask the user for permission before modifying the database.** Describe which tables will be rebuilt and what will change, then wait for explicit confirmation before running any SQL.
-
-1. **Read** the current DDL: `sqlite3 <db> ".schema <table>"` or `SELECT sql FROM sqlite_master WHERE name = ?`.
-2. **Pull 5 sample rows** per table — concrete values often contradict what column names imply.
-3. **Draft** the rebuild SQL in chat, with comments added. Show the user before executing.
-4. **Ask for permission** — list the tables to be rebuilt and confirm the user wants to proceed.
-5. **Run inside a transaction.** Confirm row count matches before COMMIT.
-6. **Tell the user** to click **Features → Schema Notes** in the running app. That re-reads `sqlite_master` and refreshes the tooltips.
-7. Skip tables that are tiny or self-explanatory. Mention which you skipped so the user isn't surprised.
+1. Read `<db>.sqlite.studio.json` if it already exists.
+2. List the schema with `sqlite3` or by reading existing schema docs.
+3. Draft concise table and column descriptions.
+4. Write the sidecar JSON, preserving unrelated fields such as `clusters`.
+5. Tell the user to click **Features -> Schema Notes** in the running app to reload the sidecar.
 
 ## Writing good descriptions
 
 Tooltip space is small. Aim for:
 
-- **Tables**: 1 sentence, ~10 words. What's one row? What's the grain?
-  - Good: `App account roster - one row per signed-up user. Soft-deleted kept 30 days.`
+- **Tables**: 1 sentence, about 10 words. State the table grain: what one row represents.
+  - Good: `App account roster - one row per signed-up user.`
   - Bad: `This table contains users.`
-- **Columns**: 3–10 words. Format, unit, source of truth, or a quirk.
+- **Columns**: 3-10 words. Include format, unit, source of truth, or a quirk.
   - Good: `Cents, never null`, `FK -> tenants.id, NULL for staff`, `active | suspended | pending`
   - Bad: `The user's email address.`
 
-Skip the obvious. Don't describe `id`, `created_at`, `updated_at` unless they have a quirk. Don't speculate ("probably …"). If you'd be guessing, leave the column out.
+Skip obvious columns like `id`, `created_at`, and `updated_at` unless they have a real quirk. Do not speculate. If you would be guessing, leave the field out.
 
 ## What not to do
 
-- Don't write SQL comments **before** `CREATE TABLE` — they don't survive.
-- Don't omit the blank line separator for table descriptions — without it the comments attach to the first column.
-- Don't use `/* block comments */` — the parser only handles `--` line comments.
-- Don't put descriptions in the `.studio.json` sidecar — that field was removed.
-- Don't read more than 5 rows per table; this is documentation, not data exfiltration.
-- Don't run the rebuild outside a transaction. A crash mid-copy loses data.
-- Don't drop and recreate triggers or indexes silently — list what you're doing and ask first.
+- Don't modify SQLite DDL or add SQL comments. Descriptions belong in the sidecar.
+- Don't overwrite existing `clusters`.
+- Don't invent table or column names.
+- Don't read more than 5 sample rows per table.
+- Don't commit the sidecar without asking. Some users want it gitignored.

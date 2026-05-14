@@ -8,6 +8,7 @@ public struct StudioRootView: View {
     @State private var skillsToastVisible = false
     @State private var skillsRepeatTask: Task<Void, Never>? = nil
     @State private var skillsToastDismissedForURL: URL? = nil
+    @State private var refreshToastTask: Task<Void, Never>? = nil
 
     public init(session: AppSession) {
         self.session = session
@@ -55,25 +56,43 @@ public struct StudioRootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if skillsToastVisible {
-                SkillsToastView {
-                    // "Get Skills" — stop repeat loop and open panel
-                    skillsRepeatTask?.cancel()
-                    skillsRepeatTask = nil
-                    withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
-                    session.showSkills()
-                } onDismiss: {
-                    // "×" — user explicitly hides; suppress for this database
-                    skillsToastDismissedForURL = session.databaseURL
-                    skillsRepeatTask?.cancel()
-                    skillsRepeatTask = nil
-                    withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+            VStack(spacing: 10) {
+                if let refreshToast = session.refreshToast {
+                    RefreshToastView(message: refreshToast.message)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .padding(.bottom, 20)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+
+                if skillsToastVisible {
+                    SkillsToastView {
+                        // "Get Skills" — stop repeat loop and open panel
+                        skillsRepeatTask?.cancel()
+                        skillsRepeatTask = nil
+                        withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+                        session.showSkills()
+                    } onDismiss: {
+                        // "×" — user explicitly hides; suppress for this database
+                        skillsToastDismissedForURL = session.databaseURL
+                        skillsRepeatTask?.cancel()
+                        skillsRepeatTask = nil
+                        withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .padding(.bottom, 20)
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
+        .animation(.snappy(duration: 0.3), value: session.refreshToast?.id)
+        .onChange(of: session.refreshToast?.id) { _, newID in
+            refreshToastTask?.cancel()
+            guard newID != nil else { return }
+            refreshToastTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                withAnimation(.snappy(duration: 0.3)) {
+                    session.dismissRefreshToast()
+                }
+            }
+        }
         .onChange(of: session.tables) { _, newTables in
             guard newTables.count > 10,
                   !session.skillsInstalled,
@@ -95,7 +114,10 @@ public struct StudioRootView: View {
         .onChange(of: session.databaseURL) { _, _ in
             skillsRepeatTask?.cancel()
             skillsRepeatTask = nil
+            refreshToastTask?.cancel()
+            refreshToastTask = nil
             withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
+            withAnimation(.snappy(duration: 0.3)) { session.dismissRefreshToast() }
         }
         .containerBackground(.thinMaterial, for: .window)
         .toolbar {
@@ -243,11 +265,12 @@ private struct WorkspaceLayoutView: View {
             HSplitView {
                 PaneShell(session: session, side: .left)
                     .id("split-pane-left")
-                    .frame(minWidth: 380)
+                    .frame(minWidth: 320)
                 PaneShell(session: session, side: .right)
                     .id("split-pane-right")
-                    .frame(minWidth: 420)
+                    .frame(minWidth: 320)
             }
+            .background(SplitViewInitialPositioner(fraction: 0.6))
             WorkspaceDockView(session: session)
                 .padding(.bottom, 18)
         }
@@ -264,6 +287,88 @@ private struct WorkspaceLayoutView: View {
                 .id(side == .left ? "full-pane-left" : "full-pane-right")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct SplitViewInitialPositioner: NSViewRepresentable {
+    let fraction: CGFloat
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.isHidden = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            context.coordinator.applyInitialPosition(from: nsView, fraction: fraction)
+        }
+    }
+
+    final class Coordinator {
+        private var didApplyInitialPosition = false
+
+        @MainActor
+        func applyInitialPosition(from view: NSView, fraction: CGFloat, attempt: Int = 0) {
+            guard !didApplyInitialPosition else { return }
+
+            guard let splitView = view.nearestSplitView(),
+                  splitView.arrangedSubviews.count >= 2,
+                  splitView.bounds.width > 0
+            else {
+                retry(from: view, fraction: fraction, attempt: attempt)
+                return
+            }
+
+            didApplyInitialPosition = true
+            splitView.setPosition(splitView.bounds.width * fraction, ofDividerAt: 0)
+        }
+
+        @MainActor
+        private func retry(from view: NSView, fraction: CGFloat, attempt: Int) {
+            guard attempt < 12 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak view, weak self] in
+                guard let view, let self else { return }
+                self.applyInitialPosition(from: view, fraction: fraction, attempt: attempt + 1)
+            }
+        }
+    }
+}
+
+private extension NSView {
+    @MainActor
+    func nearestSplitView() -> NSSplitView? {
+        firstSuperview(of: NSSplitView.self)
+            ?? window?.contentView?.firstDescendant(of: NSSplitView.self)
+    }
+
+    @MainActor
+    private func firstSuperview<T: NSView>(of type: T.Type) -> T? {
+        var current = superview
+        while let view = current {
+            if let match = view as? T {
+                return match
+            }
+            current = view.superview
+        }
+        return nil
+    }
+
+    @MainActor
+    private func firstDescendant<T: NSView>(of type: T.Type) -> T? {
+        for subview in subviews {
+            if let match = subview as? T {
+                return match
+            }
+            if let match = subview.firstDescendant(of: type) {
+                return match
+            }
+        }
+        return nil
     }
 }
 
@@ -1249,6 +1354,31 @@ private struct AlterTableSheetView: View {
                 renamedColumn = selectedColumn
             }
         }
+    }
+}
+
+// MARK: - RefreshToastView
+
+private struct RefreshToastView: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(StudioPalette.accent)
+
+            Text(message)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(StudioPalette.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 440)
+        .studioGlassCard(cornerRadius: 22, tint: Color.white, strokeOpacity: 0.12)
+        .accessibilityLabel(message)
     }
 }
 

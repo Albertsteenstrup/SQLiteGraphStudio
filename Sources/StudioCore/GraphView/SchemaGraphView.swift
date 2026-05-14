@@ -29,7 +29,7 @@ public struct SchemaGraphView: View {
     @State private var isShiftPressed = false
     @State private var showCardinals = true
     @State private var isFeaturesOpen = false
-    @State private var haloCache = HaloCache()
+    @State private var clusterTitleCache = ClusterTitleCache()
     @State private var descriptionHover: DescriptionHover? = nil
     @State private var cardScrollOffsets: [String: CGFloat] = [:]
     @State private var scrollTargetCardID: String? = nil
@@ -204,7 +204,7 @@ public struct SchemaGraphView: View {
             .allowsHitTesting(false)
 
             Canvas { context, canvasSize in
-                drawClusterHalos(in: &context, canvasSize: canvasSize)
+                drawClusterTitles(in: &context, canvasSize: canvasSize)
             }
             .allowsHitTesting(false)
 
@@ -222,16 +222,21 @@ public struct SchemaGraphView: View {
                 let cardSize = nodeSize(for: node.id)
                 let scrollOffset = cardScrollOffsets[node.id] ?? 0
 
+                let isMultiSelected = session.selectedGraphNodeIDs.count > 1 && session.selectedGraphNodeIDs.contains(node.id)
+
                 GraphNodeCardView(
                     node: node,
                     descriptor: descriptor,
                     tableDescription: session.tableDescription(for: node.id),
                     clusterLabel: session.clusterLabel(for: node.id),
+                    clusterColor: clusterBorderColor(for: node.id),
                     columnDescription: { session.columnDescription(for: node.id, column: $0) },
                     previewColumns: previewColumns,
                     outgoingEdges: outgoingEdges,
                     incomingEdges: incomingEdges,
                     isSelected: session.selectedGraphNodeIDs.contains(node.id),
+                    isMultiSelected: isMultiSelected,
+                    viewportZoom: zoom,
                     displayStyle: displayStyle,
                     scrollOffset: scrollOffset,
                     isHovered: hoveredNodeID == node.id,
@@ -319,68 +324,56 @@ public struct SchemaGraphView: View {
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
     }
 
-    /// Renders a faded color "halo" behind each cluster declared in the sidecar. Shape is
-    /// the convex hull of cluster member positions, expanded outward by a card-half-width
-    /// pad so the cards sit inside the colored region, then smoothed with quadratic curves
-    /// for an organic look. Drawn under edges and nodes so they never obscure content.
-    private func drawClusterHalos(in context: inout GraphicsContext, canvasSize: CGSize) {
+    private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
         guard session.showClusterHalos else { return }
         guard !session.graphLayout.isAnimating else { return }
         let clusters = session.schemaSidecar.clusters
         guard !clusters.isEmpty else { return }
 
-        // Rebuild union paths in graph space only when positions change.
-        // Pan/zoom are applied cheaply via affine transform at render time.
-        if haloCache.layoutRevision != layoutRevision {
-            let pad: CGFloat = 22  // graph-space padding around each card
+        if clusterTitleCache.layoutRevision != layoutRevision {
+            let pad: CGFloat = 22
 
-            haloCache.entries = clusters.compactMap { cluster in
+            clusterTitleCache.entries = clusters.compactMap { cluster in
                 guard let color = Color(studioHex: cluster.color ?? "") else { return nil }
                 var merged: Path? = nil
                 for name in cluster.tables {
                     guard session.graph.contains(nodeID: name) else { continue }
-                    let pt = session.graphLayout.position(for: name)
-                    let sz = nodeSize(for: name)
-                    let hw = sz.width  / 2 + pad
-                    let hh = sz.height / 2 + pad
-                    let rect = CGRect(x: pt.x - hw, y: pt.y - hh, width: hw * 2, height: hh * 2)
-                    let bubble = Path(roundedRect: rect, cornerRadius: hh)
+                    let point = session.graphLayout.position(for: name)
+                    let size = nodeSize(for: name)
+                    let halfWidth = size.width / 2 + pad
+                    let halfHeight = size.height / 2 + pad
+                    let rect = CGRect(
+                        x: point.x - halfWidth,
+                        y: point.y - halfHeight,
+                        width: halfWidth * 2,
+                        height: halfHeight * 2
+                    )
+                    let bubble = Path(roundedRect: rect, cornerRadius: halfHeight)
                     merged = merged.map { $0.union(bubble) } ?? bubble
                 }
                 guard let path = merged else { return nil }
-                return HaloCache.Entry(color: color, path: path, label: cluster.label)
+                return ClusterTitleCache.Entry(color: color, path: path, label: cluster.label)
             }
-            haloCache.layoutRevision = layoutRevision
+            clusterTitleCache.layoutRevision = layoutRevision
         }
 
-        // Cheap affine transform: graph space → screen space
         let viewportTransform = CGAffineTransform(scaleX: zoom, y: zoom)
             .concatenating(CGAffineTransform(
                 translationX: canvasSize.width / 2 + pan.width,
                 y: canvasSize.height / 2 + pan.height
             ))
 
-        // Thicker when zoomed out so borders stay visible; thinner when zoomed in
-        // so they don't compete with the cards themselves.
-        let lineWidth: CGFloat = max(1.0, min(3.5, 2.0 / zoom))
-
-        for entry in haloCache.entries {
+        for entry in clusterTitleCache.entries {
+            guard let label = entry.label, !label.isEmpty else { continue }
             let screenPath = entry.path.applying(viewportTransform)
-            context.stroke(
-                screenPath,
-                with: .color(entry.color.opacity(0.65)),
-                style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round)
+            let bounds = screenPath.boundingRect
+            let labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
+            let resolved = context.resolve(
+                Text(label.uppercased())
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(entry.color.opacity(0.85))
             )
-            if let label = entry.label, !label.isEmpty {
-                let bounds = screenPath.boundingRect
-                let labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
-                let resolved = context.resolve(
-                    Text(label.uppercased())
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(entry.color.opacity(0.85))
-                )
-                context.draw(resolved, at: labelPoint, anchor: .bottom)
-            }
+            context.draw(resolved, at: labelPoint, anchor: .bottom)
         }
     }
 
@@ -599,9 +592,9 @@ public struct SchemaGraphView: View {
                     )
 
                     Button {
-                        // Pick up any edits to the sidecar (new clusters, renamed groups)
-                        // and wipe the cached layout so stale positions from earlier app
-                        // builds can't get restored on top of fresh cluster geometry.
+                        // Pick up any edits to the sidecar and wipe the cached layout so
+                        // stale positions from earlier app builds can't get restored on
+                        // top of fresh cluster geometry.
                         session.reloadSchemaSidecarFromDisk()
                         session.clearPersistedGraphLayout()
                         rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
@@ -611,7 +604,7 @@ public struct SchemaGraphView: View {
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.capsule)
                     .tint(StudioPalette.accent)
-                    .help("Reload cluster hints & rebuild the layout from scratch")
+                    .help("Reload sidecar notes and cluster hints, then rebuild the layout")
                 }
 
                 Toggle(
@@ -949,6 +942,17 @@ public struct SchemaGraphView: View {
         return GraphViewportTransform(zoom: zoom, pan: pan).point(for: graphPos, in: canvasSize)
     }
 
+    private func clusterBorderColor(for nodeID: String) -> Color? {
+        guard session.showClusterHalos,
+              let clusterID = session.schemaSidecar.nodeToClusterGroup[nodeID],
+              let cluster = session.schemaSidecar.clusters.first(where: { $0.id == clusterID }),
+              let color = cluster.color.flatMap({ Color(studioHex: $0) })
+        else {
+            return nil
+        }
+        return color
+    }
+
     private func viewportAnchorMap(in canvasSize: CGSize) -> GraphAnchorMap {
         let nodeCards = Dictionary(uniqueKeysWithValues: session.graph.nodes.map { node in
             let descriptor = session.descriptor(named: node.id)
@@ -1218,12 +1222,8 @@ public struct SchemaGraphView: View {
         if point.y >= hf.minY && point.y < hf.maxY
             && point.x >= hf.minX
             && point.x < headerTextMaxX {
-            let tableDesc = session.tableDescription(for: card.tableID)
-            let clusterLabel = session.clusterLabel(for: card.tableID)
-            if tableDesc != nil || clusterLabel != nil {
-                let text = [clusterLabel.map { "[\($0)]" }, tableDesc]
-                    .compactMap { $0 }.joined(separator: " — ")
-                return DescriptionInfo(column: nil, text: text)
+            if let tableDesc = session.tableDescription(for: card.tableID) {
+                return DescriptionInfo(column: nil, text: tableDesc)
             }
         }
         // Column name zone: inner padding + estimated text width (size-11 mono ≈ 7.3 layout px/char) + margin.
@@ -1501,7 +1501,7 @@ public struct SchemaGraphView: View {
     }
 
     private func focusExpandedNode(_ nodeID: String, in size: CGSize) {
-        guard let graphFrame = detailBounds(for: nodeID) else { return }
+        guard let graphFrame = graphFrame(for: nodeID) else { return }
         let transform = GraphViewportTransform.focus(
             contentBounds: graphFrame.insetBy(dx: -28, dy: -28),
             in: size,
@@ -1515,15 +1515,6 @@ public struct SchemaGraphView: View {
         setViewport(viewportRestorePoint, animated: true)
         self.viewportRestorePoint = nil
         viewportRestoreNodeID = nil
-    }
-
-    private func detailBounds(for nodeID: String) -> CGRect? {
-        guard var bounds = graphFrame(for: nodeID) else { return nil }
-        for relatedNodeID in relatedPreviewByNode.keys {
-            guard let frame = graphFrame(for: relatedNodeID) else { continue }
-            bounds = bounds.union(frame)
-        }
-        return bounds
     }
 
     private func graphFrame(for nodeID: String) -> CGRect? {
@@ -1684,7 +1675,7 @@ private struct FeaturesMenuButton: View {
                     .fixedSize()
                 }
                 .buttonStyle(.plain)
-                .help("Show or hide the colored backgrounds behind each cluster.")
+                .help("Show or hide colored borders on clustered nodes.")
             }
         }
         .background(.clear)
@@ -1697,11 +1688,14 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let descriptor: EditableTableDescriptor?
     let tableDescription: String?
     let clusterLabel: String?
+    let clusterColor: Color?
     let columnDescription: (String) -> String?
     let previewColumns: [TableColumn]
     let outgoingEdges: [GraphEdge]
     let incomingEdges: [GraphEdge]
     let isSelected: Bool
+    let isMultiSelected: Bool
+    let viewportZoom: CGFloat
     let displayStyle: GraphNodeCardStyle
     let scrollOffset: CGFloat
     let isHovered: Bool
@@ -1733,12 +1727,15 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(backgroundShape.fill(backgroundFill))
-        .clipShape(backgroundShape)
-        .overlay {
-            backgroundShape
-                .strokeBorder(borderColor, lineWidth: isSelected || isHovered ? 1.5 : 1.0)
+        .background {
+            ZStack {
+                backgroundShape.fill(backgroundFill)
+                let strokeWidth = borderLineWidth
+                let strokeColor = isMultiSelected ? StudioPalette.accent : borderColor
+                backgroundShape.strokeBorder(strokeColor, lineWidth: strokeWidth)
+            }
         }
+        .clipShape(backgroundShape)
         .scaleEffect(isDragging ? 1.012 : (isHovered ? 1.004 : 1))
         .contentShape(backgroundShape)
         .onTapGesture {
@@ -1761,13 +1758,14 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            let hasDescription = tableDescription != nil || clusterLabel != nil
+            let hasDescription = tableDescription != nil
             Text(node.title)
                 .font(.system(size: showsDetailRows ? 13 : 12, weight: .semibold))
                 .foregroundStyle(StudioPalette.primaryText)
                 .underline(hasDescription, color: StudioPalette.primaryText.opacity(0.4))
                 .lineLimit(1)
                 .layoutPriority(1)
+                .opacity(nameZoomOpacity)
 
             Spacer(minLength: 0)
 
@@ -1777,6 +1775,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .background(StudioPalette.headerSurface, in: Capsule())
+                .opacity(metadataZoomOpacity)
 
             if let rowCountLabel {
                 Text(rowCountLabel)
@@ -1785,6 +1784,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(StudioPalette.headerSurface.opacity(0.74), in: Capsule())
+                    .opacity(metadataZoomOpacity)
             }
 
             if isHovered || showsDetailRows {
@@ -1832,10 +1832,12 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(StudioPalette.primaryText)
                 .underline(columnNote != nil, color: StudioPalette.primaryText.opacity(0.4))
+                .opacity(columnZoomOpacity)
             Spacer(minLength: 8)
             Text(column.typeLabel)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(StudioPalette.secondaryText)
+                .opacity(columnZoomOpacity)
             if isPrimaryKey {
                 graphBadge(
                     "PK",
@@ -1918,27 +1920,81 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         }
     }
 
-    private var backgroundFill: some ShapeStyle {
-        LinearGradient(
-            colors: isSelected
-                ? [
-                    StudioPalette.selectionSurfaceTop,
-                    StudioPalette.selectionSurfaceBottom,
-                ]
-                : [
-                    StudioPalette.cardSurfaceTop,
-                    StudioPalette.cardSurfaceBottom,
-                ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
+    private var backgroundFill: AnyShapeStyle {
+        if let clusterColor, clusterFillOpacity > 0 {
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        clusterColor.opacity(clusterFillOpacity),
+                        clusterColor.opacity(clusterFillOpacity * 0.74),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        }
+
+        return AnyShapeStyle(
+            LinearGradient(
+                colors: isSelected
+                    ? [
+                        StudioPalette.selectionSurfaceTop,
+                        StudioPalette.selectionSurfaceBottom,
+                    ]
+                    : [
+                        StudioPalette.cardSurfaceTop,
+                        StudioPalette.cardSurfaceBottom,
+                    ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         )
     }
 
+    private var clusterFillOpacity: Double {
+        guard clusterColor != nil else { return 0 }
+        let zoom = max(min(viewportZoom, 0.85), 0.35)
+        let progress = (0.85 - zoom) / 0.5
+        return Double(max(0, min(0.78, progress * 0.78)))
+    }
+
+    private var nameZoomOpacity: Double {
+        zoomOpacity(start: 0.82, end: 0.34, minimum: isSelected || isHovered ? 0.72 : 0.38)
+    }
+
+    private var metadataZoomOpacity: Double {
+        zoomOpacity(start: 0.88, end: 0.42, minimum: isSelected || isHovered ? 0.56 : 0.08)
+    }
+
+    private var columnZoomOpacity: Double {
+        zoomOpacity(start: 0.92, end: 0.48, minimum: isSelected || isHovered ? 0.62 : 0.16)
+    }
+
+    private func zoomOpacity(start: CGFloat, end: CGFloat, minimum: Double) -> Double {
+        let zoom = max(min(viewportZoom, start), end)
+        let progress = (zoom - end) / (start - end)
+        return minimum + Double(progress) * (1 - minimum)
+    }
+
     private var borderColor: Color {
+        if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 1.0 : 0.9) }
         if isHovered                { return Color.black.opacity(0.26) }
         if highlightState != .empty { return Color.black.opacity(0.22) }
         if isSelected               { return Color.black.opacity(0.20) }
         return Color.black.opacity(0.11)
+    }
+
+    private var borderLineWidth: CGFloat {
+        let zoom = max(viewportZoom, 0.2)
+        let zoomOutEmphasis = max(pow(zoom, 1.45), 0.16)
+        let filledClusterCap: CGFloat = clusterFillOpacity > 0 ? 9 : .greatestFiniteMagnitude
+        if isMultiSelected {
+            return min(3.2 / zoomOutEmphasis, filledClusterCap)
+        }
+        if clusterColor != nil {
+            return min((isHovered || isSelected ? 3.0 : 2.5) / zoomOutEmphasis, filledClusterCap)
+        }
+        return (isSelected || isHovered ? 1.5 : 1.0) / zoomOutEmphasis
     }
 
     private func graphBadge(_ title: String, tint: Color, emphasis: Bool, hoverTarget: GraphRelationHoverTarget) -> some View {
@@ -2588,15 +2644,13 @@ struct GraphMinimapView: View {
     }
 }
 
-/// Reference-type cache so Path.union is computed only when positions change,
-/// not on every pan/zoom frame. Held via @State so SwiftUI owns the lifetime.
-private final class HaloCache {
+private final class ClusterTitleCache {
     struct Entry {
         let color: Color
-        let path: Path  // graph-space coordinates
+        let path: Path
         let label: String?
     }
+
     var layoutRevision: Int = -1
     var entries: [Entry] = []
 }
-

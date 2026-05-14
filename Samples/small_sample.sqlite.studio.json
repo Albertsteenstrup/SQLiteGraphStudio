@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "tables": {
+    "authors": {
+      "description": "authoring.authors -- Author and editor identities, one row per person.",
+      "columns": {
+        "name": "Display name.",
+        "email": "Lowercased; NULL for anonymous imports.",
+        "bio": "Optional author biography.",
+        "is_active": "0 soft-deleted, 1 active."
+      }
+    },
+    "posts": {
+      "description": "authoring.posts -- Authored content units moving through publication states.",
+      "columns": {
+        "author_id": "FK -> authors.id.",
+        "editor_id": "Last editor; NULL for original author.",
+        "title": "Post headline.",
+        "slug": "Unique URL slug.",
+        "summary": "Optional short excerpt.",
+        "body": "Full post content.",
+        "status": "draft | published | archived.",
+        "published_at": "ISO8601 timestamp; NULL for drafts.",
+        "created_at": "Creation timestamp from import/build."
+      }
+    },
+    "comments": {
+      "description": "authoring.comments -- Reader comments, with replies linked to parent comments.",
+      "columns": {
+        "post_id": "FK -> posts.id, cascade delete.",
+        "parent_id": "Self-FK; NULL for top-level.",
+        "author_name": "Form display name, not authors.name.",
+        "author_email": "Optional; never public.",
+        "body": "Comment text.",
+        "is_flagged": "1 when moderation flagged.",
+        "created_at": "Comment creation timestamp."
+      }
+    },
+    "tags": {
+      "description": "taxonomy.tags -- Flat label vocabulary - one row per unique tag.",
+      "columns": {
+        "name": "Unique lowercase tag slug."
+      }
+    },
+    "post_tags": {
+      "description": "taxonomy.post_tags -- Join rows assigning flat tags to posts.",
+      "columns": {
+        "post_id": "FK -> posts.id.",
+        "tag_id": "FK -> tags.id.",
+        "tagged_by": "FK -> authors.id; NULL if imported."
+      }
+    },
+    "categories": {
+      "description": "taxonomy.categories -- Two-level category taxonomy keyed by slug.",
+      "columns": {
+        "slug": "Primary key URL-safe identifier.",
+        "parent_slug": "Self-FK; NULL for top-level.",
+        "name": "Human-readable category label."
+      }
+    },
+    "post_categories": {
+      "description": "taxonomy.post_categories -- Join rows assigning taxonomy categories to posts.",
+      "columns": {
+        "post_id": "FK -> posts.id.",
+        "category_slug": "FK -> categories.slug."
+      }
+    },
+    "attachments": {
+      "description": "authoring.attachments -- Uploaded files attached to posts or left orphaned.",
+      "columns": {
+        "post_id": "FK -> posts.id; NULL for orphan uploads.",
+        "file_name": "Original file name.",
+        "mime_type": "MIME type, e.g. image/png.",
+        "byte_count": "Original file size in bytes.",
+        "preview": "Optional thumbnail BLOB."
+      }
+    },
+    "sync_markers": {
+      "description": "ops.sync_markers -- External sync cursors stored by namespace and key.",
+      "columns": {
+        "namespace": "Cursor group, e.g. feed or jobs.",
+        "marker_key": "Cursor name within namespace.",
+        "marker_value": "Opaque cursor; NULL means unset."
+      }
+    },
+    "event_log": {
+      "description": "ops.event_log -- Append-only analytics events, optionally tied to posts.",
+      "columns": {
+        "post_id": "FK -> posts.id; NULL for global events.",
+        "kind": "view | share.",
+        "payload": "Opaque string or JSON by kind.",
+        "created_at": "Event timestamp."
+      }
+    },
+    "generated_metrics": {
+      "description": "unclustered.generated_metrics -- Synthetic metrics table demonstrating stored generated columns.",
+      "columns": {
+        "base_value": "Source integer value.",
+        "doubled_value": "Generated as base_value * 2."
+      }
+    },
+    "author_profiles": {
+      "description": "authoring.author_profiles -- View summarizing each author's total post count.",
+      "columns": {
+        "id": "authors.id.",
+        "name": "authors.name.",
+        "email": "authors.email.",
+        "post_count": "Count of authored posts."
+      }
+    }
+  },
+  "clusters": [
+    {
+      "id": "authoring",
+      "label": "Authoring",
+      "tables": ["authors", "author_profiles", "posts", "comments", "attachments"],
+      "color": "#7CC3FF"
+    },
+    {
+      "id": "taxonomy",
+      "label": "Taxonomy",
+      "tables": ["tags", "categories", "post_tags", "post_categories"],
+      "color": "#A8E6A3"
+    },
+    {
+      "id": "ops",
+      "label": "Ops & Sync",
+      "tables": ["event_log", "sync_markers"],
+      "color": "#F8B26A"
+    }
+  ]
+}

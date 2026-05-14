@@ -3,6 +3,16 @@ import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
+public struct RefreshToast: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let message: String
+
+    public init(id: UUID = UUID(), message: String) {
+        self.id = id
+        self.message = message
+    }
+}
+
 @MainActor
 @Observable
 public final class AppSession {
@@ -31,6 +41,7 @@ public final class AppSession {
     public var isCreateTablePresented = false
     public var isAlterTablePresented = false
     public var isSkillsPresented = false
+    public var refreshToast: RefreshToast?
     // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary
     public var graphZoom: CGFloat = 1.0
     public var graphPan: CGSize = .zero
@@ -98,6 +109,10 @@ public final class AppSession {
     }
 
     public func openDatabase(url: URL) async {
+        await openDatabase(url: url, changeBaseline: nil)
+    }
+
+    private func openDatabase(url: URL, changeBaseline: SchemaRefreshSnapshot?) async {
         isRefreshing = true
         presentedError = nil
         defer { isRefreshing = false }
@@ -106,6 +121,16 @@ public final class AppSession {
             try await databaseService.open(url: url)
             let snapshot = try await databaseService.loadCatalogSnapshot()
             apply(snapshot: snapshot, url: url)
+            if let changeBaseline {
+                refreshToast = Self.refreshSummary(
+                    before: changeBaseline,
+                    after: SchemaRefreshSnapshot(
+                        descriptors: tableDescriptors,
+                        graph: graph,
+                        sidecar: schemaSidecar
+                    )
+                ).map { RefreshToast(message: $0) }
+            }
             rememberRecentDatabase(url)
             StudioLog.ui.info("Loaded database session for \(url.lastPathComponent, privacy: .public)")
         } catch {
@@ -142,15 +167,20 @@ public final class AppSession {
         graphLayout.setClusterHints([:])
         graphLayout.reset(for: .empty)
         queryWorkspace.reset()
+        refreshToast = nil
     }
 
-    /// Re-reads `<db>.sqlite.studio.json` from disk and updates cluster hints. Does **not**
-    /// touch node positions — call alongside a layout rebuild to actually re-position nodes.
+    /// Re-reads `<db>.sqlite.studio.json` from disk and updates sidecar descriptions and
+    /// cluster hints. Does **not** touch node positions — call alongside a layout rebuild to
+    /// actually re-position nodes.
     public func reloadSchemaSidecarFromDisk() {
         guard let databaseURL else { return }
+        let before = schemaSidecar
         let sidecar = SchemaSidecarStore.load(for: databaseURL)
         schemaSidecar = sidecar
         graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
+        refreshToast = Self.sidecarSummary(before: before, after: sidecar)
+            .map { RefreshToast(message: $0) }
     }
 
     /// Removes the cached layout snapshot for the open database from UserDefaults so the
@@ -162,19 +192,22 @@ public final class AppSession {
     }
 
     public func tableDescription(for tableName: String) -> String? {
-        let raw = tableDescriptors[tableName]?.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = schemaSidecar.tables[tableName]?.description?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (raw?.isEmpty ?? true) ? nil : raw
     }
 
     public func columnDescription(for tableName: String, column columnName: String) -> String? {
-        let raw = tableDescriptors[tableName]?.columnDescriptions[columnName]?
+        let raw = schemaSidecar.tables[tableName]?.columns[columnName]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (raw?.isEmpty ?? true) ? nil : raw
     }
 
     public var hasAnyDescriptions: Bool {
-        tableDescriptors.values.contains { descriptor in
-            descriptor.description?.isEmpty == false || !descriptor.columnDescriptions.isEmpty
+        schemaSidecar.tables.values.contains { table in
+            table.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                || table.columns.values.contains {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
         }
     }
 
@@ -185,8 +218,17 @@ public final class AppSession {
 
     public func refreshSchema() {
         guard let databaseURL else { return }
+        let baseline = SchemaRefreshSnapshot(
+            descriptors: tableDescriptors,
+            graph: graph,
+            sidecar: schemaSidecar
+        )
         persistCurrentGraphLayout()
-        Task { await openDatabase(url: databaseURL) }
+        Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
+    }
+
+    public func dismissRefreshToast() {
+        refreshToast = nil
     }
 
     public func showTablePicker() {
@@ -777,7 +819,7 @@ public final class AppSession {
         expandedGraphNodeIDs = []
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
-        showAllGraphTableCards = snapshot.graph.nodes.count < 14
+        showAllGraphTableCards = false
         queryWorkspace.loadSavedQueries(for: url)
         openTabs = openTabs.compactMap { existingTab in
             guard let descriptor = tableDescriptors[existingTab.descriptor.name] else { return nil }
@@ -810,6 +852,96 @@ public final class AppSession {
             descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] }
         )
     }
+
+    private static func refreshSummary(before: SchemaRefreshSnapshot, after: SchemaRefreshSnapshot) -> String? {
+        var changes: [String] = []
+
+        let beforeTables = Set(before.descriptors.keys)
+        let afterTables = Set(after.descriptors.keys)
+        appendCount(afterTables.subtracting(beforeTables).count, label: "table", prefix: "+", to: &changes)
+        appendCount(beforeTables.subtracting(afterTables).count, label: "table", prefix: "-", to: &changes)
+
+        var addedColumns = 0
+        var removedColumns = 0
+        for tableName in beforeTables.intersection(afterTables) {
+            let beforeColumns = Set(before.descriptors[tableName]?.columns.map(\.name) ?? [])
+            let afterColumns = Set(after.descriptors[tableName]?.columns.map(\.name) ?? [])
+            addedColumns += afterColumns.subtracting(beforeColumns).count
+            removedColumns += beforeColumns.subtracting(afterColumns).count
+        }
+        appendCount(addedColumns, label: "col", prefix: "+", to: &changes)
+        appendCount(removedColumns, label: "col", prefix: "-", to: &changes)
+
+        let beforeEdges = Set(before.graph.edges.map(\.id))
+        let afterEdges = Set(after.graph.edges.map(\.id))
+        appendCount(afterEdges.subtracting(beforeEdges).count, label: "relation", prefix: "+", to: &changes)
+        appendCount(beforeEdges.subtracting(afterEdges).count, label: "relation", prefix: "-", to: &changes)
+
+        if let sidecarChange = sidecarChangeFragment(before: before.sidecar, after: after.sidecar) {
+            changes.append(sidecarChange)
+        }
+
+        return formattedRefreshSummary(changes)
+    }
+
+    private static func sidecarSummary(before: SchemaSidecar, after: SchemaSidecar) -> String? {
+        guard let change = sidecarChangeFragment(before: before, after: after) else { return nil }
+        return formattedRefreshSummary([change])
+    }
+
+    private static func sidecarChangeFragment(before: SchemaSidecar, after: SchemaSidecar) -> String? {
+        guard before != after else { return nil }
+
+        let beforeNoteCount = noteCount(in: before)
+        let afterNoteCount = noteCount(in: after)
+        let noteDelta = afterNoteCount - beforeNoteCount
+        if noteDelta > 0 {
+            return "+\(noteDelta) \(pluralized("note", count: noteDelta))"
+        }
+        if noteDelta < 0 {
+            return "\(noteDelta) \(pluralized("note", count: abs(noteDelta)))"
+        }
+
+        let clusterDelta = after.clusters.count - before.clusters.count
+        if clusterDelta > 0 {
+            return "+\(clusterDelta) \(pluralized("cluster", count: clusterDelta))"
+        }
+        if clusterDelta < 0 {
+            return "\(clusterDelta) \(pluralized("cluster", count: abs(clusterDelta)))"
+        }
+
+        return "notes changed"
+    }
+
+    private static func noteCount(in sidecar: SchemaSidecar) -> Int {
+        sidecar.tables.values.reduce(0) { count, table in
+            let hasTableNote = table.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            let columnNoteCount = table.columns.values.filter {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.count
+            return count + (hasTableNote ? 1 : 0) + columnNoteCount
+        }
+    }
+
+    private static func appendCount(_ count: Int, label: String, prefix: String, to changes: inout [String]) {
+        guard count > 0 else { return }
+        changes.append("\(prefix)\(count) \(pluralized(label, count: count))")
+    }
+
+    private static func formattedRefreshSummary(_ changes: [String]) -> String? {
+        guard !changes.isEmpty else { return nil }
+        return "Updated: " + changes.prefix(4).joined(separator: ", ")
+    }
+
+    private static func pluralized(_ label: String, count: Int) -> String {
+        count == 1 ? label : "\(label)s"
+    }
+}
+
+private struct SchemaRefreshSnapshot {
+    let descriptors: [String: EditableTableDescriptor]
+    let graph: SchemaGraph
+    let sidecar: SchemaSidecar
 }
 
 private struct PersistedGraphLayout: Codable {

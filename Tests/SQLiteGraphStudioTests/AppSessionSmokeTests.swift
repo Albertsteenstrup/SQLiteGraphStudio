@@ -55,6 +55,90 @@ struct AppSessionSmokeTests {
     }
 
     @Test
+    func sessionReadsDescriptionsFromSidecar() async throws {
+        let url = try TestSupport.createFixture(named: "sidecar-descriptions")
+        let sidecar = SchemaSidecar(
+            tables: [
+                "authors": .init(
+                    description: "Author accounts and bylines.",
+                    columns: ["email": "Public contact email."]
+                ),
+            ]
+        )
+        let data = try JSONEncoder().encode(sidecar)
+        try data.write(to: SchemaSidecarStore.sidecarURL(for: url), options: .atomic)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        #expect(session.tableDescription(for: "authors") == "Author accounts and bylines.")
+        #expect(session.columnDescription(for: "authors", column: "email") == "Public contact email.")
+        #expect(session.hasAnyDescriptions)
+    }
+
+    @Test
+    func sessionShowsRefreshToastWhenSidecarChanges() async throws {
+        let url = try TestSupport.createFixture(named: "sidecar-refresh-\(UUID().uuidString)")
+        let sidecarURL = SchemaSidecarStore.sidecarURL(for: url)
+        try? FileManager.default.removeItem(at: sidecarURL)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+        #expect(session.refreshToast == nil)
+
+        let sidecar = SchemaSidecar(
+            tables: [
+                "authors": .init(
+                    description: "Author rows.",
+                    columns: ["email": "Public contact email."]
+                ),
+            ]
+        )
+        let data = try JSONEncoder().encode(sidecar)
+        try data.write(to: sidecarURL, options: .atomic)
+
+        session.reloadSchemaSidecarFromDisk()
+
+        #expect(session.refreshToast?.message == "Updated: +2 notes")
+        #expect(session.tableDescription(for: "authors") == "Author rows.")
+        #expect(session.columnDescription(for: "authors", column: "email") == "Public contact email.")
+
+        session.dismissRefreshToast()
+        session.reloadSchemaSidecarFromDisk()
+        #expect(session.refreshToast == nil)
+    }
+
+    @Test
+    func refreshSchemaReloadsSidecarAndShowsRefreshToast() async throws {
+        let url = try TestSupport.createFixture(named: "schema-refresh-sidecar-\(UUID().uuidString)")
+        let sidecarURL = SchemaSidecarStore.sidecarURL(for: url)
+        let initialSidecar = SchemaSidecar(
+            tables: [
+                "authors": .init(description: "Original author note.")
+            ]
+        )
+        try JSONEncoder().encode(initialSidecar).write(to: sidecarURL, options: .atomic)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+        #expect(session.tableDescription(for: "authors") == "Original author note.")
+
+        let updatedSidecar = SchemaSidecar(
+            tables: [
+                "authors": .init(description: "Updated author note.")
+            ]
+        )
+        try JSONEncoder().encode(updatedSidecar).write(to: sidecarURL, options: .atomic)
+
+        session.refreshSchema()
+
+        try await waitFor {
+            session.tableDescription(for: "authors") == "Updated author note."
+                && session.refreshToast?.message == "Updated: notes changed"
+        }
+    }
+
+    @Test
     func sessionOpensAndRunsTopRowsQueryFromGraphAction() async throws {
         let url = try TestSupport.createFixture(named: "top-rows-query")
         let service = DatabaseService()

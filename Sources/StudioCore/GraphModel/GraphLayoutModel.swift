@@ -15,7 +15,7 @@ public struct GraphLayoutSnapshot: Sendable, Equatable {
 public final class GraphLayoutModel {
     /// Threshold above which auto-fit, spread-limit, and refit-on-relayout are skipped
     /// so the user can pan freely without nodes being squashed together.
-    public static let crowdedNodeThreshold = 10
+    public static let crowdedNodeThreshold = 14
 
     private var positions: [String: CGPoint] = [:]
     private var velocities: [String: CGVector] = [:]
@@ -215,11 +215,11 @@ public final class GraphLayoutModel {
         let clusterNodes = Dictionary(grouping: rankedNodes) { clusters[$0.id] ?? -1 }
         let clusterCount = max((clusters.values.max() ?? 0) + 1, 1)
 
-        let smallAllCards = presentation == .allCards && graph.nodes.count < 14
-        let baseRadius: Double = smallAllCards ? 80 : (presentation == .allCards ? 130 : 45)
-        let baseClusterSpacing: Double = smallAllCards ? 30 : (presentation == .allCards ? 60 : 0)
-        let layerSpacing: Double = smallAllCards ? 52 : (presentation == .allCards ? 75 : 35)
-        let minNodeSpacing: Double = smallAllCards ? 54 : (presentation == .allCards ? 82 : 40)
+        let smallAllCards = presentation == .allCards && graph.nodes.count < Self.crowdedNodeThreshold
+        let baseRadius: Double = smallAllCards ? 94 : (presentation == .allCards ? 130 : 45)
+        let baseClusterSpacing: Double = smallAllCards ? 0 : (presentation == .allCards ? 60 : 0)
+        let layerSpacing: Double = smallAllCards ? 92 : (presentation == .allCards ? 75 : 35)
+        let minNodeSpacing: Double = smallAllCards ? 104 : (presentation == .allCards ? 82 : 40)
 
         // Real card footprint (approximate). The physics step uses precise sizes when a
         // lookup is provided, but the *initial placement* needs realistic numbers too —
@@ -271,7 +271,7 @@ public final class GraphLayoutModel {
             
             if isIsolatedCluster {
                 // Use a compact grid layout for isolated nodes
-                let gridSpacing: Double = presentation == .allCards ? 85 : 48
+                let gridSpacing: Double = smallAllCards ? 132 : (presentation == .allCards ? 85 : 48)
                 let nodesPerRow = max(Int(sqrt(Double(nodesInCluster.count))), 1)
                 
                 for (index, node) in nodesInCluster.enumerated() {
@@ -531,9 +531,16 @@ public final class GraphLayoutModel {
         // cross-cluster FK springs pull groups together, compaction/centering squashes them
         // toward the global centroid. Use per-cluster cohesion instead of global gravity.
         let hasClusterHints = !clusterHintByNode.isEmpty
-        let effectiveClusterAttraction = hasClusterHints ? 0.022 : parameters.clusterAttractionStrength
-        let effectiveCenterStrength = hasClusterHints ? 0.001 : parameters.centerStrength
-        let effectiveCompaction = hasClusterHints ? 0.0 : parameters.compactionStrength
+        let smallAllCards = presentation == .allCards && graph.nodes.count < Self.crowdedNodeThreshold
+        let effectiveClusterAttraction = hasClusterHints
+            ? (smallAllCards ? 0.012 : 0.022)
+            : parameters.clusterAttractionStrength
+        let effectiveCenterStrength = hasClusterHints
+            ? (smallAllCards ? 0.006 : 0.001)
+            : parameters.centerStrength
+        let effectiveCompaction = hasClusterHints
+            ? (smallAllCards ? 0.014 : 0.0)
+            : parameters.compactionStrength
 
         var forces: [String: CGVector] = [:]
         for node in graph.nodes {
@@ -625,9 +632,14 @@ public final class GraphLayoutModel {
                     Double(sourceSize.width + targetSize.width) * 0.5,
                     Double(sourceSize.height + targetSize.height) * 0.5
                 ) * parameters.linkRadiusFactor
-            // Cross-cluster FK edges must not spring-attract: that would collapse separate
-            // cluster islands toward each other, undoing the initial ring placement.
-            let isCrossCluster = hasClusterHints && clusters[edge.sourceID] != clusters[edge.targetID]
+            // Keep larger explicit cluster islands distinct, but let small graphs and
+            // unhinted nodes use FK springs so they stay close to the rest of the graph.
+            let sourceHasExplicitCluster = clusterHintByNode[edge.sourceID] != nil
+            let targetHasExplicitCluster = clusterHintByNode[edge.targetID] != nil
+            let shouldKeepExplicitClustersDistinct = !smallAllCards && sourceHasExplicitCluster && targetHasExplicitCluster
+            let isCrossCluster = hasClusterHints
+                && shouldKeepExplicitClustersDistinct
+                && clusters[edge.sourceID] != clusters[edge.targetID]
             if !isCrossCluster {
                 let pull = (distance - desiredLinkDistance) * parameters.springStrength
                 forces[edge.sourceID, default: .zero].dx += delta.dx * pull
@@ -767,19 +779,19 @@ public final class GraphLayoutModel {
                 overlapCorrectionStrength: 2.6
             )
         case .allCards:
-            if positions.count > 0 && positions.count < 14 {
+            if positions.count > 0 && positions.count < Self.crowdedNodeThreshold {
                 return LayoutParameters(
-                    linkDistance: 115,
-                    repelStrength: 5_800,
+                    linkDistance: 160,
+                    repelStrength: 9_200,
                     springStrength: 0.036,
-                    centerStrength: 0.020,
+                    centerStrength: 0.030,
                     baseCollisionRadius: 78,
-                    nodeGap: 20,
+                    nodeGap: 48,
                     linkRadiusFactor: 0.42,
                     damping: 0.86,
                     columnAlignmentStrength: 0.010,
-                    clusterAttractionStrength: 0.012,
-                    compactionStrength: 0.012,
+                    clusterAttractionStrength: 0.008,
+                    compactionStrength: 0.022,
                     edgeClearance: 52,
                     edgeRepelStrength: 0.25,
                     overlapCorrectionStrength: 2.6
