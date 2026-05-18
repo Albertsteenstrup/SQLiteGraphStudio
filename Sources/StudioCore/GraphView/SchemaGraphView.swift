@@ -36,6 +36,7 @@ public struct SchemaGraphView: View {
     @State private var pulledGraphPositions: [String: CGPoint] = [:]
     @State private var tappedRelationTarget: GraphRelationHoverTarget? = nil
     @State private var isStoriesPresented = false
+    @State private var expandedStoryIDs: Set<String> = []
     @State private var activeStory: SchemaSidecar.Story?
     @State private var activeStoryPlaybackIndex: Int?
     @State private var displayedStoryText = ""
@@ -220,6 +221,7 @@ public struct SchemaGraphView: View {
                 }
 
             GraphTrackpadInputSurface(
+                ignoresInput: isStoriesPresented,
                 onPan: { delta in
                     applyTrackpadPan(delta)
                 },
@@ -770,56 +772,105 @@ public struct SchemaGraphView: View {
     }
 
     private func storyRow(_ story: SchemaSidecar.Story, viewportSize: CGSize) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(story.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .lineLimit(1)
+        let isExpanded = expandedStoryIDs.contains(story.id)
 
-                if let userStoryText = story.userStoryText {
-                    Text(userStoryText)
-                        .font(.caption)
-                        .foregroundStyle(StudioPalette.primaryText.opacity(0.74))
-                        .lineLimit(2)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        if isExpanded {
+                            expandedStoryIDs.remove(story.id)
+                        } else {
+                            expandedStoryIDs.insert(story.id)
+                        }
+                    }
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.down.circle.fill" : "chevron.right.circle")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(isExpanded ? StudioPalette.accent : StudioPalette.secondaryText)
                 }
+                .buttonStyle(.plain)
+                .help(isExpanded ? "Minimize story card" : "Expand story card")
 
-                HStack(spacing: 8) {
-                    Text(compactCreatedAt(story.createdAt))
-                    Text("\(story.playback.count) \(story.playback.count == 1 ? "beat" : "beats")")
-                    if !story.acceptanceCriteria.isEmpty {
-                        Text("\(story.acceptanceCriteria.count) AC")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(story.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(StudioPalette.primaryText)
+                        .lineLimit(1)
+
+                    if let userStoryText = story.userStoryText {
+                        Text(userStoryText)
+                            .font(.caption)
+                            .foregroundStyle(StudioPalette.primaryText.opacity(0.74))
+                            .lineLimit(isExpanded ? 3 : 2)
+                    }
+
+                    HStack(spacing: 8) {
+                        Text(compactCreatedAt(story.createdAt))
+                        Text("\(story.playback.count) \(story.playback.count == 1 ? "beat" : "beats")")
+                        if !story.acceptanceCriteria.isEmpty {
+                            Text("\(story.acceptanceCriteria.count) AC")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(StudioPalette.secondaryText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    startStory(story, in: viewportSize)
+                } label: {
+                    Label(activeStory?.id == story.id ? "Restart" : "Activate", systemImage: "play.fill")
+                        .font(.caption.weight(.semibold))
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(StudioPalette.accent)
+                .disabled(story.playback.isEmpty)
+
+                Button(role: .destructive) {
+                    if activeStory?.id == story.id {
+                        stopStory()
+                    }
+                    expandedStoryIDs.remove(story.id)
+                    session.deleteStory(id: story.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove story")
+            }
+
+            if isExpanded {
+                Divider().opacity(0.55)
+
+                StoryUserCardFormatView(
+                    actor: story.actor,
+                    goal: story.goal,
+                    benefit: story.benefit,
+                    fallbackText: story.userStoryText,
+                    conversation: story.conversation,
+                    acceptanceCriteria: story.acceptanceCriteria.map(\.displayText)
+                )
+
+                if !story.playback.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Playback")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(StudioPalette.tertiaryText)
+
+                        ForEach(Array(story.playback.prefix(4).enumerated()), id: \.offset) { index, beat in
+                            Text("\(index + 1). \(beat.text)")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(StudioPalette.secondaryText)
+                                .lineLimit(2)
+                        }
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(StudioPalette.secondaryText)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                startStory(story, in: viewportSize)
-            } label: {
-                Label(activeStory?.id == story.id ? "Restart" : "Activate", systemImage: "play.fill")
-                    .font(.caption.weight(.semibold))
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .tint(StudioPalette.accent)
-            .disabled(story.playback.isEmpty)
-
-            Button(role: .destructive) {
-                if activeStory?.id == story.id {
-                    stopStory()
-                }
-                session.deleteStory(id: story.id)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.caption.weight(.semibold))
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.borderless)
-            .help("Remove story")
         }
         .padding(12)
         .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -827,6 +878,7 @@ public struct SchemaGraphView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(activeStory?.id == story.id ? StudioPalette.foreignKeyTint.opacity(0.45) : StudioPalette.borderSoft)
         }
+        .contentShape(Rectangle())
     }
 
     private func startStory(_ story: SchemaSidecar.Story, in size: CGSize) {
@@ -957,6 +1009,11 @@ public struct SchemaGraphView: View {
         session.storyPlaybackOverlay = StoryPlaybackOverlayState(
             title: activeStory.title,
             userStoryText: activeStory.userStoryText,
+            actor: activeStory.actor,
+            goal: activeStory.goal,
+            benefit: activeStory.benefit,
+            conversation: activeStory.conversation,
+            acceptanceCriteria: activeStory.acceptanceCriteria.map(\.displayText),
             displayedText: displayedStoryText,
             acceptanceText: activeStory.acceptanceCriteria.isEmpty ? nil : acceptanceSummary(for: activeStory),
             index: index,
@@ -971,7 +1028,7 @@ public struct SchemaGraphView: View {
     private func typeStoryText(_ text: String, durationMilliseconds: Int?) async {
         displayedStoryText = ""
         publishStoryPlaybackOverlay()
-        let typeDelay = 20
+        let typeDelay = 14
 
         for character in text {
             guard !Task.isCancelled else { return }
@@ -982,8 +1039,8 @@ public struct SchemaGraphView: View {
             try? await Task.sleep(for: .milliseconds(typeDelay))
         }
 
-        let requestedDuration = max(durationMilliseconds ?? 4_200, 2_000)
-        let holdDuration = max(1_000, requestedDuration - text.count * typeDelay)
+        let requestedDuration = max(durationMilliseconds ?? 3_400, 1_600)
+        let holdDuration = max(700, requestedDuration - text.count * typeDelay)
         await waitForStoryResume(milliseconds: holdDuration)
     }
 
@@ -1033,22 +1090,17 @@ public struct SchemaGraphView: View {
                 session.selectGraphNode(expansionID)
                 session.setExpandedGraphNode(expansionID)
             }
+            pulledGraphPositions = storyFormationPositions(for: tableIDs, focus: expansionID)
         }
 
         if let relationTarget {
             scrollRelationColumnIntoView(relationTarget)
         } else {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                pulledGraphPositions.removeAll()
-            }
+            tappedRelationTarget = nil
         }
 
         layoutRevision &+= 1
         focusStoryTables(tableIDs, fallback: expansionID, in: size)
-
-        if let relationTarget {
-            pullConnectedNodesIntoView(for: relationTarget)
-        }
         publishStoryPlaybackOverlay()
     }
 
@@ -1092,6 +1144,62 @@ public struct SchemaGraphView: View {
         cardScrollOffsets[target.tableID] = min(maxOffset, CGFloat(desiredIndex) * GraphCardLayout.expandedRowHeight)
     }
 
+    private func storyFormationPositions(for tableIDs: [String], focus: String?) -> [String: CGPoint] {
+        let validTableIDs = tableIDs.filter { session.graph.contains(nodeID: $0) }
+        let uniqueTableIDs = validTableIDs.reduce(into: [String]()) { result, tableID in
+            if !result.contains(tableID) {
+                result.append(tableID)
+            }
+        }
+        guard uniqueTableIDs.count > 1 else { return [:] }
+
+        let centerID = firstValidTable([focus]) ?? uniqueTableIDs[0]
+        let center = session.graphLayout.position(for: centerID)
+        let centerSize = nodeSize(for: centerID)
+        let companions = uniqueTableIDs.filter { $0 != centerID }
+        guard !companions.isEmpty else { return [:] }
+
+        var positions: [String: CGPoint] = [:]
+        let maxCompanionExtent = companions
+            .map { max(nodeSize(for: $0).width, nodeSize(for: $0).height) }
+            .max() ?? GraphCardLayout.expandedWidth
+        let centerExtent = max(centerSize.width, centerSize.height)
+        let ringGap: CGFloat = 92
+        let firstRingCapacity = min(8, max(companions.count, 1))
+        let minChordRadius = firstRingCapacity > 1
+            ? (maxCompanionExtent + ringGap) / (2 * sin(.pi / CGFloat(firstRingCapacity)))
+            : 0
+        let baseRadius = max(260, centerExtent / 2 + maxCompanionExtent / 2 + ringGap, minChordRadius)
+
+        var remaining = companions
+        var ring = 0
+        while !remaining.isEmpty {
+            let capacity = ring == 0 ? min(8, remaining.count) : min(12 + ring * 4, remaining.count)
+            let ringTables = Array(remaining.prefix(capacity))
+            remaining.removeFirst(capacity)
+
+            let radius = baseRadius + CGFloat(ring) * maxCompanionExtent * 0.86 + CGFloat(ring) * 118
+            let angleOffset: CGFloat = ring.isMultiple(of: 2) ? -.pi / 2 : -.pi / 2 + (.pi / CGFloat(max(capacity, 1)))
+
+            for (index, tableID) in ringTables.enumerated() {
+                let angle: CGFloat
+                if capacity == 1 {
+                    angle = 0
+                } else {
+                    angle = angleOffset + (2 * .pi * CGFloat(index) / CGFloat(capacity))
+                }
+                positions[tableID] = CGPoint(
+                    x: center.x + cos(angle) * radius,
+                    y: center.y + sin(angle) * radius
+                )
+            }
+
+            ring += 1
+        }
+
+        return positions
+    }
+
     private func focusStoryTables(_ tableIDs: [String], fallback: String?, in size: CGSize) {
         var bounds = CGRect.null
         let focusedTables = tableIDs.isEmpty ? [fallback].compactMap { $0 } : tableIDs
@@ -1113,12 +1221,14 @@ public struct SchemaGraphView: View {
                 preferredZoom: 0.96
             )
         } else {
+            let minZoom: CGFloat = focusedTables.count > 5 ? 0.26 : 0.34
+            let padding: CGFloat = focusedTables.count > 5 ? 190 : 150
             transform = GraphViewportTransform.fit(
                 contentBounds: paddedBounds,
                 in: size,
-                padding: 140,
-                minZoom: 0.42,
-                maxZoom: 1.08
+                padding: padding,
+                minZoom: minZoom,
+                maxZoom: 1.02
             )
         }
 
@@ -2022,7 +2132,7 @@ public struct SchemaGraphView: View {
     private func graphFrame(for nodeID: String) -> CGRect? {
         guard session.graph.nodes.contains(where: { $0.id == nodeID }) else { return nil }
         let size = nodeSize(for: nodeID)
-        let center = session.graphLayout.position(for: nodeID)
+        let center = pulledGraphPositions[nodeID] ?? session.graphLayout.position(for: nodeID)
         return CGRect(
             x: center.x - size.width / 2,
             y: center.y - size.height / 2,
@@ -2233,6 +2343,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let relationHoverChanged: (GraphRelationHoverTarget, GraphRelationHoverSource, Bool) -> Void
     let relationTapped: (GraphRelationHoverTarget) -> Void
     let headerDragGesture: HeaderGesture
+    @State private var storySpotlightPulse = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2253,15 +2364,13 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .background {
             ZStack {
                 backgroundShape.fill(backgroundFill)
+                if isStoryHighlighted {
+                    backgroundShape.fill(storySpotlightFill)
+                        .opacity(storySpotlightPulse ? 0.9 : 0.48)
+                }
                 let strokeWidth = borderLineWidth
                 let strokeColor = isMultiSelected ? StudioPalette.accent : borderColor
                 backgroundShape.strokeBorder(strokeColor, lineWidth: strokeWidth)
-                if showsStoryHighlightColor {
-                    backgroundShape.strokeBorder(
-                        StudioPalette.foreignKeyTint.opacity(0.52),
-                        lineWidth: storyBorderLineWidth
-                    )
-                }
             }
         }
         .clipShape(backgroundShape)
@@ -2282,6 +2391,18 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             Button("Open Table", action: openTable)
             Button("Show Top 10", action: showTopRows)
         }
+        .onAppear {
+            storySpotlightPulse = isStoryHighlighted
+        }
+        .onChange(of: isStoryHighlighted) { _, highlighted in
+            storySpotlightPulse = highlighted
+        }
+        .animation(
+            isStoryHighlighted
+                ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
+                : .default,
+            value: storySpotlightPulse
+        )
         .animation(.spring(response: 0.28, dampingFraction: 0.84), value: displayStyle)
     }
 
@@ -2509,16 +2630,11 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var borderColor: Color {
-        if showsStoryHighlightColor { return StudioPalette.foreignKeyTint.opacity(0.5) }
         if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 1.0 : 0.9) }
         if isHovered                { return Color.black.opacity(0.26) }
         if highlightState != .empty { return Color.black.opacity(0.22) }
         if isSelected               { return Color.black.opacity(0.20) }
         return Color.black.opacity(0.11)
-    }
-
-    private var showsStoryHighlightColor: Bool {
-        isStoryHighlighted && viewportZoom <= 0.56
     }
 
     private var borderLineWidth: CGFloat {
@@ -2534,9 +2650,17 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         return (isSelected || isHovered ? 1.5 : 1.0) / zoomOutEmphasis
     }
 
-    private var storyBorderLineWidth: CGFloat {
-        let zoomOutEmphasis = max(pow(max(viewportZoom, 0.2), 1.25), 0.2)
-        return min(7.0 / zoomOutEmphasis, 14)
+    private var storySpotlightFill: AnyShapeStyle {
+        AnyShapeStyle(
+            LinearGradient(
+                colors: [
+                    Color(red: 1.0, green: 0.78, blue: 0.30).opacity(0.28),
+                    Color(red: 1.0, green: 0.46, blue: 0.24).opacity(0.12),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
     }
 
     private func graphBadge(_ title: String, tint: Color, emphasis: Bool, hoverTarget: GraphRelationHoverTarget) -> some View {
@@ -2883,12 +3007,14 @@ enum GraphNodeColumnHighlightStyle: Equatable {
 
 
 private struct GraphTrackpadInputSurface: NSViewRepresentable {
+    let ignoresInput: Bool
     let onPan: (CGSize) -> Void
     let onMagnify: (CGFloat, CGPoint) -> Void
     let onPointerMove: (CGPoint?) -> Void
 
     func makeNSView(context: Context) -> GraphTrackpadInputView {
         let view = GraphTrackpadInputView()
+        view.ignoresInput = ignoresInput
         view.onPan = onPan
         view.onMagnify = onMagnify
         view.onPointerMove = onPointerMove
@@ -2896,6 +3022,7 @@ private struct GraphTrackpadInputSurface: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: GraphTrackpadInputView, context: Context) {
+        nsView.ignoresInput = ignoresInput
         nsView.onPan = onPan
         nsView.onMagnify = onMagnify
         nsView.onPointerMove = onPointerMove
@@ -2908,6 +3035,13 @@ private final class GraphTrackpadInputView: NSView {
     var onPan: ((CGSize) -> Void)?
     var onMagnify: ((CGFloat, CGPoint) -> Void)?
     var onPointerMove: ((CGPoint?) -> Void)?
+    var ignoresInput = false {
+        didSet {
+            if ignoresInput {
+                publishPointerMove(nil, force: true)
+            }
+        }
+    }
 
     private nonisolated(unsafe) var eventMonitor: Any?
     private var trackingAreaReference: NSTrackingArea?
@@ -3006,15 +3140,21 @@ private final class GraphTrackpadInputView: NSView {
             case .scrollWheel:
                 guard event.window === self.window else { return event }
                 guard isInside else { return event }
+                guard !self.ignoresInput else { return event }
                 guard event.hasPreciseScrollingDeltas else { return event }
                 self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
                 return nil
             case .magnify:
                 guard event.window === self.window else { return event }
                 guard isInside else { return event }
+                guard !self.ignoresInput else { return event }
                 self.onMagnify?(event.magnification, point)
                 return nil
             case .mouseMoved:
+                guard !self.ignoresInput else {
+                    self.publishPointerMove(nil)
+                    return event
+                }
                 let inside = self.bounds.contains(point)
                 let frameInWindow = self.convert(self.bounds, to: nil)
                 StudioLog.graph.debug("trackpad.mouseMoved point=\(point.x, privacy: .public),\(point.y, privacy: .public) bounds=\(self.bounds.width, privacy: .public)x\(self.bounds.height, privacy: .public) frameInWindow=\(frameInWindow.origin.x, privacy: .public),\(frameInWindow.origin.y, privacy: .public) inside=\(inside, privacy: .public)")

@@ -9,7 +9,7 @@ You write user-story-inspired flow stories to `<db>.sqlite.studio.json`, next to
 
 Use the user story pattern as inspiration: capture who benefits (`actor`), what they need (`goal`), and why it matters (`benefit`). Keep it lighter than a Jira ticket when that fits the question: short title and value statement, useful conversation notes, acceptance criteria that confirm the flow, and graph playback beats that explain how the data moves through the schema.
 
-The app plays each playback beat by moving the graph viewport, expanding the focused table, drawing thick faded blue borders around the tables in the beat, highlighting relation edges for a referenced column, and typing the beat text on screen.
+The app plays each playback beat by moving the graph viewport, expanding the focused table, spotlighting the tables in the beat with a warm animated fill, highlighting relation edges for a referenced column, and typing the beat text on screen.
 
 ## Inputs you need
 
@@ -95,7 +95,7 @@ Field rules:
 - `acceptance_criteria` - confirmation of done. Prefer Given/When/Then objects with stable IDs (`AC1`, `AC2`). Plain strings are supported but less precise.
 - `playback` - ordered graph playback beats. Aim for 3-7 beats. The app ignores the old `steps` key.
 - `text` - narration typed during the beat. Keep it concise and specific.
-- `tables` - exact case-sensitive table names highlighted with blue borders.
+- `tables` - exact case-sensitive table names spotlighted during playback.
 - `focus` - optional exact table name the viewport should move toward.
 - `expand` - optional exact table name whose columns should be opened.
 - `relation` - optional `{ "table": "...", "column": "..." }` for a real PK/FK/REF column; the app highlights connected edges and pulls related tables into view.

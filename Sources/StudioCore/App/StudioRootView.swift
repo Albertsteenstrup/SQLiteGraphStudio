@@ -668,63 +668,135 @@ private struct StoryPlaybackOverlayCard: View {
     let sendCommand: (StoryPlaybackCommand.Kind) -> Void
 
     @State private var dragStartOffset: CGSize?
+    @State private var isExpanded = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(StudioPalette.tertiaryText)
-                        .help("Drag story card")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    storyHeader
 
-                    Text(state.title)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(StudioPalette.secondaryText)
-                        .lineLimit(1)
+                    if isExpanded {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 12) {
+                                StoryUserCardFormatView(
+                                    actor: state.actor,
+                                    goal: state.goal,
+                                    benefit: state.benefit,
+                                    fallbackText: state.userStoryText,
+                                    conversation: state.conversation,
+                                    acceptanceCriteria: state.acceptanceCriteria
+                                )
 
-                    Text("\(min(state.index + 1, state.playbackCount))/\(state.playbackCount)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(StudioPalette.tertiaryText)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(StudioPalette.headerSurface, in: Capsule())
+                                Divider().opacity(0.55)
 
-                    if state.isPaused {
-                        Text("Paused")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(StudioPalette.secondaryText)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
+                                Text(state.displayedText)
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(StudioPalette.primaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: 660, alignment: .leading)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.trailing, 6)
+                        }
+                        .scrollIndicators(.visible)
+                        .frame(maxHeight: 340)
+                    } else {
+                        compactStoryBody
                     }
                 }
 
-                if let userStoryText = state.userStoryText {
-                    Text(userStoryText)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(StudioPalette.secondaryText)
-                        .lineLimit(2)
-                        .frame(maxWidth: 620, alignment: .leading)
-                }
+                controls
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(StudioPalette.chromeFillStrong)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(StudioPalette.border, lineWidth: 1)
+        }
+        .shadow(color: StudioPalette.shadow.opacity(0.85), radius: 22, y: 12)
+        .frame(maxWidth: isExpanded ? 760 : 980)
+        .offset(offset)
+        .simultaneousGesture(dragGesture)
+        .animation(.snappy(duration: 0.18), value: isExpanded)
+    }
 
-                Text(state.displayedText)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .lineLimit(4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 620, alignment: .leading)
+    private var storyHeader: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(StudioPalette.tertiaryText)
+                .help("Drag story card")
 
-                if let acceptanceText = state.acceptanceText {
-                    Text(acceptanceText)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(StudioPalette.tertiaryText)
-                        .lineLimit(2)
-                        .frame(maxWidth: 620, alignment: .leading)
-                }
+            Text(state.title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(StudioPalette.secondaryText)
+                .lineLimit(1)
+
+            Text("\(min(state.index + 1, state.playbackCount))/\(state.playbackCount)")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(StudioPalette.tertiaryText)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(StudioPalette.headerSurface, in: Capsule())
+
+            if state.isPaused {
+                Text("Paused")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
             }
 
-            HStack(spacing: 6) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                Image(systemName: isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .frame(width: 24, height: 24)
+                    .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Minimize story card" : "Expand story card")
+        }
+    }
+
+    private var compactStoryBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let userStoryText = state.userStoryText {
+                Text(userStoryText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .lineLimit(2)
+                    .frame(maxWidth: 620, alignment: .leading)
+            }
+
+            Text(state.displayedText)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(StudioPalette.primaryText)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 620, alignment: .leading)
+
+            if let acceptanceText = state.acceptanceText {
+                Text(acceptanceText)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(StudioPalette.tertiaryText)
+                    .lineLimit(2)
+                    .frame(maxWidth: 620, alignment: .leading)
+            }
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 6) {
                 storyControlButton(
                     systemImage: "backward.end.fill",
                     help: "Previous beat",
@@ -751,22 +823,7 @@ private struct StoryPlaybackOverlayCard: View {
                 storyControlButton(systemImage: "xmark", help: "Stop story") {
                     sendCommand(.stop)
                 }
-            }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(StudioPalette.chromeFillStrong)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(StudioPalette.border, lineWidth: 1)
-        }
-        .shadow(color: StudioPalette.shadow.opacity(0.85), radius: 22, y: 12)
-        .frame(maxWidth: 980)
-        .offset(offset)
-        .simultaneousGesture(dragGesture)
     }
 
     private var dragGesture: some Gesture {

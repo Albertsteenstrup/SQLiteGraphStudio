@@ -16,6 +16,11 @@ public struct RefreshToast: Identifiable, Sendable, Equatable {
 public struct StoryPlaybackOverlayState: Sendable, Equatable {
     public let title: String
     public let userStoryText: String?
+    public let actor: String?
+    public let goal: String?
+    public let benefit: String?
+    public let conversation: [String]
+    public let acceptanceCriteria: [String]
     public let displayedText: String
     public let acceptanceText: String?
     public let index: Int
@@ -27,6 +32,11 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
     public init(
         title: String,
         userStoryText: String?,
+        actor: String? = nil,
+        goal: String? = nil,
+        benefit: String? = nil,
+        conversation: [String] = [],
+        acceptanceCriteria: [String] = [],
         displayedText: String,
         acceptanceText: String?,
         index: Int,
@@ -37,6 +47,11 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
     ) {
         self.title = title
         self.userStoryText = userStoryText
+        self.actor = actor
+        self.goal = goal
+        self.benefit = benefit
+        self.conversation = conversation
+        self.acceptanceCriteria = acceptanceCriteria
         self.displayedText = displayedText
         self.acceptanceText = acceptanceText
         self.index = index
