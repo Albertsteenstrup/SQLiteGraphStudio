@@ -48,7 +48,7 @@ public enum StudioSkills {
     public static let storyFlows = StudioSkill(
         id: "story-flows",
         title: "story-flows",
-        shortDescription: "Adds user-story-inspired flow stories with acceptance notes and graph playback to the .studio.json sidecar.",
+        shortDescription: "Adds user-story-inspired flow stories with acceptance notes, graph playback, and hidden read-aloud narration to the .studio.json sidecar.",
         fullContent: storyFlowsContent
     )
 
@@ -386,7 +386,7 @@ public enum StudioSkills {
 
     Use the user story pattern as inspiration: capture who benefits (`actor`), what they need (`goal`), and why it matters (`benefit`). Keep it lighter than a Jira ticket when that fits the question: short title and value statement, useful conversation notes, acceptance criteria that confirm the flow, and graph playback beats that explain how the data moves through the schema.
 
-    The app plays each playback beat by moving the graph viewport, expanding the focused table, spotlighting the tables in the beat with a warm animated fill, highlighting relation edges for a referenced column, and typing the beat text on screen.
+    The app plays each playback beat by moving the graph viewport, expanding the focused table, spotlighting the tables in the beat with a warm animated fill, highlighting relation edges for a referenced column, and typing the beat text on screen. Users can also enable read-aloud playback; when they do, the app reads the beat's hidden `spoken_text` with Kokoro-82M's Bella voice (`af_bella`). The app does not show `spoken_text`; if it is missing, the app reads `text`.
 
     ## Inputs you need
 
@@ -436,12 +436,14 @@ public enum StudioSkills {
           "playback": [
             {
               "text": "A new user row is inserted first. This row becomes the identity anchor for the rest of the signup flow.",
+              "spoken_text": "First, the app creates the user's account record. Everything else in signup will attach back to that identity.",
               "tables": ["users"],
               "focus": "users",
               "expand": "users"
             },
             {
               "text": "The users.id key is then reused by dependent records, so the graph highlights every table attached to that account identity.",
+              "spoken_text": "Next, the new user's identifier is reused by nearby records, so the account can be connected to sessions and membership details.",
               "tables": ["users", "sessions", "memberships"],
               "focus": "users",
               "expand": "users",
@@ -449,6 +451,7 @@ public enum StudioSkills {
             },
             {
               "text": "A default workspace is created and linked back through membership, giving the new user a place to start.",
+              "spoken_text": "Finally, the app creates a starter workspace and links the user into it, so there is a usable place to land after signup.",
               "tables": ["workspaces", "memberships", "users"],
               "focus": "workspaces",
               "expand": "workspaces"
@@ -472,6 +475,7 @@ public enum StudioSkills {
     - `acceptance_criteria` - confirmation of done. Prefer Given/When/Then objects with stable IDs (`AC1`, `AC2`). Plain strings are supported but less precise.
     - `playback` - ordered graph playback beats. Aim for 3-7 beats. The app ignores the old `steps` key.
     - `text` - narration typed during the beat. Keep it concise and specific.
+    - `spoken_text` - optional hidden human-language version read aloud with Kokoro-82M Bella. Write this for every beat when the story should sound natural over audio. Avoid raw table syntax unless it helps the listener; never put anything here that should be visibly shown.
     - `tables` - exact case-sensitive table names spotlighted during playback.
     - `focus` - optional exact table name the viewport should move toward.
     - `expand` - optional exact table name whose columns should be opened.
@@ -485,7 +489,7 @@ public enum StudioSkills {
     3. Draft the story card: `actor`, `goal`, and `benefit`. Keep it value-oriented, but do not force awkward wording.
     4. Add conversation notes only for useful assumptions, exclusions, or questions.
     5. Add acceptance criteria that are observable and testable.
-    6. Draft the graph playback beats in causal order: record created, identity/relation fan-out, downstream records, final state.
+    6. Draft the graph playback beats in causal order: record created, identity/relation fan-out, downstream records, final state. For each beat, write visible `text` for the graph card and hidden `spoken_text` for read-aloud playback.
     7. Verify every table and relation column exists exactly as written.
     8. Append the story to `stories`, preserving existing `tables`, `clusters`, and earlier `stories`.
     9. Tell the user to open **Features -> Stories** and activate the new story.
@@ -496,6 +500,7 @@ public enum StudioSkills {
     - Don't invent table or column names.
     - Don't make `actor`, `goal`, or `benefit` only about tables or UI mechanics; the story should keep a user or stakeholder value thread.
     - Don't write the old `steps` key. Playback belongs in `playback`.
+    - Don't show or mention `spoken_text` in visible story copy; it is for hidden voiceover only.
     - Don't use `relation` for a column unless it participates in a declared foreign-key relationship.
     - Don't overwrite existing stories unless the user explicitly asks.
     - Don't read more than 5 sample rows per table.

@@ -39,11 +39,11 @@ public struct SchemaGraphView: View {
     @State private var expandedStoryIDs: Set<String> = []
     @State private var activeStory: SchemaSidecar.Story?
     @State private var activeStoryPlaybackIndex: Int?
-    @State private var displayedStoryText = ""
     @State private var storyHighlightedTableIDs: Set<String> = []
     @State private var storyFocusNodeID: String?
     @State private var storyRelationTarget: GraphRelationHoverTarget?
     @State private var storyPlaybackTask: Task<Void, Never>? = nil
+    @State private var storySpeechNarrator = StorySpeechNarrator()
     @State private var isStoryPaused = false
     @State private var activeStoryViewportSize: CGSize = .zero
 
@@ -159,6 +159,8 @@ public struct SchemaGraphView: View {
             .onDisappear {
                 storyPlaybackTask?.cancel()
                 storyPlaybackTask = nil
+                storySpeechNarrator.stop()
+                updateReadAloudStatus(.idle)
                 session.storyPlaybackOverlay = nil
             }
         }
@@ -818,6 +820,23 @@ public struct SchemaGraphView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
+                    setStoryReadAloudEnabled(!session.isStoryReadAloudEnabled)
+                } label: {
+                    Image(systemName: session.isStoryReadAloudEnabled ? "speaker.wave.2.fill" : "speaker.wave.2")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(session.isStoryReadAloudEnabled ? Color.white : StudioPalette.secondaryText)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            session.isStoryReadAloudEnabled
+                                ? StudioPalette.accent
+                                : StudioPalette.headerSurface.opacity(0.82),
+                            in: Circle()
+                        )
+                }
+                .buttonStyle(.borderless)
+                .help(session.isStoryReadAloudEnabled ? "Disable read aloud" : "Read beats aloud with Kokoro Bella")
+
+                Button {
                     startStory(story, in: viewportSize)
                 } label: {
                     Label(activeStory?.id == story.id ? "Restart" : "Activate", systemImage: "play.fill")
@@ -889,6 +908,7 @@ public struct SchemaGraphView: View {
 
     private func startStory(_ story: SchemaSidecar.Story, in size: CGSize) {
         storyPlaybackTask?.cancel()
+        storySpeechNarrator.stop()
         if session.showAllGraphTableCards {
             session.setShowAllGraphTableCards(false)
         }
@@ -896,11 +916,12 @@ public struct SchemaGraphView: View {
             isStoriesPresented = false
             activeStory = story
             activeStoryPlaybackIndex = nil
-            displayedStoryText = ""
+            session.storyPlaybackDisplayedText = ""
             storyHighlightedTableIDs = []
             storyFocusNodeID = nil
             storyRelationTarget = nil
             isStoryPaused = false
+            updateReadAloudStatus(.idle)
             activeStoryViewportSize = size
             session.storyPlaybackCardOffset = .zero
             pulledGraphPositions.removeAll()
@@ -920,13 +941,18 @@ public struct SchemaGraphView: View {
                 return
             }
 
+            guard await prepareStoryAudioIfNeeded(for: story) else {
+                storyPlaybackTask = nil
+                return
+            }
+
             for index in clampedStartIndex..<story.playback.count {
                 guard !Task.isCancelled else { return }
                 await waitForStoryResume()
                 guard !Task.isCancelled else { return }
                 let beat = story.playback[index]
                 applyStoryPlaybackBeat(beat, index: index, in: size)
-                await typeStoryText(beat.text, durationMilliseconds: beat.durationMilliseconds)
+                await playStoryBeat(beat)
             }
             storyPlaybackTask = nil
         }
@@ -938,7 +964,7 @@ public struct SchemaGraphView: View {
         withAnimation(.snappy(duration: 0.18)) {
             activeStory = nil
             activeStoryPlaybackIndex = nil
-            displayedStoryText = ""
+            session.storyPlaybackDisplayedText = ""
             storyHighlightedTableIDs = []
             storyFocusNodeID = nil
             storyRelationTarget = nil
@@ -949,11 +975,14 @@ public struct SchemaGraphView: View {
             session.setExpandedGraphNode(nil)
             session.storyPlaybackOverlay = nil
         }
+        storySpeechNarrator.stop()
+        updateReadAloudStatus(.idle)
     }
 
     private func toggleStoryPause() {
         if isStoryPaused {
             isStoryPaused = false
+            storySpeechNarrator.resume()
             guard storyPlaybackTask == nil,
                   let activeStory,
                   !activeStory.playback.isEmpty
@@ -965,6 +994,7 @@ public struct SchemaGraphView: View {
             runStoryPlayback(activeStory, from: resumeIndex, in: activeStoryViewportSize)
         } else {
             isStoryPaused = true
+            storySpeechNarrator.pause()
         }
         publishStoryPlaybackOverlay()
     }
@@ -985,7 +1015,7 @@ public struct SchemaGraphView: View {
             runStoryPlayback(activeStory, from: nextIndex, in: activeStoryViewportSize)
         } else {
             applyStoryPlaybackBeat(beat, index: nextIndex, in: activeStoryViewportSize)
-            displayedStoryText = beat.text
+            session.storyPlaybackDisplayedText = beat.text
             isStoryPaused = true
             publishStoryPlaybackOverlay()
         }
@@ -997,11 +1027,82 @@ public struct SchemaGraphView: View {
             jumpStoryPlayback(by: -1)
         case .togglePause:
             toggleStoryPause()
+        case .toggleReadAloud:
+            toggleStoryReadAloud()
+        case .installReadAloud:
+            installStoryReadAloud()
         case .next:
             jumpStoryPlayback(by: 1)
         case .stop:
             stopStory()
         }
+    }
+
+    private func toggleStoryReadAloud() {
+        setStoryReadAloudEnabled(!session.isStoryReadAloudEnabled)
+    }
+
+    private func setStoryReadAloudEnabled(_ isEnabled: Bool) {
+        guard session.isStoryReadAloudEnabled != isEnabled else {
+            publishStoryPlaybackOverlay()
+            return
+        }
+
+        session.isStoryReadAloudEnabled = isEnabled
+        if isEnabled {
+            if storySpeechNarrator.isKokoroInstalled {
+                updateReadAloudStatus(.idle)
+            } else {
+                pauseStoryForReadAloudInstall()
+                updateReadAloudStatus(.installRequired)
+            }
+
+            if storySpeechNarrator.isKokoroInstalled,
+               let activeStory,
+               !activeStory.playback.isEmpty {
+                let currentIndex = min(activeStoryPlaybackIndex ?? 0, activeStory.playback.count - 1)
+                runStoryPlayback(activeStory, from: currentIndex, in: activeStoryViewportSize)
+            }
+        } else {
+            storySpeechNarrator.stop()
+            updateReadAloudStatus(.idle)
+        }
+        publishStoryPlaybackOverlay()
+    }
+
+    private func installStoryReadAloud() {
+        guard session.isStoryReadAloudEnabled else {
+            session.isStoryReadAloudEnabled = true
+            return installStoryReadAloud()
+        }
+
+        pauseStoryForReadAloudInstall()
+        updateReadAloudStatus(.installing("Starting Kokoro install"))
+        publishStoryPlaybackOverlay()
+
+        storySpeechNarrator.install { status in
+            updateReadAloudStatus(status)
+            publishStoryPlaybackOverlay()
+        } completion: { didInstall in
+            guard didInstall else { return }
+            updateReadAloudStatus(.idle)
+            if let activeStory,
+               !activeStory.playback.isEmpty {
+                let currentIndex = activeStoryPlaybackIndex ?? 0
+                runStoryPlayback(activeStory, from: currentIndex, in: activeStoryViewportSize)
+            }
+            publishStoryPlaybackOverlay()
+        }
+    }
+
+    private func pauseStoryForReadAloudInstall() {
+        isStoryPaused = true
+        storySpeechNarrator.pause()
+    }
+
+    private func updateReadAloudStatus(_ status: StoryReadAloudStatus) {
+        session.storyReadAloudStatus = status
+        session.isStoryReadAloudBusy = status.isBusy
     }
 
     private func publishStoryPlaybackOverlay() {
@@ -1020,36 +1121,108 @@ public struct SchemaGraphView: View {
             benefit: activeStory.benefit,
             conversation: activeStory.conversation,
             acceptanceCriteria: activeStory.acceptanceCriteria.map(\.displayText),
-            displayedText: displayedStoryText,
+            displayedText: session.storyPlaybackDisplayedText,
             acceptanceText: activeStory.acceptanceCriteria.isEmpty ? nil : acceptanceSummary(for: activeStory),
             index: index,
             playbackCount: playbackCount,
             isPaused: isStoryPaused,
+            isReadAloudEnabled: session.isStoryReadAloudEnabled,
+            readAloudStatus: session.storyReadAloudStatus,
+            isReadAloudBusy: session.isStoryReadAloudBusy,
             canGoBackward: index > 0,
             canGoForward: index + 1 < activeStory.playback.count
         )
     }
 
-    private static let storyTypeDelayMilliseconds = 5
+    private func prepareStoryAudioIfNeeded(for story: SchemaSidecar.Story) async -> Bool {
+        guard session.isStoryReadAloudEnabled else { return true }
+        guard storySpeechNarrator.isKokoroInstalled else {
+            pauseStoryForReadAloudInstall()
+            updateReadAloudStatus(.installRequired)
+            publishStoryPlaybackOverlay()
+            return false
+        }
+
+        isStoryPaused = true
+        updateReadAloudStatus(.preparing("Preparing audio"))
+        publishStoryPlaybackOverlay()
+
+        let didPrepare = await storySpeechNarrator.prepare(
+            story.playback.map { storySpeechText(for: $0) }
+        ) { status in
+            updateReadAloudStatus(status)
+            publishStoryPlaybackOverlay()
+        }
+
+        guard didPrepare else { return false }
+        isStoryPaused = false
+        updateReadAloudStatus(.idle)
+        publishStoryPlaybackOverlay()
+        return true
+    }
+
+    private func playStoryBeat(_ beat: SchemaSidecar.StoryPlaybackStep) async {
+        if session.isStoryReadAloudEnabled {
+            let typingTask = Task { @MainActor in
+                await typeStoryText(beat.text, durationMilliseconds: nil)
+            }
+            let didFinishAudio = await storySpeechNarrator.playPrepared(storySpeechText(for: beat)) { status in
+                updateReadAloudStatus(status)
+                publishStoryPlaybackOverlay()
+            }
+            await typingTask.value
+            if didFinishAudio {
+                updateReadAloudStatus(.idle)
+                publishStoryPlaybackOverlay()
+            }
+        } else {
+            await typeStoryText(beat.text, durationMilliseconds: beat.durationMilliseconds)
+        }
+    }
+
+    private func storySpeechText(for beat: SchemaSidecar.StoryPlaybackStep) -> String {
+        let spokenText = beat.spokenText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let spokenText, !spokenText.isEmpty {
+            return spokenText
+        }
+        return beat.text
+    }
+
+    private static let storyTypeTickMilliseconds = 18
+    private static let storyTypeCharactersPerTick = 2
+    private static let storyBeatHoldMinimumMilliseconds = 900
 
     @MainActor
     private func typeStoryText(_ text: String, durationMilliseconds: Int?) async {
-        displayedStoryText = ""
-        publishStoryPlaybackOverlay()
-        let typeDelay = Self.storyTypeDelayMilliseconds
+        session.storyPlaybackDisplayedText = ""
 
-        for character in text {
+        var index = text.startIndex
+        while index < text.endIndex {
             guard !Task.isCancelled else { return }
             await waitForStoryResume()
             guard !Task.isCancelled else { return }
-            displayedStoryText.append(character)
-            publishStoryPlaybackOverlay()
-            try? await Task.sleep(for: .milliseconds(typeDelay))
+
+            let end = text.index(
+                index,
+                offsetBy: Self.storyTypeCharactersPerTick,
+                limitedBy: text.endIndex
+            ) ?? text.endIndex
+            session.storyPlaybackDisplayedText.append(contentsOf: text[index..<end])
+            index = end
+            try? await Task.sleep(for: .milliseconds(Self.storyTypeTickMilliseconds))
         }
 
-        let requestedDuration = max(durationMilliseconds ?? 3_400, 1_600)
-        let holdDuration = max(700, requestedDuration - text.count * typeDelay)
+        let typedCharacterCount = text.count
+        let typingDuration = Self.typingDuration(for: typedCharacterCount)
+        let requestedDuration = max(durationMilliseconds ?? 3_800, 2_400)
+        let holdDuration = max(Self.storyBeatHoldMinimumMilliseconds, requestedDuration - typingDuration)
         await waitForStoryResume(milliseconds: holdDuration)
+    }
+
+    private static func typingDuration(for characterCount: Int) -> Int {
+        guard characterCount > 0 else { return 0 }
+        let ticks = (characterCount + storyTypeCharactersPerTick - 1) / storyTypeCharactersPerTick
+        return ticks * storyTypeTickMilliseconds
     }
 
     @MainActor

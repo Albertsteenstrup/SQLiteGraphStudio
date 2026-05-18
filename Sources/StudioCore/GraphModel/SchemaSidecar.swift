@@ -222,6 +222,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
 
     public struct StoryPlaybackStep: Codable, Sendable, Hashable {
         public var text: String
+        public var spokenText: String?
         public var tables: [String]
         public var focus: String?
         public var expand: String?
@@ -230,6 +231,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
 
         public init(
             text: String,
+            spokenText: String? = nil,
             tables: [String],
             focus: String? = nil,
             expand: String? = nil,
@@ -237,6 +239,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
             durationMilliseconds: Int? = nil
         ) {
             self.text = text
+            self.spokenText = spokenText
             self.tables = tables
             self.focus = focus
             self.expand = expand
@@ -246,6 +249,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
 
         private enum CodingKeys: String, CodingKey {
             case text
+            case spokenText = "spoken_text"
+            case humanText = "human_text"
             case tables
             case focus
             case expand
@@ -256,11 +261,24 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+            spokenText = try container.decodeIfPresent(String.self, forKey: .spokenText)
+                ?? container.decodeIfPresent(String.self, forKey: .humanText)
             tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []
             focus = try container.decodeIfPresent(String.self, forKey: .focus)
             expand = try container.decodeIfPresent(String.self, forKey: .expand)
             relation = try container.decodeIfPresent(StoryColumnReference.self, forKey: .relation)
             durationMilliseconds = try container.decodeIfPresent(Int.self, forKey: .durationMilliseconds)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(spokenText, forKey: .spokenText)
+            try container.encode(tables, forKey: .tables)
+            try container.encodeIfPresent(focus, forKey: .focus)
+            try container.encodeIfPresent(expand, forKey: .expand)
+            try container.encodeIfPresent(relation, forKey: .relation)
+            try container.encodeIfPresent(durationMilliseconds, forKey: .durationMilliseconds)
         }
     }
 

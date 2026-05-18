@@ -124,6 +124,7 @@ struct AppSessionSmokeTests {
             playback: [
                 .init(
                     text: "The author account is created first.",
+                    spokenText: "First, the author gets an account record.",
                     tables: ["authors"],
                     focus: "authors",
                     expand: "authors",
@@ -140,7 +141,39 @@ struct AppSessionSmokeTests {
         #expect(session.stories.first?.id == "author-onboarding")
         #expect(session.stories.first?.userStoryText == "As a new author, I want to create an account, so that I can publish posts under my own identity.")
         #expect(session.stories.first?.acceptanceCriteria.first?.displayText == "Given a valid signup request, when the author account is created, then the author can be found by email")
+        #expect(session.stories.first?.playback.first?.spokenText == "First, the author gets an account record.")
         #expect(session.stories.first?.playback.first?.relation?.column == "id")
+    }
+
+    @Test
+    func storyPlaybackAcceptsHumanTextAlias() async throws {
+        let url = try TestSupport.createFixture(named: "sidecar-story-human-text")
+        let sidecarJSON = """
+        {
+          "version": 1,
+          "stories": [
+            {
+              "id": "human-text-alias",
+              "title": "Human Text Alias",
+              "created_at": "2026-05-18T12:00:00Z",
+              "playback": [
+                {
+                  "text": "The visible graph beat stays technical.",
+                  "human_text": "The hidden voiceover can sound more natural.",
+                  "tables": ["authors"]
+                }
+              ]
+            }
+          ]
+        }
+        """
+        try sidecarJSON.write(to: SchemaSidecarStore.sidecarURL(for: url), atomically: true, encoding: .utf8)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        #expect(session.stories.first?.playback.first?.text == "The visible graph beat stays technical.")
+        #expect(session.stories.first?.playback.first?.spokenText == "The hidden voiceover can sound more natural.")
     }
 
     @Test

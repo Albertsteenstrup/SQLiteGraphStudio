@@ -13,6 +13,53 @@ public struct RefreshToast: Identifiable, Sendable, Equatable {
     }
 }
 
+public enum StoryReadAloudStatus: Sendable, Equatable {
+    case idle
+    case installRequired
+    case installing(String)
+    case preparing(String)
+    case generating
+    case speaking
+    case failed(String)
+
+    public var displayText: String? {
+        switch self {
+        case .idle:
+            return nil
+        case .installRequired:
+            return "Install Kokoro"
+        case .installing(let message):
+            return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Installing Kokoro" : message
+        case .preparing(let message):
+            return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Preparing audio" : message
+        case .generating:
+            return "Preparing voice"
+        case .speaking:
+            return "Reading"
+        case .failed(let message):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count > 96 else { return trimmed }
+            return "\(trimmed.prefix(93))..."
+        }
+    }
+
+    public var isBusy: Bool {
+        switch self {
+        case .installing, .preparing, .generating:
+            return true
+        case .idle, .installRequired, .speaking, .failed:
+            return false
+        }
+    }
+
+    public var requiresInstall: Bool {
+        if case .installRequired = self {
+            return true
+        }
+        return false
+    }
+}
+
 public struct StoryPlaybackOverlayState: Sendable, Equatable {
     public let title: String
     public let userStoryText: String?
@@ -26,6 +73,9 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
     public let index: Int
     public let playbackCount: Int
     public let isPaused: Bool
+    public let isReadAloudEnabled: Bool
+    public let readAloudStatus: StoryReadAloudStatus
+    public let isReadAloudBusy: Bool
     public let canGoBackward: Bool
     public let canGoForward: Bool
 
@@ -42,6 +92,9 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
         index: Int,
         playbackCount: Int,
         isPaused: Bool,
+        isReadAloudEnabled: Bool = false,
+        readAloudStatus: StoryReadAloudStatus = .idle,
+        isReadAloudBusy: Bool = false,
         canGoBackward: Bool,
         canGoForward: Bool
     ) {
@@ -57,6 +110,9 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
         self.index = index
         self.playbackCount = playbackCount
         self.isPaused = isPaused
+        self.isReadAloudEnabled = isReadAloudEnabled
+        self.readAloudStatus = readAloudStatus
+        self.isReadAloudBusy = isReadAloudBusy
         self.canGoBackward = canGoBackward
         self.canGoForward = canGoForward
     }
@@ -66,6 +122,8 @@ public struct StoryPlaybackCommand: Identifiable, Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case previous
         case togglePause
+        case toggleReadAloud
+        case installReadAloud
         case next
         case stop
     }
@@ -109,6 +167,11 @@ public final class AppSession {
     public var isSkillsPresented = false
     public var refreshToast: RefreshToast?
     public var storyPlaybackOverlay: StoryPlaybackOverlayState?
+    /// Beat narration shown on the playback card; updated during typing without rebuilding overlay state.
+    public var storyPlaybackDisplayedText: String = ""
+    public var isStoryReadAloudEnabled = false
+    public var storyReadAloudStatus: StoryReadAloudStatus = .idle
+    public var isStoryReadAloudBusy = false
     public var storyPlaybackCardOffset: CGSize = .zero
     public var storyPlaybackCommand: StoryPlaybackCommand?
     // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary

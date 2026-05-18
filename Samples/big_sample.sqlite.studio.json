@@ -341,12 +341,14 @@
       "playback": [
         {
           "text": "The sign-in attempt begins by finding the existing account in users, using email as the login identifier and password_hash for credential verification.",
+          "spoken_text": "Sign-in starts by finding the existing account and checking the submitted credentials against the stored login details.",
           "tables": ["users"],
           "focus": "users",
           "expand": "users"
         },
         {
           "text": "After the account is verified, the new session is attached to users.id so later requests can resolve the session token back to the signed-in account.",
+          "spoken_text": "Once the account is verified, the app creates a session so future requests can be traced back to this signed-in user.",
           "tables": ["users", "sessions"],
           "focus": "sessions",
           "expand": "sessions",
@@ -354,6 +356,7 @@
         },
         {
           "text": "Authorization context fans out through user_roles, which uses the same users.id identity anchor to find each role assignment.",
+          "spoken_text": "Then the app looks up the user's role assignments, building the access context from the same identity.",
           "tables": ["users", "user_roles"],
           "focus": "user_roles",
           "expand": "user_roles",
@@ -361,6 +364,7 @@
         },
         {
           "text": "Each role assignment resolves to roles, giving the app named access levels for the authenticated user.",
+          "spoken_text": "Each assignment resolves into a named role, giving the app a clear access level for this session.",
           "tables": ["user_roles", "roles"],
           "focus": "roles",
           "expand": "roles",
@@ -368,6 +372,7 @@
         },
         {
           "text": "With the session token active and roles loaded, the app can treat the request as signed in and apply permission checks from the available access catalog.",
+          "spoken_text": "With the session active and roles loaded, the app can handle the request as authenticated and apply the right permission checks.",
           "tables": ["sessions", "users", "roles", "permissions"],
           "focus": "sessions",
           "expand": "sessions"

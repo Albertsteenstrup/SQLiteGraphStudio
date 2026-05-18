@@ -59,6 +59,7 @@ public struct StudioRootView: View {
             if let storyOverlay = session.storyPlaybackOverlay {
                 StoryPlaybackOverlayCard(
                     state: storyOverlay,
+                    displayedText: session.storyPlaybackDisplayedText,
                     offset: Binding(
                         get: { session.storyPlaybackCardOffset },
                         set: { session.storyPlaybackCardOffset = $0 }
@@ -100,7 +101,7 @@ public struct StudioRootView: View {
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
         .animation(.snappy(duration: 0.3), value: session.refreshToast?.id)
-        .animation(.snappy(duration: 0.24), value: session.storyPlaybackOverlay)
+        .animation(.snappy(duration: 0.24), value: session.storyPlaybackOverlay != nil)
         .onChange(of: session.refreshToast?.id) { _, newID in
             refreshToastTask?.cancel()
             guard newID != nil else { return }
@@ -664,11 +665,16 @@ private struct WorkspaceDockPill: View {
 
 private struct StoryPlaybackOverlayCard: View {
     let state: StoryPlaybackOverlayState
+    let displayedText: String
     @Binding var offset: CGSize
     let sendCommand: (StoryPlaybackCommand.Kind) -> Void
 
     @State private var dragStartOffset: CGSize?
     @State private var isExpanded = false
+
+    private var presentationOffset: CGSize {
+        offset
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -690,11 +696,12 @@ private struct StoryPlaybackOverlayCard: View {
 
                                 Divider().opacity(0.55)
 
-                                Text(state.displayedText)
+                                Text(displayedText)
                                     .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(StudioPalette.primaryText)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: 660, alignment: .leading)
+                                    .animation(nil, value: displayedText)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.trailing, 6)
@@ -702,6 +709,7 @@ private struct StoryPlaybackOverlayCard: View {
                         .frame(height: 340, alignment: .top)
                     } else {
                         compactStoryBody
+                            .frame(height: state.acceptanceText == nil ? 100 : 122, alignment: .topLeading)
                     }
                 }
 
@@ -720,8 +728,16 @@ private struct StoryPlaybackOverlayCard: View {
         }
         .shadow(color: StudioPalette.shadow.opacity(0.85), radius: 22, y: 12)
         .frame(maxWidth: isExpanded ? 760 : 980)
-        .offset(offset)
+        .offset(presentationOffset)
+        .transaction { transaction in
+            if dragStartOffset != nil {
+                transaction.animation = nil
+            }
+        }
+        .animation(nil, value: displayedText)
         .animation(.snappy(duration: 0.18), value: isExpanded)
+        .contentShape(Rectangle())
+        .highPriorityGesture(dragGesture)
     }
 
     private var storyHeader: some View {
@@ -730,8 +746,6 @@ private struct StoryPlaybackOverlayCard: View {
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(StudioPalette.tertiaryText)
                 .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
-                .gesture(dragGesture)
                 .help("Drag story card")
 
             Text(state.title)
@@ -755,6 +769,10 @@ private struct StoryPlaybackOverlayCard: View {
                     .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
             }
 
+            if state.isReadAloudEnabled, let readAloudStatus = state.readAloudStatus.displayText {
+                readAloudStatusPill(readAloudStatus)
+            }
+
             Button {
                 isExpanded.toggle()
             } label: {
@@ -769,6 +787,43 @@ private struct StoryPlaybackOverlayCard: View {
         }
     }
 
+    private func readAloudStatusPill(_ text: String) -> some View {
+        Group {
+            if state.readAloudStatus.requiresInstall {
+                Button {
+                    sendCommand(.installReadAloud)
+                } label: {
+                    Label(text, systemImage: "arrow.down.circle.fill")
+                        .font(.caption2.weight(.bold))
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(StudioPalette.accent, in: Capsule())
+                .help("Install Kokoro for read aloud")
+            } else {
+                HStack(spacing: 5) {
+                    if state.isReadAloudBusy {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.58)
+                            .frame(width: 10, height: 10)
+                    }
+
+                    Text(text)
+                        .font(.caption2.weight(.bold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(StudioPalette.secondaryText)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
+            }
+        }
+    }
+
     private var compactStoryBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let userStoryText = state.userStoryText {
@@ -779,12 +834,13 @@ private struct StoryPlaybackOverlayCard: View {
                     .frame(maxWidth: 620, alignment: .leading)
             }
 
-            Text(state.displayedText)
+            Text(displayedText)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(StudioPalette.primaryText)
                 .lineLimit(4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 620, alignment: .leading)
+                .animation(nil, value: displayedText)
 
             if let acceptanceText = state.acceptanceText {
                 Text(acceptanceText)
@@ -798,32 +854,41 @@ private struct StoryPlaybackOverlayCard: View {
 
     private var controls: some View {
         HStack(spacing: 6) {
-                storyControlButton(
-                    systemImage: "backward.end.fill",
-                    help: "Previous beat",
-                    isDisabled: !state.canGoBackward
-                ) {
-                    sendCommand(.previous)
-                }
+            storyControlButton(
+                systemImage: "backward.end.fill",
+                help: "Previous beat",
+                isDisabled: !state.canGoBackward || state.isReadAloudBusy
+            ) {
+                sendCommand(.previous)
+            }
 
-                storyControlButton(
-                    systemImage: state.isPaused ? "play.fill" : "pause.fill",
-                    help: state.isPaused ? "Resume story" : "Pause story"
-                ) {
-                    sendCommand(.togglePause)
-                }
+            storyControlButton(
+                systemImage: state.isPaused ? "play.fill" : "pause.fill",
+                help: state.isPaused ? "Resume story" : "Pause story",
+                isDisabled: state.isReadAloudBusy
+            ) {
+                sendCommand(.togglePause)
+            }
 
-                storyControlButton(
-                    systemImage: "forward.end.fill",
-                    help: "Next beat",
-                    isDisabled: !state.canGoForward
-                ) {
-                    sendCommand(.next)
-                }
+            storyControlButton(
+                systemImage: state.isReadAloudEnabled ? "speaker.wave.2.fill" : "speaker.wave.2",
+                help: state.isReadAloudEnabled ? "Disable read aloud" : "Read beats aloud with Kokoro Bella",
+                isActive: state.isReadAloudEnabled
+            ) {
+                sendCommand(.toggleReadAloud)
+            }
 
-                storyControlButton(systemImage: "xmark", help: "Stop story") {
-                    sendCommand(.stop)
-                }
+            storyControlButton(
+                systemImage: "forward.end.fill",
+                help: "Next beat",
+                isDisabled: !state.canGoForward || state.isReadAloudBusy
+            ) {
+                sendCommand(.next)
+            }
+
+            storyControlButton(systemImage: "xmark", help: "Stop story") {
+                sendCommand(.stop)
+            }
         }
     }
 
@@ -834,10 +899,14 @@ private struct StoryPlaybackOverlayCard: View {
                     dragStartOffset = offset
                 }
                 let start = dragStartOffset ?? .zero
-                offset = CGSize(
-                    width: start.width + value.translation.width,
-                    height: start.height + value.translation.height
-                )
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    offset = CGSize(
+                        width: start.width + value.translation.width,
+                        height: start.height + value.translation.height
+                    )
+                }
             }
             .onEnded { _ in
                 dragStartOffset = nil
@@ -848,14 +917,15 @@ private struct StoryPlaybackOverlayCard: View {
         systemImage: String,
         help: String,
         isDisabled: Bool = false,
+        isActive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(isDisabled ? StudioPalette.tertiaryText : StudioPalette.secondaryText)
+                .foregroundStyle(isDisabled ? StudioPalette.tertiaryText : isActive ? Color.white : StudioPalette.secondaryText)
                 .frame(width: 28, height: 28)
-                .background(StudioPalette.headerSurface.opacity(isDisabled ? 0.46 : 0.82), in: Circle())
+                .background(isActive ? StudioPalette.accent : StudioPalette.headerSurface.opacity(isDisabled ? 0.46 : 0.82), in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
