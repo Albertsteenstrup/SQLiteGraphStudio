@@ -1030,11 +1030,13 @@ public struct SchemaGraphView: View {
         )
     }
 
+    private static let storyTypeDelayMilliseconds = 5
+
     @MainActor
     private func typeStoryText(_ text: String, durationMilliseconds: Int?) async {
         displayedStoryText = ""
         publishStoryPlaybackOverlay()
-        let typeDelay = 14
+        let typeDelay = Self.storyTypeDelayMilliseconds
 
         for character in text {
             guard !Task.isCancelled else { return }
