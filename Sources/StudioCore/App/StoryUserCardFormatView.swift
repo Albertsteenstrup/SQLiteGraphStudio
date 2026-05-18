@@ -60,7 +60,7 @@ struct StoryUserCardFormatView: View {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(StudioPalette.tertiaryText)
 
-            ForEach(Array(items.prefix(4).enumerated()), id: \.offset) { _, item in
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 Text(item)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(StudioPalette.secondaryText)

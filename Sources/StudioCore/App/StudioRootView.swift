@@ -677,7 +677,7 @@ private struct StoryPlaybackOverlayCard: View {
                     storyHeader
 
                     if isExpanded {
-                        ScrollView {
+                        ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 12) {
                                 StoryUserCardFormatView(
                                     actor: state.actor,
@@ -699,8 +699,7 @@ private struct StoryPlaybackOverlayCard: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.trailing, 6)
                         }
-                        .scrollIndicators(.visible)
-                        .frame(maxHeight: 340)
+                        .frame(height: 340, alignment: .top)
                     } else {
                         compactStoryBody
                     }
@@ -722,7 +721,6 @@ private struct StoryPlaybackOverlayCard: View {
         .shadow(color: StudioPalette.shadow.opacity(0.85), radius: 22, y: 12)
         .frame(maxWidth: isExpanded ? 760 : 980)
         .offset(offset)
-        .simultaneousGesture(dragGesture)
         .animation(.snappy(duration: 0.18), value: isExpanded)
     }
 
@@ -731,6 +729,9 @@ private struct StoryPlaybackOverlayCard: View {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(StudioPalette.tertiaryText)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+                .gesture(dragGesture)
                 .help("Drag story card")
 
             Text(state.title)

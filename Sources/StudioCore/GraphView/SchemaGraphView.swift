@@ -221,7 +221,7 @@ public struct SchemaGraphView: View {
                 }
 
             GraphTrackpadInputSurface(
-                ignoresInput: isStoriesPresented,
+                ignoresInput: isStoriesPresented || session.storyPlaybackOverlay != nil,
                 onPan: { delta in
                     applyTrackpadPan(delta)
                 },
@@ -847,29 +847,35 @@ public struct SchemaGraphView: View {
             if isExpanded {
                 Divider().opacity(0.55)
 
-                StoryUserCardFormatView(
-                    actor: story.actor,
-                    goal: story.goal,
-                    benefit: story.benefit,
-                    fallbackText: story.userStoryText,
-                    conversation: story.conversation,
-                    acceptanceCriteria: story.acceptanceCriteria.map(\.displayText)
-                )
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        StoryUserCardFormatView(
+                            actor: story.actor,
+                            goal: story.goal,
+                            benefit: story.benefit,
+                            fallbackText: story.userStoryText,
+                            conversation: story.conversation,
+                            acceptanceCriteria: story.acceptanceCriteria.map(\.displayText)
+                        )
 
-                if !story.playback.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Playback")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(StudioPalette.tertiaryText)
+                        if !story.playback.isEmpty {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Playback")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(StudioPalette.tertiaryText)
 
-                        ForEach(Array(story.playback.prefix(4).enumerated()), id: \.offset) { index, beat in
-                            Text("\(index + 1). \(beat.text)")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(StudioPalette.secondaryText)
-                                .lineLimit(2)
+                                ForEach(Array(story.playback.enumerated()), id: \.offset) { index, beat in
+                                    Text("\(index + 1). \(beat.text)")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(StudioPalette.secondaryText)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: 240, alignment: .top)
             }
         }
         .padding(12)
