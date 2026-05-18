@@ -64,10 +64,19 @@ public struct TableWorkspaceView: View {
                     Button {
                         session.selectTab(id: tab.id)
                     } label: {
+                        let tableDescription = session.tableDescription(for: tab.descriptor.name)
                         HStack(spacing: 8) {
-                            Text(tab.title)
-                                .lineLimit(1)
-                                .foregroundStyle(StudioPalette.primaryText)
+                            if let tableDescription {
+                                DescribedTableNameText(
+                                    title: tab.title,
+                                    description: tableDescription,
+                                    font: .body
+                                )
+                            } else {
+                                Text(tab.title)
+                                    .lineLimit(1)
+                                    .foregroundStyle(StudioPalette.primaryText)
+                            }
 
                             Button {
                                 session.closeTab(id: tab.id)
@@ -111,6 +120,9 @@ public struct TableWorkspaceView: View {
             TableGridRepresentable(
                 tab: activeTab,
                 revision: activeTab.revision,
+                columnDescription: { columnName in
+                    session.columnDescription(for: activeTab.descriptor.name, column: columnName)
+                },
                 requestColumnDrop: { column in
                     pendingColumnDrop = column
                 }
@@ -182,9 +194,18 @@ public struct TableWorkspaceView: View {
     private func header(for activeTab: TableTabModel) -> some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(activeTab.title)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(StudioPalette.primaryText)
+                let tableDescription = session.tableDescription(for: activeTab.descriptor.name)
+                if let tableDescription {
+                    DescribedTableNameText(
+                        title: activeTab.title,
+                        description: tableDescription,
+                        font: .title3.weight(.semibold)
+                    )
+                } else {
+                    Text(activeTab.title)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(StudioPalette.primaryText)
+                }
                 HStack(spacing: 8) {
                     Text(activeTab.descriptor.isEditable ? "Editable table" : "Read-only table")
                     Text(activeTab.rowCountLabel)
@@ -328,5 +349,47 @@ public struct TableWorkspaceView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+}
+
+private struct DescribedTableNameText: View {
+    let title: String
+    let description: String
+    let font: Font
+    @State private var isHovering = false
+
+    var body: some View {
+        Text(title)
+            .lineLimit(1)
+            .font(font)
+            .foregroundStyle(StudioPalette.primaryText)
+            .underline(true, color: StudioPalette.primaryText.opacity(0.4))
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovering = hovering
+                if hovering {
+                    NSCursor.pointingHand.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
+            .popover(isPresented: $isHovering, arrowEdge: .top) {
+                TableNameDescriptionTooltip(text: description)
+            }
+    }
+}
+
+private struct TableNameDescriptionTooltip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(StudioPalette.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(width: 230, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

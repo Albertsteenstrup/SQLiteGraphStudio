@@ -1,11 +1,11 @@
 ---
 name: schema-descriptions
-description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
+description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
 ---
 
 # schema-descriptions
 
-You write descriptions to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Features -> Schema Notes**. The database DDL is not modified.
+You write descriptions to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Features -> Schema Notes**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
 Descriptions are intentionally a sidecar so users can edit them directly without rebuilding SQLite tables.
 

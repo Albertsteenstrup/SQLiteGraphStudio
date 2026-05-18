@@ -77,6 +77,126 @@ struct AppSessionSmokeTests {
     }
 
     @Test
+    func sessionResolvesQueryResultColumnDescriptions() async throws {
+        let url = try TestSupport.createFixture(named: "query-result-descriptions")
+        let sidecar = SchemaSidecar(
+            tables: [
+                "authors": .init(
+                    description: "Author accounts and bylines.",
+                    columns: ["email": "Public contact email."]
+                ),
+                "posts": .init(
+                    description: "Published and draft posts.",
+                    columns: ["slug": "URL-safe public identifier."]
+                ),
+            ]
+        )
+        try SchemaSidecarStore.save(sidecar, for: url)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        #expect(session.descriptionForQueryResultColumn("authors.email") == "Public contact email.")
+        #expect(session.descriptionForQueryResultColumn("email") == "authors.email: Public contact email.")
+        #expect(session.descriptionForQueryResultColumn("posts") == "Published and draft posts.")
+        #expect(session.descriptionForQueryResultColumn("missing") == nil)
+    }
+
+    @Test
+    func sessionReadsStoriesFromSidecar() async throws {
+        let url = try TestSupport.createFixture(named: "sidecar-stories")
+        let story = SchemaSidecar.Story(
+            id: "author-onboarding",
+            title: "Author Onboarding",
+            createdAt: "2026-05-18T12:00:00Z",
+            prompt: "What happens when an author signs up?",
+            actor: "a new author",
+            goal: "to create an account",
+            benefit: "I can publish posts under my own identity",
+            acceptanceCriteria: [
+                .init(
+                    id: "AC1",
+                    given: "a valid signup request",
+                    when: "the author account is created",
+                    then: "the author can be found by email"
+                ),
+            ],
+            playback: [
+                .init(
+                    text: "The author account is created first.",
+                    tables: ["authors"],
+                    focus: "authors",
+                    expand: "authors",
+                    relation: .init(table: "authors", column: "id")
+                ),
+            ]
+        )
+        let sidecar = SchemaSidecar(stories: [story])
+        try SchemaSidecarStore.save(sidecar, for: url)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        #expect(session.stories.first?.id == "author-onboarding")
+        #expect(session.stories.first?.userStoryText == "As a new author, I want to create an account, so that I can publish posts under my own identity.")
+        #expect(session.stories.first?.acceptanceCriteria.first?.displayText == "Given a valid signup request, when the author account is created, then the author can be found by email")
+        #expect(session.stories.first?.playback.first?.relation?.column == "id")
+    }
+
+    @Test
+    func legacyStoryStepsDoNotDrivePlayback() async throws {
+        let url = try TestSupport.createFixture(named: "legacy-story-steps")
+        let legacyJSON = """
+        {
+          "version": 1,
+          "stories": [
+            {
+              "id": "legacy-steps",
+              "title": "Legacy Steps",
+              "created_at": "2026-05-18T12:00:00Z",
+              "steps": [
+                {
+                  "text": "This old playback shape should not run.",
+                  "tables": ["authors"],
+                  "focus": "authors"
+                }
+              ]
+            }
+          ]
+        }
+        """
+        try legacyJSON.write(to: SchemaSidecarStore.sidecarURL(for: url), atomically: true, encoding: .utf8)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        #expect(session.stories.first?.id == "legacy-steps")
+        #expect(session.stories.first?.playback.isEmpty == true)
+    }
+
+    @Test
+    func sessionDeletesStoriesFromSidecar() async throws {
+        let url = try TestSupport.createFixture(named: "sidecar-story-delete-\(UUID().uuidString)")
+        let story = SchemaSidecar.Story(
+            id: "delete-me",
+            title: "Delete Me",
+            createdAt: "2026-05-18T12:00:00Z",
+            playback: [
+                .init(text: "A short story.", tables: ["authors"], focus: "authors")
+            ]
+        )
+        try SchemaSidecarStore.save(SchemaSidecar(stories: [story]), for: url)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+        session.deleteStory(id: "delete-me")
+
+        #expect(session.stories.isEmpty)
+        #expect(SchemaSidecarStore.load(for: url).stories.isEmpty)
+        #expect(session.refreshToast?.message == "Updated: -1 story")
+    }
+
+    @Test
     func sessionShowsRefreshToastWhenSidecarChanges() async throws {
         let url = try TestSupport.createFixture(named: "sidecar-refresh-\(UUID().uuidString)")
         let sidecarURL = SchemaSidecarStore.sidecarURL(for: url)

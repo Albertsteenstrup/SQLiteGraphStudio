@@ -10,6 +10,8 @@ DerivedData/
 .codex/
 Samples/*.sqlite-shm
 Samples/*.sqlite-wal
+__azurite_db_*.json
+__blobstorage__/
 
 # Kiro spec configs (optional — remove this line to include specs in repo)
 # .kiro/

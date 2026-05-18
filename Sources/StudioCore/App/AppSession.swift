@@ -13,6 +13,57 @@ public struct RefreshToast: Identifiable, Sendable, Equatable {
     }
 }
 
+public struct StoryPlaybackOverlayState: Sendable, Equatable {
+    public let title: String
+    public let userStoryText: String?
+    public let displayedText: String
+    public let acceptanceText: String?
+    public let index: Int
+    public let playbackCount: Int
+    public let isPaused: Bool
+    public let canGoBackward: Bool
+    public let canGoForward: Bool
+
+    public init(
+        title: String,
+        userStoryText: String?,
+        displayedText: String,
+        acceptanceText: String?,
+        index: Int,
+        playbackCount: Int,
+        isPaused: Bool,
+        canGoBackward: Bool,
+        canGoForward: Bool
+    ) {
+        self.title = title
+        self.userStoryText = userStoryText
+        self.displayedText = displayedText
+        self.acceptanceText = acceptanceText
+        self.index = index
+        self.playbackCount = playbackCount
+        self.isPaused = isPaused
+        self.canGoBackward = canGoBackward
+        self.canGoForward = canGoForward
+    }
+}
+
+public struct StoryPlaybackCommand: Identifiable, Sendable, Equatable {
+    public enum Kind: Sendable, Equatable {
+        case previous
+        case togglePause
+        case next
+        case stop
+    }
+
+    public let id: UUID
+    public let kind: Kind
+
+    public init(id: UUID = UUID(), kind: Kind) {
+        self.id = id
+        self.kind = kind
+    }
+}
+
 @MainActor
 @Observable
 public final class AppSession {
@@ -42,6 +93,9 @@ public final class AppSession {
     public var isAlterTablePresented = false
     public var isSkillsPresented = false
     public var refreshToast: RefreshToast?
+    public var storyPlaybackOverlay: StoryPlaybackOverlayState?
+    public var storyPlaybackCardOffset: CGSize = .zero
+    public var storyPlaybackCommand: StoryPlaybackCommand?
     // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary
     public var graphZoom: CGFloat = 1.0
     public var graphPan: CGSize = .zero
@@ -202,12 +256,50 @@ public final class AppSession {
         return (raw?.isEmpty ?? true) ? nil : raw
     }
 
+    public func descriptionForQueryResultColumn(_ columnName: String) -> String? {
+        let trimmed = columnName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let separatorIndex = trimmed.firstIndex(of: ".") {
+            let tableName = String(trimmed[..<separatorIndex])
+            let fieldName = String(trimmed[trimmed.index(after: separatorIndex)...])
+            if let description = columnDescription(for: tableName, column: fieldName) {
+                return description
+            }
+            if let description = tableDescription(for: tableName) {
+                return description
+            }
+        }
+
+        if let description = tableDescription(for: trimmed) {
+            return description
+        }
+
+        let columnMatches = schemaSidecar.tables.compactMap { tableName, table in
+            table.columns[trimmed]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? (tableName, table.columns[trimmed]!)
+                : nil
+        }
+
+        guard columnMatches.count == 1, let match = columnMatches.first else {
+            return nil
+        }
+
+        return "\(match.0).\(trimmed): \(match.1)"
+    }
+
     public var hasAnyDescriptions: Bool {
         schemaSidecar.tables.values.contains { table in
             table.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                 || table.columns.values.contains {
                     !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 }
+        }
+    }
+
+    public var stories: [SchemaSidecar.Story] {
+        schemaSidecar.stories.sorted { lhs, rhs in
+            lhs.createdAt.localizedStandardCompare(rhs.createdAt) == .orderedDescending
         }
     }
 
@@ -276,12 +368,22 @@ public final class AppSession {
 
     public var skillsInstalled: Bool {
         guard let dir = skillsDirectory else { return false }
-        return StudioSkills.areInstalled(in: dir)
+        return !StudioSkills.hasMissingInstallableSkills(in: dir)
     }
 
     public func installSkills() {
         guard let dir = skillsDirectory else { return }
         try? StudioSkills.install(StudioSkills.all, to: dir)
+    }
+
+    public func installSkill(_ skill: StudioSkill) {
+        guard let dir = skillsDirectory else { return }
+        try? StudioSkills.install([skill], to: dir)
+    }
+
+    public func installSkills(to targetDirectory: StudioSkillDirectoryTarget) {
+        guard let dir = skillsDirectory else { return }
+        try? StudioSkills.install(StudioSkills.all, to: dir, targetDirectory: targetDirectory)
     }
 
     @discardableResult
@@ -405,6 +507,27 @@ public final class AppSession {
 
     public func collapseExpandedGraphNodes() {
         expandedGraphNodeIDs.removeAll()
+    }
+
+    public func deleteStory(id storyID: String) {
+        guard let databaseURL else { return }
+        guard schemaSidecar.stories.contains(where: { $0.id == storyID }) else { return }
+
+        let before = schemaSidecar
+        var next = schemaSidecar
+        next.stories.removeAll { $0.id == storyID }
+
+        do {
+            try SchemaSidecarStore.save(next, for: databaseURL)
+            schemaSidecar = next
+            refreshToast = Self.sidecarSummary(before: before, after: next)
+                .map { RefreshToast(message: $0) }
+        } catch {
+            presentedError = SQLiteUserError(
+                kind: .generic,
+                message: "Could not update the sidecar file: \(error.localizedDescription)"
+            )
+        }
     }
 
     public func persistCurrentGraphLayout() {
@@ -908,6 +1031,14 @@ public final class AppSession {
         }
         if clusterDelta < 0 {
             return "\(clusterDelta) \(pluralized("cluster", count: abs(clusterDelta)))"
+        }
+
+        let storyDelta = after.stories.count - before.stories.count
+        if storyDelta > 0 {
+            return "+\(storyDelta) \(pluralized("story", count: storyDelta))"
+        }
+        if storyDelta < 0 {
+            return "\(storyDelta) \(pluralized("story", count: abs(storyDelta)))"
         }
 
         return "notes changed"

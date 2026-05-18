@@ -4,16 +4,27 @@ import SwiftUI
 public struct TableGridRepresentable: NSViewRepresentable {
     public let tab: TableTabModel
     public let revision: Int
+    public let columnDescription: (String) -> String?
     public let requestColumnDrop: (TableColumn) -> Void
 
-    public init(tab: TableTabModel, revision: Int, requestColumnDrop: @escaping (TableColumn) -> Void) {
+    public init(
+        tab: TableTabModel,
+        revision: Int,
+        columnDescription: @escaping (String) -> String?,
+        requestColumnDrop: @escaping (TableColumn) -> Void
+    ) {
         self.tab = tab
         self.revision = revision
+        self.columnDescription = columnDescription
         self.requestColumnDrop = requestColumnDrop
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(tab: tab, requestColumnDrop: requestColumnDrop)
+        Coordinator(
+            tab: tab,
+            columnDescription: columnDescription,
+            requestColumnDrop: requestColumnDrop
+        )
     }
 
     @MainActor
@@ -26,6 +37,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
         context.coordinator.update(
             tab: tab,
             revision: revision,
+            columnDescription: columnDescription,
             requestColumnDrop: requestColumnDrop,
             scrollView: nsView
         )
@@ -34,6 +46,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
     @MainActor
     public final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         private var tab: TableTabModel
+        private var columnDescription: (String) -> String?
         private var requestColumnDrop: (TableColumn) -> Void
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
@@ -44,8 +57,13 @@ public struct TableGridRepresentable: NSViewRepresentable {
         private var contextMenuRow: Int?
         private var contextMenuColumnName: String?
 
-        init(tab: TableTabModel, requestColumnDrop: @escaping (TableColumn) -> Void) {
+        init(
+            tab: TableTabModel,
+            columnDescription: @escaping (String) -> String?,
+            requestColumnDrop: @escaping (TableColumn) -> Void
+        ) {
             self.tab = tab
+            self.columnDescription = columnDescription
             self.requestColumnDrop = requestColumnDrop
         }
 
@@ -113,10 +131,12 @@ public struct TableGridRepresentable: NSViewRepresentable {
         func update(
             tab: TableTabModel,
             revision: Int,
+            columnDescription: @escaping (String) -> String?,
             requestColumnDrop: @escaping (TableColumn) -> Void,
             scrollView: NSScrollView
         ) {
             self.tab = tab
+            self.columnDescription = columnDescription
             self.requestColumnDrop = requestColumnDrop
             self.scrollView = scrollView
             guard let tableView else { return }
@@ -252,6 +272,10 @@ public struct TableGridRepresentable: NSViewRepresentable {
             applyHeaderState(on: tableView)
         }
 
+        fileprivate func descriptionForColumn(_ columnName: String) -> String? {
+            columnDescription(columnName)
+        }
+
         private func syncColumns(on tableView: NSTableView) {
             let currentNames = tableView.tableColumns.map(\.identifier.rawValue)
             let desiredNames = tab.descriptor.columns.map(\.name)
@@ -277,12 +301,15 @@ public struct TableGridRepresentable: NSViewRepresentable {
             for tableColumn in tableView.tableColumns {
                 guard let headerCell = tableColumn.headerCell as? MetadataHeaderCell else { continue }
                 let columnName = tableColumn.identifier.rawValue
+                tableColumn.headerToolTip = nil
                 headerCell.isSortActive = tab.queryState.sort?.columnName == columnName
                 headerCell.hasFilter = !tab.filterValue(for: columnName).isEmpty
                 headerCell.isHovered = hoveredColumnName == columnName
                 headerCell.showsChevron = true
+                headerCell.hasDescription = columnDescription(columnName) != nil
             }
             tableView.headerView?.needsDisplay = true
+            headerView?.rebuildDescriptionToolTips()
         }
 
         @objc private func clipViewBoundsDidChange(_ notification: Notification) {
@@ -535,6 +562,7 @@ private final class CopyPasteTableView: NSTableView {
 final class InteractiveTableHeaderView: NSTableHeaderView {
     weak var coordinator: TableGridRepresentable.Coordinator?
     private var trackingArea: NSTrackingArea?
+    private let descriptionHoverController = HeaderDescriptionHoverController()
 
     override var isOpaque: Bool {
         true
@@ -554,6 +582,33 @@ final class InteractiveTableHeaderView: NSTableHeaderView {
         )
         addTrackingArea(trackingArea)
         self.trackingArea = trackingArea
+        rebuildDescriptionToolTips()
+    }
+
+    func rebuildDescriptionToolTips() {
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let tableView else { return }
+        for columnIndex in tableView.tableColumns.indices {
+            let tableColumn = tableView.tableColumns[columnIndex]
+            guard coordinator?.descriptionForColumn(tableColumn.identifier.rawValue) != nil,
+                  let headerCell = tableColumn.headerCell as? MetadataHeaderCell,
+                  headerCell.hasDescription
+            else {
+                continue
+            }
+            addCursorRect(headerCell.titleToolTipRect(for: headerRect(ofColumn: columnIndex)), cursor: .pointingHand)
+        }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            descriptionHoverController.clear()
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -573,6 +628,12 @@ final class InteractiveTableHeaderView: NSTableHeaderView {
     override func mouseMoved(with event: NSEvent) {
         guard let tableView else { return }
         let point = convert(event.locationInWindow, from: nil)
+        if let hit = descriptionHit(at: point) {
+            descriptionHoverController.show(text: hit.description, key: hit.key, relativeTo: hit.rect, of: self)
+        } else {
+            descriptionHoverController.clear()
+        }
+
         let columnIndex = tableView.column(at: CGPoint(x: point.x, y: 1))
         if columnIndex >= 0, tableView.tableColumns.indices.contains(columnIndex) {
             coordinator?.updateHoveredColumn(tableView.tableColumns[columnIndex].identifier.rawValue)
@@ -582,7 +643,31 @@ final class InteractiveTableHeaderView: NSTableHeaderView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        descriptionHoverController.clear()
         coordinator?.updateHoveredColumn(nil)
+    }
+
+    private func descriptionHit(at point: NSPoint) -> (key: String, description: String, rect: NSRect)? {
+        guard let tableView else { return nil }
+        let columnIndex = tableView.column(at: CGPoint(x: point.x, y: 1))
+        guard columnIndex >= 0,
+              tableView.tableColumns.indices.contains(columnIndex)
+        else {
+            return nil
+        }
+
+        let tableColumn = tableView.tableColumns[columnIndex]
+        let columnName = tableColumn.identifier.rawValue
+        guard let description = coordinator?.descriptionForColumn(columnName),
+              let headerCell = tableColumn.headerCell as? MetadataHeaderCell,
+              headerCell.hasDescription
+        else {
+            return nil
+        }
+
+        let titleRect = headerCell.titleToolTipRect(for: headerRect(ofColumn: columnIndex))
+        guard titleRect.contains(point) else { return nil }
+        return (key: columnName, description: description, rect: titleRect)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -646,6 +731,7 @@ class GridRowView: NSTableRowView {
     }
 }
 
+
 @MainActor
 final class MetadataHeaderCell: NSTableHeaderCell {
     private let subtitle: String
@@ -653,6 +739,7 @@ final class MetadataHeaderCell: NSTableHeaderCell {
     var hasFilter = false
     var isHovered = false
     var showsChevron = true
+    var hasDescription = false
 
     init(title: String, subtitle: String) {
         self.subtitle = subtitle
@@ -670,6 +757,19 @@ final class MetadataHeaderCell: NSTableHeaderCell {
         NSRect(x: cellFrame.maxX - 30, y: cellFrame.midY - 9, width: 18, height: 18)
     }
 
+    func titleTextRect(for cellFrame: NSRect) -> NSRect {
+        let textRect = cellFrame.insetBy(dx: 16, dy: 8)
+        let chevronRect = chevronRect(for: cellFrame)
+        let availableWidth = max(60, (showsChevron ? chevronRect.minX : cellFrame.maxX - 12) - textRect.minX - 8)
+        return NSRect(x: textRect.minX, y: textRect.minY + 24, width: availableWidth, height: 18)
+    }
+
+    func titleToolTipRect(for cellFrame: NSRect) -> NSRect {
+        let titleRect = titleTextRect(for: cellFrame)
+        let titleWidth = min(titleRect.width, attributedTitle(forTooltipSizing: true).size().width + 4)
+        return NSRect(x: titleRect.minX, y: titleRect.minY, width: titleWidth, height: titleRect.height)
+    }
+
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
         if isSortActive || hasFilter || isHovered {
             let highlightRect = cellFrame.insetBy(dx: 4, dy: 4)
@@ -682,6 +782,8 @@ final class MetadataHeaderCell: NSTableHeaderCell {
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
             .foregroundColor: NSColor.labelColor.withAlphaComponent(0.96),
+            .underlineStyle: hasDescription ? NSUnderlineStyle.single.rawValue : 0,
+            .underlineColor: NSColor.labelColor.withAlphaComponent(0.38),
         ]
         let subtitleAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 10, weight: .medium),
@@ -691,10 +793,7 @@ final class MetadataHeaderCell: NSTableHeaderCell {
         let chevronRect = chevronRect(for: cellFrame)
         let availableWidth = max(60, (showsChevron ? chevronRect.minX : cellFrame.maxX - 12) - textRect.minX - 8)
 
-        stringValue.draw(
-            in: NSRect(x: textRect.minX, y: textRect.minY + 24, width: availableWidth, height: 18),
-            withAttributes: titleAttributes
-        )
+        stringValue.draw(in: titleTextRect(for: cellFrame), withAttributes: titleAttributes)
         subtitle.draw(
             in: NSRect(x: textRect.minX, y: textRect.minY + 6, width: availableWidth, height: 12),
             withAttributes: subtitleAttributes
@@ -740,7 +839,75 @@ final class MetadataHeaderCell: NSTableHeaderCell {
         divider.lineWidth = 1
         divider.stroke()
     }
+
+    private func attributedTitle(forTooltipSizing: Bool) -> NSAttributedString {
+        NSAttributedString(
+            string: stringValue,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .underlineStyle: forTooltipSizing && hasDescription ? NSUnderlineStyle.single.rawValue : 0,
+            ]
+        )
+    }
 }
+
+@MainActor
+final class HeaderDescriptionHoverController {
+    private var popover: NSPopover?
+    private var activeKey: String?
+
+    func show(text: String, key: String, relativeTo rect: NSRect, of view: NSView) {
+        NSCursor.pointingHand.set()
+        guard view.window != nil else { return }
+        if activeKey == key, popover?.isShown == true {
+            return
+        }
+
+        clear(resetCursor: false)
+        let contentController = NSHostingController(rootView: HeaderDescriptionTooltip(text: text))
+        contentController.view.frame.size = NSSize(width: 230, height: 120)
+        let fittingSize = contentController.view.fittingSize
+
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.animates = false
+        popover.contentSize = NSSize(width: 230, height: max(44, min(140, fittingSize.height)))
+        popover.contentViewController = contentController
+        popover.show(relativeTo: rect.insetBy(dx: -4, dy: -2), of: view, preferredEdge: .maxY)
+
+        self.popover = popover
+        activeKey = key
+    }
+
+    func clear() {
+        clear(resetCursor: true)
+    }
+
+    private func clear(resetCursor: Bool) {
+        popover?.close()
+        popover = nil
+        activeKey = nil
+        if resetCursor {
+            NSCursor.arrow.set()
+        }
+    }
+}
+
+private struct HeaderDescriptionTooltip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(StudioPalette.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(width: 230, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 
 private struct HeaderPopoverContent: View {
     let column: TableColumn

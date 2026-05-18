@@ -160,7 +160,10 @@ public struct QueryWorkspaceView: View {
 
                         switch activeQuery.selectedOutput {
                         case .results:
-                            QueryResultsView(result: activeQuery.result)
+                            QueryResultsView(
+                                result: activeQuery.result,
+                                columnDescription: { session.descriptionForQueryResultColumn($0) }
+                            )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         case .plan:
                             QueryPlanView(plan: activeQuery.explainPlan)
@@ -365,6 +368,7 @@ private struct QueryPlanView: View {
 
 private struct QueryResultsView: View {
     let result: QueryResult
+    let columnDescription: (String) -> String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -397,7 +401,10 @@ private struct QueryResultsView: View {
                         .fill(StudioPalette.gridSurface)
                 )
             } else {
-                QueryResultsGridRepresentable(result: result)
+                QueryResultsGridRepresentable(
+                    result: result,
+                    columnDescription: columnDescription
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(StudioPalette.gridSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -412,9 +419,10 @@ private struct QueryResultsView: View {
 
 private struct QueryResultsGridRepresentable: NSViewRepresentable {
     let result: QueryResult
+    let columnDescription: (String) -> String?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(result: result)
+        Coordinator(result: result, columnDescription: columnDescription)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -422,16 +430,23 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        context.coordinator.update(result: result, scrollView: nsView)
+        context.coordinator.update(
+            result: result,
+            columnDescription: columnDescription,
+            scrollView: nsView
+        )
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         private var result: QueryResult
+        private var columnDescription: (String) -> String?
         private weak var tableView: NSTableView?
+        private weak var headerView: QueryResultsHeaderView?
 
-        init(result: QueryResult) {
+        init(result: QueryResult, columnDescription: @escaping (String) -> String?) {
             self.result = result
+            self.columnDescription = columnDescription
         }
 
         func makeScrollView() -> NSScrollView {
@@ -453,6 +468,7 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             }
             let headerView = QueryResultsHeaderView()
             headerView.frame.size.height = 58
+            headerView.descriptionForColumn = columnDescription
 
             tableView.headerView = headerView
             tableView.usesAlternatingRowBackgroundColors = false
@@ -471,14 +487,22 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
 
             scrollView.documentView = tableView
             self.tableView = tableView
+            self.headerView = headerView
             syncColumns(on: tableView)
             return scrollView
         }
 
-        func update(result: QueryResult, scrollView: NSScrollView) {
+        func update(
+            result: QueryResult,
+            columnDescription: @escaping (String) -> String?,
+            scrollView: NSScrollView
+        ) {
             self.result = result
+            self.columnDescription = columnDescription
+            headerView?.descriptionForColumn = columnDescription
             guard let tableView else { return }
             syncColumns(on: tableView)
+            applyHeaderDescriptions(on: tableView)
             tableView.noteNumberOfRowsChanged()
             tableView.reloadData()
         }
@@ -525,12 +549,24 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
                 let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.name))
                 let headerCell = MetadataHeaderCell(title: column.name, subtitle: column.typeLabel)
                 headerCell.showsChevron = false
+                headerCell.hasDescription = columnDescription(column.name) != nil
                 tableColumn.headerCell = headerCell
+                tableColumn.headerToolTip = nil
                 tableColumn.title = column.name
                 tableColumn.width = max(168, CGFloat(column.name.count) * 12 + 64)
                 tableColumn.minWidth = 132
                 tableView.addTableColumn(tableColumn)
             }
+        }
+
+        private func applyHeaderDescriptions(on tableView: NSTableView) {
+            for tableColumn in tableView.tableColumns {
+                tableColumn.headerToolTip = nil
+                guard let headerCell = tableColumn.headerCell as? MetadataHeaderCell else { continue }
+                headerCell.hasDescription = columnDescription(tableColumn.identifier.rawValue) != nil
+            }
+            headerView?.rebuildDescriptionToolTips()
+            tableView.headerView?.needsDisplay = true
         }
 
         private func handleKeyEvent(_ event: NSEvent) -> Bool {
@@ -638,8 +674,55 @@ private final class CopyOnlyQueryTableView: NSTableView {
 
 @MainActor
 private final class QueryResultsHeaderView: NSTableHeaderView {
+    var descriptionForColumn: ((String) -> String?)?
+    private var trackingArea: NSTrackingArea?
+    private let descriptionHoverController = HeaderDescriptionHoverController()
+
     override var isOpaque: Bool {
         true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        self.trackingArea = trackingArea
+        rebuildDescriptionToolTips()
+    }
+
+    func rebuildDescriptionToolTips() {
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let tableView else { return }
+        for columnIndex in tableView.tableColumns.indices {
+            let tableColumn = tableView.tableColumns[columnIndex]
+            guard descriptionForColumn?(tableColumn.identifier.rawValue) != nil,
+                  let headerCell = tableColumn.headerCell as? MetadataHeaderCell,
+                  headerCell.hasDescription
+            else {
+                continue
+            }
+            addCursorRect(headerCell.titleToolTipRect(for: headerRect(ofColumn: columnIndex)), cursor: .pointingHand)
+        }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            descriptionHoverController.clear()
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -654,6 +737,44 @@ private final class QueryResultsHeaderView: NSTableHeaderView {
         separator.stroke()
 
         super.draw(dirtyRect)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let hit = descriptionHit(at: point) {
+            descriptionHoverController.show(text: hit.description, key: hit.key, relativeTo: hit.rect, of: self)
+        } else {
+            descriptionHoverController.clear()
+        }
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        descriptionHoverController.clear()
+        super.mouseExited(with: event)
+    }
+
+    private func descriptionHit(at point: NSPoint) -> (key: String, description: String, rect: NSRect)? {
+        guard let tableView else { return nil }
+        let columnIndex = tableView.column(at: CGPoint(x: point.x, y: 1))
+        guard columnIndex >= 0,
+              tableView.tableColumns.indices.contains(columnIndex)
+        else {
+            return nil
+        }
+
+        let tableColumn = tableView.tableColumns[columnIndex]
+        let columnName = tableColumn.identifier.rawValue
+        guard let description = descriptionForColumn?(columnName),
+              let headerCell = tableColumn.headerCell as? MetadataHeaderCell,
+              headerCell.hasDescription
+        else {
+            return nil
+        }
+
+        let titleRect = headerCell.titleToolTipRect(for: headerRect(ofColumn: columnIndex))
+        guard titleRect.contains(point) else { return nil }
+        return (key: columnName, description: description, rect: titleRect)
     }
 }
 

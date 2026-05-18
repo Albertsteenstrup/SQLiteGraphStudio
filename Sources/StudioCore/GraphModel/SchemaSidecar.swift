@@ -4,20 +4,25 @@ import Foundation
 ///
 /// The `graph-clusters` skill populates `clusters` so the physics engine groups related tables
 /// together by the user's chosen lens. The `schema-descriptions` skill populates `tables`
-/// so table and column descriptions stay easy to edit without rewriting SQLite DDL.
+/// so table and column descriptions stay easy to edit without rewriting SQLite DDL. The
+/// `story-flows` skill populates `stories` so authored application flows can play back on
+/// the schema graph.
 public struct SchemaSidecar: Codable, Sendable, Hashable {
     public var version: Int
     public var clusters: [ClusterHint]
     public var tables: [String: TableDescription]
+    public var stories: [Story]
 
     public init(
         version: Int = 1,
         clusters: [ClusterHint] = [],
-        tables: [String: TableDescription] = [:]
+        tables: [String: TableDescription] = [:],
+        stories: [Story] = []
     ) {
         self.version = version
         self.clusters = clusters
         self.tables = tables
+        self.stories = stories
     }
 
     public static let empty = SchemaSidecar()
@@ -26,6 +31,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         case version
         case clusters
         case tables
+        case stories
     }
 
     public init(from decoder: Decoder) throws {
@@ -33,6 +39,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         clusters = try container.decodeIfPresent([ClusterHint].self, forKey: .clusters) ?? []
         tables = try container.decodeIfPresent([String: TableDescription].self, forKey: .tables) ?? [:]
+        stories = try container.decodeIfPresent([Story].self, forKey: .stories) ?? []
     }
 
     public struct ClusterHint: Codable, Sendable, Hashable, Identifiable {
@@ -70,6 +77,203 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         }
     }
 
+    public struct Story: Codable, Sendable, Hashable, Identifiable {
+        public var id: String
+        public var title: String
+        public var createdAt: String
+        public var prompt: String?
+        public var actor: String?
+        public var goal: String?
+        public var benefit: String?
+        public var conversation: [String]
+        public var acceptanceCriteria: [AcceptanceCriterion]
+        public var playback: [StoryPlaybackStep]
+
+        public init(
+            id: String,
+            title: String,
+            createdAt: String,
+            prompt: String? = nil,
+            actor: String? = nil,
+            goal: String? = nil,
+            benefit: String? = nil,
+            conversation: [String] = [],
+            acceptanceCriteria: [AcceptanceCriterion] = [],
+            playback: [StoryPlaybackStep]
+        ) {
+            self.id = id
+            self.title = title
+            self.createdAt = createdAt
+            self.prompt = prompt
+            self.actor = actor
+            self.goal = goal
+            self.benefit = benefit
+            self.conversation = conversation
+            self.acceptanceCriteria = acceptanceCriteria
+            self.playback = playback
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case title
+            case createdAt = "created_at"
+            case prompt
+            case actor
+            case goal
+            case benefit
+            case conversation
+            case acceptanceCriteria = "acceptance_criteria"
+            case playback
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+            title = try container.decodeIfPresent(String.self, forKey: .title) ?? "Untitled Story"
+            createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+            prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
+            actor = try container.decodeIfPresent(String.self, forKey: .actor)
+            goal = try container.decodeIfPresent(String.self, forKey: .goal)
+            benefit = try container.decodeIfPresent(String.self, forKey: .benefit)
+            conversation = try container.decodeIfPresent([String].self, forKey: .conversation) ?? []
+            acceptanceCriteria = try container.decodeIfPresent([AcceptanceCriterion].self, forKey: .acceptanceCriteria) ?? []
+            playback = try container.decodeIfPresent([StoryPlaybackStep].self, forKey: .playback) ?? []
+        }
+
+        public var userStoryText: String? {
+            guard let actor = actor?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let goal = goal?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let benefit = benefit?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !actor.isEmpty,
+                  !goal.isEmpty,
+                  !benefit.isEmpty
+            else {
+                return nil
+            }
+            return "As \(actor), I want \(goal), so that \(benefit)."
+        }
+    }
+
+    public struct AcceptanceCriterion: Codable, Sendable, Hashable, Identifiable {
+        public var id: String
+        public var text: String?
+        public var given: String?
+        public var when: String?
+        public var then: String?
+
+        public init(
+            id: String,
+            text: String? = nil,
+            given: String? = nil,
+            when: String? = nil,
+            then: String? = nil
+        ) {
+            self.id = id
+            self.text = text
+            self.given = given
+            self.when = when
+            self.then = then
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case text
+            case given
+            case when
+            case then
+        }
+
+        public init(from decoder: Decoder) throws {
+            let singleValueContainer = try decoder.singleValueContainer()
+            if let text = try? singleValueContainer.decode(String.self) {
+                id = UUID().uuidString
+                self.text = text
+                given = nil
+                when = nil
+                then = nil
+                return
+            }
+
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+            text = try container.decodeIfPresent(String.self, forKey: .text)
+            given = try container.decodeIfPresent(String.self, forKey: .given)
+            when = try container.decodeIfPresent(String.self, forKey: .when)
+            then = try container.decodeIfPresent(String.self, forKey: .then)
+        }
+
+        public var displayText: String {
+            if let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                return text
+            }
+
+            let parts = [
+                given.map { "Given \($0)" },
+                when.map { "when \($0)" },
+                then.map { "then \($0)" },
+            ].compactMap { part -> String? in
+                guard let part = part?.trimmingCharacters(in: .whitespacesAndNewlines), !part.isEmpty else { return nil }
+                return part
+            }
+
+            return parts.joined(separator: ", ")
+        }
+    }
+
+    public struct StoryPlaybackStep: Codable, Sendable, Hashable {
+        public var text: String
+        public var tables: [String]
+        public var focus: String?
+        public var expand: String?
+        public var relation: StoryColumnReference?
+        public var durationMilliseconds: Int?
+
+        public init(
+            text: String,
+            tables: [String],
+            focus: String? = nil,
+            expand: String? = nil,
+            relation: StoryColumnReference? = nil,
+            durationMilliseconds: Int? = nil
+        ) {
+            self.text = text
+            self.tables = tables
+            self.focus = focus
+            self.expand = expand
+            self.relation = relation
+            self.durationMilliseconds = durationMilliseconds
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case text
+            case tables
+            case focus
+            case expand
+            case relation
+            case durationMilliseconds = "duration_ms"
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+            tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []
+            focus = try container.decodeIfPresent(String.self, forKey: .focus)
+            expand = try container.decodeIfPresent(String.self, forKey: .expand)
+            relation = try container.decodeIfPresent(StoryColumnReference.self, forKey: .relation)
+            durationMilliseconds = try container.decodeIfPresent(Int.self, forKey: .durationMilliseconds)
+        }
+    }
+
+    public struct StoryColumnReference: Codable, Sendable, Hashable {
+        public var table: String
+        public var column: String
+
+        public init(table: String, column: String) {
+            self.table = table
+            self.column = column
+        }
+    }
+
     /// Returns `nodeID -> clusterGroupID` for every table named in a cluster hint.
     public var nodeToClusterGroup: [String: String] {
         var map: [String: String] = [:]
@@ -100,5 +304,13 @@ public enum SchemaSidecarStore {
             return .empty
         }
         return sidecar
+    }
+
+    public static func save(_ sidecar: SchemaSidecar, for databaseURL: URL) throws {
+        let url = sidecarURL(for: databaseURL)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(sidecar)
+        try data.write(to: url, options: .atomic)
     }
 }

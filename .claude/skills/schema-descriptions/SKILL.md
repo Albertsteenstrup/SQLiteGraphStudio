@@ -1,11 +1,11 @@
 ---
 name: schema-descriptions
-description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
+description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
 ---
 
 # schema-descriptions
 
-You write descriptions to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Features -> Schema Notes**. The database DDL is not modified.
+You write descriptions to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Features -> Schema Notes**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
 Descriptions are intentionally a sidecar so users can edit them directly without rebuilding SQLite tables.
 
@@ -26,14 +26,14 @@ Preserve any existing `clusters` block. Add or replace only the `tables` entries
   "version": 1,
   "tables": {
     "users": {
-      "description": "App account roster - one row per signed-up user.",
+      "description": "auth.users -- App account roster, one row per signed-up user.",
       "columns": {
         "email": "Lowercased login email.",
         "status": "active | suspended | pending"
       }
     },
     "orders": {
-      "description": "Customer purchase record, one row per checkout.",
+      "description": "billing.orders -- Customer purchase record, one row per checkout.",
       "columns": {
         "total_cents": "Order total in cents.",
         "created_at": "UTC timestamp from checkout."
@@ -47,7 +47,7 @@ Preserve any existing `clusters` block. Add or replace only the `tables` entries
 Field rules:
 
 - `tables` - object keyed by exact case-sensitive table or view name.
-- `description` - optional table-level description shown when hovering the table name.
+- `description` - optional table-level description shown verbatim when hovering the table name.
 - `columns` - optional object keyed by exact case-sensitive column name.
 - Unknown table or column names are ignored by the app, so verify spelling before writing.
 
@@ -63,8 +63,8 @@ Field rules:
 
 Tooltip space is small. Aim for:
 
-- **Tables**: 1 sentence, about 10 words. State the table grain: what one row represents.
-  - Good: `App account roster - one row per signed-up user.`
+- **Tables**: exactly `cluster_name.table_name -- short description`. State the table grain: what one row represents. Use an existing cluster id when present; use `unclustered` only when the table is not in any cluster.
+  - Good: `authoring.comments -- Reader comments, with replies linked to parent comments.`
   - Bad: `This table contains users.`
 - **Columns**: 3-10 words. Include format, unit, source of truth, or a quirk.
   - Good: `Cents, never null`, `FK -> tenants.id, NULL for staff`, `active | suspended | pending`

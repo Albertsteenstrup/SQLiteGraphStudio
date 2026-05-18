@@ -56,6 +56,23 @@ public struct StudioRootView: View {
             }
         }
         .overlay(alignment: .bottom) {
+            if let storyOverlay = session.storyPlaybackOverlay {
+                StoryPlaybackOverlayCard(
+                    state: storyOverlay,
+                    offset: Binding(
+                        get: { session.storyPlaybackCardOffset },
+                        set: { session.storyPlaybackCardOffset = $0 }
+                    ),
+                    sendCommand: { commandKind in
+                        session.storyPlaybackCommand = StoryPlaybackCommand(kind: commandKind)
+                    }
+                )
+                .padding(.bottom, 34)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(10_000)
+            }
+        }
+        .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
                 if let refreshToast = session.refreshToast {
                     RefreshToastView(message: refreshToast.message)
@@ -83,6 +100,7 @@ public struct StudioRootView: View {
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
         .animation(.snappy(duration: 0.3), value: session.refreshToast?.id)
+        .animation(.snappy(duration: 0.24), value: session.storyPlaybackOverlay)
         .onChange(of: session.refreshToast?.id) { _, newID in
             refreshToastTask?.cancel()
             guard newID != nil else { return }
@@ -641,6 +659,149 @@ private struct WorkspaceDockPill: View {
             Capsule()
                 .stroke(isVisible ? StudioPalette.border : StudioPalette.borderSoft, lineWidth: 1)
         }
+    }
+}
+
+private struct StoryPlaybackOverlayCard: View {
+    let state: StoryPlaybackOverlayState
+    @Binding var offset: CGSize
+    let sendCommand: (StoryPlaybackCommand.Kind) -> Void
+
+    @State private var dragStartOffset: CGSize?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(StudioPalette.tertiaryText)
+                        .help("Drag story card")
+
+                    Text(state.title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(StudioPalette.secondaryText)
+                        .lineLimit(1)
+
+                    Text("\(min(state.index + 1, state.playbackCount))/\(state.playbackCount)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(StudioPalette.tertiaryText)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(StudioPalette.headerSurface, in: Capsule())
+
+                    if state.isPaused {
+                        Text("Paused")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(StudioPalette.secondaryText)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
+                    }
+                }
+
+                if let userStoryText = state.userStoryText {
+                    Text(userStoryText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(StudioPalette.secondaryText)
+                        .lineLimit(2)
+                        .frame(maxWidth: 620, alignment: .leading)
+                }
+
+                Text(state.displayedText)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 620, alignment: .leading)
+
+                if let acceptanceText = state.acceptanceText {
+                    Text(acceptanceText)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(StudioPalette.tertiaryText)
+                        .lineLimit(2)
+                        .frame(maxWidth: 620, alignment: .leading)
+                }
+            }
+
+            HStack(spacing: 6) {
+                storyControlButton(
+                    systemImage: "backward.end.fill",
+                    help: "Previous beat",
+                    isDisabled: !state.canGoBackward
+                ) {
+                    sendCommand(.previous)
+                }
+
+                storyControlButton(
+                    systemImage: state.isPaused ? "play.fill" : "pause.fill",
+                    help: state.isPaused ? "Resume story" : "Pause story"
+                ) {
+                    sendCommand(.togglePause)
+                }
+
+                storyControlButton(
+                    systemImage: "forward.end.fill",
+                    help: "Next beat",
+                    isDisabled: !state.canGoForward
+                ) {
+                    sendCommand(.next)
+                }
+
+                storyControlButton(systemImage: "xmark", help: "Stop story") {
+                    sendCommand(.stop)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(StudioPalette.chromeFillStrong)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(StudioPalette.border, lineWidth: 1)
+        }
+        .shadow(color: StudioPalette.shadow.opacity(0.85), radius: 22, y: 12)
+        .frame(maxWidth: 980)
+        .offset(offset)
+        .simultaneousGesture(dragGesture)
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if dragStartOffset == nil {
+                    dragStartOffset = offset
+                }
+                let start = dragStartOffset ?? .zero
+                offset = CGSize(
+                    width: start.width + value.translation.width,
+                    height: start.height + value.translation.height
+                )
+            }
+            .onEnded { _ in
+                dragStartOffset = nil
+            }
+    }
+
+    private func storyControlButton(
+        systemImage: String,
+        help: String,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(isDisabled ? StudioPalette.tertiaryText : StudioPalette.secondaryText)
+                .frame(width: 28, height: 28)
+                .background(StudioPalette.headerSurface.opacity(isDisabled ? 0.46 : 0.82), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .help(help)
     }
 }
 
@@ -1431,12 +1592,8 @@ private struct SkillsPickerView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var session: AppSession
     @State private var expandedSkillIDs: Set<String> = []
-    @State private var didInstall = false
+    @State private var installRevision = 0
     @State private var autoCloseTask: Task<Void, Never>? = nil
-
-    private var isInstalled: Bool {
-        didInstall || session.skillsInstalled
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1471,30 +1628,48 @@ private struct SkillsPickerView: View {
             }
 
             HStack {
-                if isInstalled {
-                    Label("Installed", systemImage: "checkmark.circle.fill")
+                if missingInstallCount == 0 {
+                    Label("All available targets installed", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(Color.green)
                         .font(.subheadline.weight(.medium))
+                } else {
+                    Text("\(missingInstallCount) missing")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(StudioPalette.secondaryText)
                 }
                 Spacer()
                 Button("Cancel") {
                     session.dismissSkills()
                     dismiss()
                 }
-                Button("Install All") {
+                Menu("Add Target") {
+                    ForEach(missingTargetDirectories) { targetDirectory in
+                        Button(targetDirectory.label) {
+                            session.installSkills(to: targetDirectory)
+                            installRevision &+= 1
+                            scheduleAutoClose()
+                        }
+                    }
+                }
+                .disabled(missingTargetDirectories.isEmpty)
+                Button(missingInstallCount == 0 ? "Installed" : "Install Missing") {
                     session.installSkills()
-                    didInstall = true
+                    installRevision &+= 1
                     scheduleAutoClose()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(StudioPalette.accent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(isInstalled)
+                .disabled(missingInstallCount == 0)
             }
         }
         .padding(20)
+        .id(installRevision)
         .onChange(of: session.isSkillsPresented) { _, isPresented in
             if !isPresented { dismiss() }
+        }
+        .onDisappear {
+            autoCloseTask?.cancel()
         }
     }
 
@@ -1508,9 +1683,22 @@ private struct SkillsPickerView: View {
         }
     }
 
+    private var missingInstallCount: Int {
+        guard let dir = session.skillsDirectory else { return 0 }
+        return StudioSkills.all.reduce(0) { count, skill in
+            count + StudioSkills.missingTargets(for: skill, in: dir).count
+        }
+    }
+
+    private var missingTargetDirectories: [StudioSkillDirectoryTarget] {
+        guard let dir = session.skillsDirectory else { return [] }
+        return StudioSkills.missingTargetDirectories(in: dir)
+    }
+
     @ViewBuilder
     private func skillRow(_ skill: StudioSkill) -> some View {
         let isExpanded = expandedSkillIDs.contains(skill.id)
+        let installStatus = installationStatus(for: skill)
 
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -1531,23 +1719,27 @@ private struct SkillsPickerView: View {
                             .font(.caption)
                             .foregroundStyle(StudioPalette.secondaryText)
                             .multilineTextAlignment(.leading)
+                        Text(installStatus.detail)
+                            .font(.caption2)
+                            .foregroundStyle(StudioPalette.tertiaryText)
+                            .lineLimit(1)
                     }
 
                     Spacer(minLength: 8)
 
-                    if isInstalled {
+                    if installStatus.missingCount == 0, installStatus.availableCount > 0 {
                         Label("Installed", systemImage: "checkmark.circle.fill")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Color.green)
                     } else {
-                        Button("Install") {
-                            session.installSkills()
-                            didInstall = true
-                            scheduleAutoClose()
+                        Button(installStatus.availableCount == 0 ? "No Target" : "Install") {
+                            session.installSkill(skill)
+                            installRevision &+= 1
                         }
                         .buttonStyle(.bordered)
                         .tint(StudioPalette.accent)
                         .controlSize(.small)
+                        .disabled(installStatus.availableCount == 0 || installStatus.missingCount == 0)
                     }
                 }
                 .padding(.vertical, 8)
@@ -1573,5 +1765,38 @@ private struct SkillsPickerView: View {
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+    }
+
+    private func installationStatus(for skill: StudioSkill) -> SkillInstallStatus {
+        guard let dir = session.skillsDirectory else {
+            return SkillInstallStatus(availableCount: 0, installedCount: 0, missingCount: 0)
+        }
+        let available = StudioSkills.availableInstallationTargets(for: skill, in: dir)
+        let installed = StudioSkills.installedTargets(for: skill, in: dir)
+        let missing = StudioSkills.missingTargets(for: skill, in: dir)
+        return SkillInstallStatus(
+            availableCount: available.count,
+            installedCount: installed.count,
+            missingCount: missing.count
+        )
+    }
+
+    private struct SkillInstallStatus {
+        let availableCount: Int
+        let installedCount: Int
+        let missingCount: Int
+
+        var detail: String {
+            guard availableCount > 0 else {
+                return "No supported skill directory found"
+            }
+            if missingCount == 0 {
+                return "Installed in \(installedCount) target\(installedCount == 1 ? "" : "s")"
+            }
+            if installedCount == 0 {
+                return "Not installed in \(availableCount) target\(availableCount == 1 ? "" : "s")"
+            }
+            return "\(installedCount) installed, \(missingCount) missing"
+        }
     }
 }

@@ -303,5 +303,76 @@
       "tables": ["tickets", "ticket_messages", "articles", "feedback"],
       "color": "#F497B8"
     }
+  ],
+  "stories": [
+    {
+      "id": "user-signs-in-2026-05-18T07-41-42Z",
+      "title": "User Signs In",
+      "created_at": "2026-05-18T07:41:42Z",
+      "prompt": "What happens when a user signs in?",
+      "actor": "a returning user",
+      "goal": "to access the application with their account",
+      "benefit": "their identity, session, and access level are established before they continue",
+      "conversation": [
+        "Sign-in starts from an existing users row; account creation and password reset are outside this story.",
+        "The schema stores the active login in sessions and derives access context from user_roles and roles.",
+        "permissions is an action catalog without declared role links in this sample, so it is useful context but not part of the authenticated relation path."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an existing account with valid credentials",
+          "when": "the user submits the sign-in form",
+          "then": "the matching users row is found by email and its password_hash can be verified"
+        },
+        {
+          "id": "AC2",
+          "given": "the account is verified",
+          "when": "sign-in completes",
+          "then": "a sessions row is created for that users.id with an expires_at timestamp"
+        },
+        {
+          "id": "AC3",
+          "given": "the signed-in user has assigned roles",
+          "when": "the app loads the authenticated context",
+          "then": "user_roles links the user to roles that describe their access level"
+        }
+      ],
+      "playback": [
+        {
+          "text": "The sign-in attempt begins by finding the existing account in users, using email as the login identifier and password_hash for credential verification.",
+          "tables": ["users"],
+          "focus": "users",
+          "expand": "users"
+        },
+        {
+          "text": "After the account is verified, the new session is attached to users.id so later requests can resolve the session token back to the signed-in account.",
+          "tables": ["users", "sessions"],
+          "focus": "sessions",
+          "expand": "sessions",
+          "relation": { "table": "sessions", "column": "user_id" }
+        },
+        {
+          "text": "Authorization context fans out through user_roles, which uses the same users.id identity anchor to find each role assignment.",
+          "tables": ["users", "user_roles"],
+          "focus": "user_roles",
+          "expand": "user_roles",
+          "relation": { "table": "user_roles", "column": "user_id" }
+        },
+        {
+          "text": "Each role assignment resolves to roles, giving the app named access levels for the authenticated user.",
+          "tables": ["user_roles", "roles"],
+          "focus": "roles",
+          "expand": "roles",
+          "relation": { "table": "user_roles", "column": "role_id" }
+        },
+        {
+          "text": "With the session token active and roles loaded, the app can treat the request as signed in and apply permission checks from the available access catalog.",
+          "tables": ["sessions", "users", "roles", "permissions"],
+          "focus": "sessions",
+          "expand": "sessions"
+        }
+      ]
+    }
   ]
 }
