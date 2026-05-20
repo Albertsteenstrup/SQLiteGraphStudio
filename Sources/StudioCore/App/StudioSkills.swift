@@ -415,6 +415,10 @@ public enum StudioSkills {
           "actor": "a new user",
           "goal": "to create an account",
           "benefit": "I can start using a personal workspace",
+          "clusters": ["auth", "workspace"],
+          "related_stories": [
+            { "story_id": "user-signs-in-2026-05-18T14-10-00Z", "kind": "precedes" }
+          ],
           "conversation": [
             "Signup creates both identity and the first usable workspace.",
             "Email verification is outside this story unless the schema shows verification tables."
@@ -471,6 +475,8 @@ public enum StudioSkills {
     - `actor` - user or stakeholder role. Include the article if natural, e.g. `a new user`.
     - `goal` - user-visible goal, not implementation.
     - `benefit` - user or business value.
+    - `clusters` - optional existing top-level cluster IDs whose tables are central to the story. Use the same cluster IDs already present in the sidecar; do not invent new story-only cluster names. Omit this when the sidecar has no relevant clusters.
+    - `related_stories` - optional lightweight links to existing stories. Each link is `{ "story_id": "...", "kind": "..." }`; use only intentional relations such as `precedes`, `follows`, `depends_on`, `extends`, `alternative`, or `related`.
     - `conversation` - optional short notes, assumptions, exclusions, or open questions discovered while inspecting the schema.
     - `acceptance_criteria` - confirmation of done. Prefer Given/When/Then objects with stable IDs (`AC1`, `AC2`). Plain strings are supported but less precise.
     - `playback` - ordered graph playback beats. Aim for 3-7 beats. The app ignores the old `steps` key.
@@ -487,17 +493,21 @@ public enum StudioSkills {
     1. Read `<db>.sqlite.studio.json` if it exists.
     2. List the schema and identify the tables and foreign-key columns used by the requested flow.
     3. Draft the story card: `actor`, `goal`, and `benefit`. Keep it value-oriented, but do not force awkward wording.
-    4. Add conversation notes only for useful assumptions, exclusions, or questions.
-    5. Add acceptance criteria that are observable and testable.
-    6. Draft the graph playback beats in causal order: record created, identity/relation fan-out, downstream records, final state. For each beat, write visible `text` for the graph card and hidden `spoken_text` for read-aloud playback.
-    7. Verify every table and relation column exists exactly as written.
-    8. Append the story to `stories`, preserving existing `tables`, `clusters`, and earlier `stories`.
-    9. Tell the user to open **Features -> Stories** and activate the new story.
+    4. Assign `clusters` by matching the story's playback tables to existing top-level `clusters[].tables`. Prefer the smallest useful set of cluster IDs; leave it empty if the flow crosses the whole schema or no cluster exists.
+    5. Add `related_stories` only when the sidecar already has a clearly connected story. Keep links sparse and obvious; do not create a complete graph.
+    6. Add conversation notes only for useful assumptions, exclusions, or questions.
+    7. Add acceptance criteria that are observable and testable.
+    8. Draft the graph playback beats in causal order: record created, identity/relation fan-out, downstream records, final state. For each beat, write visible `text` for the graph card and hidden `spoken_text` for read-aloud playback.
+    9. Verify every table and relation column exists exactly as written.
+    10. Append the story to `stories`, preserving existing `tables`, `clusters`, and earlier `stories`.
+    11. Tell the user to open **Features -> Stories** and activate the new story.
 
     ## What not to do
 
     - Don't modify SQLite DDL or create tables in the database. Stories belong in the sidecar.
     - Don't invent table or column names.
+    - Don't invent cluster IDs; story clusters must reuse existing top-level sidecar cluster IDs.
+    - Don't over-link stories. Prefer no `related_stories` over speculative links.
     - Don't make `actor`, `goal`, or `benefit` only about tables or UI mechanics; the story should keep a user or stakeholder value thread.
     - Don't write the old `steps` key. Playback belongs in `playback`.
     - Don't show or mention `spoken_text` in visible story copy; it is for hidden voiceover only.

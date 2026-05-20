@@ -157,6 +157,8 @@ public final class AppSession {
     public var floatingDetailsCardPosition: CGPoint?
     public var showAllGraphTableCards = false
     public var showClusterHalos = true
+    public var showStoryCardsInGraph = false
+    public var showOnlyStoryCardsInGraph = false
     public var openTabs: [TableTabModel] = []
     public var activeTabID: UUID?
     public var isRefreshing = false
@@ -292,6 +294,8 @@ public final class AppSession {
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
         showAllGraphTableCards = false
+        showStoryCardsInGraph = false
+        showOnlyStoryCardsInGraph = false
         openTabs = []
 
         activeTabID = nil
@@ -1021,6 +1025,8 @@ public final class AppSession {
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
         showAllGraphTableCards = false
+        showStoryCardsInGraph = false
+        showOnlyStoryCardsInGraph = false
         queryWorkspace.loadSavedQueries(for: url)
         openTabs = openTabs.compactMap { existingTab in
             guard let descriptor = tableDescriptors[existingTab.descriptor.name] else { return nil }

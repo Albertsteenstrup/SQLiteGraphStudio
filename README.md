@@ -23,7 +23,7 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 - Connection profiles for quick re-opening
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
-- AI-authored flow stories — agents can append user-story-inspired flow cards with acceptance notes and narrated graph playback to the sidecar, then **Features → Stories** plays them back by moving the graph, expanding tables, highlighting relations, typing the story text, and optionally reading hidden human-language beat narration through Kokoro-82M Bella (via the [story-flows](Skills/story-flows/SKILL.md) skill)
+- AI-authored flow stories — agents can append user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, and narrated graph playback to the sidecar; **Features → Stories** plays them back and can show them as minimal graph-native cards connected to the schema tables they cover (via the [story-flows](Skills/story-flows/SKILL.md) skill)
 
 ## AI Skills
 
@@ -31,7 +31,7 @@ Three optional AI coding agent skills let you enrich the graph with a single pro
 
 - **graph-clusters** — Groups your tables into meaningful clusters. It defaults to domain areas, and you can ask for another lens such as people, artifacts, departments, workflows, or ownership. Run from your AI coding agent.
 - **schema-descriptions** — Annotates your tables and columns with hover descriptions shown in the graph, table grids, and query results. Run from your AI coding agent.
-- **story-flows** — Turns questions like "what happens when a user signs up?" into user-story-inspired flow cards with acceptance notes, graph playback, and hidden `spoken_text` for optional read-aloud playback.
+- **story-flows** — Turns questions like "what happens when a user signs up?" into user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, graph playback, and hidden `spoken_text` for optional read-aloud playback.
 
 Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. Skills are installed next to your `.sqlite` file so any AI coding agent in that directory can use them.
 

@@ -177,6 +177,59 @@ struct AppSessionSmokeTests {
     }
 
     @Test
+    func storiesReadClusterLanguageAndLightweightRelations() async throws {
+        let url = try TestSupport.createFixture(named: "sidecar-story-clusters")
+        let sidecarJSON = """
+        {
+          "version": 1,
+          "clusters": [
+            {
+              "id": "publishing",
+              "label": "Publishing",
+              "tables": ["authors", "posts"],
+              "color": "#A8E6A3"
+            }
+          ],
+          "stories": [
+            {
+              "id": "author-onboarding",
+              "title": "Author Onboarding",
+              "created_at": "2026-05-18T12:00:00Z",
+              "clusters": ["publishing"],
+              "related_stories": [
+                { "story_id": "author-publishes-post", "kind": "precedes" },
+                "author-edits-post"
+              ],
+              "playback": [
+                {
+                  "text": "The author account anchors publishing work.",
+                  "tables": ["authors", "posts"],
+                  "focus": "authors"
+                }
+              ]
+            }
+          ]
+        }
+        """
+        try sidecarJSON.write(to: SchemaSidecarStore.sidecarURL(for: url), atomically: true, encoding: .utf8)
+
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        let story = try #require(session.stories.first)
+        #expect(story.clusters == ["publishing"])
+        #expect(story.relatedStories.map(\.storyID) == ["author-publishes-post", "author-edits-post"])
+        #expect(story.relatedStories.map(\.kind) == ["precedes", "related"])
+        #expect(story.coveredTableIDs == ["authors", "posts"])
+        #expect(story.primaryTableIDs == ["authors"])
+
+        let coverage = session.schemaSidecar.clusterCoverage(for: story)
+        #expect(coverage.first?.clusterID == "publishing")
+        #expect(coverage.first?.displayLabel == "Publishing")
+        #expect(coverage.first?.tableIDs == ["authors", "posts"])
+    }
+
+    @Test
     func legacyStoryStepsDoNotDrivePlayback() async throws {
         let url = try TestSupport.createFixture(named: "legacy-story-steps")
         let legacyJSON = """

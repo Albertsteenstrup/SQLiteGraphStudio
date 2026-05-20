@@ -313,6 +313,7 @@
       "actor": "a returning user",
       "goal": "to access the application with their account",
       "benefit": "their identity, session, and access level are established before they continue",
+      "clusters": ["auth"],
       "conversation": [
         "Sign-in starts from an existing users row; account creation and password reset are outside this story.",
         "The schema stores the active login in sessions and derives access context from user_roles and roles.",
@@ -376,6 +377,191 @@
           "tables": ["sessions", "users", "roles", "permissions"],
           "focus": "sessions",
           "expand": "sessions"
+        }
+      ]
+    },
+    {
+      "id": "customer-places-order-2026-05-19T20-40-57Z",
+      "title": "Customer Places Order",
+      "created_at": "2026-05-19T20:40:57Z",
+      "prompt": "Make another story for big sample.",
+      "actor": "a customer",
+      "goal": "to place an order and complete payment",
+      "benefit": "the business can fulfill the purchase and collect revenue against a clear invoice",
+      "clusters": ["crm", "catalog", "fulfillment", "billing"],
+      "conversation": [
+        "This story follows an existing customer through checkout; customer acquisition and lead conversion are outside the flow.",
+        "The sample schema separates the operational order from the billing invoice, so the playback shows fulfillment first and billing second.",
+        "Inventory tables exist in the fulfillment cluster, but there is no declared order-to-stock reservation relationship in this schema."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an existing customer with selected products",
+          "when": "checkout creates the order",
+          "then": "orders is linked to customers by customer_id"
+        },
+        {
+          "id": "AC2",
+          "given": "the order exists",
+          "when": "line items are saved",
+          "then": "order_lines links the order to each purchased product"
+        },
+        {
+          "id": "AC3",
+          "given": "the order is ready for billing",
+          "when": "an invoice is generated",
+          "then": "invoices and invoice_lines record the billable total for the order"
+        },
+        {
+          "id": "AC4",
+          "given": "the customer pays the invoice",
+          "when": "payment is captured",
+          "then": "payments records the amount and paid_at timestamp against the invoice"
+        }
+      ],
+      "playback": [
+        {
+          "text": "The checkout flow starts from customers, the account that owns the purchase and anchors the commercial history.",
+          "spoken_text": "First, checkout starts with the customer account. This is the record that owns the purchase history.",
+          "tables": ["customers"],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "A new orders row is created for that customer, using orders.customer_id to connect the purchase to the account.",
+          "spoken_text": "Next, the app creates the order and attaches it to the customer, so the purchase has a clear owner.",
+          "tables": ["customers", "orders"],
+          "focus": "orders",
+          "expand": "orders",
+          "relation": { "table": "orders", "column": "customer_id" }
+        },
+        {
+          "text": "Each selected product becomes an order_lines row, connecting the order to products with quantities.",
+          "spoken_text": "Then each item in the basket becomes an order line, connecting the order to the products and quantities being bought.",
+          "tables": ["orders", "order_lines", "products"],
+          "focus": "order_lines",
+          "expand": "order_lines",
+          "relation": { "table": "order_lines", "column": "order_id" }
+        },
+        {
+          "text": "Product lookup completes the line-item context, letting fulfillment and billing calculate what was bought.",
+          "spoken_text": "The product reference fills in what each line item represents, which is what fulfillment and billing need next.",
+          "tables": ["order_lines", "products"],
+          "focus": "products",
+          "expand": "products",
+          "relation": { "table": "order_lines", "column": "product_id" }
+        },
+        {
+          "text": "Billing generates an invoices row from the order, separating the operational purchase from the amount due.",
+          "spoken_text": "Billing then creates an invoice from the order, turning the purchase into an amount due.",
+          "tables": ["orders", "invoices"],
+          "focus": "invoices",
+          "expand": "invoices",
+          "relation": { "table": "invoices", "column": "order_id" }
+        },
+        {
+          "text": "invoice_lines breaks the invoice into billable charges, preserving the detail behind the invoice total.",
+          "spoken_text": "Invoice lines preserve the detail behind the bill, so the invoice total can be explained later.",
+          "tables": ["invoices", "invoice_lines"],
+          "focus": "invoice_lines",
+          "expand": "invoice_lines",
+          "relation": { "table": "invoice_lines", "column": "invoice_id" }
+        },
+        {
+          "text": "When payment is captured, payments links the paid amount back to invoices so the order can be treated as paid.",
+          "spoken_text": "Finally, the payment is recorded against the invoice, marking the commercial side of the order as paid.",
+          "tables": ["invoices", "payments", "payment_methods", "customers"],
+          "focus": "payments",
+          "expand": "payments",
+          "relation": { "table": "payments", "column": "invoice_id" }
+        }
+      ]
+    },
+    {
+      "id": "customer-opens-support-ticket-2026-05-20T10-00-52Z",
+      "title": "Customer Opens Support Ticket",
+      "created_at": "2026-05-20T10:00:52Z",
+      "prompt": "Make another story which also connects to other stories.",
+      "actor": "a customer",
+      "goal": "to get help after a purchase",
+      "benefit": "support can respond with the right customer and account context",
+      "clusters": ["crm", "support", "auth"],
+      "related_stories": [
+        { "story_id": "customer-places-order-2026-05-19T20-40-57Z", "kind": "follows" },
+        { "story_id": "user-signs-in-2026-05-18T07-41-42Z", "kind": "depends_on" }
+      ],
+      "conversation": [
+        "This story follows the order story as a post-purchase support moment, even though tickets are linked to customers rather than directly to orders.",
+        "Support messages can be traced back to users through ticket_messages.sender_user_id, so the flow depends on an authenticated sender when the customer or agent posts a message.",
+        "Knowledge base articles and feedback are modeled separately from tickets; the playback includes them as a self-service path after the case is created."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a customer needs help after checkout",
+          "when": "they open a support case",
+          "then": "tickets records the subject and status against customers.id"
+        },
+        {
+          "id": "AC2",
+          "given": "the support ticket exists",
+          "when": "the customer or agent posts a reply",
+          "then": "ticket_messages links the message to both the ticket and the sender user"
+        },
+        {
+          "id": "AC3",
+          "given": "the issue can be answered by documentation",
+          "when": "the customer reads a knowledge base article",
+          "then": "feedback can record whether that article was helpful"
+        }
+      ],
+      "playback": [
+        {
+          "text": "The support flow starts from customers, carrying forward the account context established by the earlier order story.",
+          "spoken_text": "The support flow starts with the customer account, carrying forward the context from the purchase.",
+          "tables": ["customers"],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "A tickets row captures the new case and links it to customers.id, so support can see which account needs help.",
+          "spoken_text": "A new support ticket is created and attached to the customer, so the support team knows which account needs help.",
+          "tables": ["customers", "tickets"],
+          "focus": "tickets",
+          "expand": "tickets",
+          "relation": { "table": "tickets", "column": "customer_id" }
+        },
+        {
+          "text": "The first conversation entry is stored in ticket_messages and tied back to the ticket with ticket_id.",
+          "spoken_text": "The first message is stored under the ticket, creating the conversation thread for the case.",
+          "tables": ["tickets", "ticket_messages"],
+          "focus": "ticket_messages",
+          "expand": "ticket_messages",
+          "relation": { "table": "ticket_messages", "column": "ticket_id" }
+        },
+        {
+          "text": "ticket_messages.sender_user_id connects the reply to users, which is why this story depends on the sign-in story for authenticated authorship.",
+          "spoken_text": "The message also points to the signed-in user who wrote it, connecting support activity back to authenticated identity.",
+          "tables": ["ticket_messages", "users", "sessions"],
+          "focus": "users",
+          "expand": "users",
+          "relation": { "table": "ticket_messages", "column": "sender_user_id" }
+        },
+        {
+          "text": "If the case is answered through self-service, articles provides the knowledge base content that can resolve the issue without another ticket update.",
+          "spoken_text": "If the issue can be solved through self-service, a knowledge base article can provide the answer.",
+          "tables": ["tickets", "articles"],
+          "focus": "articles",
+          "expand": "articles"
+        },
+        {
+          "text": "feedback records whether the article helped, closing the loop from support demand back into knowledge base quality.",
+          "spoken_text": "Finally, article feedback records whether the answer helped, so support can improve the knowledge base over time.",
+          "tables": ["articles", "feedback", "tickets"],
+          "focus": "feedback",
+          "expand": "feedback",
+          "relation": { "table": "feedback", "column": "article_id" }
         }
       ]
     }

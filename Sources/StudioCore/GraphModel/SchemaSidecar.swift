@@ -85,6 +85,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         public var actor: String?
         public var goal: String?
         public var benefit: String?
+        public var clusters: [String]
+        public var relatedStories: [StoryRelation]
         public var conversation: [String]
         public var acceptanceCriteria: [AcceptanceCriterion]
         public var playback: [StoryPlaybackStep]
@@ -97,6 +99,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
             actor: String? = nil,
             goal: String? = nil,
             benefit: String? = nil,
+            clusters: [String] = [],
+            relatedStories: [StoryRelation] = [],
             conversation: [String] = [],
             acceptanceCriteria: [AcceptanceCriterion] = [],
             playback: [StoryPlaybackStep]
@@ -108,6 +112,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
             self.actor = actor
             self.goal = goal
             self.benefit = benefit
+            self.clusters = clusters
+            self.relatedStories = relatedStories
             self.conversation = conversation
             self.acceptanceCriteria = acceptanceCriteria
             self.playback = playback
@@ -121,6 +127,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
             case actor
             case goal
             case benefit
+            case clusters
+            case relatedStories = "related_stories"
             case conversation
             case acceptanceCriteria = "acceptance_criteria"
             case playback
@@ -135,6 +143,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
             actor = try container.decodeIfPresent(String.self, forKey: .actor)
             goal = try container.decodeIfPresent(String.self, forKey: .goal)
             benefit = try container.decodeIfPresent(String.self, forKey: .benefit)
+            clusters = try container.decodeIfPresent([String].self, forKey: .clusters) ?? []
+            relatedStories = try container.decodeIfPresent([StoryRelation].self, forKey: .relatedStories) ?? []
             conversation = try container.decodeIfPresent([String].self, forKey: .conversation) ?? []
             acceptanceCriteria = try container.decodeIfPresent([AcceptanceCriterion].self, forKey: .acceptanceCriteria) ?? []
             playback = try container.decodeIfPresent([StoryPlaybackStep].self, forKey: .playback) ?? []
@@ -151,6 +161,105 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
                 return nil
             }
             return "As \(actor), I want \(goal), so that \(benefit)."
+        }
+
+        public var coveredTableIDs: [String] {
+            var ordered: [String] = []
+            var seen: Set<String> = []
+
+            func append(_ tableID: String?) {
+                guard let tableID = tableID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !tableID.isEmpty,
+                      !seen.contains(tableID)
+                else {
+                    return
+                }
+                seen.insert(tableID)
+                ordered.append(tableID)
+            }
+
+            for beat in playback {
+                append(beat.focus)
+                append(beat.expand)
+                append(beat.relation?.table)
+                for table in beat.tables {
+                    append(table)
+                }
+            }
+
+            return ordered
+        }
+
+        public var primaryTableIDs: [String] {
+            var ordered: [String] = []
+            var seen: Set<String> = []
+
+            func append(_ tableID: String?) {
+                guard let tableID = tableID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !tableID.isEmpty,
+                      !seen.contains(tableID)
+                else {
+                    return
+                }
+                seen.insert(tableID)
+                ordered.append(tableID)
+            }
+
+            for beat in playback {
+                append(beat.focus)
+                append(beat.expand)
+                append(beat.relation?.table)
+            }
+
+            if ordered.isEmpty {
+                return Array(coveredTableIDs.prefix(3))
+            }
+
+            return ordered
+        }
+    }
+
+    public struct StoryRelation: Codable, Sendable, Hashable, Identifiable {
+        public var storyID: String
+        public var kind: String
+        public var note: String?
+
+        public var id: String {
+            "\(storyID)|\(kind)|\(note ?? "")"
+        }
+
+        public init(storyID: String, kind: String = "related", note: String? = nil) {
+            self.storyID = storyID
+            self.kind = kind
+            self.note = note
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case storyID = "story_id"
+            case kind
+            case note
+        }
+
+        public init(from decoder: Decoder) throws {
+            let singleValueContainer = try decoder.singleValueContainer()
+            if let storyID = try? singleValueContainer.decode(String.self) {
+                self.storyID = storyID
+                kind = "related"
+                note = nil
+                return
+            }
+
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            storyID = try container.decodeIfPresent(String.self, forKey: .storyID) ?? ""
+            kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "related"
+            note = try container.decodeIfPresent(String.self, forKey: .note)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(storyID, forKey: .storyID)
+            try container.encode(kind, forKey: .kind)
+            try container.encodeIfPresent(note, forKey: .note)
         }
     }
 
@@ -301,6 +410,70 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
             }
         }
         return map
+    }
+
+    public func clusterCoverage(for story: Story) -> [StoryClusterCoverage] {
+        let clusterGroupByNode = nodeToClusterGroup
+        let coveredTables = Set(story.coveredTableIDs)
+        var tableIDsByCluster: [String: [String]] = [:]
+
+        for tableID in story.coveredTableIDs {
+            guard let clusterID = clusterGroupByNode[tableID] else { continue }
+            tableIDsByCluster[clusterID, default: []].append(tableID)
+        }
+
+        for clusterID in story.clusters where tableIDsByCluster[clusterID] == nil {
+            tableIDsByCluster[clusterID] = clusters
+                .first { $0.id == clusterID }?
+                .tables
+                .filter { coveredTables.contains($0) } ?? []
+        }
+
+        return tableIDsByCluster.map { clusterID, tableIDs in
+            let cluster = clusters.first { $0.id == clusterID }
+            return StoryClusterCoverage(
+                clusterID: clusterID,
+                label: cluster?.label,
+                color: cluster?.color,
+                tableIDs: tableIDs
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.tableIDs.count == rhs.tableIDs.count {
+                return lhs.clusterID.localizedStandardCompare(rhs.clusterID) == .orderedAscending
+            }
+            return lhs.tableIDs.count > rhs.tableIDs.count
+        }
+    }
+
+    public func primaryClusterCoverage(for story: Story) -> StoryClusterCoverage? {
+        let coverage = clusterCoverage(for: story)
+        if let explicitClusterID = story.clusters.first,
+           let explicit = coverage.first(where: { $0.clusterID == explicitClusterID }) {
+            return explicit
+        }
+        return coverage.first
+    }
+
+    public struct StoryClusterCoverage: Sendable, Hashable, Identifiable {
+        public var clusterID: String
+        public var label: String?
+        public var color: String?
+        public var tableIDs: [String]
+
+        public var id: String { clusterID }
+
+        public init(clusterID: String, label: String?, color: String?, tableIDs: [String]) {
+            self.clusterID = clusterID
+            self.label = label
+            self.color = color
+            self.tableIDs = tableIDs
+        }
+
+        public var displayLabel: String {
+            let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed?.isEmpty == false) ? trimmed! : clusterID
+        }
     }
 }
 

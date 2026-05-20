@@ -15,6 +15,9 @@ public struct SchemaGraphView: View {
     @State private var nodeDragPointerOffset: CGSize?
     @State private var multiNodeDragOrigins: [String: CGPoint] = [:]
     @State private var draggedNodeID: String?
+    @State private var draggedStoryID: String?
+    @State private var storyDragOrigin: CGPoint?
+    @State private var storyDragPointerOffset: CGSize?
     @State private var hoveredNodeID: String?
     @State private var hoveredRelationTarget: GraphRelationHoverTarget?
     @State private var hoveredEdgeID: String?
@@ -39,6 +42,8 @@ public struct SchemaGraphView: View {
     @State private var expandedStoryIDs: Set<String> = []
     @State private var activeStory: SchemaSidecar.Story?
     @State private var activeStoryPlaybackIndex: Int?
+    @State private var selectedStoryID: String?
+    @State private var hoveredStoryID: String?
     @State private var storyHighlightedTableIDs: Set<String> = []
     @State private var storyFocusNodeID: String?
     @State private var storyRelationTarget: GraphRelationHoverTarget?
@@ -46,6 +51,8 @@ public struct SchemaGraphView: View {
     @State private var storySpeechNarrator = StorySpeechNarrator()
     @State private var isStoryPaused = false
     @State private var activeStoryViewportSize: CGSize = .zero
+    @State private var storyGraphPositions: [String: CGPoint] = [:]
+    @State private var pulledStoryGraphPositions: [String: CGPoint] = [:]
 
     public init(session: AppSession) {
         self.session = session
@@ -55,7 +62,12 @@ public struct SchemaGraphView: View {
         session.showAllGraphTableCards ? .allCards : .compact
     }
 
+    private var isStoryOnlyMode: Bool {
+        session.showStoryCardsInGraph && session.showOnlyStoryCardsInGraph
+    }
+
     private var focusNodeID: String? {
+        guard !isStoryOnlyMode else { return nil }
         guard hoveredRelationTarget == nil else { return nil }
         if session.showAllGraphTableCards {
             return storyFocusNodeID ?? hoveredNodeID ?? (session.selectedGraphNodeIDs.count <= 1 ? session.selectedGraphNodeID : nil)
@@ -199,7 +211,10 @@ public struct SchemaGraphView: View {
             hoverTarget: currentHoverTarget
         )
         let edgeLookup = GraphEdgeLookup(edges: session.graph.edges)
-        let renderedNodes = renderedGraphNodes(anchorMap: anchorMap, viewportSize: size)
+        let renderedNodes = isStoryOnlyMode ? [] : renderedGraphNodes(anchorMap: anchorMap, viewportSize: size)
+        let storyCards = storyGraphCards()
+        let emphasizedStoryTableIDs = emphasizedStoryTableIDs(for: storyCards)
+        let selectedRelatedStoryIDs = selectedStoryID.map { relatedStoryIDs(for: $0, in: storyCards) } ?? []
         let _ = layoutRevision
 
         ZStack {
@@ -207,15 +222,18 @@ public struct SchemaGraphView: View {
                 .contentShape(Rectangle())
                 .gesture(backgroundPanGesture)
                 .onTapGesture {
-                    if !pulledGraphPositions.isEmpty {
+                    if !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty {
                         withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
                             pulledGraphPositions.removeAll()
+                            pulledStoryGraphPositions.removeAll()
                         }
                         tappedRelationTarget = nil
                     }
                     if let expandedID = manuallyExpandedNodeID {
                         toggleExpandedState(for: expandedID, in: viewportSize)
                     }
+                    selectedStoryID = nil
+                    hoveredStoryID = nil
                     session.clearGraphSelection()
                     withAnimation(.snappy(duration: 0.18)) {
                         isFeaturesOpen = false
@@ -231,7 +249,11 @@ public struct SchemaGraphView: View {
                     applyTrackpadMagnification(magnification, anchor: anchor, in: size)
                 },
                 onPointerMove: { point in
-                    handleViewportPointerMove(point, anchorMap: anchorMap, edgeLookup: edgeLookup)
+                    if isStoryOnlyMode {
+                        handleViewportPointerMove(nil, anchorMap: anchorMap, edgeLookup: edgeLookup)
+                    } else {
+                        handleViewportPointerMove(point, anchorMap: anchorMap, edgeLookup: edgeLookup)
+                    }
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -242,10 +264,25 @@ public struct SchemaGraphView: View {
             }
             .allowsHitTesting(false)
 
-            Canvas { context, _ in
-                drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight)
+            if !isStoryOnlyMode {
+                Canvas { context, _ in
+                    drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight)
+                }
+                .allowsHitTesting(false)
             }
-            .allowsHitTesting(false)
+
+            if !storyCards.isEmpty {
+                Canvas { context, _ in
+                    drawStoryGraphEdges(
+                        in: &context,
+                        storyCards: storyCards,
+                        anchorMap: anchorMap,
+                        viewportSize: size,
+                        showsTableLinks: !isStoryOnlyMode
+                    )
+                }
+                .allowsHitTesting(false)
+            }
 
             ForEach(renderedNodes) { node in
                 let descriptor = session.descriptor(named: node.id)
@@ -275,7 +312,7 @@ public struct SchemaGraphView: View {
                     scrollOffset: scrollOffset,
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
-                    isStoryHighlighted: storyHighlightedTableIDs.contains(node.id),
+                    isStoryHighlighted: storyHighlightedTableIDs.contains(node.id) || emphasizedStoryTableIDs.contains(node.id),
                     highlightState: relationHighlight.highlightState(for: node.id),
                     selectNode: {
                         if !pulledGraphPositions.isEmpty {
@@ -284,6 +321,8 @@ public struct SchemaGraphView: View {
                             }
                             tappedRelationTarget = nil
                         }
+                        selectedStoryID = nil
+                        pulledStoryGraphPositions.removeAll()
                         withAnimation(.snappy(duration: 0.16)) {
                             session.selectGraphNode(node.id)
                         }
@@ -325,6 +364,47 @@ public struct SchemaGraphView: View {
                 )
                 .zIndex(zIndex(for: node.id))
             }
+
+            ForEach(storyCards) { card in
+                StorySchemaCardView(
+                    story: card.story,
+                    clusterLabel: card.clusterLabel,
+                    clusterColor: card.clusterColor,
+                    tableCount: card.tableIDs.count,
+                    relationCount: card.story.relatedStories.count,
+                    isActive: activeStory?.id == card.story.id,
+                    isSelected: selectedStoryID == card.story.id,
+                    isHovered: hoveredStoryID == card.story.id,
+                    isDragging: draggedStoryID == card.story.id,
+                    isConnected: selectedRelatedStoryIDs.contains(card.story.id),
+                    selectStory: {
+                        selectStory(card.story)
+                    },
+                    startStory: {
+                        selectedStoryID = card.story.id
+                        startStory(card.story, in: size)
+                    },
+                    pullConnections: {
+                        selectStory(card.story)
+                        pullStoryConnectionsIntoView(for: card)
+                    },
+                    hoverChanged: { isHovered in
+                        withAnimation(.snappy(duration: 0.16)) {
+                            hoveredStoryID = isHovered ? card.story.id : nil
+                        }
+                    }
+                )
+                .frame(width: StoryGraphCardLayout.width, height: StoryGraphCardLayout.height, alignment: .topLeading)
+                .scaleEffect(zoom)
+                .position(storyScreenCenter(for: card, in: size))
+                .simultaneousGesture(storyDragGesture(storyID: card.id, in: size))
+                .shadow(
+                    color: StudioPalette.shadow.opacity(draggedStoryID == card.id ? 0.62 : (storyIsEmphasized(card.id) ? 0.52 : 0.34)),
+                    radius: draggedStoryID == card.id ? 18 : (storyIsEmphasized(card.id) ? 14 : 8),
+                    y: draggedStoryID == card.id ? 10 : (storyIsEmphasized(card.id) ? 8 : 4)
+                )
+                .zIndex(draggedStoryID == card.id ? 6 : (storyIsEmphasized(card.id) ? 5 : (selectedRelatedStoryIDs.contains(card.id) ? 3 : 1.5)))
+            }
             
             // Floating description tooltip
             if let hover = descriptionHover {
@@ -360,7 +440,7 @@ public struct SchemaGraphView: View {
     }
 
     private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
-        guard session.showClusterHalos else { return }
+        guard session.showClusterHalos || isStoryOnlyMode else { return }
         guard !session.graphLayout.isAnimating else { return }
         let clusters = session.schemaSidecar.clusters
         guard !clusters.isEmpty else { return }
@@ -455,6 +535,144 @@ public struct SchemaGraphView: View {
         )
         .frame(maxWidth: tooltipMaxWidth, alignment: .leading)
         .position(x: anchorX + tooltipMaxWidth / 2, y: anchorY)
+    }
+
+    private func drawStoryGraphEdges(
+        in context: inout GraphicsContext,
+        storyCards: [StoryGraphCard],
+        anchorMap: GraphAnchorMap,
+        viewportSize: CGSize,
+        showsTableLinks: Bool
+    ) {
+        let storyCardsByID = Dictionary(uniqueKeysWithValues: storyCards.map { ($0.id, $0) })
+        let selectedRelatedStoryIDs = selectedStoryID.map { relatedStoryIDs(for: $0, in: storyCards) } ?? []
+
+        for card in storyCards {
+            let isEmphasized = storyIsEmphasized(card.id)
+            let sourceFrame = storyFrame(for: card, in: viewportSize)
+            if showsTableLinks {
+                let tableIDs = isEmphasized ? card.tableIDs : card.primaryTableIDs
+
+                for tableID in tableIDs.prefix(isEmphasized ? 12 : 3) {
+                    guard let tableFrame = anchorMap.nodeCards[tableID]?.frame else { continue }
+                    let start = edgePoint(on: sourceFrame, toward: tableFrame.center)
+                    let end = edgePoint(on: tableFrame, toward: sourceFrame.center)
+                    var path = Path()
+                    path.move(to: start)
+                    path.addLine(to: end)
+                    context.stroke(
+                        path,
+                        with: .color(
+                            card.clusterColor?.opacity(isEmphasized ? 0.52 : 0.22)
+                                ?? StudioPalette.edgeNeutral.opacity(isEmphasized ? 0.36 : 0.16)
+                        ),
+                        style: StrokeStyle(
+                            lineWidth: isEmphasized ? 1.4 : 0.9,
+                            lineCap: .round,
+                            lineJoin: .round,
+                            dash: isEmphasized ? [5, 5] : [3, 7]
+                        )
+                    )
+                }
+            }
+
+            for relation in card.story.relatedStories {
+                guard let targetCard = storyCardsByID[relation.storyID] else { continue }
+                let targetFrame = storyFrame(for: targetCard, in: viewportSize)
+                let direction = storyRelationDirection(for: relation.kind)
+                let drawsTowardTarget = direction != .targetToSource
+                let startFrame = drawsTowardTarget ? sourceFrame : targetFrame
+                let endFrame = drawsTowardTarget ? targetFrame : sourceFrame
+                let start = edgePoint(on: startFrame, toward: endFrame.center)
+                let end = edgePoint(on: endFrame, toward: startFrame.center)
+                let relationIsEmphasized = isEmphasized
+                    || storyIsEmphasized(targetCard.id)
+                    || selectedRelatedStoryIDs.contains(card.id)
+                    || selectedRelatedStoryIDs.contains(targetCard.id)
+                var path = Path()
+                path.move(to: start)
+                path.addLine(to: end)
+                context.stroke(
+                    path,
+                    with: .color(StudioPalette.primaryText.opacity(relationIsEmphasized ? 0.34 : 0.14)),
+                    style: StrokeStyle(
+                        lineWidth: relationIsEmphasized ? 1.25 : 0.8,
+                        lineCap: .round,
+                        lineJoin: .round,
+                        dash: [2, 5]
+                    )
+                )
+                if relationIsEmphasized, direction != .none {
+                    drawStoryRelationMarker(in: &context, from: start, to: end)
+                }
+                drawStoryRelationLabel(
+                    in: &context,
+                    title: storyRelationDisplayName(relation.kind),
+                    at: CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2),
+                    emphasized: relationIsEmphasized
+                )
+            }
+        }
+    }
+
+    private func drawStoryRelationMarker(in context: inout GraphicsContext, from start: CGPoint, to end: CGPoint) {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        guard dx != 0 || dy != 0 else { return }
+
+        let angle = atan2(dy, dx)
+        let markerCenter = CGPoint(x: start.x + dx * 0.72, y: start.y + dy * 0.72)
+        let markerSize: CGFloat = 4.2
+        let markerAngle: CGFloat = .pi / 5
+
+        var path = Path()
+        path.move(to: CGPoint(
+            x: markerCenter.x - markerSize * cos(angle - markerAngle),
+            y: markerCenter.y - markerSize * sin(angle - markerAngle)
+        ))
+        path.addLine(to: markerCenter)
+        path.addLine(to: CGPoint(
+            x: markerCenter.x - markerSize * cos(angle + markerAngle),
+            y: markerCenter.y - markerSize * sin(angle + markerAngle)
+        ))
+
+        context.stroke(
+            path,
+            with: .color(StudioPalette.primaryText.opacity(0.42)),
+            style: StrokeStyle(lineWidth: 1.05, lineCap: .round, lineJoin: .round)
+        )
+    }
+
+    private func drawStoryRelationLabel(
+        in context: inout GraphicsContext,
+        title: String,
+        at point: CGPoint,
+        emphasized: Bool
+    ) {
+        let labelFont = Font.system(size: 10, weight: .bold)
+        let strokeOffsets: [(CGFloat, CGFloat)] = [
+            (-1.4, -1.4), (0, -1.4), (1.4, -1.4),
+            (-1.4, 0),                 (1.4, 0),
+            (-1.4, 1.4),  (0, 1.4),   (1.4, 1.4),
+        ]
+
+        for (dx, dy) in strokeOffsets {
+            context.draw(
+                Text(title)
+                    .font(labelFont)
+                    .foregroundStyle(Color.white.opacity(emphasized ? 0.94 : 0.78)),
+                at: CGPoint(x: point.x + dx, y: point.y + dy),
+                anchor: .center
+            )
+        }
+
+        context.draw(
+            Text(title)
+                .font(labelFont)
+                .foregroundStyle(StudioPalette.secondaryText.opacity(emphasized ? 0.98 : 0.72)),
+            at: point,
+            anchor: .center
+        )
     }
 
     private func drawEdges(
@@ -720,6 +938,57 @@ public struct SchemaGraphView: View {
 
                 Spacer()
 
+                if !stories.isEmpty {
+                    Button {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            let isShowing = !session.showStoryCardsInGraph
+                            session.showStoryCardsInGraph = isShowing
+                            if !isShowing {
+                                selectedStoryID = nil
+                                hoveredStoryID = nil
+                                pulledStoryGraphPositions.removeAll()
+                                session.showOnlyStoryCardsInGraph = false
+                            }
+                        }
+                        if session.showStoryCardsInGraph {
+                            fitGraph(in: size)
+                        }
+                    } label: {
+                        Image(systemName: session.showStoryCardsInGraph ? "rectangle.3.group.fill" : "rectangle.3.group")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(session.showStoryCardsInGraph ? StudioPalette.accent : StudioPalette.secondaryText)
+                            .frame(width: 24, height: 24)
+                            .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(session.showStoryCardsInGraph ? "Hide story cards in schema" : "Show story cards in schema")
+
+                    Button {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            let isShowingOnlyStories = !session.showOnlyStoryCardsInGraph
+                            session.showOnlyStoryCardsInGraph = isShowingOnlyStories
+                            if isShowingOnlyStories {
+                                session.showStoryCardsInGraph = true
+                                session.clearGraphSelection()
+                                session.setExpandedGraphNode(nil)
+                                pulledGraphPositions.removeAll()
+                                tappedRelationTarget = nil
+                            }
+                        }
+                        if session.showOnlyStoryCardsInGraph {
+                            fitGraph(in: size)
+                        }
+                    } label: {
+                        Image(systemName: session.showOnlyStoryCardsInGraph ? "eye.slash.fill" : "eye.slash")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(session.showOnlyStoryCardsInGraph ? StudioPalette.accent : StudioPalette.secondaryText)
+                            .frame(width: 24, height: 24)
+                            .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(session.showOnlyStoryCardsInGraph ? "Show schema nodes with stories" : "Show only stories")
+                }
+
                 Button {
                     withAnimation(.snappy(duration: 0.18)) {
                         isStoriesPresented = false
@@ -916,6 +1185,8 @@ public struct SchemaGraphView: View {
             isStoriesPresented = false
             activeStory = story
             activeStoryPlaybackIndex = nil
+            selectedStoryID = story.id
+            hoveredStoryID = nil
             session.storyPlaybackDisplayedText = ""
             storyHighlightedTableIDs = []
             storyFocusNodeID = nil
@@ -925,6 +1196,7 @@ public struct SchemaGraphView: View {
             activeStoryViewportSize = size
             session.storyPlaybackCardOffset = .zero
             pulledGraphPositions.removeAll()
+            pulledStoryGraphPositions.removeAll()
             tappedRelationTarget = nil
         }
 
@@ -971,6 +1243,7 @@ public struct SchemaGraphView: View {
             isStoryPaused = false
             activeStoryViewportSize = .zero
             pulledGraphPositions.removeAll()
+            pulledStoryGraphPositions.removeAll()
             tappedRelationTarget = nil
             session.setExpandedGraphNode(nil)
             session.storyPlaybackOverlay = nil
@@ -1272,6 +1545,7 @@ public struct SchemaGraphView: View {
                 session.setExpandedGraphNode(expansionID)
             }
             pulledGraphPositions = storyFormationPositions(for: tableIDs, focus: expansionID)
+            pulledStoryGraphPositions.removeAll()
         }
 
         if let relationTarget {
@@ -1647,6 +1921,45 @@ public struct SchemaGraphView: View {
             }
     }
 
+    private func storyDragGesture(storyID: String, in canvasSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("graphViewport"))
+            .onChanged { value in
+                let cards = storyGraphCards()
+                guard let card = cards.first(where: { $0.id == storyID }) else { return }
+
+                if draggedStoryID != storyID {
+                    draggedStoryID = storyID
+                    let currentGraphPoint = storyGraphPoint(for: card)
+                    storyDragOrigin = currentGraphPoint
+                    let startGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
+                        .graphPoint(for: value.startLocation, in: canvasSize)
+                    storyDragPointerOffset = CGSize(
+                        width: startGraphPoint.x - currentGraphPoint.x,
+                        height: startGraphPoint.y - currentGraphPoint.y
+                    )
+                    selectedStoryID = storyID
+                    hoveredStoryID = storyID
+                    pulledStoryGraphPositions.removeValue(forKey: storyID)
+                    NSCursor.closedHand.set()
+                }
+
+                guard draggedStoryID == storyID else { return }
+                let currentGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
+                    .graphPoint(for: value.location, in: canvasSize)
+                let moved = CGPoint(
+                    x: currentGraphPoint.x - (storyDragPointerOffset?.width ?? 0),
+                    y: currentGraphPoint.y - (storyDragPointerOffset?.height ?? 0)
+                )
+                storyGraphPositions[storyID] = moved
+            }
+            .onEnded { _ in
+                draggedStoryID = nil
+                storyDragOrigin = nil
+                storyDragPointerOffset = nil
+                NSCursor.arrow.set()
+            }
+    }
+
     private func zIndex(for nodeID: String) -> Double {
         if draggedNodeID == nodeID {
             return 4
@@ -1699,6 +2012,126 @@ public struct SchemaGraphView: View {
             descriptor: session.descriptor(named: nodeID),
             style: nodeDisplayStyle(for: nodeID, previewColumns: previewColumns(for: nodeID)),
             hovered: hoveredNodeID == nodeID && draggedNodeID == nil
+        )
+    }
+
+    private func storyGraphCards() -> [StoryGraphCard] {
+        StoryGraphPlacement.placedCards(for: session).map { placed in
+            let clusterColor = session.schemaSidecar.primaryClusterCoverage(for: placed.story)?
+                .color
+                .flatMap { Color(studioHex: $0) }
+            return StoryGraphCard(
+                story: placed.story,
+                tableIDs: placed.tableIDs,
+                primaryTableIDs: placed.primaryTableIDs,
+                clusterLabel: placed.clusterLabel,
+                clusterColor: clusterColor,
+                graphPosition: placed.graphPosition
+            )
+        }
+    }
+
+    private func selectStory(_ story: SchemaSidecar.Story) {
+        let isSameSelection = selectedStoryID == story.id
+        if !isSameSelection && (!pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty) {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                pulledGraphPositions.removeAll()
+                pulledStoryGraphPositions.removeAll()
+            }
+            tappedRelationTarget = nil
+        }
+        withAnimation(.snappy(duration: 0.16)) {
+            selectedStoryID = story.id
+            session.clearGraphSelection()
+            isStoriesPresented = false
+        }
+    }
+
+    private func storyIsEmphasized(_ storyID: String) -> Bool {
+        hoveredStoryID == storyID || selectedStoryID == storyID || activeStory?.id == storyID
+    }
+
+    private func emphasizedStoryTableIDs(for storyCards: [StoryGraphCard]) -> Set<String> {
+        let emphasizedIDs = Set([hoveredStoryID, selectedStoryID, activeStory?.id].compactMap { $0 })
+        guard !emphasizedIDs.isEmpty else { return [] }
+
+        var tableIDs: Set<String> = []
+        for card in storyCards where emphasizedIDs.contains(card.id) {
+            tableIDs.formUnion(card.tableIDs)
+        }
+        return tableIDs
+    }
+
+    private func relatedStoryIDs(for storyID: String, in storyCards: [StoryGraphCard]) -> Set<String> {
+        var relatedIDs: Set<String> = []
+        for card in storyCards {
+            if card.id == storyID {
+                for relation in card.story.relatedStories where !relation.storyID.isEmpty {
+                    relatedIDs.insert(relation.storyID)
+                }
+            }
+            if card.story.relatedStories.contains(where: { $0.storyID == storyID }) {
+                relatedIDs.insert(card.id)
+            }
+        }
+        relatedIDs.remove(storyID)
+        return relatedIDs
+    }
+
+    private func storyRelationDirection(for kind: String) -> StoryRelationDirection {
+        switch kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "follows", "follow", "blocked_by", "requires":
+            return .targetToSource
+        case "precedes", "precede", "depends_on", "depends", "extends", "blocks":
+            return .sourceToTarget
+        default:
+            return .none
+        }
+    }
+
+    private func storyRelationDisplayName(_ kind: String) -> String {
+        let cleaned = kind
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        return cleaned.isEmpty ? "related" : cleaned
+    }
+
+    private func storyScreenCenter(for card: StoryGraphCard, in canvasSize: CGSize) -> CGPoint {
+        GraphViewportTransform(zoom: zoom, pan: pan)
+            .point(for: storyGraphPoint(for: card), in: canvasSize)
+    }
+
+    private func storyGraphPoint(for card: StoryGraphCard) -> CGPoint {
+        pulledStoryGraphPositions[card.id] ?? storyGraphPositions[card.id] ?? card.graphPosition
+    }
+
+    private func storyFrame(for card: StoryGraphCard, in canvasSize: CGSize) -> CGRect {
+        let center = storyScreenCenter(for: card, in: canvasSize)
+        let scaledSize = CGSize(
+            width: StoryGraphCardLayout.width * zoom,
+            height: StoryGraphCardLayout.height * zoom
+        )
+        return CGRect(
+            x: center.x - scaledSize.width / 2,
+            y: center.y - scaledSize.height / 2,
+            width: scaledSize.width,
+            height: scaledSize.height
+        )
+    }
+
+    private func edgePoint(on frame: CGRect, toward target: CGPoint) -> CGPoint {
+        let center = frame.center
+        let dx = target.x - center.x
+        let dy = target.y - center.y
+        guard dx != 0 || dy != 0 else { return center }
+
+        let halfWidth = max(frame.width / 2, 1)
+        let halfHeight = max(frame.height / 2, 1)
+        let scale = min(halfWidth / max(abs(dx), 0.0001), halfHeight / max(abs(dy), 0.0001))
+        return CGPoint(
+            x: center.x + dx * scale,
+            y: center.y + dy * scale
         )
     }
 
@@ -1803,9 +2236,27 @@ public struct SchemaGraphView: View {
 
     private func fitGraph(in size: CGSize) {
         setViewport(
-            GraphViewportTransform.fit(contentBounds: graphBoundsAnchorMap().contentBounds, in: size),
+            GraphViewportTransform.fit(contentBounds: graphContentBoundsForFit(), in: size),
             animated: true
         )
+    }
+
+    private func graphContentBoundsForFit() -> CGRect {
+        var bounds = graphBoundsAnchorMap().contentBounds
+        guard session.showStoryCardsInGraph else { return bounds }
+
+        for card in storyGraphCards() {
+            let graphPoint = storyGraphPoint(for: card)
+            let frame = CGRect(
+                x: graphPoint.x - StoryGraphCardLayout.width / 2,
+                y: graphPoint.y - StoryGraphCardLayout.height / 2,
+                width: StoryGraphCardLayout.width,
+                height: StoryGraphCardLayout.height
+            )
+            bounds = bounds.union(frame)
+        }
+
+        return bounds
     }
 
     /// Crowded graphs (>10 nodes) skip auto-fit so nodes aren't squashed into the viewport.
@@ -2036,7 +2487,7 @@ public struct SchemaGraphView: View {
         guard newHover != descriptionHover else { return }
         if newHover != nil {
             NSCursor.pointingHand.set()
-        } else {
+        } else if hoveredStoryID == nil && draggedStoryID == nil {
             NSCursor.arrow.set()
         }
         descriptionHover = newHover
@@ -2169,8 +2620,11 @@ public struct SchemaGraphView: View {
             return !viewport.contains(center)
         }
         guard !offScreenIDs.isEmpty else {
-            if !pulledGraphPositions.isEmpty {
-                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { pulledGraphPositions.removeAll() }
+            if !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty {
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                    pulledGraphPositions.removeAll()
+                    pulledStoryGraphPositions.removeAll()
+                }
                 tappedRelationTarget = nil
             }
             return
@@ -2235,6 +2689,94 @@ public struct SchemaGraphView: View {
         )
         withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
             pulledGraphPositions = newPositions
+            pulledStoryGraphPositions.removeAll()
+        }
+    }
+
+    private func pullStoryConnectionsIntoView(for card: StoryGraphCard) {
+        guard draggedNodeID == nil else { return }
+
+        let currentStoryCards = storyGraphCards()
+        let storyCardsByID = Dictionary(uniqueKeysWithValues: currentStoryCards.map { ($0.id, $0) })
+        let graphTableIDs = Set(session.graph.nodes.map(\.id))
+        let relatedStoryIDs = relatedStoryIDs(for: card.id, in: currentStoryCards)
+            .filter { storyCardsByID[$0] != nil }
+            .sorted { lhs, rhs in
+                let lhsTitle = storyCardsByID[lhs]?.story.title ?? lhs
+                let rhsTitle = storyCardsByID[rhs]?.story.title ?? rhs
+                return lhsTitle.localizedStandardCompare(rhsTitle) == .orderedAscending
+            }
+        let tableIDs = card.tableIDs
+            .filter { graphTableIDs.contains($0) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+
+        let targets = relatedStoryIDs.map { StoryPullTarget(kind: .story, id: $0) }
+            + tableIDs.map { StoryPullTarget(kind: .table, id: $0) }
+        guard !targets.isEmpty else { return }
+
+        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
+        let sourceFrame = storyFrame(for: card, in: viewportSize)
+        let sourceCenter = sourceFrame.center
+        let sourceHalfW = sourceFrame.width / 2
+        let sourceHalfH = sourceFrame.height / 2
+        let gap: CGFloat = 78
+        let interCardGap: CGFloat = 30
+        let n = targets.count
+        let maxConnectedHalfExtent = targets.map { target -> CGFloat in
+            let size = storyPullTargetSize(for: target)
+            return max(size.width, size.height) * zoom / 2
+        }.max() ?? 0
+        let minRadiusForSpacing: CGFloat = n > 1
+            ? (maxConnectedHalfExtent + interCardGap / 2) / sin(.pi / CGFloat(n))
+            : 0
+
+        var nextTablePositions: [String: CGPoint] = [:]
+        var nextStoryPositions: [String: CGPoint] = [:]
+
+        for (index, target) in targets.enumerated() {
+            let angle: CGFloat = n == 1
+                ? -.pi / 2
+                : (-.pi / 2 + (2.0 * .pi * CGFloat(index)) / CGFloat(n))
+            let cosA = cos(angle)
+            let sinA = sin(angle)
+            let targetSize = storyPullTargetSize(for: target)
+            let targetHalfW = targetSize.width * zoom / 2
+            let targetHalfH = targetSize.height * zoom / 2
+            let sourceExtent = sourceHalfW * abs(cosA) + sourceHalfH * abs(sinA)
+            let targetExtent = targetHalfW * abs(cosA) + targetHalfH * abs(sinA)
+            let radius = max(sourceExtent + gap + targetExtent, minRadiusForSpacing)
+            let candidate = CGPoint(
+                x: sourceCenter.x + radius * cosA,
+                y: sourceCenter.y + radius * sinA
+            )
+            let clamped = CGPoint(
+                x: min(max(targetHalfW + 8, candidate.x), viewportSize.width - targetHalfW - 8),
+                y: min(max(targetHalfH + 8, candidate.y), viewportSize.height - targetHalfH - 8)
+            )
+            let graphPoint = transform.graphPoint(for: clamped, in: viewportSize)
+
+            switch target.kind {
+            case .table:
+                nextTablePositions[target.id] = graphPoint
+            case .story:
+                guard target.id != card.id else { continue }
+                nextStoryPositions[target.id] = graphPoint
+            }
+        }
+
+        tappedRelationTarget = nil
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+            pulledGraphPositions = nextTablePositions
+            pulledStoryGraphPositions = nextStoryPositions
+        }
+    }
+
+    private func storyPullTargetSize(for target: StoryPullTarget) -> CGSize {
+        switch target.kind {
+        case .table:
+            return nodeSize(for: target.id)
+        case .story:
+            return CGSize(width: StoryGraphCardLayout.width, height: StoryGraphCardLayout.height)
         }
     }
 
@@ -2388,6 +2930,151 @@ public struct SchemaGraphView: View {
     }
 }
 
+private struct StoryGraphCard: Identifiable {
+    let story: SchemaSidecar.Story
+    let tableIDs: [String]
+    let primaryTableIDs: [String]
+    let clusterLabel: String?
+    let clusterColor: Color?
+    let graphPosition: CGPoint
+
+    var id: String { story.id }
+}
+
+private enum StoryRelationDirection {
+    case sourceToTarget
+    case targetToSource
+    case none
+}
+
+private struct StoryPullTarget {
+    let kind: StoryPullTargetKind
+    let id: String
+}
+
+private enum StoryPullTargetKind {
+    case table
+    case story
+}
+
+private struct StorySchemaCardView: View {
+    let story: SchemaSidecar.Story
+    let clusterLabel: String?
+    let clusterColor: Color?
+    let tableCount: Int
+    let relationCount: Int
+    let isActive: Bool
+    let isSelected: Bool
+    let isHovered: Bool
+    let isDragging: Bool
+    let isConnected: Bool
+    let selectStory: () -> Void
+    let startStory: () -> Void
+    let pullConnections: () -> Void
+    let hoverChanged: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle()
+                .fill(clusterColor ?? StudioPalette.accentSoft)
+                .frame(width: 3)
+                .clipShape(Capsule())
+                .opacity(isActive || isSelected || isHovered || isDragging ? 0.95 : 0.68)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
+                    Image(systemName: "book.pages")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(StudioPalette.secondaryText)
+
+                    Text(clusterLabel ?? "Story")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(StudioPalette.secondaryText)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 2)
+
+                    Button(action: pullConnections) {
+                        Image(systemName: "scope")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(StudioPalette.secondaryText)
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Bring covered tables and linked stories closer")
+
+                    Button(action: startStory) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(StudioPalette.primaryText)
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Start story playback")
+                }
+
+                Text(story.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Text(tableCount == 1 ? "1 table" : "\(tableCount) tables")
+                    if relationCount > 0 {
+                        Text(relationCount == 1 ? "1 link" : "\(relationCount) links")
+                    }
+                    if isConnected {
+                        Text("related")
+                    }
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(StudioPalette.tertiaryText)
+                .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(backgroundFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(borderColor, lineWidth: isActive || isSelected || isHovered || isDragging ? 1.35 : 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onTapGesture(perform: selectStory)
+        .onHover { isHovered in
+            if isHovered {
+                NSCursor.openHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+            hoverChanged(isHovered)
+        }
+        .scaleEffect(isDragging ? 1.025 : (isHovered ? 1.018 : 1))
+        .animation(.snappy(duration: 0.16), value: isHovered)
+        .help("Select story")
+    }
+
+    private var backgroundFill: Color {
+        if isActive || isSelected || isDragging {
+            return Color.white.opacity(0.96)
+        }
+        if isConnected {
+            return Color.white.opacity(0.9)
+        }
+        return Color.white.opacity(isHovered ? 0.94 : 0.86)
+    }
+
+    private var borderColor: Color {
+        if let clusterColor {
+            return clusterColor.opacity(isActive || isSelected || isHovered || isDragging ? 0.72 : (isConnected ? 0.52 : 0.36))
+        }
+        return StudioPalette.borderStrong.opacity(isActive || isSelected || isHovered || isDragging ? 0.95 : (isConnected ? 0.78 : 0.62))
+    }
+}
+
 private struct FeaturesMenuButton: View {
     @Binding var isOpen: Bool
     @Binding var showCardinals: Bool
@@ -2450,6 +3137,13 @@ private struct FeaturesMenuButton: View {
                 .fixedSize()
             }
             .buttonStyle(.plain)
+            .onHover { isHovered in
+                if isHovered {
+                    NSCursor.pointingHand.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
             .help("Open story flows")
 
             Button {
@@ -3186,6 +3880,12 @@ enum GraphNodeColumnHighlightStyle: Equatable {
     case both
 }
 
+private extension CGRect {
+    var center: CGPoint {
+        CGPoint(x: midX, y: midY)
+    }
+}
+
 
 private struct GraphTrackpadInputSurface: NSViewRepresentable {
     let ignoresInput: Bool
@@ -3382,6 +4082,14 @@ struct GraphMinimapView: View {
     let zoom: CGFloat
     let pan: CGSize
     let onViewportTap: (CGPoint) -> Void
+
+    private var isStoryOnlyMode: Bool {
+        session.showStoryCardsInGraph && session.showOnlyStoryCardsInGraph
+    }
+
+    private var storyCards: [StoryGraphPlacedCard] {
+        StoryGraphPlacement.placedCards(for: session)
+    }
     
     var body: some View {
         ZStack {
@@ -3396,37 +4104,10 @@ struct GraphMinimapView: View {
                 
                 let minimapTransform = calculateMinimapTransform(contentBounds: contentBounds, minimapSize: size)
                 
-                // Draw edges first (behind nodes)
-                for edge in session.graph.edges {
-                    let sourcePos = session.graphLayout.position(for: edge.sourceID)
-                    let targetPos = session.graphLayout.position(for: edge.targetID)
-                    let minimapSource = minimapTransform.point(for: sourcePos, in: size)
-                    let minimapTarget = minimapTransform.point(for: targetPos, in: size)
-                    
-                    var path = Path()
-                    path.move(to: minimapSource)
-                    path.addLine(to: minimapTarget)
-                    context.stroke(
-                        path,
-                        with: .color(StudioPalette.edgeNeutral.opacity(0.3)),
-                        lineWidth: 0.5
-                    )
-                }
-                
-                // Draw nodes
-                for node in session.graph.nodes {
-                    let nodePos = session.graphLayout.position(for: node.id)
-                    let minimapPos = minimapTransform.point(for: nodePos, in: size)
-                    let nodeRect = CGRect(
-                        x: minimapPos.x - 2,
-                        y: minimapPos.y - 2,
-                        width: 4,
-                        height: 4
-                    )
-                    context.fill(
-                        Path(roundedRect: nodeRect, cornerRadius: 1),
-                        with: .color(StudioPalette.primaryText.opacity(0.6))
-                    )
+                if isStoryOnlyMode {
+                    drawStoryMinimap(in: &context, size: size, minimapTransform: minimapTransform)
+                } else {
+                    drawSchemaMinimap(in: &context, size: size, minimapTransform: minimapTransform)
                 }
                 
                 // Draw viewport indicator
@@ -3456,15 +4137,99 @@ struct GraphMinimapView: View {
         }
         .shadow(color: StudioPalette.shadow.opacity(0.5), radius: 12, y: 8)
     }
+
+    private func drawSchemaMinimap(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        minimapTransform: GraphViewportTransform
+    ) {
+        for edge in session.graph.edges {
+            let sourcePos = session.graphLayout.position(for: edge.sourceID)
+            let targetPos = session.graphLayout.position(for: edge.targetID)
+            let minimapSource = minimapTransform.point(for: sourcePos, in: size)
+            let minimapTarget = minimapTransform.point(for: targetPos, in: size)
+
+            var path = Path()
+            path.move(to: minimapSource)
+            path.addLine(to: minimapTarget)
+            context.stroke(
+                path,
+                with: .color(StudioPalette.edgeNeutral.opacity(0.3)),
+                lineWidth: 0.5
+            )
+        }
+
+        for node in session.graph.nodes {
+            let nodePos = session.graphLayout.position(for: node.id)
+            let minimapPos = minimapTransform.point(for: nodePos, in: size)
+            let nodeRect = CGRect(
+                x: minimapPos.x - 2,
+                y: minimapPos.y - 2,
+                width: 4,
+                height: 4
+            )
+            context.fill(
+                Path(roundedRect: nodeRect, cornerRadius: 1),
+                with: .color(StudioPalette.primaryText.opacity(0.6))
+            )
+        }
+    }
+
+    private func drawStoryMinimap(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        minimapTransform: GraphViewportTransform
+    ) {
+        let cardsByID = Dictionary(uniqueKeysWithValues: storyCards.map { ($0.id, $0) })
+
+        for card in storyCards {
+            for relation in card.story.relatedStories {
+                guard let targetCard = cardsByID[relation.storyID] else { continue }
+                let minimapSource = minimapTransform.point(for: card.graphPosition, in: size)
+                let minimapTarget = minimapTransform.point(for: targetCard.graphPosition, in: size)
+
+                var path = Path()
+                path.move(to: minimapSource)
+                path.addLine(to: minimapTarget)
+                context.stroke(
+                    path,
+                    with: .color(StudioPalette.primaryText.opacity(0.2)),
+                    lineWidth: 0.5
+                )
+            }
+        }
+
+        for card in storyCards {
+            let minimapPos = minimapTransform.point(for: card.graphPosition, in: size)
+            let nodeRect = CGRect(
+                x: minimapPos.x - 3,
+                y: minimapPos.y - 2,
+                width: 6,
+                height: 4
+            )
+            context.fill(
+                Path(roundedRect: nodeRect, cornerRadius: 1),
+                with: .color(StudioPalette.accent.opacity(0.75))
+            )
+        }
+    }
     
     private func graphContentBounds() -> CGRect {
+        let padding: CGFloat = 100
+
+        if isStoryOnlyMode {
+            let storyBounds = StoryGraphPlacement.contentBounds(for: storyCards)
+            guard !storyBounds.isEmpty else { return .zero }
+            return storyBounds.insetBy(dx: -padding, dy: -padding)
+        }
+
         guard !session.graph.nodes.isEmpty else { return .zero }
-        
+
         var minX = Double.infinity
         var minY = Double.infinity
         var maxX = -Double.infinity
         var maxY = -Double.infinity
-        
+
         for node in session.graph.nodes {
             let pos = session.graphLayout.position(for: node.id)
             minX = min(minX, pos.x)
@@ -3472,8 +4237,7 @@ struct GraphMinimapView: View {
             maxX = max(maxX, pos.x)
             maxY = max(maxY, pos.y)
         }
-        
-        let padding: CGFloat = 100
+
         return CGRect(
             x: minX - padding,
             y: minY - padding,
