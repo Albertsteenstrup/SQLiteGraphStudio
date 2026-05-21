@@ -62,6 +62,8 @@ public enum StoryReadAloudStatus: Sendable, Equatable {
 
 public struct StoryPlaybackOverlayState: Sendable, Equatable {
     public let title: String
+    public let clusterLabel: String?
+    public let clusterColorHex: String?
     public let userStoryText: String?
     public let actor: String?
     public let goal: String?
@@ -81,6 +83,8 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
 
     public init(
         title: String,
+        clusterLabel: String? = nil,
+        clusterColorHex: String? = nil,
         userStoryText: String?,
         actor: String? = nil,
         goal: String? = nil,
@@ -99,6 +103,8 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
         canGoForward: Bool
     ) {
         self.title = title
+        self.clusterLabel = clusterLabel
+        self.clusterColorHex = clusterColorHex
         self.userStoryText = userStoryText
         self.actor = actor
         self.goal = goal
@@ -187,6 +193,7 @@ public final class AppSession {
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
+    private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
     private static let profileStorageKey = "SQLiteGraphStudio.connection-profiles"
     private static let allowedDatabaseExtensions: Set<String> = [
@@ -302,6 +309,7 @@ public final class AppSession {
         tableDescriptors = [:]
         graphLayout.setClusterHints([:])
         graphLayout.reset(for: .empty)
+        pinnedStoryGraphPositionsByMode = [:]
         queryWorkspace.reset()
         refreshToast = nil
     }
@@ -325,6 +333,13 @@ public final class AppSession {
     public func clearPersistedGraphLayout() {
         guard let databaseURL else { return }
         userDefaults.removeObject(forKey: graphLayoutStorageKey(for: databaseURL))
+    }
+
+    /// Removes cached story-card positions so the next layout pass recomputes cluster placement.
+    public func clearPersistedStoryGraphLayout() {
+        guard let databaseURL else { return }
+        userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: databaseURL))
+        pinnedStoryGraphPositionsByMode = [:]
     }
 
     public func tableDescription(for tableName: String) -> String? {
@@ -398,6 +413,7 @@ public final class AppSession {
             sidecar: schemaSidecar
         )
         persistCurrentGraphLayout()
+        persistStoryGraphLayout()
         Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
     }
 
@@ -618,6 +634,37 @@ public final class AppSession {
         let persistedLayout = PersistedGraphLayout(snapshot: snapshot)
         guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
         userDefaults.set(data, forKey: graphLayoutStorageKey(for: databaseURL))
+    }
+
+    public func pinnedStoryGraphPosition(for storyID: String) -> CGPoint? {
+        pinnedStoryGraphPosition(for: storyID, mode: StoryGraphPlacement.layoutMode(for: self))
+    }
+
+    public func pinnedStoryGraphPosition(for storyID: String, mode: StoryGraphLayoutMode) -> CGPoint? {
+        pinnedStoryGraphPositionsByMode[mode.persistenceKey]?[storyID]
+    }
+
+    public func pinStoryGraphPosition(_ storyID: String, at point: CGPoint) {
+        pinStoryGraphPosition(storyID, at: point, mode: StoryGraphPlacement.layoutMode(for: self))
+    }
+
+    public func pinStoryGraphPosition(_ storyID: String, at point: CGPoint, mode: StoryGraphLayoutMode) {
+        let key = mode.persistenceKey
+        var positions = pinnedStoryGraphPositionsByMode[key, default: [:]]
+        positions[storyID] = point
+        pinnedStoryGraphPositionsByMode[key] = positions
+    }
+
+    public func persistStoryGraphLayout() {
+        guard let databaseURL else { return }
+        guard !pinnedStoryGraphPositionsByMode.isEmpty else {
+            userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: databaseURL))
+            return
+        }
+
+        let persistedLayout = PersistedStoryGraphLayout(positionsByMode: pinnedStoryGraphPositionsByMode)
+        guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
+        userDefaults.set(data, forKey: storyGraphLayoutStorageKey(for: databaseURL))
     }
 
     public func restoreCompactGraphLayoutForCurrentDatabase() {
@@ -1018,7 +1065,9 @@ public final class AppSession {
         schemaSidecar = sidecar
         graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
         graphLayout.reset(for: snapshot.graph)
+        pinnedStoryGraphPositionsByMode = [:]
         restorePersistedGraphLayoutIfAvailable(for: url, graph: snapshot.graph)
+        restorePersistedStoryGraphLayoutIfAvailable(for: url)
         activePaneSide = .right
         selectedGraphNodeID = nil
         expandedGraphNodeIDs = []
@@ -1043,6 +1092,20 @@ public final class AppSession {
 
     private func graphLayoutStorageKey(for url: URL) -> String {
         "SQLiteGraphStudio.graph-layout.\(url.path)"
+    }
+
+    private func storyGraphLayoutStorageKey(for url: URL) -> String {
+        "SQLiteGraphStudio.story-graph-layout.\(url.path)"
+    }
+
+    private func restorePersistedStoryGraphLayoutIfAvailable(for url: URL) {
+        guard let data = userDefaults.data(forKey: storyGraphLayoutStorageKey(for: url)),
+              let persistedLayout = try? JSONDecoder().decode(PersistedStoryGraphLayout.self, from: data)
+        else {
+            return
+        }
+
+        pinnedStoryGraphPositionsByMode = persistedLayout.cgPointsByMode
     }
 
     private func restorePersistedGraphLayoutIfAvailable(for url: URL, graph: SchemaGraph) {
@@ -1173,6 +1236,22 @@ private struct PersistedGraphLayout: Codable {
             positions: positions.mapValues(\.cgPoint),
             pinnedPositions: pinnedPositions.mapValues(\.cgPoint)
         )
+    }
+}
+
+private struct PersistedStoryGraphLayout: Codable {
+    let positionsByMode: [String: [String: PersistedPoint]]
+
+    init(positionsByMode: [String: [String: CGPoint]]) {
+        self.positionsByMode = positionsByMode.mapValues { modePositions in
+            modePositions.mapValues(PersistedPoint.init)
+        }
+    }
+
+    var cgPointsByMode: [String: [String: CGPoint]] {
+        positionsByMode.mapValues { modePositions in
+            modePositions.mapValues(\.cgPoint)
+        }
     }
 }
 

@@ -35,6 +35,46 @@
         "action": "Permission action name."
       }
     },
+    "role_permissions": {
+      "description": "auth.role_permissions -- Join rows granting permissions to roles.",
+      "columns": {
+        "role_id": "FK -> roles.id.",
+        "permission_id": "FK -> permissions.id."
+      }
+    },
+    "api_keys": {
+      "description": "auth.api_keys -- Programmatic access keys owned by users.",
+      "columns": {
+        "user_id": "FK -> users.id.",
+        "key_hash": "Hashed API key value.",
+        "expires_at": "Optional key expiry timestamp."
+      }
+    },
+    "oauth_clients": {
+      "description": "auth.oauth_clients -- Registered OAuth client applications.",
+      "columns": {
+        "name": "Client display name.",
+        "client_id": "Public client identifier."
+      }
+    },
+    "oauth_tokens": {
+      "description": "auth.oauth_tokens -- Issued OAuth access tokens for clients and users.",
+      "columns": {
+        "client_id": "FK -> oauth_clients.id.",
+        "user_id": "Optional FK -> users.id.",
+        "token": "Opaque access token.",
+        "expires_at": "Token expiry timestamp."
+      }
+    },
+    "login_attempts": {
+      "description": "auth.login_attempts -- Audit log of sign-in attempts by email.",
+      "columns": {
+        "email": "Attempted login email.",
+        "ip": "Source IP address.",
+        "success": "Whether credentials matched.",
+        "attempted_at": "Attempt timestamp."
+      }
+    },
     "departments": {
       "description": "hr.departments -- Company departments for employee assignment.",
       "columns": {
@@ -73,6 +113,44 @@
         "reviewer_id": "FK -> reviewing employee.",
         "score": "Review score.",
         "created_at": "Review creation timestamp."
+      }
+    },
+    "job_postings": {
+      "description": "hr.job_postings -- Open requisitions tied to departments.",
+      "columns": {
+        "dept_id": "FK -> departments.id.",
+        "title": "Job title being hired.",
+        "status": "open | closed | draft"
+      }
+    },
+    "candidates": {
+      "description": "hr.candidates -- Applicants linked to job postings.",
+      "columns": {
+        "posting_id": "FK -> job_postings.id.",
+        "name": "Candidate display name.",
+        "email": "Candidate contact email."
+      }
+    },
+    "interviews": {
+      "description": "hr.interviews -- Scheduled interviews for candidates.",
+      "columns": {
+        "candidate_id": "FK -> candidates.id.",
+        "interviewer_id": "FK -> employees.id.",
+        "scheduled_at": "Interview start timestamp."
+      }
+    },
+    "benefits": {
+      "description": "hr.benefits -- Benefit plan catalog offered to employees.",
+      "columns": {
+        "name": "Benefit plan name.",
+        "description": "Short plan summary."
+      }
+    },
+    "employee_benefits": {
+      "description": "hr.employee_benefits -- Join rows enrolling employees in benefits.",
+      "columns": {
+        "emp_id": "FK -> employees.id.",
+        "benefit_id": "FK -> benefits.id."
       }
     },
     "customers": {
@@ -114,6 +192,44 @@
         "description": "Activity detail text."
       }
     },
+    "territories": {
+      "description": "crm.territories -- Sales territories for account coverage.",
+      "columns": {
+        "name": "Territory name.",
+        "region": "Geographic region label."
+      }
+    },
+    "customer_territories": {
+      "description": "crm.customer_territories -- Join rows assigning customers to territories.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "territory_id": "FK -> territories.id."
+      }
+    },
+    "campaigns": {
+      "description": "crm.campaigns -- Marketing campaigns with date ranges.",
+      "columns": {
+        "name": "Campaign name.",
+        "start_date": "Campaign start date.",
+        "end_date": "Campaign end date."
+      }
+    },
+    "campaign_leads": {
+      "description": "crm.campaign_leads -- Join rows attaching leads to campaigns.",
+      "columns": {
+        "campaign_id": "FK -> campaigns.id.",
+        "lead_id": "FK -> leads.id."
+      }
+    },
+    "notes": {
+      "description": "crm.notes -- Account notes authored by internal users.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "author_user_id": "FK -> users.id.",
+        "body": "Note body text.",
+        "created_at": "Note creation timestamp."
+      }
+    },
     "categories": {
       "description": "catalog.categories -- Product category vocabulary.",
       "columns": {
@@ -144,6 +260,44 @@
       "description": "catalog.tags -- Standalone tag vocabulary for sample metadata.",
       "columns": {
         "name": "Tag display name."
+      }
+    },
+    "brands": {
+      "description": "catalog.brands -- Product brand catalog.",
+      "columns": {
+        "name": "Brand display name."
+      }
+    },
+    "product_images": {
+      "description": "catalog.product_images -- Image URLs attached to products.",
+      "columns": {
+        "product_id": "FK -> products.id.",
+        "url": "Image asset URL.",
+        "sort_order": "Display ordering index."
+      }
+    },
+    "price_lists": {
+      "description": "catalog.price_lists -- Named price lists by currency.",
+      "columns": {
+        "name": "Price list name.",
+        "currency": "ISO currency code."
+      }
+    },
+    "price_list_items": {
+      "description": "catalog.price_list_items -- Product prices within a price list.",
+      "columns": {
+        "price_list_id": "FK -> price_lists.id.",
+        "product_id": "FK -> products.id.",
+        "price": "List price in sample units."
+      }
+    },
+    "promotions": {
+      "description": "catalog.promotions -- Time-bound discount promotions.",
+      "columns": {
+        "name": "Promotion name.",
+        "discount_pct": "Discount percentage as decimal.",
+        "starts_at": "Promotion start timestamp.",
+        "ends_at": "Promotion end timestamp."
       }
     },
     "orders": {
@@ -190,6 +344,45 @@
         "date": "Movement date."
       }
     },
+    "carriers": {
+      "description": "fulfillment.carriers -- Shipping carrier catalog.",
+      "columns": {
+        "name": "Carrier display name."
+      }
+    },
+    "shipments": {
+      "description": "fulfillment.shipments -- Outbound shipments for customer orders.",
+      "columns": {
+        "order_id": "FK -> orders.id.",
+        "carrier_id": "FK -> carriers.id.",
+        "shipped_at": "Ship timestamp.",
+        "tracking_number": "Carrier tracking identifier."
+      }
+    },
+    "shipment_lines": {
+      "description": "fulfillment.shipment_lines -- Order line quantities included in a shipment.",
+      "columns": {
+        "shipment_id": "FK -> shipments.id.",
+        "order_line_id": "FK -> order_lines.id.",
+        "quantity": "Shipped unit count."
+      }
+    },
+    "returns": {
+      "description": "fulfillment.returns -- Customer return requests against orders.",
+      "columns": {
+        "order_id": "FK -> orders.id.",
+        "reason": "Return reason text.",
+        "status": "Return workflow status."
+      }
+    },
+    "return_lines": {
+      "description": "fulfillment.return_lines -- Product quantities being returned.",
+      "columns": {
+        "return_id": "FK -> returns.id.",
+        "product_id": "FK -> products.id.",
+        "quantity": "Returned unit count."
+      }
+    },
     "invoices": {
       "description": "billing.invoices -- Customer invoices generated from orders.",
       "columns": {
@@ -229,6 +422,46 @@
         "last_four": "Last four visible digits."
       }
     },
+    "credit_notes": {
+      "description": "billing.credit_notes -- Credits issued against invoices.",
+      "columns": {
+        "invoice_id": "FK -> invoices.id.",
+        "amount": "Credit amount in sample units.",
+        "issued_at": "Credit issue timestamp."
+      }
+    },
+    "subscriptions": {
+      "description": "billing.subscriptions -- Recurring billing agreements for customers.",
+      "columns": {
+        "customer_id": "FK -> customers.id.",
+        "status": "active | paused | canceled",
+        "started_at": "Subscription start timestamp."
+      }
+    },
+    "subscription_items": {
+      "description": "billing.subscription_items -- Products billed on a subscription.",
+      "columns": {
+        "subscription_id": "FK -> subscriptions.id.",
+        "product_id": "FK -> products.id.",
+        "quantity": "Billed unit count."
+      }
+    },
+    "refunds": {
+      "description": "billing.refunds -- Refunds recorded against payments.",
+      "columns": {
+        "payment_id": "FK -> payments.id.",
+        "amount": "Refund amount in sample units.",
+        "refunded_at": "Refund timestamp."
+      }
+    },
+    "dunning_events": {
+      "description": "billing.dunning_events -- Payment reminder events for overdue invoices.",
+      "columns": {
+        "invoice_id": "FK -> invoices.id.",
+        "sent_at": "Reminder sent timestamp.",
+        "channel": "email | sms | letter"
+      }
+    },
     "tickets": {
       "description": "support.tickets -- Customer support cases by subject and status.",
       "columns": {
@@ -258,49 +491,163 @@
         "article_id": "FK -> articles.id.",
         "helpful": "Boolean helpfulness vote."
       }
+    },
+    "sla_policies": {
+      "description": "support.sla_policies -- Response-time targets for support queues.",
+      "columns": {
+        "name": "Policy name.",
+        "response_hours": "Target first-response hours."
+      }
+    },
+    "ticket_assignments": {
+      "description": "support.ticket_assignments -- Agent ownership rows for tickets.",
+      "columns": {
+        "ticket_id": "FK -> tickets.id.",
+        "assignee_user_id": "FK -> users.id.",
+        "assigned_at": "Assignment timestamp."
+      }
+    },
+    "knowledge_sections": {
+      "description": "support.knowledge_sections -- Top-level help center sections.",
+      "columns": {
+        "name": "Section title.",
+        "sort_order": "Display ordering index."
+      }
+    },
+    "article_sections": {
+      "description": "support.article_sections -- Join rows placing articles in sections.",
+      "columns": {
+        "article_id": "FK -> articles.id.",
+        "section_id": "FK -> knowledge_sections.id."
+      }
+    },
+    "escalations": {
+      "description": "support.escalations -- Escalation events for overdue tickets.",
+      "columns": {
+        "ticket_id": "FK -> tickets.id.",
+        "escalated_at": "Escalation timestamp.",
+        "reason": "Escalation reason text."
+      }
     }
   },
   "clusters": [
     {
       "id": "auth",
       "label": "Auth & Access",
-      "tables": ["roles", "users", "user_roles", "sessions", "permissions"],
+      "tables": [
+        "roles",
+        "users",
+        "user_roles",
+        "sessions",
+        "permissions",
+        "role_permissions",
+        "api_keys",
+        "oauth_clients",
+        "oauth_tokens",
+        "login_attempts"
+      ],
       "color": "#7CC3FF"
     },
     {
       "id": "hr",
       "label": "HR",
-      "tables": ["departments", "employees", "salaries", "time_off", "evaluations"],
+      "tables": [
+        "departments",
+        "employees",
+        "salaries",
+        "time_off",
+        "evaluations",
+        "job_postings",
+        "candidates",
+        "interviews",
+        "benefits",
+        "employee_benefits"
+      ],
       "color": "#B8A7FF"
     },
     {
       "id": "crm",
       "label": "CRM",
-      "tables": ["customers", "contacts", "leads", "deals", "activities"],
+      "tables": [
+        "customers",
+        "contacts",
+        "leads",
+        "deals",
+        "activities",
+        "territories",
+        "customer_territories",
+        "campaigns",
+        "campaign_leads",
+        "notes"
+      ],
       "color": "#A8E6A3"
     },
     {
       "id": "catalog",
       "label": "Catalog",
-      "tables": ["categories", "products", "product_categories", "suppliers", "tags"],
+      "tables": [
+        "categories",
+        "products",
+        "product_categories",
+        "suppliers",
+        "tags",
+        "brands",
+        "product_images",
+        "price_lists",
+        "price_list_items",
+        "promotions"
+      ],
       "color": "#FFD166"
     },
     {
       "id": "fulfillment",
       "label": "Fulfillment",
-      "tables": ["orders", "order_lines", "warehouses", "bins", "stock_levels", "stock_movements"],
+      "tables": [
+        "orders",
+        "order_lines",
+        "warehouses",
+        "bins",
+        "stock_levels",
+        "stock_movements",
+        "carriers",
+        "shipments",
+        "shipment_lines",
+        "returns",
+        "return_lines"
+      ],
       "color": "#5EC7C2"
     },
     {
       "id": "billing",
       "label": "Billing",
-      "tables": ["invoices", "invoice_lines", "payments", "taxes", "payment_methods"],
+      "tables": [
+        "invoices",
+        "invoice_lines",
+        "payments",
+        "taxes",
+        "payment_methods",
+        "credit_notes",
+        "subscriptions",
+        "subscription_items",
+        "refunds",
+        "dunning_events"
+      ],
       "color": "#F8B26A"
     },
     {
       "id": "support",
       "label": "Support",
-      "tables": ["tickets", "ticket_messages", "articles", "feedback"],
+      "tables": [
+        "tickets",
+        "ticket_messages",
+        "articles",
+        "feedback",
+        "sla_policies",
+        "ticket_assignments",
+        "knowledge_sections",
+        "article_sections",
+        "escalations"
+      ],
       "color": "#F497B8"
     }
   ],
@@ -313,11 +660,13 @@
       "actor": "a returning user",
       "goal": "to access the application with their account",
       "benefit": "their identity, session, and access level are established before they continue",
-      "clusters": ["auth"],
+      "clusters": [
+        "auth"
+      ],
       "conversation": [
         "Sign-in starts from an existing users row; account creation and password reset are outside this story.",
-        "The schema stores the active login in sessions and derives access context from user_roles and roles.",
-        "permissions is an action catalog without declared role links in this sample, so it is useful context but not part of the authenticated relation path."
+        "The schema stores the active login in sessions and derives access context from user_roles, roles, and role_permissions.",
+        "login_attempts records each attempt for security monitoring."
       ],
       "acceptance_criteria": [
         {
@@ -343,40 +692,75 @@
         {
           "text": "The sign-in attempt begins by finding the existing account in users, using email as the login identifier and password_hash for credential verification.",
           "spoken_text": "Sign-in starts by finding the existing account and checking the submitted credentials against the stored login details.",
-          "tables": ["users"],
+          "tables": [
+            "users"
+          ],
           "focus": "users",
           "expand": "users"
         },
         {
           "text": "After the account is verified, the new session is attached to users.id so later requests can resolve the session token back to the signed-in account.",
           "spoken_text": "Once the account is verified, the app creates a session so future requests can be traced back to this signed-in user.",
-          "tables": ["users", "sessions"],
+          "tables": [
+            "users",
+            "sessions"
+          ],
           "focus": "sessions",
           "expand": "sessions",
-          "relation": { "table": "sessions", "column": "user_id" }
+          "relation": {
+            "table": "sessions",
+            "column": "user_id"
+          }
         },
         {
           "text": "Authorization context fans out through user_roles, which uses the same users.id identity anchor to find each role assignment.",
           "spoken_text": "Then the app looks up the user's role assignments, building the access context from the same identity.",
-          "tables": ["users", "user_roles"],
+          "tables": [
+            "users",
+            "user_roles"
+          ],
           "focus": "user_roles",
           "expand": "user_roles",
-          "relation": { "table": "user_roles", "column": "user_id" }
+          "relation": {
+            "table": "user_roles",
+            "column": "user_id"
+          }
         },
         {
           "text": "Each role assignment resolves to roles, giving the app named access levels for the authenticated user.",
           "spoken_text": "Each assignment resolves into a named role, giving the app a clear access level for this session.",
-          "tables": ["user_roles", "roles"],
+          "tables": [
+            "user_roles",
+            "roles"
+          ],
           "focus": "roles",
           "expand": "roles",
-          "relation": { "table": "user_roles", "column": "role_id" }
+          "relation": {
+            "table": "user_roles",
+            "column": "role_id"
+          }
         },
         {
           "text": "With the session token active and roles loaded, the app can treat the request as signed in and apply permission checks from the available access catalog.",
           "spoken_text": "With the session active and roles loaded, the app can handle the request as authenticated and apply the right permission checks.",
-          "tables": ["sessions", "users", "roles", "permissions"],
+          "tables": [
+            "sessions",
+            "users",
+            "roles",
+            "permissions"
+          ],
           "focus": "sessions",
           "expand": "sessions"
+        },
+        {
+          "text": "login_attempts records whether the attempt succeeded before the session is issued.",
+          "spoken_text": "Each sign-in attempt is logged before the session is created.",
+          "tables": [
+            "users",
+            "login_attempts"
+          ],
+          "focus": "login_attempts",
+          "expand": "login_attempts"
         }
       ]
     },
@@ -388,7 +772,12 @@
       "actor": "a customer",
       "goal": "to place an order and complete payment",
       "benefit": "the business can fulfill the purchase and collect revenue against a clear invoice",
-      "clusters": ["crm", "catalog", "fulfillment", "billing"],
+      "clusters": [
+        "crm",
+        "catalog",
+        "fulfillment",
+        "billing"
+      ],
       "conversation": [
         "This story follows an existing customer through checkout; customer acquisition and lead conversion are outside the flow.",
         "The sample schema separates the operational order from the billing invoice, so the playback shows fulfillment first and billing second.",
@@ -424,57 +813,110 @@
         {
           "text": "The checkout flow starts from customers, the account that owns the purchase and anchors the commercial history.",
           "spoken_text": "First, checkout starts with the customer account. This is the record that owns the purchase history.",
-          "tables": ["customers"],
+          "tables": [
+            "customers"
+          ],
           "focus": "customers",
           "expand": "customers"
         },
         {
           "text": "A new orders row is created for that customer, using orders.customer_id to connect the purchase to the account.",
           "spoken_text": "Next, the app creates the order and attaches it to the customer, so the purchase has a clear owner.",
-          "tables": ["customers", "orders"],
+          "tables": [
+            "customers",
+            "orders"
+          ],
           "focus": "orders",
           "expand": "orders",
-          "relation": { "table": "orders", "column": "customer_id" }
+          "relation": {
+            "table": "orders",
+            "column": "customer_id"
+          }
         },
         {
           "text": "Each selected product becomes an order_lines row, connecting the order to products with quantities.",
           "spoken_text": "Then each item in the basket becomes an order line, connecting the order to the products and quantities being bought.",
-          "tables": ["orders", "order_lines", "products"],
+          "tables": [
+            "orders",
+            "order_lines",
+            "products"
+          ],
           "focus": "order_lines",
           "expand": "order_lines",
-          "relation": { "table": "order_lines", "column": "order_id" }
+          "relation": {
+            "table": "order_lines",
+            "column": "order_id"
+          }
         },
         {
           "text": "Product lookup completes the line-item context, letting fulfillment and billing calculate what was bought.",
           "spoken_text": "The product reference fills in what each line item represents, which is what fulfillment and billing need next.",
-          "tables": ["order_lines", "products"],
+          "tables": [
+            "order_lines",
+            "products"
+          ],
           "focus": "products",
           "expand": "products",
-          "relation": { "table": "order_lines", "column": "product_id" }
+          "relation": {
+            "table": "order_lines",
+            "column": "product_id"
+          }
         },
         {
           "text": "Billing generates an invoices row from the order, separating the operational purchase from the amount due.",
           "spoken_text": "Billing then creates an invoice from the order, turning the purchase into an amount due.",
-          "tables": ["orders", "invoices"],
+          "tables": [
+            "orders",
+            "invoices"
+          ],
           "focus": "invoices",
           "expand": "invoices",
-          "relation": { "table": "invoices", "column": "order_id" }
+          "relation": {
+            "table": "invoices",
+            "column": "order_id"
+          }
         },
         {
           "text": "invoice_lines breaks the invoice into billable charges, preserving the detail behind the invoice total.",
           "spoken_text": "Invoice lines preserve the detail behind the bill, so the invoice total can be explained later.",
-          "tables": ["invoices", "invoice_lines"],
+          "tables": [
+            "invoices",
+            "invoice_lines"
+          ],
           "focus": "invoice_lines",
           "expand": "invoice_lines",
-          "relation": { "table": "invoice_lines", "column": "invoice_id" }
+          "relation": {
+            "table": "invoice_lines",
+            "column": "invoice_id"
+          }
         },
         {
           "text": "When payment is captured, payments links the paid amount back to invoices so the order can be treated as paid.",
           "spoken_text": "Finally, the payment is recorded against the invoice, marking the commercial side of the order as paid.",
-          "tables": ["invoices", "payments", "payment_methods", "customers"],
+          "tables": [
+            "invoices",
+            "payments",
+            "payment_methods",
+            "customers"
+          ],
           "focus": "payments",
           "expand": "payments",
-          "relation": { "table": "payments", "column": "invoice_id" }
+          "relation": {
+            "table": "payments",
+            "column": "invoice_id"
+          }
+        },
+        {
+          "text": "Active promotions and price_list_items can adjust line pricing before the order total is finalized.",
+          "spoken_text": "Promotions or price list overrides may adjust line pricing before checkout completes.",
+          "tables": [
+            "products",
+            "promotions",
+            "price_list_items",
+            "order_lines"
+          ],
+          "focus": "promotions",
+          "expand": "promotions"
         }
       ]
     },
@@ -486,10 +928,20 @@
       "actor": "a customer",
       "goal": "to get help after a purchase",
       "benefit": "support can respond with the right customer and account context",
-      "clusters": ["crm", "support", "auth"],
+      "clusters": [
+        "crm",
+        "support",
+        "auth"
+      ],
       "related_stories": [
-        { "story_id": "customer-places-order-2026-05-19T20-40-57Z", "kind": "follows" },
-        { "story_id": "user-signs-in-2026-05-18T07-41-42Z", "kind": "depends_on" }
+        {
+          "story_id": "customer-places-order-2026-05-19T20-40-57Z",
+          "kind": "follows"
+        },
+        {
+          "story_id": "user-signs-in-2026-05-18T07-41-42Z",
+          "kind": "depends_on"
+        }
       ],
       "conversation": [
         "This story follows the order story as a post-purchase support moment, even though tickets are linked to customers rather than directly to orders.",
@@ -520,48 +972,2087 @@
         {
           "text": "The support flow starts from customers, carrying forward the account context established by the earlier order story.",
           "spoken_text": "The support flow starts with the customer account, carrying forward the context from the purchase.",
-          "tables": ["customers"],
+          "tables": [
+            "customers"
+          ],
           "focus": "customers",
           "expand": "customers"
         },
         {
           "text": "A tickets row captures the new case and links it to customers.id, so support can see which account needs help.",
           "spoken_text": "A new support ticket is created and attached to the customer, so the support team knows which account needs help.",
-          "tables": ["customers", "tickets"],
+          "tables": [
+            "customers",
+            "tickets"
+          ],
           "focus": "tickets",
           "expand": "tickets",
-          "relation": { "table": "tickets", "column": "customer_id" }
+          "relation": {
+            "table": "tickets",
+            "column": "customer_id"
+          }
         },
         {
           "text": "The first conversation entry is stored in ticket_messages and tied back to the ticket with ticket_id.",
           "spoken_text": "The first message is stored under the ticket, creating the conversation thread for the case.",
-          "tables": ["tickets", "ticket_messages"],
+          "tables": [
+            "tickets",
+            "ticket_messages"
+          ],
           "focus": "ticket_messages",
           "expand": "ticket_messages",
-          "relation": { "table": "ticket_messages", "column": "ticket_id" }
+          "relation": {
+            "table": "ticket_messages",
+            "column": "ticket_id"
+          }
         },
         {
           "text": "ticket_messages.sender_user_id connects the reply to users, which is why this story depends on the sign-in story for authenticated authorship.",
           "spoken_text": "The message also points to the signed-in user who wrote it, connecting support activity back to authenticated identity.",
-          "tables": ["ticket_messages", "users", "sessions"],
+          "tables": [
+            "ticket_messages",
+            "users",
+            "sessions"
+          ],
           "focus": "users",
           "expand": "users",
-          "relation": { "table": "ticket_messages", "column": "sender_user_id" }
+          "relation": {
+            "table": "ticket_messages",
+            "column": "sender_user_id"
+          }
         },
         {
           "text": "If the case is answered through self-service, articles provides the knowledge base content that can resolve the issue without another ticket update.",
           "spoken_text": "If the issue can be solved through self-service, a knowledge base article can provide the answer.",
-          "tables": ["tickets", "articles"],
+          "tables": [
+            "tickets",
+            "articles"
+          ],
           "focus": "articles",
           "expand": "articles"
         },
         {
           "text": "feedback records whether the article helped, closing the loop from support demand back into knowledge base quality.",
           "spoken_text": "Finally, article feedback records whether the answer helped, so support can improve the knowledge base over time.",
-          "tables": ["articles", "feedback", "tickets"],
+          "tables": [
+            "articles",
+            "feedback",
+            "tickets"
+          ],
           "focus": "feedback",
           "expand": "feedback",
-          "relation": { "table": "feedback", "column": "article_id" }
+          "relation": {
+            "table": "feedback",
+            "column": "article_id"
+          }
+        },
+        {
+          "text": "ticket_assignments can route the new ticket to a support agent via users.",
+          "spoken_text": "The ticket can immediately be assigned to a support agent.",
+          "tables": [
+            "tickets",
+            "ticket_assignments",
+            "users"
+          ],
+          "focus": "ticket_assignments",
+          "expand": "ticket_assignments",
+          "relation": {
+            "table": "ticket_assignments",
+            "column": "ticket_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "sales-rep-closes-deal-2026-05-20T14-30-00Z",
+      "title": "Sales Rep Closes a Deal",
+      "created_at": "2026-05-20T14:30:00Z",
+      "prompt": "What happens when a sales rep closes a deal?",
+      "actor": "a sales representative",
+      "goal": "to record a won opportunity and log the next follow-up",
+      "benefit": "pipeline reporting and customer history reflect the closed revenue",
+      "clusters": [
+        "crm"
+      ],
+      "conversation": [
+        "This story covers deal closure on an existing customer account; lead capture and qualification in leads are outside the flow because leads has no declared FK into customers or deals.",
+        "contacts can hold people at the account, but the sample schema ties deals directly to customers rather than to individual contacts.",
+        "activities is the audit trail for calls, meetings, and notes after the deal row exists."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an existing customer account in the pipeline",
+          "when": "the rep marks the opportunity as won",
+          "then": "deals records the amount and close_date against customers.id"
+        },
+        {
+          "id": "AC2",
+          "given": "the deal row exists",
+          "when": "the rep logs a follow-up touchpoint",
+          "then": "activities links the note or call to deals.id"
+        },
+        {
+          "id": "AC3",
+          "given": "activities are recorded over time",
+          "when": "reporting reads the account history",
+          "then": "the customer, deal, and activity rows form a traceable sales timeline"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Deal closure starts from customers, the account that owns the commercial relationship and anchors pipeline history.",
+          "spoken_text": "Closing a deal starts with the customer account, the organization that owns this sales relationship.",
+          "tables": [
+            "customers"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "A deals row captures the won opportunity, using deals.customer_id to tie revenue back to that account.",
+          "spoken_text": "The rep records the won deal and attaches it to the customer, so the revenue has a clear account owner.",
+          "tables": [
+            "customers",
+            "deals"
+          ],
+          "focus": "deals",
+          "expand": "deals",
+          "relation": {
+            "table": "deals",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "amount and close_date on the deal row become the fields forecasting and reporting read when the quarter closes.",
+          "spoken_text": "The deal amount and close date are what reporting uses when the quarter ends.",
+          "tables": [
+            "deals",
+            "customers"
+          ],
+          "focus": "deals",
+          "expand": "deals"
+        },
+        {
+          "text": "Follow-up work is stored in activities, which uses activities.deal_id to keep each touchpoint on the same opportunity thread.",
+          "spoken_text": "Follow-up calls and notes land in activities, keeping every touchpoint on the same deal thread.",
+          "tables": [
+            "deals",
+            "activities"
+          ],
+          "focus": "activities",
+          "expand": "activities",
+          "relation": {
+            "table": "activities",
+            "column": "deal_id"
+          }
+        },
+        {
+          "text": "With the deal closed and activities logged, the CRM timeline from account through opportunity to follow-up is complete.",
+          "spoken_text": "With the deal closed and follow-ups logged, the sales timeline from account to opportunity is complete.",
+          "tables": [
+            "customers",
+            "deals",
+            "activities"
+          ],
+          "focus": "activities",
+          "expand": "activities"
+        }
+      ]
+    },
+    {
+      "id": "warehouse-fulfills-order-2026-05-20T14-31-00Z",
+      "title": "Warehouse Fulfills Order",
+      "created_at": "2026-05-20T14:31:00Z",
+      "prompt": "What happens when a warehouse fulfills a customer order?",
+      "actor": "a warehouse operator",
+      "goal": "to pick, pack, and ship the items from a placed order",
+      "benefit": "on-hand inventory stays accurate and the customer receives what they paid for",
+      "clusters": [
+        "fulfillment",
+        "catalog"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-places-order-2026-05-19T20-40-57Z",
+          "kind": "follows"
+        }
+      ],
+      "conversation": [
+        "This story continues after checkout from the order story; billing and payment are assumed complete before fulfillment begins.",
+        "The schema has no declared FK from orders to stock tables, so inventory impact is traced through products shared by order_lines and stock_levels.",
+        "stock_movements records quantity changes but does not reference orders directly in this sample."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a placed order ready for fulfillment",
+          "when": "the operator opens the pick list",
+          "then": "order_lines lists each product_id and quantity tied to orders.id"
+        },
+        {
+          "id": "AC2",
+          "given": "each line item product",
+          "when": "the operator locates stock",
+          "then": "stock_levels shows available quantity for that product_id in a bin"
+        },
+        {
+          "id": "AC3",
+          "given": "items are picked and shipped",
+          "when": "inventory is updated",
+          "then": "stock_movements records the outgoing quantity for each product_id"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Fulfillment begins from orders, the operational purchase record created during checkout in the earlier order story.",
+          "spoken_text": "Fulfillment starts with the order, the purchase record created during checkout.",
+          "tables": [
+            "orders"
+          ],
+          "focus": "orders",
+          "expand": "orders"
+        },
+        {
+          "text": "order_lines expands the order into pickable rows, linking each line to a product_id and quantity.",
+          "spoken_text": "Order lines break the order into pickable rows, each with a product and quantity.",
+          "tables": [
+            "orders",
+            "order_lines"
+          ],
+          "focus": "order_lines",
+          "expand": "order_lines",
+          "relation": {
+            "table": "order_lines",
+            "column": "order_id"
+          }
+        },
+        {
+          "text": "products resolves each line item to the SKU the warehouse must locate on the floor.",
+          "spoken_text": "The product reference tells the operator which SKU to locate on the warehouse floor.",
+          "tables": [
+            "order_lines",
+            "products"
+          ],
+          "focus": "products",
+          "expand": "products",
+          "relation": {
+            "table": "order_lines",
+            "column": "product_id"
+          }
+        },
+        {
+          "text": "stock_levels shows how many units of that product_id are available in each bin before picking starts.",
+          "spoken_text": "Stock levels show how many units are available in each bin before picking begins.",
+          "tables": [
+            "products",
+            "stock_levels",
+            "bins"
+          ],
+          "focus": "stock_levels",
+          "expand": "stock_levels",
+          "relation": {
+            "table": "stock_levels",
+            "column": "product_id"
+          }
+        },
+        {
+          "text": "bins.warehouse_id places the pick location inside warehouses, so operators know which site holds the inventory.",
+          "spoken_text": "Each bin belongs to a warehouse, so the operator knows which site holds the stock.",
+          "tables": [
+            "stock_levels",
+            "bins",
+            "warehouses"
+          ],
+          "focus": "warehouses",
+          "expand": "warehouses",
+          "relation": {
+            "table": "bins",
+            "column": "warehouse_id"
+          }
+        },
+        {
+          "text": "After shipment, stock_movements records the quantity reduction for each product_id, closing the loop between the order and on-hand inventory.",
+          "spoken_text": "After shipment, a stock movement records the quantity reduction, tying the order back to on-hand inventory.",
+          "tables": [
+            "stock_movements",
+            "products",
+            "orders",
+            "order_lines"
+          ],
+          "focus": "stock_movements",
+          "expand": "stock_movements",
+          "relation": {
+            "table": "stock_movements",
+            "column": "product_id"
+          }
+        },
+        {
+          "text": "After picking, shipments and shipment_lines record the carrier handoff from the fulfilled order.",
+          "spoken_text": "Once picked, the shipment and its line items record carrier tracking.",
+          "tables": [
+            "orders",
+            "shipments",
+            "shipment_lines"
+          ],
+          "focus": "shipments",
+          "expand": "shipments",
+          "relation": {
+            "table": "shipments",
+            "column": "order_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "employee-requests-time-off-2026-05-20T15-00-00Z",
+      "title": "Employee Requests Time Off",
+      "created_at": "2026-05-20T15:00:00Z",
+      "prompt": "What happens when an employee submits a leave request?",
+      "actor": "an employee",
+      "goal": "to request scheduled time away from work",
+      "benefit": "managers can plan coverage while HR keeps an auditable leave record",
+      "clusters": [
+        "hr",
+        "auth"
+      ],
+      "related_stories": [
+        {
+          "story_id": "user-signs-in-2026-05-18T07-41-42Z",
+          "kind": "depends_on"
+        }
+      ],
+      "conversation": [
+        "employees.user_id optionally links a workforce record to users; this story assumes the employee signed in first.",
+        "time_off.status models approval workflow in the sample but has no separate approver table.",
+        "Salary and payroll adjustments from leave are outside this schema."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a signed-in user with a linked employees row",
+          "when": "they open the time-off form",
+          "then": "employees resolves the requester through employees.user_id"
+        },
+        {
+          "id": "AC2",
+          "given": "the employee record exists",
+          "when": "they submit dates and reason",
+          "then": "time_off records start_date, end_date, and status against employees.id"
+        },
+        {
+          "id": "AC3",
+          "given": "the employee belongs to a department",
+          "when": "manager routing runs",
+          "then": "employees.dept_id links the requester to departments for org context"
+        }
+      ],
+      "playback": [
+        {
+          "text": "The leave flow starts from users, the signed-in identity that must map to a workforce record before a request can be filed.",
+          "spoken_text": "Time off starts with the signed-in user, the identity that must map to an employee record.",
+          "tables": [
+            "users"
+          ],
+          "focus": "users",
+          "expand": "users"
+        },
+        {
+          "text": "employees.user_id connects the account to a single workforce row, which becomes the anchor for every HR action in this story.",
+          "spoken_text": "The app finds the employee row linked to that user, which anchors the rest of the HR flow.",
+          "tables": [
+            "users",
+            "employees"
+          ],
+          "focus": "employees",
+          "expand": "employees",
+          "relation": {
+            "table": "employees",
+            "column": "user_id"
+          }
+        },
+        {
+          "text": "employees.dept_id places the requester inside departments so managers can see which team is affected by the absence.",
+          "spoken_text": "The employee's department shows which team needs coverage while they are away.",
+          "tables": [
+            "employees",
+            "departments"
+          ],
+          "focus": "departments",
+          "expand": "departments",
+          "relation": {
+            "table": "employees",
+            "column": "dept_id"
+          }
+        },
+        {
+          "text": "A new time_off row captures the requested window and workflow status, linked back to the employee with time_off.emp_id.",
+          "spoken_text": "The leave request is saved with dates and status, tied back to that employee.",
+          "tables": [
+            "employees",
+            "time_off"
+          ],
+          "focus": "time_off",
+          "expand": "time_off",
+          "relation": {
+            "table": "time_off",
+            "column": "emp_id"
+          }
+        },
+        {
+          "text": "With the request persisted, HR and the employee's manager can track approval from the same employees and time_off thread.",
+          "spoken_text": "With the request on file, HR and the manager can track approval from the same employee record.",
+          "tables": [
+            "employees",
+            "time_off",
+            "departments"
+          ],
+          "focus": "time_off",
+          "expand": "time_off"
+        }
+      ]
+    },
+    {
+      "id": "manager-submits-performance-review-2026-05-20T15-01-00Z",
+      "title": "Manager Submits Performance Review",
+      "created_at": "2026-05-20T15:01:00Z",
+      "prompt": "What happens when a manager completes an employee performance review?",
+      "actor": "a people manager",
+      "goal": "to record a performance evaluation for a direct report",
+      "benefit": "HR can compare scores over time and tie development plans to accountable reviewers",
+      "clusters": [
+        "hr"
+      ],
+      "conversation": [
+        "evaluations.reviewer_id and evaluations.emp_id both reference employees, so both participants are workforce rows rather than raw users rows.",
+        "Compensation changes in salaries are modeled separately; this story stops at the review record.",
+        "There is no review cycle or template table in the sample schema."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a manager and report both exist as employees rows",
+          "when": "the review form opens",
+          "then": "the reviewer and subject can be resolved through employees.id"
+        },
+        {
+          "id": "AC2",
+          "given": "the manager submits scores and notes",
+          "when": "the review is saved",
+          "then": "evaluations stores score and created_at for evaluations.emp_id"
+        },
+        {
+          "id": "AC3",
+          "given": "the evaluation row exists",
+          "when": "reporting reads reviewer accountability",
+          "then": "evaluations.reviewer_id points to the manager's employees row"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Performance review begins from the manager's employees row, which will later be stored as evaluations.reviewer_id.",
+          "spoken_text": "The review starts with the manager's employee record, the person accountable for the evaluation.",
+          "tables": [
+            "employees"
+          ],
+          "focus": "employees",
+          "expand": "employees"
+        },
+        {
+          "text": "The direct report is a second employees row; both participants stay in the HR cluster without requiring a users login for the report.",
+          "spoken_text": "The direct report is another employee row, separate from the manager but in the same HR model.",
+          "tables": [
+            "employees",
+            "departments"
+          ],
+          "focus": "employees",
+          "expand": "employees"
+        },
+        {
+          "text": "evaluations.emp_id links the review outcome to the employee being rated, including score and created_at.",
+          "spoken_text": "The evaluation is saved against the employee being rated, including the score and date.",
+          "tables": [
+            "employees",
+            "evaluations"
+          ],
+          "focus": "evaluations",
+          "expand": "evaluations",
+          "relation": {
+            "table": "evaluations",
+            "column": "emp_id"
+          }
+        },
+        {
+          "text": "evaluations.reviewer_id records which manager owned the review, creating a two-way employees relationship on the same table.",
+          "spoken_text": "The reviewer field records which manager owned the review, linking both sides of the conversation.",
+          "tables": [
+            "evaluations",
+            "employees"
+          ],
+          "focus": "evaluations",
+          "expand": "evaluations",
+          "relation": {
+            "table": "evaluations",
+            "column": "reviewer_id"
+          }
+        },
+        {
+          "text": "Department context from employees.dept_id helps HR compare team performance after the evaluation is filed.",
+          "spoken_text": "Department context helps HR compare team performance once the review is filed.",
+          "tables": [
+            "evaluations",
+            "employees",
+            "departments"
+          ],
+          "focus": "departments",
+          "expand": "departments",
+          "relation": {
+            "table": "employees",
+            "column": "dept_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "sales-rep-converts-lead-2026-05-20T15-02-00Z",
+      "title": "Sales Rep Converts Lead to Customer",
+      "created_at": "2026-05-20T15:02:00Z",
+      "prompt": "What happens when a sales rep converts a qualified lead into a customer account?",
+      "actor": "a sales representative",
+      "goal": "to promote a qualified lead into a paying customer account",
+      "benefit": "pipeline reporting can attribute revenue to the original lead source",
+      "clusters": [
+        "crm"
+      ],
+      "related_stories": [
+        {
+          "story_id": "sales-rep-closes-deal-2026-05-20T14-30-00Z",
+          "kind": "precedes"
+        }
+      ],
+      "conversation": [
+        "leads has no declared foreign key into customers, so conversion is modeled as creating customers and contacts then updating leads.status in application logic.",
+        "This story precedes deal closure: a converted account is the prerequisite for the closed-deal story.",
+        "Marketing automation and lead scoring tables are not present in the sample."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a lead in a qualified status",
+          "when": "the rep starts conversion",
+          "then": "leads supplies email, source, and status for the prospect record"
+        },
+        {
+          "id": "AC2",
+          "given": "conversion is approved",
+          "when": "the account is created",
+          "then": "customers stores the new organization that will own downstream deals and orders"
+        },
+        {
+          "id": "AC3",
+          "given": "the customer account exists",
+          "when": "the primary contact is saved",
+          "then": "contacts links the lead's person to customers.id with name and email"
+        },
+        {
+          "id": "AC4",
+          "given": "customers and contacts exist",
+          "when": "the rep marks the lead converted",
+          "then": "leads.status reflects that the prospect became an account"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Lead conversion starts from leads, capturing the prospect email, acquisition source, and current pipeline status.",
+          "spoken_text": "Conversion starts with the lead, where the team captured email, source, and pipeline status.",
+          "tables": [
+            "leads"
+          ],
+          "focus": "leads",
+          "expand": "leads"
+        },
+        {
+          "text": "A customers row is created for the new organization, establishing the account that will own future deals and orders.",
+          "spoken_text": "A customer account is created for the organization, the anchor for future deals and orders.",
+          "tables": [
+            "leads",
+            "customers"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "contacts.customer_id attaches the primary person to the account, typically reusing the lead email on the contact row.",
+          "spoken_text": "A contact is added to the account, usually carrying over the lead's email and name.",
+          "tables": [
+            "customers",
+            "contacts"
+          ],
+          "focus": "contacts",
+          "expand": "contacts",
+          "relation": {
+            "table": "contacts",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "The lead's status is updated to show conversion complete, keeping marketing attribution even though leads has no schema-level FK to customers.",
+          "spoken_text": "The lead status is updated to converted, preserving attribution even without a database link to customers.",
+          "tables": [
+            "leads",
+            "customers",
+            "contacts"
+          ],
+          "focus": "leads",
+          "expand": "leads"
+        },
+        {
+          "text": "With customers and contacts in place, the rep can open opportunities in deals as described in the closed-deal story.",
+          "spoken_text": "With the account and contact ready, the rep can open deals on this customer next.",
+          "tables": [
+            "customers",
+            "contacts",
+            "deals"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        }
+      ]
+    },
+    {
+      "id": "merchandiser-categorizes-product-2026-05-20T15-03-00Z",
+      "title": "Merchandiser Categorizes New Product",
+      "created_at": "2026-05-20T15:03:00Z",
+      "prompt": "What happens when merchandising adds a product to the catalog with categories?",
+      "actor": "a merchandiser",
+      "goal": "to publish a sellable product with the right category placement",
+      "benefit": "sales, search, and fulfillment all reference consistent catalog structure",
+      "clusters": [
+        "catalog"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-places-order-2026-05-19T20-40-57Z",
+          "kind": "precedes"
+        }
+      ],
+      "conversation": [
+        "suppliers and tags exist for richer catalog demos but have no FK into products in this schema; the playback focuses on categories via product_categories.",
+        "Pricing on products feeds order_lines during checkout in the order story.",
+        "Inventory and stock tables live in fulfillment and are outside merchandising setup."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a new SKU is ready to sell",
+          "when": "merchandising creates the product",
+          "then": "products stores name and unit price"
+        },
+        {
+          "id": "AC2",
+          "given": "category taxonomy already exists",
+          "when": "the merchandiser assigns placement",
+          "then": "product_categories links products.id to categories.id"
+        },
+        {
+          "id": "AC3",
+          "given": "the product is categorized",
+          "when": "a customer later checks out",
+          "then": "order_lines can reference the same products.id used in the catalog"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Catalog setup begins by creating a products row with the sellable name and price that downstream orders will reference.",
+          "spoken_text": "Catalog work starts by creating the product with the name and price orders will use later.",
+          "tables": [
+            "products"
+          ],
+          "focus": "products",
+          "expand": "products"
+        },
+        {
+          "text": "categories holds the taxonomy labels merchandising uses to group items for browsing and reporting.",
+          "spoken_text": "Categories hold the taxonomy labels used to group products for browsing and reporting.",
+          "tables": [
+            "categories",
+            "products"
+          ],
+          "focus": "categories",
+          "expand": "categories"
+        },
+        {
+          "text": "product_categories connects the new product to each selected category using both foreign keys in the join table.",
+          "spoken_text": "The join table connects the product to each selected category using both foreign keys.",
+          "tables": [
+            "products",
+            "product_categories",
+            "categories"
+          ],
+          "focus": "product_categories",
+          "expand": "product_categories",
+          "relation": {
+            "table": "product_categories",
+            "column": "product_id"
+          }
+        },
+        {
+          "text": "product_categories.category_id resolves the other side of the relationship, pulling the assigned category nodes into the graph view.",
+          "spoken_text": "The category side of the join shows which taxonomy nodes the product belongs to.",
+          "tables": [
+            "product_categories",
+            "categories"
+          ],
+          "focus": "categories",
+          "expand": "categories",
+          "relation": {
+            "table": "product_categories",
+            "column": "category_id"
+          }
+        },
+        {
+          "text": "With products categorized, checkout stories can safely reference the SKU through order_lines.product_id.",
+          "spoken_text": "Once categorized, checkout can reference this SKU through order line items.",
+          "tables": [
+            "products",
+            "product_categories",
+            "order_lines"
+          ],
+          "focus": "products",
+          "expand": "products"
+        },
+        {
+          "text": "product_images and brands enrich the catalog presentation around the categorized product.",
+          "spoken_text": "Images and brand metadata enrich the categorized product record.",
+          "tables": [
+            "products",
+            "product_images",
+            "brands"
+          ],
+          "focus": "product_images",
+          "expand": "product_images",
+          "relation": {
+            "table": "product_images",
+            "column": "product_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "finance-records-partial-payment-2026-05-20T15-04-00Z",
+      "title": "Finance Records Partial Payment",
+      "created_at": "2026-05-20T15:04:00Z",
+      "prompt": "What happens when finance records a partial payment on an outstanding invoice?",
+      "actor": "a finance clerk",
+      "goal": "to apply a partial payment against an overdue invoice",
+      "benefit": "accounts receivable shows the remaining balance until the invoice is paid in full",
+      "clusters": [
+        "billing",
+        "crm"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-places-order-2026-05-19T20-40-57Z",
+          "kind": "follows"
+        }
+      ],
+      "conversation": [
+        "This story assumes an invoice already exists from the order story; it focuses on incremental payments rather than first-time checkout.",
+        "taxes is a regional rate catalog without invoice FKs in the sample, so tax breakdown is excluded.",
+        "Multiple payments rows can reference the same invoice_id to model partial settlement."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an invoice linked to a prior order",
+          "when": "finance opens the receivable",
+          "then": "invoices.order_id connects the bill to orders and customers through the order"
+        },
+        {
+          "id": "AC2",
+          "given": "the customer pays less than the invoice total",
+          "when": "the clerk records the receipt",
+          "then": "payments stores a payment amount and paid_at against invoices.id"
+        },
+        {
+          "id": "AC3",
+          "given": "a stored payment method exists for the account",
+          "when": "the clerk confirms how the customer paid",
+          "then": "payment_methods.customer_id provides instrument context for the same customers account"
+        },
+        {
+          "id": "AC4",
+          "given": "one partial payment is recorded",
+          "when": "balance is calculated",
+          "then": "the remaining due amount is derived from invoices.amount minus summed payments"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Partial payment handling starts from customers, the account whose receivable balance finance is settling.",
+          "spoken_text": "Partial payment work starts with the customer whose balance finance is settling.",
+          "tables": [
+            "customers"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "orders anchors the commercial event; invoices.order_id ties the outstanding bill back to that purchase.",
+          "spoken_text": "The order anchors the purchase, and the invoice links back to it for context.",
+          "tables": [
+            "customers",
+            "orders",
+            "invoices"
+          ],
+          "focus": "invoices",
+          "expand": "invoices",
+          "relation": {
+            "table": "invoices",
+            "column": "order_id"
+          }
+        },
+        {
+          "text": "invoice_lines preserves the charge breakdown behind invoices.amount while finance decides how much to accept today.",
+          "spoken_text": "Invoice lines show the charge breakdown behind the total amount due.",
+          "tables": [
+            "invoices",
+            "invoice_lines"
+          ],
+          "focus": "invoice_lines",
+          "expand": "invoice_lines",
+          "relation": {
+            "table": "invoice_lines",
+            "column": "invoice_id"
+          }
+        },
+        {
+          "text": "payment_methods.customer_id shows which stored instrument the customer expects finance to use for the installment.",
+          "spoken_text": "Stored payment methods show which instrument the customer expects for this installment.",
+          "tables": [
+            "customers",
+            "payment_methods"
+          ],
+          "focus": "payment_methods",
+          "expand": "payment_methods",
+          "relation": {
+            "table": "payment_methods",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "A payments row records only part of invoices.amount, leaving a remaining balance until another payment is posted.",
+          "spoken_text": "A payment row records part of the invoice total, leaving a balance until the next receipt.",
+          "tables": [
+            "invoices",
+            "payments"
+          ],
+          "focus": "payments",
+          "expand": "payments",
+          "relation": {
+            "table": "payments",
+            "column": "invoice_id"
+          }
+        },
+        {
+          "text": "Finance can repeat payments against the same invoice until the summed payments match the invoice total.",
+          "spoken_text": "Finance can post additional payments on the same invoice until the bill is fully paid.",
+          "tables": [
+            "invoices",
+            "payments",
+            "customers"
+          ],
+          "focus": "payments",
+          "expand": "payments"
+        },
+        {
+          "text": "If the remaining balance stays overdue, dunning_events records reminder outreach on the invoice.",
+          "spoken_text": "Overdue balances can trigger dunning reminder events on the invoice.",
+          "tables": [
+            "invoices",
+            "dunning_events"
+          ],
+          "focus": "dunning_events",
+          "expand": "dunning_events",
+          "relation": {
+            "table": "dunning_events",
+            "column": "invoice_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "admin-assigns-user-role-2026-05-20T16-00-00Z",
+      "title": "Admin Assigns User Role",
+      "created_at": "2026-05-20T16:00:00Z",
+      "prompt": "What happens when an admin assigns a role to a user?",
+      "actor": "an administrator",
+      "goal": "to grant an access level to an existing account",
+      "benefit": "the user can reach the features their job requires on the next sign-in",
+      "clusters": [
+        "auth"
+      ],
+      "related_stories": [
+        {
+          "story_id": "user-signs-in-2026-05-18T07-41-42Z",
+          "kind": "follows"
+        }
+      ],
+      "conversation": [
+        "This story covers role assignment after the account exists; account creation and credential setup are outside the flow.",
+        "role_permissions defines what each role can do once assigned.",
+        "Sign-in reads user_roles on each session; this story writes the assignment that sign-in later consumes."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an existing users row",
+          "when": "the admin selects a role to grant",
+          "then": "roles supplies the named access level being assigned"
+        },
+        {
+          "id": "AC2",
+          "given": "both the user and role exist",
+          "when": "the assignment is saved",
+          "then": "user_roles links users.id to roles.id"
+        },
+        {
+          "id": "AC3",
+          "given": "the assignment row exists",
+          "when": "the user signs in again",
+          "then": "sessions and user_roles resolve the updated access context"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Role assignment starts from users, the account that will receive the new access level.",
+          "spoken_text": "Role assignment starts with the user account that needs new access.",
+          "tables": [
+            "users"
+          ],
+          "focus": "users",
+          "expand": "users"
+        },
+        {
+          "text": "The admin picks a roles row, using the role catalog as the named access level to grant.",
+          "spoken_text": "The admin chooses a named role from the access catalog.",
+          "tables": [
+            "roles",
+            "users"
+          ],
+          "focus": "roles",
+          "expand": "roles"
+        },
+        {
+          "text": "user_roles stores the grant, connecting users.id and roles.id in one join row.",
+          "spoken_text": "The assignment is saved as a join row linking the user to the role.",
+          "tables": [
+            "users",
+            "user_roles",
+            "roles"
+          ],
+          "focus": "user_roles",
+          "expand": "user_roles",
+          "relation": {
+            "table": "user_roles",
+            "column": "user_id"
+          }
+        },
+        {
+          "text": "user_roles.role_id completes the link back to roles so reporting can read the role name.",
+          "spoken_text": "The role side of the assignment resolves to the named access level.",
+          "tables": [
+            "user_roles",
+            "roles"
+          ],
+          "focus": "roles",
+          "expand": "roles",
+          "relation": {
+            "table": "user_roles",
+            "column": "role_id"
+          }
+        },
+        {
+          "text": "role_permissions maps the assigned role to concrete permissions checked at runtime.",
+          "spoken_text": "Role permissions define what actions the assigned role may perform.",
+          "tables": [
+            "roles",
+            "role_permissions",
+            "permissions"
+          ],
+          "focus": "role_permissions",
+          "expand": "role_permissions",
+          "relation": {
+            "table": "role_permissions",
+            "column": "role_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hr-onboards-new-employee-2026-05-20T16-01-00Z",
+      "title": "HR Onboards New Employee",
+      "created_at": "2026-05-20T16:01:00Z",
+      "prompt": "What happens when HR onboards a new employee?",
+      "actor": "an HR coordinator",
+      "goal": "to link a new hire to a department and starting compensation",
+      "benefit": "payroll and org reporting can treat the person as an active employee",
+      "clusters": [
+        "hr",
+        "auth"
+      ],
+      "related_stories": [
+        {
+          "story_id": "user-signs-in-2026-05-18T07-41-42Z",
+          "kind": "depends_on"
+        }
+      ],
+      "conversation": [
+        "This story assumes the hire already has a users row for workplace login; public signup is outside the flow.",
+        "time_off and evaluations depend on employees existing but are not created during onboarding here.",
+        "salaries captures the first compensation row; later changes would add additional salary history rows."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a new hire with a user account",
+          "when": "HR creates the employee record",
+          "then": "employees.user_id links the person to users.id"
+        },
+        {
+          "id": "AC2",
+          "given": "the employee record exists",
+          "when": "HR assigns an org unit",
+          "then": "employees.dept_id references departments.id"
+        },
+        {
+          "id": "AC3",
+          "given": "department assignment is complete",
+          "when": "starting pay is recorded",
+          "then": "salaries stores amount and effective_date for employees.id"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Onboarding begins from users, the login identity HR will attach to the employment record.",
+          "spoken_text": "Onboarding starts with the user account HR will attach to the new hire.",
+          "tables": [
+            "users"
+          ],
+          "focus": "users",
+          "expand": "users"
+        },
+        {
+          "text": "An employees row is created with employees.user_id pointing back to that account.",
+          "spoken_text": "HR creates the employee record and links it to the user account.",
+          "tables": [
+            "users",
+            "employees"
+          ],
+          "focus": "employees",
+          "expand": "employees",
+          "relation": {
+            "table": "employees",
+            "column": "user_id"
+          }
+        },
+        {
+          "text": "employees.dept_id places the hire inside departments, establishing their team for org charts and approvals.",
+          "spoken_text": "The hire is assigned to a department for org charts and approvals.",
+          "tables": [
+            "employees",
+            "departments"
+          ],
+          "focus": "departments",
+          "expand": "departments",
+          "relation": {
+            "table": "employees",
+            "column": "dept_id"
+          }
+        },
+        {
+          "text": "title on the employee row captures the job label shown alongside the department assignment.",
+          "spoken_text": "The job title is stored on the employee record alongside the department.",
+          "tables": [
+            "employees",
+            "departments"
+          ],
+          "focus": "employees",
+          "expand": "employees"
+        },
+        {
+          "text": "salaries records the starting compensation against employees.id with an effective_date for payroll.",
+          "spoken_text": "Starting pay is recorded with an effective date for payroll.",
+          "tables": [
+            "employees",
+            "salaries"
+          ],
+          "focus": "salaries",
+          "expand": "salaries",
+          "relation": {
+            "table": "salaries",
+            "column": "emp_id"
+          }
+        },
+        {
+          "text": "With user, employee, department, and salary rows linked, downstream HR flows like leave and reviews can start.",
+          "spoken_text": "With identity, org placement, and pay recorded, leave and review flows can begin.",
+          "tables": [
+            "users",
+            "employees",
+            "departments",
+            "salaries"
+          ],
+          "focus": "employees",
+          "expand": "employees"
+        },
+        {
+          "text": "employee_benefits enrolls the new hire in selected benefits plans.",
+          "spoken_text": "Benefit enrollment links the employee to chosen plans.",
+          "tables": [
+            "employees",
+            "employee_benefits",
+            "benefits"
+          ],
+          "focus": "employee_benefits",
+          "expand": "employee_benefits",
+          "relation": {
+            "table": "employee_benefits",
+            "column": "emp_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "account-manager-adds-contact-2026-05-20T16-02-00Z",
+      "title": "Account Manager Adds Contact",
+      "created_at": "2026-05-20T16:02:00Z",
+      "prompt": "What happens when an account manager adds a contact to a customer?",
+      "actor": "an account manager",
+      "goal": "to record a person who works at a customer organization",
+      "benefit": "sales and support can reach the right stakeholder for that account",
+      "clusters": [
+        "crm"
+      ],
+      "related_stories": [
+        {
+          "story_id": "sales-rep-converts-lead-2026-05-20T15-02-00Z",
+          "kind": "follows"
+        }
+      ],
+      "conversation": [
+        "contacts belongs to customers, not to individual deals or orders in this schema.",
+        "Lead conversion may create the customer shell first; this story enriches the account with reachable people.",
+        "Multiple contacts can share one customers.id for large accounts."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an existing customer account",
+          "when": "the manager opens the account roster",
+          "then": "customers.id anchors the commercial relationship"
+        },
+        {
+          "id": "AC2",
+          "given": "the customer account is selected",
+          "when": "a new person is saved",
+          "then": "contacts.customer_id links the person to that account"
+        },
+        {
+          "id": "AC3",
+          "given": "the contact row exists",
+          "when": "outreach is logged later",
+          "then": "deals and activities on the same customer remain separate from contact identity in this sample"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Adding a contact starts from customers, the organization that owns the commercial relationship.",
+          "spoken_text": "Adding a contact starts with the customer organization.",
+          "tables": [
+            "customers"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "A contacts row is inserted with contacts.customer_id tying the person back to that account.",
+          "spoken_text": "A new contact row is linked to the customer account.",
+          "tables": [
+            "customers",
+            "contacts"
+          ],
+          "focus": "contacts",
+          "expand": "contacts",
+          "relation": {
+            "table": "contacts",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "name and email on the contact row become the fields sales uses for outreach and meeting invites.",
+          "spoken_text": "Name and email become the fields sales uses for outreach.",
+          "tables": [
+            "contacts",
+            "customers"
+          ],
+          "focus": "contacts",
+          "expand": "contacts"
+        },
+        {
+          "text": "The account may accumulate several contacts over time, each sharing the same customers.id anchor.",
+          "spoken_text": "The account can hold several contacts over time, all tied to the same customer.",
+          "tables": [
+            "customers",
+            "contacts"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "Downstream deal work still lives on deals and activities, while contacts keeps the people map for the account.",
+          "spoken_text": "Deal activity stays on deals, while contacts keeps the people map for the account.",
+          "tables": [
+            "contacts",
+            "customers",
+            "deals",
+            "activities"
+          ],
+          "focus": "deals",
+          "expand": "deals"
+        }
+      ]
+    },
+    {
+      "id": "customer-saves-payment-method-2026-05-20T16-03-00Z",
+      "title": "Customer Saves Payment Method",
+      "created_at": "2026-05-20T16:03:00Z",
+      "prompt": "What happens when a customer saves a payment method on file?",
+      "actor": "a customer",
+      "goal": "to store a reusable payment instrument for future purchases",
+      "benefit": "checkout can charge the saved method without re-entering card details",
+      "clusters": [
+        "billing",
+        "crm"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-places-order-2026-05-19T20-40-57Z",
+          "kind": "precedes"
+        }
+      ],
+      "conversation": [
+        "This story covers vaulting an instrument before or between orders; capturing payment against an invoice is the order story.",
+        "payment_methods stores type and last_four rather than full PAN data in this sample.",
+        "Multiple methods can exist per customers.id for the same account."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a customer with an active account",
+          "when": "they submit card or bank details",
+          "then": "payment_methods.customer_id links the instrument to customers.id"
+        },
+        {
+          "id": "AC2",
+          "given": "the method is saved",
+          "when": "checkout reads wallet data",
+          "then": "type and last_four describe the stored instrument without exposing full numbers"
+        },
+        {
+          "id": "AC3",
+          "given": "a saved method exists",
+          "when": "the customer places an order",
+          "then": "payments at invoice time can reference the same customer context established here"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Saving a payment method starts from customers, the account that will own the stored instrument.",
+          "spoken_text": "Saving a payment method starts with the customer account.",
+          "tables": [
+            "customers"
+          ],
+          "focus": "customers",
+          "expand": "customers"
+        },
+        {
+          "text": "A payment_methods row is created with payment_methods.customer_id pointing back to that account.",
+          "spoken_text": "A payment method row is created and linked to the customer.",
+          "tables": [
+            "customers",
+            "payment_methods"
+          ],
+          "focus": "payment_methods",
+          "expand": "payment_methods",
+          "relation": {
+            "table": "payment_methods",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "type records whether the instrument is a card, bank account, or other supported method.",
+          "spoken_text": "The method type records whether this is a card, bank account, or other instrument.",
+          "tables": [
+            "payment_methods",
+            "customers"
+          ],
+          "focus": "payment_methods",
+          "expand": "payment_methods"
+        },
+        {
+          "text": "last_four gives checkout enough display detail for the customer to recognize the right saved method.",
+          "spoken_text": "The last four digits let the customer recognize the right saved method at checkout.",
+          "tables": [
+            "payment_methods"
+          ],
+          "focus": "payment_methods",
+          "expand": "payment_methods"
+        },
+        {
+          "text": "When the customer later checks out, orders and payments reuse the same customers.id wallet context.",
+          "spoken_text": "At checkout, orders and payments reuse the same customer wallet context.",
+          "tables": [
+            "customers",
+            "payment_methods",
+            "orders",
+            "payments"
+          ],
+          "focus": "orders",
+          "expand": "orders"
+        }
+      ]
+    },
+    {
+      "id": "inventory-clerk-receives-stock-2026-05-20T16-04-00Z",
+      "title": "Inventory Clerk Receives Stock",
+      "created_at": "2026-05-20T16:04:00Z",
+      "prompt": "What happens when inventory receives an inbound stock shipment?",
+      "actor": "an inventory clerk",
+      "goal": "to put received units into warehouse bins and update on-hand counts",
+      "benefit": "fulfillment can pick products that were previously out of stock",
+      "clusters": [
+        "fulfillment",
+        "catalog"
+      ],
+      "related_stories": [
+        {
+          "story_id": "warehouse-fulfills-order-2026-05-20T14-31-00Z",
+          "kind": "precedes"
+        }
+      ],
+      "conversation": [
+        "suppliers exists in the catalog cluster but has no declared FK to stock tables in this sample, so vendor identity is excluded.",
+        "This is the inbound counterpart to outbound stock_movements shown in order fulfillment.",
+        "stock_levels uses a composite key on bin_id and product_id for quantity by location."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a shipment arrives at a warehouse site",
+          "when": "the clerk selects the receiving location",
+          "then": "warehouses and bins identify where units will be stored"
+        },
+        {
+          "id": "AC2",
+          "given": "each received SKU",
+          "when": "counts are posted to a bin",
+          "then": "stock_levels updates quantity for bin_id and product_id"
+        },
+        {
+          "id": "AC3",
+          "given": "on-hand counts change",
+          "when": "the receipt is finalized",
+          "then": "stock_movements records the inbound quantity against products.id"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Receiving starts from warehouses, the site where inbound product will be stored.",
+          "spoken_text": "Receiving starts by choosing the warehouse site.",
+          "tables": [
+            "warehouses"
+          ],
+          "focus": "warehouses",
+          "expand": "warehouses"
+        },
+        {
+          "text": "bins.warehouse_id narrows storage to a specific bin label inside that site.",
+          "spoken_text": "The clerk picks a bin inside the warehouse for putaway.",
+          "tables": [
+            "warehouses",
+            "bins"
+          ],
+          "focus": "bins",
+          "expand": "bins",
+          "relation": {
+            "table": "bins",
+            "column": "warehouse_id"
+          }
+        },
+        {
+          "text": "products identifies each SKU being received before quantities are posted.",
+          "spoken_text": "Each received SKU is identified before quantities are posted.",
+          "tables": [
+            "products",
+            "bins"
+          ],
+          "focus": "products",
+          "expand": "products"
+        },
+        {
+          "text": "stock_levels increases on-hand quantity for the bin_id and product_id pair.",
+          "spoken_text": "On-hand quantity is increased for the bin and product pair.",
+          "tables": [
+            "stock_levels",
+            "bins",
+            "products"
+          ],
+          "focus": "stock_levels",
+          "expand": "stock_levels",
+          "relation": {
+            "table": "stock_levels",
+            "column": "bin_id"
+          }
+        },
+        {
+          "text": "stock_movements.product_id logs the inbound quantity change for audit and replenishment reporting.",
+          "spoken_text": "A stock movement logs the inbound quantity for audit and reporting.",
+          "tables": [
+            "stock_movements",
+            "products",
+            "stock_levels"
+          ],
+          "focus": "stock_movements",
+          "expand": "stock_movements",
+          "relation": {
+            "table": "stock_movements",
+            "column": "product_id"
+          }
+        },
+        {
+          "text": "With bins restocked, the fulfillment story can pick order_lines against updated stock_levels.",
+          "spoken_text": "With bins restocked, fulfillment can pick orders against the updated counts.",
+          "tables": [
+            "stock_levels",
+            "products",
+            "order_lines",
+            "orders"
+          ],
+          "focus": "order_lines",
+          "expand": "order_lines"
+        }
+      ]
+    },
+    {
+      "id": "developer-uses-api-key-2026-05-20T18-00-00Z",
+      "title": "Developer Uses API Key",
+      "created_at": "2026-05-20T18:00:00Z",
+      "prompt": "How does programmatic API access work for a user?",
+      "actor": "a developer",
+      "goal": "to call the API on behalf of their account",
+      "benefit": "integrations can authenticate without an interactive sign-in session",
+      "clusters": [
+        "auth"
+      ],
+      "related_stories": [
+        {
+          "story_id": "user-signs-in-2026-05-18T07-41-42Z",
+          "kind": "related"
+        },
+        {
+          "story_id": "admin-assigns-user-role-2026-05-20T16-00-00Z",
+          "kind": "depends_on"
+        }
+      ],
+      "conversation": [
+        "API keys belong to users rows; OAuth flows use separate client and token tables."
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a users row exists",
+          "when": "a key is issued",
+          "then": "api_keys stores a hashed key for that user"
+        },
+        {
+          "id": "AC2",
+          "given": "the key is presented",
+          "when": "access is granted",
+          "then": "the request resolves to the same users.id as interactive sign-in"
+        }
+      ],
+      "playback": [
+        {
+          "text": "API access still anchors on users as the identity record.",
+          "tables": [
+            "users"
+          ],
+          "focus": "users",
+          "expand": "users"
+        },
+        {
+          "text": "api_keys attaches a long-lived credential to users.id for automation.",
+          "tables": [
+            "users",
+            "api_keys"
+          ],
+          "focus": "api_keys",
+          "expand": "api_keys",
+          "relation": {
+            "table": "api_keys",
+            "column": "user_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "recruiter-schedules-interview-2026-05-20T18-01-00Z",
+      "title": "Recruiter Schedules Interview",
+      "created_at": "2026-05-20T18:01:00Z",
+      "prompt": "What happens when HR schedules a candidate interview?",
+      "actor": "a recruiter",
+      "goal": "to move a candidate forward in hiring",
+      "benefit": "the hiring team knows who to meet and when",
+      "clusters": [
+        "hr"
+      ],
+      "related_stories": [
+        {
+          "story_id": "hr-onboards-new-employee-2026-05-20T16-01-00Z",
+          "kind": "precedes"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a job_postings row is open",
+          "when": "a candidate applies",
+          "then": "candidates links to that posting"
+        },
+        {
+          "id": "AC2",
+          "given": "a candidate exists",
+          "when": "an interview is booked",
+          "then": "interviews references candidates.id and an employees interviewer"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Hiring starts from job_postings tied to departments.",
+          "tables": [
+            "job_postings",
+            "departments"
+          ],
+          "focus": "job_postings",
+          "expand": "job_postings"
+        },
+        {
+          "text": "candidates captures the applicant against the posting.",
+          "tables": [
+            "candidates",
+            "job_postings"
+          ],
+          "focus": "candidates",
+          "expand": "candidates",
+          "relation": {
+            "table": "candidates",
+            "column": "posting_id"
+          }
+        },
+        {
+          "text": "interviews schedules the meeting with an employee interviewer.",
+          "tables": [
+            "interviews",
+            "candidates",
+            "employees"
+          ],
+          "focus": "interviews",
+          "expand": "interviews",
+          "relation": {
+            "table": "interviews",
+            "column": "candidate_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marketer-launches-campaign-2026-05-20T18-02-00Z",
+      "title": "Marketer Launches Campaign",
+      "created_at": "2026-05-20T18:02:00Z",
+      "prompt": "How are leads attached to a marketing campaign?",
+      "actor": "a marketer",
+      "goal": "to track which leads came from a campaign",
+      "benefit": "pipeline reporting can attribute conversions to marketing spend",
+      "clusters": [
+        "crm"
+      ],
+      "related_stories": [
+        {
+          "story_id": "sales-rep-converts-lead-2026-05-20T15-02-00Z",
+          "kind": "follows"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a campaigns row exists",
+          "when": "leads are imported",
+          "then": "campaign_leads links campaign and lead ids"
+        }
+      ],
+      "playback": [
+        {
+          "text": "campaigns defines the marketing program and active date range.",
+          "tables": [
+            "campaigns"
+          ],
+          "focus": "campaigns",
+          "expand": "campaigns"
+        },
+        {
+          "text": "campaign_leads attaches leads to the campaign for attribution.",
+          "tables": [
+            "campaigns",
+            "campaign_leads",
+            "leads"
+          ],
+          "focus": "campaign_leads",
+          "expand": "campaign_leads",
+          "relation": {
+            "table": "campaign_leads",
+            "column": "campaign_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "merchandiser-sets-promotional-price-2026-05-20T18-03-00Z",
+      "title": "Merchandiser Sets Promotional Price",
+      "created_at": "2026-05-20T18:03:00Z",
+      "prompt": "How do price lists and promotions relate to products?",
+      "actor": "a merchandiser",
+      "goal": "to publish promotional pricing",
+      "benefit": "checkout can show discounted prices during the promotion window",
+      "clusters": [
+        "catalog"
+      ],
+      "related_stories": [
+        {
+          "story_id": "merchandiser-categorizes-product-2026-05-20T15-03-00Z",
+          "kind": "related"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "products exist",
+          "when": "a price list is maintained",
+          "then": "price_list_items stores list prices per product"
+        },
+        {
+          "id": "AC2",
+          "given": "a promotion is active",
+          "when": "pricing is resolved",
+          "then": "promotions supplies the discount window"
+        }
+      ],
+      "playback": [
+        {
+          "text": "products remains the sellable item anchor.",
+          "tables": [
+            "products"
+          ],
+          "focus": "products",
+          "expand": "products"
+        },
+        {
+          "text": "price_list_items overrides catalog price inside a named price_lists row.",
+          "tables": [
+            "products",
+            "price_lists",
+            "price_list_items"
+          ],
+          "focus": "price_list_items",
+          "expand": "price_list_items",
+          "relation": {
+            "table": "price_list_items",
+            "column": "product_id"
+          }
+        },
+        {
+          "text": "promotions adds a time-bound discount layer on top of list pricing.",
+          "tables": [
+            "promotions",
+            "products"
+          ],
+          "focus": "promotions",
+          "expand": "promotions"
+        }
+      ]
+    },
+    {
+      "id": "warehouse-ships-order-2026-05-20T18-04-00Z",
+      "title": "Warehouse Ships Order",
+      "created_at": "2026-05-20T18:04:00Z",
+      "prompt": "What happens when an order leaves the warehouse?",
+      "actor": "a warehouse clerk",
+      "goal": "to record shipment with carrier tracking",
+      "benefit": "customers and support can trace delivery status",
+      "clusters": [
+        "fulfillment"
+      ],
+      "related_stories": [
+        {
+          "story_id": "warehouse-fulfills-order-2026-05-20T14-31-00Z",
+          "kind": "follows"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "order_lines exist",
+          "when": "a shipment is created",
+          "then": "shipments references orders and carriers"
+        },
+        {
+          "id": "AC2",
+          "given": "a shipment exists",
+          "when": "quantities are picked",
+          "then": "shipment_lines links each order_line quantity shipped"
+        }
+      ],
+      "playback": [
+        {
+          "text": "Shipping starts from orders already placed by the customer.",
+          "tables": [
+            "orders"
+          ],
+          "focus": "orders",
+          "expand": "orders"
+        },
+        {
+          "text": "shipments records the carrier handoff and tracking number.",
+          "tables": [
+            "orders",
+            "shipments",
+            "carriers"
+          ],
+          "focus": "shipments",
+          "expand": "shipments",
+          "relation": {
+            "table": "shipments",
+            "column": "order_id"
+          }
+        },
+        {
+          "text": "shipment_lines ties each shipped quantity back to order_lines.",
+          "tables": [
+            "shipments",
+            "shipment_lines",
+            "order_lines"
+          ],
+          "focus": "shipment_lines",
+          "expand": "shipment_lines",
+          "relation": {
+            "table": "shipment_lines",
+            "column": "shipment_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "customer-initiates-return-2026-05-20T18-05-00Z",
+      "title": "Customer Initiates Return",
+      "created_at": "2026-05-20T18:05:00Z",
+      "prompt": "How is a product return captured against an order?",
+      "actor": "a customer",
+      "goal": "to return items from a prior purchase",
+      "benefit": "inventory and billing can reverse the sale cleanly",
+      "clusters": [
+        "fulfillment"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-places-order-2026-05-19T20-40-57Z",
+          "kind": "depends_on"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "an orders row exists",
+          "when": "a return is opened",
+          "then": "returns references that order with a reason"
+        },
+        {
+          "id": "AC2",
+          "given": "a return exists",
+          "when": "items are listed",
+          "then": "return_lines captures product quantities"
+        }
+      ],
+      "playback": [
+        {
+          "text": "returns anchors on the original orders row.",
+          "tables": [
+            "orders",
+            "returns"
+          ],
+          "focus": "returns",
+          "expand": "returns",
+          "relation": {
+            "table": "returns",
+            "column": "order_id"
+          }
+        },
+        {
+          "text": "return_lines lists each product quantity being sent back.",
+          "tables": [
+            "returns",
+            "return_lines",
+            "products"
+          ],
+          "focus": "return_lines",
+          "expand": "return_lines",
+          "relation": {
+            "table": "return_lines",
+            "column": "return_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "finance-starts-subscription-2026-05-20T18-06-00Z",
+      "title": "Finance Starts Subscription",
+      "created_at": "2026-05-20T18:06:00Z",
+      "prompt": "How is recurring billing set up for a customer?",
+      "actor": "a finance analyst",
+      "goal": "to bill products on a recurring schedule",
+      "benefit": "revenue becomes predictable without manual re-invoicing",
+      "clusters": [
+        "billing"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-saves-payment-method-2026-05-20T16-03-00Z",
+          "kind": "depends_on"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a customers row exists",
+          "when": "a subscription is opened",
+          "then": "subscriptions links to customers.id with status active"
+        },
+        {
+          "id": "AC2",
+          "given": "a subscription exists",
+          "when": "items are added",
+          "then": "subscription_items lists billed products"
+        }
+      ],
+      "playback": [
+        {
+          "text": "subscriptions attaches a recurring agreement to customers.",
+          "tables": [
+            "customers",
+            "subscriptions"
+          ],
+          "focus": "subscriptions",
+          "expand": "subscriptions",
+          "relation": {
+            "table": "subscriptions",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "subscription_items defines which products bill each cycle.",
+          "tables": [
+            "subscriptions",
+            "subscription_items",
+            "products"
+          ],
+          "focus": "subscription_items",
+          "expand": "subscription_items",
+          "relation": {
+            "table": "subscription_items",
+            "column": "subscription_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "support-escalates-overdue-ticket-2026-05-20T18-07-00Z",
+      "title": "Support Escalates Overdue Ticket",
+      "created_at": "2026-05-20T18:07:00Z",
+      "prompt": "What happens when a ticket breaches SLA?",
+      "actor": "a support lead",
+      "goal": "to escalate an overdue case",
+      "benefit": "critical customers get senior attention before churn",
+      "clusters": [
+        "support"
+      ],
+      "related_stories": [
+        {
+          "story_id": "customer-opens-support-ticket-2026-05-20T10-00-52Z",
+          "kind": "follows"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "sla_policies defines response_hours",
+          "when": "a ticket ages past SLA",
+          "then": "escalations records the breach event"
+        },
+        {
+          "id": "AC2",
+          "given": "a ticket is escalated",
+          "when": "ownership changes",
+          "then": "ticket_assignments can reassign assignee_user_id"
+        }
+      ],
+      "playback": [
+        {
+          "text": "sla_policies sets the response target for the queue.",
+          "tables": [
+            "sla_policies"
+          ],
+          "focus": "sla_policies",
+          "expand": "sla_policies"
+        },
+        {
+          "text": "escalations logs the overdue event against tickets.",
+          "tables": [
+            "tickets",
+            "escalations"
+          ],
+          "focus": "escalations",
+          "expand": "escalations",
+          "relation": {
+            "table": "escalations",
+            "column": "ticket_id"
+          }
+        },
+        {
+          "text": "ticket_assignments moves ownership to a senior agent.",
+          "tables": [
+            "tickets",
+            "ticket_assignments",
+            "users"
+          ],
+          "focus": "ticket_assignments",
+          "expand": "ticket_assignments",
+          "relation": {
+            "table": "ticket_assignments",
+            "column": "ticket_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "admin-grants-role-permission-2026-05-20T18-08-00Z",
+      "title": "Admin Grants Role Permission",
+      "created_at": "2026-05-20T18:08:00Z",
+      "prompt": "How are permissions attached to roles?",
+      "actor": "an administrator",
+      "goal": "to define what a role can do",
+      "benefit": "authorization checks use a clear role-to-permission map",
+      "clusters": [
+        "auth"
+      ],
+      "related_stories": [
+        {
+          "story_id": "admin-assigns-user-role-2026-05-20T16-00-00Z",
+          "kind": "follows"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "roles and permissions rows exist",
+          "when": "a grant is saved",
+          "then": "role_permissions links both ids"
+        }
+      ],
+      "playback": [
+        {
+          "text": "permissions catalogs atomic actions the app can check.",
+          "tables": [
+            "permissions"
+          ],
+          "focus": "permissions",
+          "expand": "permissions"
+        },
+        {
+          "text": "role_permissions connects roles to permissions.",
+          "tables": [
+            "roles",
+            "permissions",
+            "role_permissions"
+          ],
+          "focus": "role_permissions",
+          "expand": "role_permissions",
+          "relation": {
+            "table": "role_permissions",
+            "column": "role_id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "account-manager-logs-customer-note-2026-05-20T18-09-00Z",
+      "title": "Account Manager Logs Customer Note",
+      "created_at": "2026-05-20T18:09:00Z",
+      "prompt": "How are internal notes stored on a customer account?",
+      "actor": "an account manager",
+      "goal": "to capture context from a customer conversation",
+      "benefit": "the team shares account history without repeating discovery",
+      "clusters": [
+        "crm"
+      ],
+      "related_stories": [
+        {
+          "story_id": "account-manager-adds-contact-2026-05-20T16-02-00Z",
+          "kind": "related"
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "id": "AC1",
+          "given": "a customers row exists",
+          "when": "a note is saved",
+          "then": "notes stores body text and author_user_id"
+        }
+      ],
+      "playback": [
+        {
+          "text": "notes anchors on customers as the account being documented.",
+          "tables": [
+            "customers",
+            "notes"
+          ],
+          "focus": "notes",
+          "expand": "notes",
+          "relation": {
+            "table": "notes",
+            "column": "customer_id"
+          }
+        },
+        {
+          "text": "author_user_id ties the note back to users for attribution.",
+          "tables": [
+            "notes",
+            "users"
+          ],
+          "focus": "users",
+          "expand": "users",
+          "relation": {
+            "table": "notes",
+            "column": "author_user_id"
+          }
         }
       ]
     }

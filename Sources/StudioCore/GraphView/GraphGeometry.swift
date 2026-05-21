@@ -397,3 +397,41 @@ func cardinalityDisplayString(for cardinality: EdgeCardinality) -> String {
     case .manyToMany: return "N:M"
     }
 }
+
+enum ClusterTitleCacheToken {
+    static func make(
+        layoutRevision: Int,
+        sidecarRevision: Int,
+        playbackKey: Int,
+        isStoryOnlyMode: Bool,
+        hasFocusPlan: Bool,
+        showClusterHalos: Bool
+    ) -> Int {
+        var token = layoutRevision &* 31 &+ sidecarRevision
+        token = token &* 31 &+ playbackKey
+        token = token &* 31 &+ (isStoryOnlyMode ? 1 : 0)
+        token = token &* 31 &+ (hasFocusPlan ? 1 : 0)
+        token = token &* 31 &+ (showClusterHalos ? 1 : 0)
+        return token
+    }
+}
+
+enum StoryGraphCardsCacheToken {
+    static func make(
+        layoutRevision: Int,
+        sidecarRevision: Int,
+        showStoryCardsInGraph: Bool,
+        showOnlyStoryCardsInGraph: Bool,
+        showAllGraphTableCards: Bool,
+        graphNodeCount: Int,
+        storyCount: Int
+    ) -> Int {
+        var token = layoutRevision &* 31 &+ sidecarRevision
+        token = token &* 31 &+ (showStoryCardsInGraph ? 1 : 0)
+        token = token &* 31 &+ (showOnlyStoryCardsInGraph ? 1 : 0)
+        token = token &* 31 &+ (showAllGraphTableCards ? 1 : 0)
+        token = token &* 31 &+ graphNodeCount
+        token = token &* 31 &+ storyCount
+        return token
+    }
+}

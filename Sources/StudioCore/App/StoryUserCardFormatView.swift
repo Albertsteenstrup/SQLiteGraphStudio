@@ -28,6 +28,7 @@ struct StoryUserCardFormatView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(StudioPalette.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if !visibleConversation.isEmpty {
@@ -38,6 +39,7 @@ struct StoryUserCardFormatView: View {
                 detailSection("Acceptance", items: visibleAcceptanceCriteria)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func storyPart(_ label: String, value: String?) -> some View {
@@ -51,7 +53,9 @@ struct StoryUserCardFormatView: View {
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(value == nil ? StudioPalette.tertiaryText : StudioPalette.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func detailSection(_ title: String, items: [String]) -> some View {
@@ -65,8 +69,10 @@ struct StoryUserCardFormatView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(StudioPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func cleaned(_ value: String?) -> String? {

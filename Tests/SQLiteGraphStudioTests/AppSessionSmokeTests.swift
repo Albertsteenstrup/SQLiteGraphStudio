@@ -55,6 +55,69 @@ struct AppSessionSmokeTests {
     }
 
     @Test
+    func sessionRestoresPersistedStoryGraphLayoutForDatabase() async throws {
+        let url = try TestSupport.createFixture(named: "persisted-story-layout")
+        let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+
+        do {
+            let firstSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
+            await firstSession.openDatabase(url: url)
+            firstSession.showStoryCardsInGraph = true
+            firstSession.showOnlyStoryCardsInGraph = true
+            firstSession.pinStoryGraphPosition(
+                "dedicated-story",
+                at: CGPoint(x: 140, y: -88),
+                mode: .dedicated(.fitAll)
+            )
+            firstSession.pinStoryGraphPosition(
+                "anchored-story",
+                at: CGPoint(x: -96, y: 52),
+                mode: .anchoredToTables
+            )
+            firstSession.persistStoryGraphLayout()
+
+            let secondSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
+            await secondSession.openDatabase(url: url)
+
+            #expect(
+                secondSession.pinnedStoryGraphPosition(for: "dedicated-story", mode: .dedicated(.fitAll))
+                    == CGPoint(x: 140, y: -88)
+            )
+            #expect(
+                secondSession.pinnedStoryGraphPosition(for: "anchored-story", mode: .anchoredToTables)
+                    == CGPoint(x: -96, y: 52)
+            )
+        }
+
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
+
+    @Test
+    func sessionClearsPersistedStoryGraphLayoutForDatabase() async throws {
+        let url = try TestSupport.createFixture(named: "clear-story-layout")
+        let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+
+        do {
+            let session = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
+            await session.openDatabase(url: url)
+            session.showStoryCardsInGraph = true
+            session.pinStoryGraphPosition("anchored-story", at: CGPoint(x: 42, y: -18), mode: .anchoredToTables)
+            session.persistStoryGraphLayout()
+
+            session.clearPersistedStoryGraphLayout()
+
+            #expect(session.pinnedStoryGraphPosition(for: "anchored-story", mode: .anchoredToTables) == nil)
+            #expect(userDefaults.data(forKey: "SQLiteGraphStudio.story-graph-layout.\(url.path)") == nil)
+        }
+
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
+
+    @Test
     func sessionReadsDescriptionsFromSidecar() async throws {
         let url = try TestSupport.createFixture(named: "sidecar-descriptions")
         let sidecar = SchemaSidecar(

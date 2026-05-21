@@ -39,11 +39,14 @@ public struct SchemaGraphView: View {
     @State private var pulledGraphPositions: [String: CGPoint] = [:]
     @State private var tappedRelationTarget: GraphRelationHoverTarget? = nil
     @State private var isStoriesPresented = false
-    @State private var expandedStoryIDs: Set<String> = []
+    @State private var storySearchText = ""
+    @State private var isStorySearchCursorActive = false
+    @State private var isStoryMenuCardCursorActive = false
     @State private var activeStory: SchemaSidecar.Story?
     @State private var activeStoryPlaybackIndex: Int?
     @State private var selectedStoryID: String?
     @State private var hoveredStoryID: String?
+    @State private var storyPopupStoryID: String?
     @State private var storyHighlightedTableIDs: Set<String> = []
     @State private var storyFocusNodeID: String?
     @State private var storyRelationTarget: GraphRelationHoverTarget?
@@ -51,8 +54,20 @@ public struct SchemaGraphView: View {
     @State private var storySpeechNarrator = StorySpeechNarrator()
     @State private var isStoryPaused = false
     @State private var activeStoryViewportSize: CGSize = .zero
-    @State private var storyGraphPositions: [String: CGPoint] = [:]
     @State private var pulledStoryGraphPositions: [String: CGPoint] = [:]
+    @State private var storyStarModeSourceID: String?
+    @State private var graphFocusTableRelation: GraphRelationHoverTarget?
+    @State private var draggedStoryUsesStarModePull = false
+    @State private var draggedNodeUsesFocusPull = false
+    @State private var preGraphFocusViewport: GraphViewportTransform?
+    @State private var preStoryOnlyViewport: GraphViewportTransform?
+    @State private var preStoryShowAllGraphTableCards: Bool?
+    @State private var preStoryShowStoryCardsInGraph: Bool?
+    @State private var preStoryShowOnlyStoryCardsInGraph: Bool?
+    @State private var clusterTitleCacheKey: Int = 0
+    @State private var storyGraphCardsCache = StoryGraphCardsCache()
+    @State private var isViewportPanning = false
+    @State private var viewportSyncTask: Task<Void, Never>?
 
     public init(session: AppSession) {
         self.session = session
@@ -64,6 +79,14 @@ public struct SchemaGraphView: View {
 
     private var isStoryOnlyMode: Bool {
         session.showStoryCardsInGraph && session.showOnlyStoryCardsInGraph
+    }
+
+    private var storyOnlyCardCount: Int {
+        StoryGraphPlacement.placeableStoryCount(for: session)
+    }
+
+    private var shouldAutoFitStoryViewport: Bool {
+        isStoryOnlyMode && storyOnlyCardCount > 0 && storyOnlyCardCount < StoryGraphPlacement.crowdedStoryThreshold
     }
 
     private var focusNodeID: String? {
@@ -115,7 +138,11 @@ public struct SchemaGraphView: View {
                     emptyState
                 } else {
                     graphScene(size: geometry.size)
-                    graphOverlayControls(size: geometry.size)
+                    if activeStory == nil {
+                        graphOverlayControls(size: geometry.size)
+                    } else {
+                        playbackStoryMenuControl(size: geometry.size)
+                    }
                 }
             }
             .onAppear {
@@ -141,9 +168,31 @@ public struct SchemaGraphView: View {
             }
             .onChange(of: geometry.size) { oldSize, newSize in
                 viewportSize = newSize
-                if !session.graph.nodes.isEmpty, oldSize == .zero, newSize != .zero, shouldAutoFit {
+                guard !session.graph.nodes.isEmpty, newSize != .zero else { return }
+                if activeStory != nil {
+                    activeStoryViewportSize = newSize
+                    fitGraphFocusViewport(in: newSize)
+                } else if isStoryOnlyMode, shouldAutoFitStoryViewport {
+                    fitGraph(in: newSize)
+                } else if oldSize == .zero, shouldAutoFit {
                     fitGraph(in: newSize)
                 }
+            }
+            .onChange(of: session.showOnlyStoryCardsInGraph) { _, _ in
+                handleStoryOnlyModeChange(in: geometry.size)
+            }
+            .onChange(of: storyOnlyCardCount) { _, _ in
+                guard isStoryOnlyMode else { return }
+                invalidateClusterTitleCache()
+                layoutRevision &+= 1
+                guard viewportSize != .zero else { return }
+                if shouldAutoFitStoryViewport {
+                    fitGraph(in: viewportSize)
+                }
+            }
+            .onChange(of: session.maximizedPaneSide) { _, _ in
+                guard isStoryOnlyMode, shouldAutoFitStoryViewport, viewportSize != .zero else { return }
+                fitGraph(in: viewportSize)
             }
             .onChange(of: session.graph) { _, _ in
                 Task { @MainActor in
@@ -159,20 +208,25 @@ public struct SchemaGraphView: View {
                 switchPresentationMode(isShowingAllCards: isPresented, in: geometry.size)
             }
             .onChange(of: zoom) { _, newZoom in
-                Task { @MainActor in session.graphZoom = newZoom }
+                scheduleViewportSessionSync(zoom: newZoom, pan: pan)
             }
             .onChange(of: pan) { _, newPan in
-                Task { @MainActor in session.graphPan = newPan }
+                scheduleViewportSessionSync(zoom: zoom, pan: newPan)
             }
             .onChange(of: session.storyPlaybackCommand?.id) { _, _ in
                 guard let command = session.storyPlaybackCommand else { return }
                 handleStoryPlaybackCommand(command.kind)
             }
             .onDisappear {
+                viewportSyncTask?.cancel()
+                viewportSyncTask = nil
                 storyPlaybackTask?.cancel()
                 storyPlaybackTask = nil
                 storySpeechNarrator.stop()
                 updateReadAloudStatus(.idle)
+                preStoryShowAllGraphTableCards = nil
+                preStoryShowStoryCardsInGraph = nil
+                preStoryShowOnlyStoryCardsInGraph = nil
                 session.storyPlaybackOverlay = nil
             }
         }
@@ -211,10 +265,18 @@ public struct SchemaGraphView: View {
             hoverTarget: currentHoverTarget
         )
         let edgeLookup = GraphEdgeLookup(edges: session.graph.edges)
-        let renderedNodes = isStoryOnlyMode ? [] : renderedGraphNodes(anchorMap: anchorMap, viewportSize: size)
-        let storyCards = storyGraphCards()
-        let emphasizedStoryTableIDs = emphasizedStoryTableIDs(for: storyCards)
-        let selectedRelatedStoryIDs = selectedStoryID.map { relatedStoryIDs(for: $0, in: storyCards) } ?? []
+        let focusPlan = effectiveFocusPlan
+        let renderedNodes = isStoryOnlyMode ? [] : renderedGraphNodes(
+            anchorMap: anchorMap,
+            viewportSize: size,
+            focusPlan: focusPlan
+        )
+        let storyCards = cachedStoryGraphCards()
+        let visibleStoryCards = focusPlan.map { plan in
+            storyCards.filter { plan.tierForStory($0.id) != .hidden }
+        } ?? storyCards
+        let emphasizedStoryTableIDs = emphasizedStoryTableIDs(for: storyCards, focusPlan: focusPlan)
+        let selectedRelatedStoryIDs = storyStarHubID.map { relatedStoryIDs(for: $0, in: storyCards) } ?? []
         let _ = layoutRevision
 
         ZStack {
@@ -222,12 +284,15 @@ public struct SchemaGraphView: View {
                 .contentShape(Rectangle())
                 .gesture(backgroundPanGesture)
                 .onTapGesture {
-                    if !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty {
-                        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                            pulledGraphPositions.removeAll()
-                            pulledStoryGraphPositions.removeAll()
+                    if storyPopupStoryID != nil {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            storyPopupStoryID = nil
                         }
-                        tappedRelationTarget = nil
+                        return
+                    }
+                    if storyStarModeSourceID != nil || graphFocusTableRelation != nil
+                        || !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty {
+                        clearGraphFocusSession()
                     }
                     if let expandedID = manuallyExpandedNodeID {
                         toggleExpandedState(for: expandedID, in: viewportSize)
@@ -241,7 +306,7 @@ public struct SchemaGraphView: View {
                 }
 
             GraphTrackpadInputSurface(
-                ignoresInput: isStoriesPresented || session.storyPlaybackOverlay != nil,
+                ignoresInput: isStoriesPresented || storyPopupStoryID != nil,
                 onPan: { delta in
                     applyTrackpadPan(delta)
                 },
@@ -266,7 +331,7 @@ public struct SchemaGraphView: View {
 
             if !isStoryOnlyMode {
                 Canvas { context, _ in
-                    drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight)
+                    drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight, focusPlan: focusPlan)
                 }
                 .allowsHitTesting(false)
             }
@@ -275,10 +340,11 @@ public struct SchemaGraphView: View {
                 Canvas { context, _ in
                     drawStoryGraphEdges(
                         in: &context,
-                        storyCards: storyCards,
+                        storyCards: visibleStoryCards,
                         anchorMap: anchorMap,
                         viewportSize: size,
-                        showsTableLinks: !isStoryOnlyMode
+                        showsTableLinks: !isStoryOnlyMode,
+                        focusPlan: focusPlan
                     )
                 }
                 .allowsHitTesting(false)
@@ -314,15 +380,10 @@ public struct SchemaGraphView: View {
                     isDragging: draggedNodeID == node.id,
                     isStoryHighlighted: storyHighlightedTableIDs.contains(node.id) || emphasizedStoryTableIDs.contains(node.id),
                     highlightState: relationHighlight.highlightState(for: node.id),
+                    keepsTextReadableWhenZoomed: focusPlan != nil,
                     selectNode: {
-                        if !pulledGraphPositions.isEmpty {
-                            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                                pulledGraphPositions.removeAll()
-                            }
-                            tappedRelationTarget = nil
-                        }
+                        clearGraphFocusSession()
                         selectedStoryID = nil
-                        pulledStoryGraphPositions.removeAll()
                         withAnimation(.snappy(duration: 0.16)) {
                             session.selectGraphNode(node.id)
                         }
@@ -357,6 +418,7 @@ public struct SchemaGraphView: View {
                 .frame(width: cardSize.width, height: cardSize.height, alignment: .topLeading)
                 .scaleEffect(zoom)
                 .position(screenCenter(for: node.id, in: size))
+                .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
                 .shadow(
                     color: StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8),
                     radius: shadowRadius(for: node.id),
@@ -365,7 +427,9 @@ public struct SchemaGraphView: View {
                 .zIndex(zIndex(for: node.id))
             }
 
-            ForEach(storyCards) { card in
+            ForEach(visibleStoryCards) { card in
+                let storyFocusTier = focusPlan?.tierForStory(card.id)
+                let isEmphasized = storyIsEmphasized(card.id)
                 StorySchemaCardView(
                     story: card.story,
                     clusterLabel: card.clusterLabel,
@@ -373,10 +437,11 @@ public struct SchemaGraphView: View {
                     tableCount: card.tableIDs.count,
                     relationCount: card.story.relatedStories.count,
                     isActive: activeStory?.id == card.story.id,
-                    isSelected: selectedStoryID == card.story.id,
+                    isSelected: storyStarHubID == card.story.id,
                     isHovered: hoveredStoryID == card.story.id,
                     isDragging: draggedStoryID == card.story.id,
                     isConnected: selectedRelatedStoryIDs.contains(card.story.id),
+                    allowHoverEffects: !isViewportPanning,
                     selectStory: {
                         selectStory(card.story)
                     },
@@ -389,22 +454,28 @@ public struct SchemaGraphView: View {
                         pullStoryConnectionsIntoView(for: card)
                     },
                     hoverChanged: { isHovered in
-                        withAnimation(.snappy(duration: 0.16)) {
-                            hoveredStoryID = isHovered ? card.story.id : nil
+                        guard !isViewportPanning else { return }
+                        hoveredStoryID = isHovered ? card.story.id : nil
+                    },
+                    openDetail: {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            storyPopupStoryID = card.story.id
                         }
                     }
                 )
                 .frame(width: StoryGraphCardLayout.width, height: StoryGraphCardLayout.height, alignment: .topLeading)
                 .scaleEffect(zoom)
                 .position(storyScreenCenter(for: card, in: size))
+                .opacity(focusOpacity(for: storyFocusTier))
                 .simultaneousGesture(storyDragGesture(storyID: card.id, in: size))
                 .shadow(
-                    color: StudioPalette.shadow.opacity(draggedStoryID == card.id ? 0.62 : (storyIsEmphasized(card.id) ? 0.52 : 0.34)),
-                    radius: draggedStoryID == card.id ? 18 : (storyIsEmphasized(card.id) ? 14 : 8),
-                    y: draggedStoryID == card.id ? 10 : (storyIsEmphasized(card.id) ? 8 : 4)
+                    color: StudioPalette.shadow.opacity(isEmphasized || draggedStoryID == card.id ? 0.52 : 0.22),
+                    radius: draggedStoryID == card.id ? 14 : (isEmphasized ? 10 : 4),
+                    y: draggedStoryID == card.id ? 8 : (isEmphasized ? 6 : 2)
                 )
-                .zIndex(draggedStoryID == card.id ? 6 : (storyIsEmphasized(card.id) ? 5 : (selectedRelatedStoryIDs.contains(card.id) ? 3 : 1.5)))
+                .zIndex(draggedStoryID == card.id ? 6 : (isEmphasized ? 5 : (selectedRelatedStoryIDs.contains(card.id) ? 3 : 1.5)))
             }
+            .compositingGroup()
             
             // Floating description tooltip
             if let hover = descriptionHover {
@@ -433,6 +504,18 @@ public struct SchemaGraphView: View {
             }
 
             // Cardinality labels are drawn directly in the Canvas (see drawEdges)
+
+            if activeStory == nil, let focusPlan = graphFocusPlan, focusPlan.isActive {
+                graphFocusBanner(focusPlan: focusPlan)
+                    .zIndex(1100)
+            }
+
+            if let popupStoryID = storyPopupStoryID,
+               let popupStory = session.stories.first(where: { $0.id == popupStoryID }) {
+                storyCardPopup(for: popupStory, in: size)
+                    .zIndex(1300)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
         }
         .coordinateSpace(name: "graphViewport")
         .animation(session.showAllGraphTableCards ? nil : .snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
@@ -440,55 +523,189 @@ public struct SchemaGraphView: View {
     }
 
     private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
-        guard session.showClusterHalos || isStoryOnlyMode else { return }
-        guard !session.graphLayout.isAnimating else { return }
-        let clusters = session.schemaSidecar.clusters
-        guard !clusters.isEmpty else { return }
+        let focusPlan = effectiveFocusPlan
+        guard session.showClusterHalos || isStoryOnlyMode || focusPlan != nil else { return }
 
-        if clusterTitleCache.layoutRevision != layoutRevision {
-            let pad: CGFloat = 22
+        let titleStyle = StoryGraphPlacement.clusterTitleStyle(for: session)
+        let playbackKey = (activeStoryPlaybackIndex ?? -1) &* 31
+        let cacheKey = clusterTitleCacheToken(focusPlan: focusPlan, playbackKey: playbackKey)
 
-            clusterTitleCache.entries = clusters.compactMap { cluster in
-                guard let color = Color(studioHex: cluster.color ?? "") else { return nil }
-                var merged: Path? = nil
-                for name in cluster.tables {
-                    guard session.graph.contains(nodeID: name) else { continue }
-                    let point = session.graphLayout.position(for: name)
-                    let size = nodeSize(for: name)
-                    let halfWidth = size.width / 2 + pad
-                    let halfHeight = size.height / 2 + pad
-                    let rect = CGRect(
-                        x: point.x - halfWidth,
-                        y: point.y - halfHeight,
-                        width: halfWidth * 2,
-                        height: halfHeight * 2
-                    )
-                    let bubble = Path(roundedRect: rect, cornerRadius: halfHeight)
-                    merged = merged.map { $0.union(bubble) } ?? bubble
-                }
-                guard let path = merged else { return nil }
-                return ClusterTitleCache.Entry(color: color, path: path, label: cluster.label)
+        if clusterTitleCache.cacheKey != cacheKey {
+            if let focusPlan {
+                clusterTitleCache.entries = focusClusterTitleEntries(focusPlan: focusPlan, padding: titleStyle.padding)
+            } else if isStoryOnlyMode {
+                clusterTitleCache.entries = storyClusterTitleEntries(padding: titleStyle.padding)
+            } else {
+                clusterTitleCache.entries = tableClusterTitleEntries(padding: titleStyle.padding)
             }
-            clusterTitleCache.layoutRevision = layoutRevision
+            clusterTitleCache.cacheKey = cacheKey
         }
 
-        let viewportTransform = CGAffineTransform(scaleX: zoom, y: zoom)
-            .concatenating(CGAffineTransform(
-                translationX: canvasSize.width / 2 + pan.width,
-                y: canvasSize.height / 2 + pan.height
-            ))
+        guard !clusterTitleCache.entries.isEmpty else { return }
+
+        let viewportTransform = GraphViewportTransform(zoom: zoom, pan: pan)
+        let inFocusLayout = focusPlan != nil
 
         for entry in clusterTitleCache.entries {
             guard let label = entry.label, !label.isEmpty else { continue }
-            let screenPath = entry.path.applying(viewportTransform)
-            let bounds = screenPath.boundingRect
-            let labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
+            let labelPoint: CGPoint
+            if let anchor = entry.labelAnchor {
+                labelPoint = viewportTransform.point(for: anchor, in: canvasSize)
+            } else {
+                let screenPath = entry.path.applying(
+                    CGAffineTransform(scaleX: zoom, y: zoom)
+                        .concatenating(CGAffineTransform(
+                            translationX: canvasSize.width / 2 + pan.width,
+                            y: canvasSize.height / 2 + pan.height
+                        ))
+                )
+                let bounds = screenPath.boundingRect
+                labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
+            }
             let resolved = context.resolve(
                 Text(label.uppercased())
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(entry.color.opacity(0.85))
+                    .font(.system(size: titleStyle.fontSize, weight: .bold, design: .rounded))
+                    .foregroundStyle(entry.color.opacity(inFocusLayout ? 0.96 : 0.85))
             )
             context.draw(resolved, at: labelPoint, anchor: .bottom)
+        }
+    }
+
+    private func tableClusterTitleEntries(padding pad: CGFloat, focusPlan: GraphFocusPlan? = nil) -> [ClusterTitleCache.Entry] {
+        session.schemaSidecar.clusters.compactMap { cluster in
+            guard let color = Color(studioHex: cluster.color ?? "") else { return nil }
+            var merged: Path? = nil
+            for name in cluster.tables {
+                guard session.graph.contains(nodeID: name) else { continue }
+                if let focusPlan, focusPlan.tierForTable(name) == .hidden { continue }
+                let point = graphNodePoint(for: name)
+                let size = nodeSize(for: name)
+                let halfWidth = size.width / 2 + pad
+                let halfHeight = size.height / 2 + pad
+                let rect = CGRect(
+                    x: point.x - halfWidth,
+                    y: point.y - halfHeight,
+                    width: halfWidth * 2,
+                    height: halfHeight * 2
+                )
+                let bubble = Path(roundedRect: rect, cornerRadius: halfHeight)
+                merged = merged.map { $0.union(bubble) } ?? bubble
+            }
+            guard let path = merged else { return nil }
+            return ClusterTitleCache.Entry(color: color, path: path, label: cluster.label, labelAnchor: nil)
+        }
+    }
+
+    private func focusClusterTitleEntries(focusPlan: GraphFocusPlan, padding pad: CGFloat) -> [ClusterTitleCache.Entry] {
+        var entries: [ClusterTitleCache.Entry] = []
+        let labelGap: CGFloat = 30
+
+        for cluster in session.schemaSidecar.clusters {
+            guard let color = Color(studioHex: cluster.color ?? "") else { continue }
+            let frames = cluster.tables.compactMap { name -> CGRect? in
+                guard session.graph.contains(nodeID: name) else { return nil }
+                guard focusPlan.tierForTable(name) != .hidden else { return nil }
+                let center = graphNodePoint(for: name)
+                let size = nodeSize(for: name)
+                return CGRect(
+                    x: center.x - size.width / 2,
+                    y: center.y - size.height / 2,
+                    width: size.width,
+                    height: size.height
+                )
+            }
+            guard !frames.isEmpty else { continue }
+            entries.append(
+                makeFocusClusterTitleEntry(
+                    color: color,
+                    label: cluster.label,
+                    frames: frames,
+                    padding: pad,
+                    labelGap: labelGap
+                )
+            )
+        }
+
+        let visibleStories = storyGraphCards().filter { focusPlan.tierForStory($0.id) != .hidden }
+        let grouped = Dictionary(grouping: visibleStories, by: \.clusterKey)
+        for clusterKey in grouped.keys.sorted() {
+            let cards = grouped[clusterKey] ?? []
+            guard let sample = cards.first else { continue }
+            let color = Color(studioHex: sample.clusterColorHex ?? "")
+                ?? sample.clusterColor
+                ?? StudioPalette.accent
+            let frames = cards.map { card -> CGRect in
+                let center = storyGraphPoint(for: card)
+                return CGRect(
+                    x: center.x - StoryGraphCardLayout.width / 2,
+                    y: center.y - StoryGraphCardLayout.height / 2,
+                    width: StoryGraphCardLayout.width,
+                    height: StoryGraphCardLayout.height
+                )
+            }
+            entries.append(
+                makeFocusClusterTitleEntry(
+                    color: color,
+                    label: sample.clusterLabel ?? clusterKey,
+                    frames: frames,
+                    padding: pad,
+                    labelGap: labelGap
+                )
+            )
+        }
+
+        return entries
+    }
+
+    private func makeFocusClusterTitleEntry(
+        color: Color,
+        label: String?,
+        frames: [CGRect],
+        padding: CGFloat,
+        labelGap: CGFloat
+    ) -> ClusterTitleCache.Entry {
+        let bounds = frames.reduce(CGRect.null) { partial, frame in
+            partial.isNull ? frame : partial.union(frame)
+        }
+        let padded = bounds.insetBy(dx: -padding, dy: -padding)
+        let path = Path(roundedRect: padded, cornerRadius: min(max(padded.height / 4, 18), 52))
+        let minY = frames.map(\.minY).min() ?? bounds.minY
+        let centroidX = frames.map(\.midX).reduce(0, +) / CGFloat(max(frames.count, 1))
+        let labelAnchor = CGPoint(x: centroidX, y: minY - labelGap)
+        return ClusterTitleCache.Entry(color: color, path: path, label: label, labelAnchor: labelAnchor)
+    }
+
+    private func storyClusterTitleEntries(padding pad: CGFloat, focusPlan: GraphFocusPlan? = nil) -> [ClusterTitleCache.Entry] {
+        let cards = storyGraphCards().filter { card in
+            guard let focusPlan else { return true }
+            return focusPlan.tierForStory(card.id) != .hidden
+        }
+        guard !cards.isEmpty else { return [] }
+
+        let grouped = Dictionary(grouping: cards, by: \.clusterKey)
+        return grouped.keys.sorted().compactMap { clusterKey in
+            let clusterCards = grouped[clusterKey] ?? []
+            guard let sample = clusterCards.first else { return nil }
+            let color = Color(studioHex: sample.clusterColorHex ?? "")
+                ?? sample.clusterColor
+                ?? StudioPalette.accent
+            var merged: Path? = nil
+            for card in clusterCards {
+                let point = storyGraphPoint(for: card)
+                let halfWidth = StoryGraphCardLayout.width / 2 + pad
+                let halfHeight = StoryGraphCardLayout.height / 2 + pad
+                let rect = CGRect(
+                    x: point.x - halfWidth,
+                    y: point.y - halfHeight,
+                    width: halfWidth * 2,
+                    height: halfHeight * 2
+                )
+                let bubble = Path(roundedRect: rect, cornerRadius: halfHeight)
+                merged = merged.map { $0.union(bubble) } ?? bubble
+            }
+            guard let path = merged else { return nil }
+            let label = clusterCards.first?.clusterLabel ?? clusterKey
+            return ClusterTitleCache.Entry(color: color, path: path, label: label, labelAnchor: nil)
         }
     }
 
@@ -542,10 +759,11 @@ public struct SchemaGraphView: View {
         storyCards: [StoryGraphCard],
         anchorMap: GraphAnchorMap,
         viewportSize: CGSize,
-        showsTableLinks: Bool
+        showsTableLinks: Bool,
+        focusPlan: GraphFocusPlan? = nil
     ) {
         let storyCardsByID = Dictionary(uniqueKeysWithValues: storyCards.map { ($0.id, $0) })
-        let selectedRelatedStoryIDs = selectedStoryID.map { relatedStoryIDs(for: $0, in: storyCards) } ?? []
+        let selectedRelatedStoryIDs = storyStarHubID.map { relatedStoryIDs(for: $0, in: storyCards) } ?? []
 
         for card in storyCards {
             let isEmphasized = storyIsEmphasized(card.id)
@@ -553,7 +771,8 @@ public struct SchemaGraphView: View {
             if showsTableLinks {
                 let tableIDs = isEmphasized ? card.tableIDs : card.primaryTableIDs
 
-                for tableID in tableIDs.prefix(isEmphasized ? 12 : 3) {
+                for tableID in tableIDs.prefix(tableLinkLimit(isEmphasized: isEmphasized)) {
+                    if let focusPlan, focusPlan.tierForTable(tableID) == .hidden { continue }
                     guard let tableFrame = anchorMap.nodeCards[tableID]?.frame else { continue }
                     let start = edgePoint(on: sourceFrame, toward: tableFrame.center)
                     let end = edgePoint(on: tableFrame, toward: sourceFrame.center)
@@ -578,6 +797,11 @@ public struct SchemaGraphView: View {
 
             for relation in card.story.relatedStories {
                 guard let targetCard = storyCardsByID[relation.storyID] else { continue }
+                if let focusPlan {
+                    if focusPlan.tierForStory(card.id) == .hidden || focusPlan.tierForStory(targetCard.id) == .hidden {
+                        continue
+                    }
+                }
                 let targetFrame = storyFrame(for: targetCard, in: viewportSize)
                 let direction = storyRelationDirection(for: relation.kind)
                 let drawsTowardTarget = direction != .targetToSource
@@ -605,14 +829,49 @@ public struct SchemaGraphView: View {
                 if relationIsEmphasized, direction != .none {
                     drawStoryRelationMarker(in: &context, from: start, to: end)
                 }
-                drawStoryRelationLabel(
-                    in: &context,
-                    title: storyRelationDisplayName(relation.kind),
-                    at: CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2),
-                    emphasized: relationIsEmphasized
-                )
+                if shouldShowStoryRelationLabel(
+                    between: card.id,
+                    and: targetCard.id,
+                    relationHighlighted: relationIsEmphasized
+                ) {
+                    drawStoryRelationLabel(
+                        in: &context,
+                        title: storyRelationDisplayName(relation.kind),
+                        at: CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2),
+                        emphasized: relationIsEmphasized
+                    )
+                }
             }
         }
+    }
+
+    private func tableLinkLimit(isEmphasized: Bool) -> Int {
+        if isEmphasized { return 12 }
+        if zoom < 0.55 { return 1 }
+        if zoom < 0.85 { return 2 }
+        return 3
+    }
+
+    private func shouldShowStoryRelationLabel(
+        between sourceID: String,
+        and targetID: String,
+        relationHighlighted: Bool
+    ) -> Bool {
+        if hoveredStoryID == sourceID || hoveredStoryID == targetID {
+            return true
+        }
+        if activeStory?.id == sourceID || activeStory?.id == targetID {
+            return true
+        }
+        if storyStarModeSourceID != nil, relationHighlighted {
+            return true
+        }
+        if let focusPlan = effectiveFocusPlan, focusPlan.isActive,
+           focusPlan.tierForStory(sourceID) != .hidden,
+           focusPlan.tierForStory(targetID) != .hidden {
+            return true
+        }
+        return false
     }
 
     private func drawStoryRelationMarker(in context: inout GraphicsContext, from start: CGPoint, to end: CGPoint) {
@@ -678,9 +937,15 @@ public struct SchemaGraphView: View {
     private func drawEdges(
         in context: inout GraphicsContext,
         anchorMap: GraphAnchorMap,
-        relationHighlight: GraphRelationHighlight
+        relationHighlight: GraphRelationHighlight,
+        focusPlan: GraphFocusPlan? = nil
     ) {
         for edge in session.graph.edges {
+            if let focusPlan {
+                let sourceVisible = focusPlan.tierForTable(edge.sourceID) != .hidden
+                let targetVisible = focusPlan.tierForTable(edge.targetID) != .hidden
+                guard sourceVisible, targetVisible else { continue }
+            }
             guard let anchors = anchorMap.edgeAnchors(for: edge) else { continue }
 
             let isHighlighted = relationHighlight.highlightedEdgeIDs.contains(edge.id)
@@ -858,6 +1123,9 @@ public struct SchemaGraphView: View {
                         // top of fresh cluster geometry.
                         session.reloadSchemaSidecarFromDisk()
                         session.clearPersistedGraphLayout()
+                        session.clearPersistedStoryGraphLayout()
+                        pulledStoryGraphPositions.removeAll()
+                        invalidateClusterTitleCache()
                         rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
                     } label: {
                         Label("Relayout", systemImage: "sparkles.rectangle.stack")
@@ -926,9 +1194,54 @@ public struct SchemaGraphView: View {
         }
     }
 
+    private func playbackStoryMenuControl(size: CGSize) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    isStoriesPresented.toggle()
+                }
+            } label: {
+                Image(systemName: "book.pages")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isStoriesPresented ? Color.white : StudioPalette.secondaryText)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        isStoriesPresented ? StudioPalette.accent : StudioPalette.chromeFillStrong,
+                        in: Circle()
+                    )
+                    .overlay {
+                        Circle()
+                            .stroke(StudioPalette.border, lineWidth: 1)
+                    }
+            }
+            .buttonStyle(.plain)
+            .help("Show stories")
+            .onHover { isHovered in
+                guard isHovered else { return }
+                withAnimation(.snappy(duration: 0.18)) {
+                    isStoriesPresented = true
+                }
+            }
+            .padding(.top, 18)
+            .padding(.trailing, 18)
+
+            if isStoriesPresented {
+                storiesPanel(in: size)
+                    .padding(.top, 62)
+                    .padding(.trailing, 18)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topTrailing)))
+                    .zIndex(1200)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .zIndex(1200)
+    }
+
     private func storiesPanel(in size: CGSize) -> some View {
-        let width = min(max(size.width * 0.42, 360), 460)
-        let stories = session.stories
+        let width = min(max(size.width * 0.44, 400), 540)
+        let rows = storyMenuRows()
+        let filteredRows = filteredStoryMenuRows(rows)
+        let query = normalizedStorySearchText
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
@@ -938,7 +1251,7 @@ public struct SchemaGraphView: View {
 
                 Spacer()
 
-                if !stories.isEmpty {
+                if !rows.isEmpty {
                     Button {
                         withAnimation(.snappy(duration: 0.18)) {
                             let isShowing = !session.showStoryCardsInGraph
@@ -946,7 +1259,7 @@ public struct SchemaGraphView: View {
                             if !isShowing {
                                 selectedStoryID = nil
                                 hoveredStoryID = nil
-                                pulledStoryGraphPositions.removeAll()
+                                clearGraphFocusSession(animated: false)
                                 session.showOnlyStoryCardsInGraph = false
                             }
                         }
@@ -975,9 +1288,6 @@ public struct SchemaGraphView: View {
                                 tappedRelationTarget = nil
                             }
                         }
-                        if session.showOnlyStoryCardsInGraph {
-                            fitGraph(in: size)
-                        }
                     } label: {
                         Image(systemName: session.showOnlyStoryCardsInGraph ? "eye.slash.fill" : "eye.slash")
                             .font(.system(size: 12, weight: .semibold))
@@ -1004,9 +1314,24 @@ public struct SchemaGraphView: View {
                 .help("Close stories")
             }
 
-            if stories.isEmpty {
+            storySearchField
+
+            if rows.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("No stories in this sidecar.")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(StudioPalette.primaryText)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(StudioPalette.borderSoft)
+                }
+            } else if filteredRows.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("No matching stories.")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(StudioPalette.primaryText)
                 }
@@ -1020,8 +1345,8 @@ public struct SchemaGraphView: View {
             } else {
                 ScrollView {
                     VStack(spacing: 8) {
-                        ForEach(stories) { story in
-                            storyRow(story, viewportSize: size)
+                        ForEach(filteredRows) { row in
+                            storyRow(row, viewportSize: size, searchQuery: query)
                         }
                     }
                     .padding(2)
@@ -1042,30 +1367,207 @@ public struct SchemaGraphView: View {
         .shadow(color: StudioPalette.shadow.opacity(0.8), radius: 24, y: 14)
     }
 
-    private func storyRow(_ story: SchemaSidecar.Story, viewportSize: CGSize) -> some View {
-        let isExpanded = expandedStoryIDs.contains(story.id)
+    private var storySearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(StudioPalette.tertiaryText)
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
+            TextField("Search title, date, or cluster", text: $storySearchText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(StudioPalette.primaryText)
+
+            if !normalizedStorySearchText.isEmpty {
                 Button {
-                    withAnimation(.snappy(duration: 0.18)) {
-                        if isExpanded {
-                            expandedStoryIDs.remove(story.id)
-                        } else {
-                            expandedStoryIDs.insert(story.id)
-                        }
-                    }
+                    storySearchText = ""
                 } label: {
-                    Image(systemName: isExpanded ? "chevron.down.circle.fill" : "chevron.right.circle")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(isExpanded ? StudioPalette.accent : StudioPalette.secondaryText)
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StudioPalette.tertiaryText)
                 }
                 .buttonStyle(.plain)
-                .help(isExpanded ? "Minimize story card" : "Expand story card")
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(StudioPalette.headerSurface.opacity(0.82), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(StudioPalette.borderSoft, lineWidth: 1)
+        }
+        .onHover { setStorySearchCursorActive($0) }
+        .onDisappear { setStorySearchCursorActive(false) }
+    }
 
+    private var normalizedStorySearchText: String {
+        storySearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func storyMenuRows() -> [StoryMenuRow] {
+        session.stories.map { story in
+            let cluster = session.schemaSidecar.primaryClusterCoverage(for: story)
+            return StoryMenuRow(
+                story: story,
+                dateText: compactCreatedAt(story.createdAt),
+                rawDateText: story.createdAt,
+                clusterLabel: cluster?.displayLabel ?? "Schema",
+                clusterColor: cluster?.color.flatMap { Color(studioHex: $0) } ?? StudioPalette.accentSoft
+            )
+        }
+    }
+
+    private func filteredStoryMenuRows(_ rows: [StoryMenuRow]) -> [StoryMenuRow] {
+        let query = normalizedStorySearchText
+        guard !query.isEmpty else { return rows }
+        return rows.filter { row in
+            row.story.title.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                || row.dateText.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                || row.rawDateText.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                || row.clusterLabel.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
+    }
+
+    @ViewBuilder
+    private func storyDetailScrollContent(_ story: SchemaSidecar.Story) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            StoryUserCardFormatView(
+                actor: story.actor,
+                goal: story.goal,
+                benefit: story.benefit,
+                fallbackText: story.userStoryText,
+                conversation: story.conversation,
+                acceptanceCriteria: story.acceptanceCriteria.map(\.displayText)
+            )
+
+            if !story.playback.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Playback")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(StudioPalette.tertiaryText)
+
+                    ForEach(Array(story.playback.enumerated()), id: \.offset) { index, beat in
+                        Text("\(index + 1). \(beat.text)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(StudioPalette.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func storyCardPopup(for story: SchemaSidecar.Story, in viewportSize: CGSize) -> some View {
+        let width = min(max(viewportSize.width * 0.38, 320), 440)
+        let maxScrollHeight = min(viewportSize.height * 0.62, 480)
+
+        return ZStack {
+            Color.black.opacity(0.1)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        storyPopupStoryID = nil
+                    }
+                }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(story.title)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(StudioPalette.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if let userStoryText = story.userStoryText {
+                            Text(userStoryText)
+                                .font(.caption)
+                                .foregroundStyle(StudioPalette.primaryText.opacity(0.74))
+                                .lineLimit(2)
+                        }
+
+                        HStack(spacing: 8) {
+                            Text(compactCreatedAt(story.createdAt))
+                            Text("\(story.playback.count) \(story.playback.count == 1 ? "beat" : "beats")")
+                            if !story.acceptanceCriteria.isEmpty {
+                                Text("\(story.acceptanceCriteria.count) AC")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(StudioPalette.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            storyPopupStoryID = nil
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(StudioPalette.secondaryText)
+                            .frame(width: 24, height: 24)
+                            .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close")
+                }
+
+                Divider().opacity(0.55)
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    storyDetailScrollContent(story)
+                        .padding(.bottom, 4)
+                }
+                .frame(maxHeight: maxScrollHeight)
+
+                HStack(spacing: 10) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            storyPopupStoryID = nil
+                        }
+                        startStory(story, in: viewportSize)
+                    } label: {
+                        Label(activeStory?.id == story.id ? "Restart Story" : "Start Story", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(StudioPalette.accent)
+                    .disabled(story.playback.isEmpty)
+
+                    Spacer()
+                }
+            }
+            .padding(16)
+            .frame(width: width, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(StudioPalette.chromeFillStrong)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(StudioPalette.border, lineWidth: 1)
+            }
+            .shadow(color: StudioPalette.shadow.opacity(0.82), radius: 24, y: 14)
+        }
+    }
+
+    private func storyRow(_ row: StoryMenuRow, viewportSize: CGSize, searchQuery: String) -> some View {
+        let story = row.story
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(story.title)
-                        .font(.system(size: 13, weight: .semibold))
+                    storyClusterBadge(label: row.clusterLabel, color: row.clusterColor, searchQuery: searchQuery)
+
+                    highlightedText(
+                        story.title,
+                        query: searchQuery,
+                        font: .system(size: 13, weight: .semibold),
+                        matchFont: .system(size: 13, weight: .black)
+                    )
                         .foregroundStyle(StudioPalette.primaryText)
                         .lineLimit(1)
 
@@ -1073,97 +1575,77 @@ public struct SchemaGraphView: View {
                         Text(userStoryText)
                             .font(.caption)
                             .foregroundStyle(StudioPalette.primaryText.opacity(0.74))
-                            .lineLimit(isExpanded ? 3 : 2)
+                            .lineLimit(2)
                     }
 
                     HStack(spacing: 8) {
-                        Text(compactCreatedAt(story.createdAt))
+                        highlightedText(
+                            row.dateText,
+                            query: searchQuery,
+                            font: .caption,
+                            matchFont: .caption.weight(.black)
+                        )
                         Text("\(story.playback.count) \(story.playback.count == 1 ? "beat" : "beats")")
+                            .font(.caption)
                         if !story.acceptanceCriteria.isEmpty {
                             Text("\(story.acceptanceCriteria.count) AC")
+                                .font(.caption)
                         }
                     }
-                    .font(.caption)
                     .foregroundStyle(StudioPalette.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button {
-                    setStoryReadAloudEnabled(!session.isStoryReadAloudEnabled)
-                } label: {
-                    Image(systemName: session.isStoryReadAloudEnabled ? "speaker.wave.2.fill" : "speaker.wave.2")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(session.isStoryReadAloudEnabled ? Color.white : StudioPalette.secondaryText)
-                        .frame(width: 24, height: 24)
-                        .background(
-                            session.isStoryReadAloudEnabled
-                                ? StudioPalette.accent
-                                : StudioPalette.headerSurface.opacity(0.82),
-                            in: Circle()
-                        )
-                }
-                .buttonStyle(.borderless)
-                .help(session.isStoryReadAloudEnabled ? "Disable read aloud" : "Read beats aloud with Kokoro Bella")
-
-                Button {
-                    startStory(story, in: viewportSize)
-                } label: {
-                    Label(activeStory?.id == story.id ? "Restart" : "Activate", systemImage: "play.fill")
-                        .font(.caption.weight(.semibold))
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(StudioPalette.accent)
-                .disabled(story.playback.isEmpty)
-
-                Button(role: .destructive) {
-                    if activeStory?.id == story.id {
-                        stopStory()
+                HStack(spacing: 7) {
+                    Button {
+                        setStoryReadAloudEnabled(!session.isStoryReadAloudEnabled)
+                    } label: {
+                        Image(systemName: session.isStoryReadAloudEnabled ? "speaker.wave.2.fill" : "speaker.wave.2")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(session.isStoryReadAloudEnabled ? Color.white : StudioPalette.secondaryText)
+                            .frame(width: 28, height: 28)
+                            .background(
+                                session.isStoryReadAloudEnabled
+                                    ? StudioPalette.accent
+                                    : StudioPalette.headerSurface.opacity(0.82),
+                                in: Circle()
+                            )
                     }
-                    expandedStoryIDs.remove(story.id)
-                    session.deleteStory(id: story.id)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.borderless)
-                .help("Remove story")
-            }
+                    .buttonStyle(.borderless)
+                    .help(session.isStoryReadAloudEnabled ? "Disable read aloud" : "Read beats aloud with Kokoro Bella")
 
-            if isExpanded {
-                Divider().opacity(0.55)
+                    Button {
+                        startStory(story, in: viewportSize)
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 30, height: 30)
+                            .background(Color.black, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(story.playback.isEmpty)
+                    .opacity(story.playback.isEmpty ? 0.4 : 1)
+                    .help(activeStory?.id == story.id ? "Restart story" : "Activate story")
 
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        StoryUserCardFormatView(
-                            actor: story.actor,
-                            goal: story.goal,
-                            benefit: story.benefit,
-                            fallbackText: story.userStoryText,
-                            conversation: story.conversation,
-                            acceptanceCriteria: story.acceptanceCriteria.map(\.displayText)
-                        )
-
-                        if !story.playback.isEmpty {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("Playback")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(StudioPalette.tertiaryText)
-
-                                ForEach(Array(story.playback.enumerated()), id: \.offset) { index, beat in
-                                    Text("\(index + 1). \(beat.text)")
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(StudioPalette.secondaryText)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
+                    Button(role: .destructive) {
+                        if activeStory?.id == story.id {
+                            stopStory()
                         }
+                        session.deleteStory(id: story.id)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(StudioPalette.secondaryText)
+                            .frame(width: 28, height: 28)
+                            .background(StudioPalette.headerSurface.opacity(0.68), in: Circle())
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .buttonStyle(.borderless)
+                    .help("Remove story")
                 }
-                .frame(height: 240, alignment: .top)
+                .padding(.top, 18)
             }
         }
         .padding(12)
@@ -1173,18 +1655,115 @@ public struct SchemaGraphView: View {
                 .stroke(activeStory?.id == story.id ? StudioPalette.foreignKeyTint.opacity(0.45) : StudioPalette.borderSoft)
         }
         .contentShape(Rectangle())
+        .onTapGesture {
+            openStoryPopup(story)
+        }
+        .onHover { setStoryMenuCardCursorActive($0) }
+        .onDisappear { setStoryMenuCardCursorActive(false) }
+    }
+
+    private func storyClusterBadge(label: String, color: Color, searchQuery: String) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+
+            highlightedText(
+                label,
+                query: searchQuery,
+                font: .caption2.weight(.medium),
+                matchFont: .caption2.weight(.black)
+            )
+                .foregroundStyle(StudioPalette.secondaryText)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(StudioPalette.headerSurface.opacity(0.78), in: Capsule())
+    }
+
+    private func highlightedText(_ text: String, query: String, font: Font, matchFont: Font) -> Text {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return Text(text).font(font) }
+
+        var result = Text("")
+        var searchStart = text.startIndex
+        let fullRange = text.startIndex..<text.endIndex
+
+        while searchStart < text.endIndex,
+              let match = text.range(
+                of: trimmedQuery,
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: searchStart..<text.endIndex
+              ) {
+            if searchStart < match.lowerBound {
+                result = result + Text(String(text[searchStart..<match.lowerBound])).font(font)
+            }
+            result = result + Text(String(text[match])).font(matchFont)
+            searchStart = match.upperBound
+        }
+
+        if searchStart < fullRange.upperBound {
+            result = result + Text(String(text[searchStart..<fullRange.upperBound])).font(font)
+        }
+
+        return result
+    }
+
+    private func setStorySearchCursorActive(_ isActive: Bool) {
+        if isActive && !isStorySearchCursorActive {
+            NSCursor.iBeam.push()
+            isStorySearchCursorActive = true
+        } else if !isActive && isStorySearchCursorActive {
+            NSCursor.pop()
+            isStorySearchCursorActive = false
+        }
+    }
+
+    private func setStoryMenuCardCursorActive(_ isActive: Bool) {
+        if isActive && !isStoryMenuCardCursorActive {
+            NSCursor.pointingHand.push()
+            isStoryMenuCardCursorActive = true
+        } else if !isActive && isStoryMenuCardCursorActive {
+            NSCursor.pop()
+            isStoryMenuCardCursorActive = false
+        }
+    }
+
+    private func openStoryPopup(_ story: SchemaSidecar.Story) {
+        setStoryMenuCardCursorActive(false)
+        withAnimation(.snappy(duration: 0.18)) {
+            isStoriesPresented = false
+            storyPopupStoryID = story.id
+        }
     }
 
     private func startStory(_ story: SchemaSidecar.Story, in size: CGSize) {
         storyPlaybackTask?.cancel()
         storySpeechNarrator.stop()
+        if activeStory == nil {
+            preStoryShowAllGraphTableCards = session.showAllGraphTableCards
+            preStoryShowStoryCardsInGraph = session.showStoryCardsInGraph
+            preStoryShowOnlyStoryCardsInGraph = session.showOnlyStoryCardsInGraph
+        }
         if session.showAllGraphTableCards {
             session.setShowAllGraphTableCards(false)
         }
+        session.showStoryCardsInGraph = true
+        session.showOnlyStoryCardsInGraph = false
+        invalidateStoryGraphCardsCache()
+        var noNodeAnimation = Transaction()
+        noNodeAnimation.animation = nil
+        withTransaction(noNodeAnimation) {
+            session.clearGraphSelection()
+            session.setExpandedGraphNode(nil)
+            cardScrollOffsets.removeAll()
+        }
         withAnimation(.snappy(duration: 0.18)) {
             isStoriesPresented = false
+            storyPopupStoryID = nil
             activeStory = story
-            activeStoryPlaybackIndex = nil
+            activeStoryPlaybackIndex = story.playback.isEmpty ? nil : Self.storyPreludePlaybackIndex
             selectedStoryID = story.id
             hoveredStoryID = nil
             session.storyPlaybackDisplayedText = ""
@@ -1195,18 +1774,31 @@ public struct SchemaGraphView: View {
             updateReadAloudStatus(.idle)
             activeStoryViewportSize = size
             session.storyPlaybackCardOffset = .zero
+            enterGraphFocusSession()
+            clearGraphFocusSession(animated: false, restoreViewport: false, clearSavedViewport: false)
             pulledGraphPositions.removeAll()
-            pulledStoryGraphPositions.removeAll()
             tappedRelationTarget = nil
         }
+        applyInitialStoryPlaybackFormation(for: story, in: size)
 
         publishStoryPlaybackOverlay()
-        runStoryPlayback(story, from: 0, in: size)
+        runStoryPlayback(story, from: Self.storyPreludePlaybackIndex, in: size)
+    }
+
+    private func applyInitialStoryPlaybackFormation(for story: SchemaSidecar.Story, in size: CGSize) {
+        guard let hubCard = storyGraphCards().first(where: { $0.story.id == story.id }) else { return }
+        graphFocusTableRelation = nil
+        tappedRelationTarget = nil
+        applyStoryStarFormation(for: hubCard, animated: true)
+        fitGraphFocusViewport(in: size)
     }
 
     private func runStoryPlayback(_ story: SchemaSidecar.Story, from startIndex: Int, in size: CGSize) {
         storyPlaybackTask?.cancel()
-        let clampedStartIndex = min(max(startIndex, 0), max(story.playback.count - 1, 0))
+        let clampedStartIndex = min(
+            max(startIndex, Self.storyPreludePlaybackIndex),
+            max(story.playback.count - 1, Self.storyPreludePlaybackIndex)
+        )
         storyPlaybackTask = Task { @MainActor in
             guard !story.playback.isEmpty else {
                 storyPlaybackTask = nil
@@ -1218,7 +1810,17 @@ public struct SchemaGraphView: View {
                 return
             }
 
-            for index in clampedStartIndex..<story.playback.count {
+            let firstBeatIndex: Int
+            if clampedStartIndex == Self.storyPreludePlaybackIndex {
+                applyStoryPlaybackPrelude(for: story, in: size)
+                await waitForStoryResume(milliseconds: Self.storyPreludeHoldMilliseconds)
+                guard !Task.isCancelled else { return }
+                firstBeatIndex = 0
+            } else {
+                firstBeatIndex = clampedStartIndex
+            }
+
+            for index in firstBeatIndex..<story.playback.count {
                 guard !Task.isCancelled else { return }
                 await waitForStoryResume()
                 guard !Task.isCancelled else { return }
@@ -1230,9 +1832,31 @@ public struct SchemaGraphView: View {
         }
     }
 
+    private func applyStoryPlaybackPrelude(for story: SchemaSidecar.Story, in size: CGSize) {
+        var noNodeAnimation = Transaction()
+        noNodeAnimation.animation = nil
+        withTransaction(noNodeAnimation) {
+            session.clearGraphSelection()
+            session.setExpandedGraphNode(nil)
+            cardScrollOffsets.removeAll()
+        }
+        withAnimation(.snappy(duration: 0.2)) {
+            activeStoryPlaybackIndex = Self.storyPreludePlaybackIndex
+            session.storyPlaybackDisplayedText = ""
+            storyRelationTarget = nil
+            storyHighlightedTableIDs = []
+            storyFocusNodeID = nil
+        }
+        applyInitialStoryPlaybackFormation(for: story, in: size)
+        publishStoryPlaybackOverlay()
+    }
+
     private func stopStory() {
         storyPlaybackTask?.cancel()
         storyPlaybackTask = nil
+        let shouldRestoreAllGraphTableCards = preStoryShowAllGraphTableCards == true
+        let restoredShowStoryCards = preStoryShowStoryCardsInGraph
+        let restoredShowOnlyStories = preStoryShowOnlyStoryCardsInGraph
         withAnimation(.snappy(duration: 0.18)) {
             activeStory = nil
             activeStoryPlaybackIndex = nil
@@ -1242,10 +1866,27 @@ public struct SchemaGraphView: View {
             storyRelationTarget = nil
             isStoryPaused = false
             activeStoryViewportSize = .zero
+            if let savedViewport = preGraphFocusViewport {
+                setViewport(savedViewport, animated: true)
+            }
+            preGraphFocusViewport = nil
+            clearGraphFocusSession(animated: false, restoreViewport: false, clearSavedViewport: false)
             pulledGraphPositions.removeAll()
-            pulledStoryGraphPositions.removeAll()
             tappedRelationTarget = nil
             session.setExpandedGraphNode(nil)
+            if shouldRestoreAllGraphTableCards {
+                session.setShowAllGraphTableCards(true)
+            }
+            if let restoredShowStoryCards {
+                session.showStoryCardsInGraph = restoredShowStoryCards
+            }
+            if let restoredShowOnlyStories {
+                session.showOnlyStoryCardsInGraph = restoredShowOnlyStories
+            }
+            invalidateStoryGraphCardsCache()
+            preStoryShowAllGraphTableCards = nil
+            preStoryShowStoryCardsInGraph = nil
+            preStoryShowOnlyStoryCardsInGraph = nil
             session.storyPlaybackOverlay = nil
         }
         storySpeechNarrator.stop()
@@ -1260,10 +1901,13 @@ public struct SchemaGraphView: View {
                   let activeStory,
                   !activeStory.playback.isEmpty
             else {
+                publishStoryPlaybackOverlay()
                 return
             }
-            let currentIndex = activeStoryPlaybackIndex ?? 0
-            let resumeIndex = min(currentIndex + 1, activeStory.playback.count - 1)
+            let currentIndex = activeStoryPlaybackIndex ?? Self.storyPreludePlaybackIndex
+            let resumeIndex = currentIndex == Self.storyPreludePlaybackIndex
+                ? Self.storyPreludePlaybackIndex
+                : min(currentIndex + 1, activeStory.playback.count - 1)
             runStoryPlayback(activeStory, from: resumeIndex, in: activeStoryViewportSize)
         } else {
             isStoryPaused = true
@@ -1274,13 +1918,28 @@ public struct SchemaGraphView: View {
 
     private func jumpStoryPlayback(by delta: Int) {
         guard let activeStory, !activeStory.playback.isEmpty else { return }
-        let currentIndex = activeStoryPlaybackIndex ?? 0
-        let nextIndex = min(max(currentIndex + delta, 0), activeStory.playback.count - 1)
+        let currentIndex = activeStoryPlaybackIndex ?? Self.storyPreludePlaybackIndex
+        let nextIndex = min(
+            max(currentIndex + delta, Self.storyPreludePlaybackIndex),
+            activeStory.playback.count - 1
+        )
         guard nextIndex != currentIndex else { return }
 
         let shouldResume = !isStoryPaused
         storyPlaybackTask?.cancel()
         storyPlaybackTask = nil
+
+        if nextIndex == Self.storyPreludePlaybackIndex {
+            if shouldResume {
+                isStoryPaused = false
+                runStoryPlayback(activeStory, from: Self.storyPreludePlaybackIndex, in: activeStoryViewportSize)
+            } else {
+                applyStoryPlaybackPrelude(for: activeStory, in: activeStoryViewportSize)
+                isStoryPaused = true
+                publishStoryPlaybackOverlay()
+            }
+            return
+        }
 
         let beat = activeStory.playback[nextIndex]
         if shouldResume {
@@ -1333,7 +1992,10 @@ public struct SchemaGraphView: View {
             if storySpeechNarrator.isKokoroInstalled,
                let activeStory,
                !activeStory.playback.isEmpty {
-                let currentIndex = min(activeStoryPlaybackIndex ?? 0, activeStory.playback.count - 1)
+                let currentIndex = min(
+                    activeStoryPlaybackIndex ?? Self.storyPreludePlaybackIndex,
+                    activeStory.playback.count - 1
+                )
                 runStoryPlayback(activeStory, from: currentIndex, in: activeStoryViewportSize)
             }
         } else {
@@ -1361,7 +2023,7 @@ public struct SchemaGraphView: View {
             updateReadAloudStatus(.idle)
             if let activeStory,
                !activeStory.playback.isEmpty {
-                let currentIndex = activeStoryPlaybackIndex ?? 0
+                let currentIndex = activeStoryPlaybackIndex ?? Self.storyPreludePlaybackIndex
                 runStoryPlayback(activeStory, from: currentIndex, in: activeStoryViewportSize)
             }
             publishStoryPlaybackOverlay()
@@ -1384,10 +2046,13 @@ public struct SchemaGraphView: View {
             return
         }
 
-        let index = activeStoryPlaybackIndex ?? 0
+        let index = activeStoryPlaybackIndex ?? Self.storyPreludePlaybackIndex
         let playbackCount = max(activeStory.playback.count, 1)
+        let primaryCluster = session.schemaSidecar.primaryClusterCoverage(for: activeStory)
         session.storyPlaybackOverlay = StoryPlaybackOverlayState(
             title: activeStory.title,
+            clusterLabel: primaryCluster?.displayLabel,
+            clusterColorHex: primaryCluster?.color,
             userStoryText: activeStory.userStoryText,
             actor: activeStory.actor,
             goal: activeStory.goal,
@@ -1402,8 +2067,8 @@ public struct SchemaGraphView: View {
             isReadAloudEnabled: session.isStoryReadAloudEnabled,
             readAloudStatus: session.storyReadAloudStatus,
             isReadAloudBusy: session.isStoryReadAloudBusy,
-            canGoBackward: index > 0,
-            canGoForward: index + 1 < activeStory.playback.count
+            canGoBackward: index > Self.storyPreludePlaybackIndex,
+            canGoForward: index < activeStory.playback.count - 1
         )
     }
 
@@ -1464,6 +2129,8 @@ public struct SchemaGraphView: View {
     private static let storyTypeTickMilliseconds = 18
     private static let storyTypeCharactersPerTick = 2
     private static let storyBeatHoldMinimumMilliseconds = 900
+    private static let storyPreludePlaybackIndex = -1
+    private static let storyPreludeHoldMilliseconds = 5_000
 
     @MainActor
     private func typeStoryText(_ text: String, durationMilliseconds: Int?) async {
@@ -1535,27 +2202,40 @@ public struct SchemaGraphView: View {
             tableIDs.first,
         ])
 
-        withAnimation(.snappy(duration: 0.2)) {
+        let hubCard = storyGraphCards().first { $0.story.id == activeStory?.id }
+
+        var noNodeAnimation = Transaction()
+        noNodeAnimation.animation = nil
+        withTransaction(noNodeAnimation) {
             activeStoryPlaybackIndex = index
             storyRelationTarget = relationTarget
             storyHighlightedTableIDs = Set(tableIDs)
             storyFocusNodeID = expansionID
-            if let expansionID {
-                session.selectGraphNode(expansionID)
-                session.setExpandedGraphNode(expansionID)
-            }
-            pulledGraphPositions = storyFormationPositions(for: tableIDs, focus: expansionID)
-            pulledStoryGraphPositions.removeAll()
+            session.clearGraphSelection()
+            session.setExpandedGraphNode(nil)
+            cardScrollOffsets.removeAll()
         }
 
-        if let relationTarget {
-            scrollRelationColumnIntoView(relationTarget)
-        } else {
+        withAnimation(.snappy(duration: 0.2)) {
+            if let hubCard {
+                applyStoryStarFormation(for: hubCard, animated: false)
+                let starTableIDs = Set(hubCard.tableIDs)
+                let extraTableIDs = tableIDs.filter { !starTableIDs.contains($0) }
+                if !extraTableIDs.isEmpty {
+                    let extraPositions = storyFormationPositions(for: extraTableIDs, focus: expansionID)
+                    pulledGraphPositions.merge(extraPositions) { _, new in new }
+                }
+            } else {
+                pulledGraphPositions = storyFormationPositions(for: tableIDs, focus: expansionID)
+            }
+        }
+
+        if relationTarget == nil {
             tappedRelationTarget = nil
         }
 
         layoutRevision &+= 1
-        focusStoryTables(tableIDs, fallback: expansionID, in: size)
+        fitGraphFocusViewport(in: size)
         publishStoryPlaybackOverlay()
     }
 
@@ -1706,9 +2386,20 @@ public struct SchemaGraphView: View {
     private func compactCreatedAt(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "No timestamp" }
-        return trimmed
-            .replacingOccurrences(of: "T", with: " ")
-            .replacingOccurrences(of: "Z", with: "")
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        let date = isoFormatter.date(from: trimmed) ?? fallbackFormatter.date(from: trimmed)
+        guard let date else {
+            return trimmed
+                .replacingOccurrences(of: "T", with: " ")
+                .replacingOccurrences(of: "Z", with: "")
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 
     private func acceptanceSummary(for story: SchemaSidecar.Story) -> String {
@@ -1767,21 +2458,31 @@ public struct SchemaGraphView: View {
         )
     }
 
-    private func renderedGraphNodes(anchorMap: GraphAnchorMap, viewportSize: CGSize) -> [GraphNode] {
-        guard session.showAllGraphTableCards else { return session.graph.nodes }
+    private func renderedGraphNodes(
+        anchorMap: GraphAnchorMap,
+        viewportSize: CGSize,
+        focusPlan: GraphFocusPlan? = nil
+    ) -> [GraphNode] {
+        let nodes: [GraphNode]
+        if session.showAllGraphTableCards {
+            nodes = session.graph.nodes
+        } else {
+            let renderViewport = CGRect(origin: .zero, size: viewportSize).insetBy(dx: -420, dy: -420)
+            nodes = session.graph.nodes.filter { node in
+                if node.id == draggedNodeID || node.id == hoveredNodeID || session.selectedGraphNodeIDs.contains(node.id) {
+                    return true
+                }
 
-        let renderViewport = CGRect(origin: .zero, size: viewportSize).insetBy(dx: -420, dy: -420)
-        return session.graph.nodes.filter { node in
-            if node.id == draggedNodeID || node.id == hoveredNodeID || session.selectedGraphNodeIDs.contains(node.id) {
-                return true
+                guard let frame = anchorMap.nodeCards[node.id]?.frame else {
+                    return true
+                }
+
+                return frame.intersects(renderViewport)
             }
-
-            guard let frame = anchorMap.nodeCards[node.id]?.frame else {
-                return true
-            }
-
-            return frame.intersects(renderViewport)
         }
+
+        guard let focusPlan else { return nodes }
+        return nodes.filter { focusPlan.tierForTable($0.id) != .hidden }
     }
 
     private func shadowRadius(for nodeID: String) -> CGFloat {
@@ -1798,6 +2499,7 @@ public struct SchemaGraphView: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .named("graphViewport"))
             .onChanged { value in
                 guard draggedNodeID == nil else { return }
+                isViewportPanning = true
                 
                 // Check if shift is pressed for selection rectangle
                 if NSEvent.modifierFlags.contains(.shift) {
@@ -1816,6 +2518,7 @@ public struct SchemaGraphView: View {
             }
             .onEnded { _ in
                 guard draggedNodeID == nil else { return }
+                isViewportPanning = false
                 
                 if selectionRectStart != nil {
                     // Finish selection
@@ -1824,6 +2527,7 @@ public struct SchemaGraphView: View {
                 } else {
                     panStart = pan
                 }
+                flushViewportSessionSync()
             }
     }
     
@@ -1857,26 +2561,30 @@ public struct SchemaGraphView: View {
             .onChanged { value in
                 if draggedNodeID != nodeID {
                     draggedNodeID = nodeID
-                    nodeDragOrigin = session.graphLayout.position(for: nodeID)
+                    let currentGraphPoint = graphNodePoint(for: nodeID)
+                    nodeDragOrigin = currentGraphPoint
                     let startGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
                         .graphPoint(for: value.startLocation, in: canvasSize)
-                    if let nodeDragOrigin {
-                        nodeDragPointerOffset = CGSize(
-                            width: startGraphPoint.x - nodeDragOrigin.x,
-                            height: startGraphPoint.y - nodeDragOrigin.y
-                        )
-                    }
+                    nodeDragPointerOffset = CGSize(
+                        width: startGraphPoint.x - currentGraphPoint.x,
+                        height: startGraphPoint.y - currentGraphPoint.y
+                    )
+                    draggedNodeUsesFocusPull = isFocusRelatedTable(nodeID)
                     hoveredNodeID = nil
                     clearRelationHoverState()
-                    if !pulledGraphPositions.isEmpty { pulledGraphPositions.removeAll() }
-                    tappedRelationTarget = nil
-                    
-                    // If node is not in selection, select only this node
+                    if !draggedNodeUsesFocusPull {
+                        if !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty {
+                            clearGraphFocusSession(restoreViewport: false)
+                        } else {
+                            tappedRelationTarget = nil
+                        }
+                    }
+
                     if !session.selectedGraphNodeIDs.contains(nodeID) {
                         session.selectGraphNode(nodeID)
                     }
                     multiNodeDragOrigins = Dictionary(
-                        uniqueKeysWithValues: session.selectedGraphNodeIDs.map { ($0, session.graphLayout.position(for: $0)) }
+                        uniqueKeysWithValues: session.selectedGraphNodeIDs.map { ($0, graphNodePoint(for: $0)) }
                     )
                 }
 
@@ -1887,38 +2595,53 @@ public struct SchemaGraphView: View {
                     x: currentGraphPoint.x - (nodeDragPointerOffset?.width ?? 0),
                     y: currentGraphPoint.y - (nodeDragPointerOffset?.height ?? 0)
                 )
-                
-                // If multiple nodes selected, move them all together
-                if session.selectedGraphNodeIDs.count > 1 {
+
+                if session.selectedGraphNodeIDs.count > 1, !draggedNodeUsesFocusPull {
                     let delta = CGPoint(
                         x: moved.x - (nodeDragOrigin?.x ?? moved.x),
                         y: moved.y - (nodeDragOrigin?.y ?? moved.y)
                     )
-                    
+
                     for selectedNodeID in session.selectedGraphNodeIDs {
-                        let originalPos = multiNodeDragOrigins[selectedNodeID] ?? session.graphLayout.position(for: selectedNodeID)
+                        let originalPos = multiNodeDragOrigins[selectedNodeID] ?? graphNodePoint(for: selectedNodeID)
                         let newPos = CGPoint(
                             x: originalPos.x + delta.x,
                             y: originalPos.y + delta.y
                         )
                         session.graphLayout.pin(nodeID: selectedNodeID, at: newPos)
                     }
+                } else if draggedNodeUsesFocusPull {
+                    pulledGraphPositions[nodeID] = moved
                 } else {
                     session.graphLayout.pin(nodeID: nodeID, at: moved)
                 }
-                
+
                 layoutRevision &+= 1
             }
             .onEnded { _ in
+                if draggedNodeUsesFocusPull, let draggedNodeID {
+                    session.graphLayout.pin(nodeID: draggedNodeID, at: graphNodePoint(for: draggedNodeID))
+                }
                 draggedNodeID = nil
                 nodeDragOrigin = nil
                 nodeDragPointerOffset = nil
+                draggedNodeUsesFocusPull = false
                 multiNodeDragOrigins = [:]
                 layoutRevision &+= 1
                 if !session.showAllGraphTableCards {
                     session.persistCurrentGraphLayout()
                 }
             }
+    }
+
+    private func graphNodePoint(for nodeID: String) -> CGPoint {
+        pulledGraphPositions[nodeID] ?? session.graphLayout.position(for: nodeID)
+    }
+
+    private func isFocusRelatedTable(_ nodeID: String) -> Bool {
+        guard let target = graphFocusTableRelation else { return false }
+        guard nodeID != target.tableID else { return false }
+        return relatedNodeIDs(for: target).contains(nodeID)
     }
 
     private func storyDragGesture(storyID: String, in canvasSize: CGSize) -> some Gesture {
@@ -1937,9 +2660,14 @@ public struct SchemaGraphView: View {
                         width: startGraphPoint.x - currentGraphPoint.x,
                         height: startGraphPoint.y - currentGraphPoint.y
                     )
-                    selectedStoryID = storyID
-                    hoveredStoryID = storyID
-                    pulledStoryGraphPositions.removeValue(forKey: storyID)
+                    draggedStoryUsesStarModePull = isStarModeConnectedStory(storyID, in: cards)
+                    if draggedStoryUsesStarModePull {
+                        hoveredStoryID = storyID
+                    } else {
+                        selectedStoryID = storyID
+                        hoveredStoryID = storyID
+                        pulledStoryGraphPositions.removeValue(forKey: storyID)
+                    }
                     NSCursor.closedHand.set()
                 }
 
@@ -1950,12 +2678,23 @@ public struct SchemaGraphView: View {
                     x: currentGraphPoint.x - (storyDragPointerOffset?.width ?? 0),
                     y: currentGraphPoint.y - (storyDragPointerOffset?.height ?? 0)
                 )
-                storyGraphPositions[storyID] = moved
+                if draggedStoryUsesStarModePull {
+                    pulledStoryGraphPositions[storyID] = moved
+                } else {
+                    session.pinStoryGraphPosition(storyID, at: moved)
+                }
             }
             .onEnded { _ in
+                if draggedStoryUsesStarModePull, let draggedStoryID {
+                    if let point = pulledStoryGraphPositions[draggedStoryID] {
+                        session.pinStoryGraphPosition(draggedStoryID, at: point)
+                    }
+                }
                 draggedStoryID = nil
                 storyDragOrigin = nil
                 storyDragPointerOffset = nil
+                draggedStoryUsesStarModePull = false
+                session.persistStoryGraphLayout()
                 NSCursor.arrow.set()
             }
     }
@@ -2016,29 +2755,94 @@ public struct SchemaGraphView: View {
     }
 
     private func storyGraphCards() -> [StoryGraphCard] {
+        cachedStoryGraphCards()
+    }
+
+    private func cachedStoryGraphCards() -> [StoryGraphCard] {
+        let token = storyGraphCardsCacheToken()
+        if !storyGraphCardsCache.isValid || storyGraphCardsCache.token != token {
+            storyGraphCardsCache.token = token
+            storyGraphCardsCache.cards = computeStoryGraphCards()
+            storyGraphCardsCache.isValid = true
+        }
+        return storyGraphCardsCache.cards
+    }
+
+    private func computeStoryGraphCards() -> [StoryGraphCard] {
         StoryGraphPlacement.placedCards(for: session).map { placed in
-            let clusterColor = session.schemaSidecar.primaryClusterCoverage(for: placed.story)?
-                .color
-                .flatMap { Color(studioHex: $0) }
-            return StoryGraphCard(
+            StoryGraphCard(
                 story: placed.story,
                 tableIDs: placed.tableIDs,
                 primaryTableIDs: placed.primaryTableIDs,
+                clusterKey: placed.clusterKey,
                 clusterLabel: placed.clusterLabel,
-                clusterColor: clusterColor,
+                clusterColorHex: placed.clusterColorHex,
+                clusterColor: placed.clusterColorHex.flatMap { Color(studioHex: $0) },
                 graphPosition: placed.graphPosition
             )
         }
     }
 
-    private func selectStory(_ story: SchemaSidecar.Story) {
-        let isSameSelection = selectedStoryID == story.id
-        if !isSameSelection && (!pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty) {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                pulledGraphPositions.removeAll()
-                pulledStoryGraphPositions.removeAll()
+    private func storyGraphCardsCacheToken() -> Int {
+        StoryGraphCardsCacheToken.make(
+            layoutRevision: layoutRevision,
+            sidecarRevision: clusterTitleCacheKey,
+            showStoryCardsInGraph: session.showStoryCardsInGraph,
+            showOnlyStoryCardsInGraph: session.showOnlyStoryCardsInGraph,
+            showAllGraphTableCards: session.showAllGraphTableCards,
+            graphNodeCount: session.graph.nodes.count,
+            storyCount: session.stories.count
+        )
+    }
+
+    private func invalidateStoryGraphCardsCache() {
+        storyGraphCardsCache.isValid = false
+    }
+
+    private func scheduleViewportSessionSync(zoom: CGFloat, pan: CGSize) {
+        viewportSyncTask?.cancel()
+        viewportSyncTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(48))
+            guard !Task.isCancelled else { return }
+            session.graphZoom = zoom
+            session.graphPan = pan
+        }
+    }
+
+    private func flushViewportSessionSync() {
+        viewportSyncTask?.cancel()
+        viewportSyncTask = nil
+        session.graphZoom = zoom
+        session.graphPan = pan
+    }
+
+    private func handleStoryOnlyModeChange(in size: CGSize) {
+        invalidateClusterTitleCache()
+        clearGraphFocusSession(animated: false)
+        layoutRevision &+= 1
+
+        if isStoryOnlyMode {
+            if preStoryOnlyViewport == nil {
+                preStoryOnlyViewport = GraphViewportTransform(zoom: zoom, pan: pan)
             }
-            tappedRelationTarget = nil
+            guard size != .zero else { return }
+            if shouldAutoFitStoryViewport {
+                fitGraph(in: size)
+            }
+        } else {
+            if let restored = preStoryOnlyViewport {
+                setViewport(restored, animated: true)
+                preStoryOnlyViewport = nil
+            } else if shouldAutoFit, size != .zero {
+                fitGraph(in: size)
+            }
+        }
+    }
+
+    private func selectStory(_ story: SchemaSidecar.Story) {
+        let isSameSelection = storyStarHubID == story.id
+        if !isSameSelection && (storyStarModeSourceID != nil || graphFocusTableRelation != nil || !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty) {
+            clearGraphFocusSession()
         }
         withAnimation(.snappy(duration: 0.16)) {
             selectedStoryID = story.id
@@ -2048,10 +2852,70 @@ public struct SchemaGraphView: View {
     }
 
     private func storyIsEmphasized(_ storyID: String) -> Bool {
-        hoveredStoryID == storyID || selectedStoryID == storyID || activeStory?.id == storyID
+        hoveredStoryID == storyID || storyStarHubID == storyID || activeStory?.id == storyID
     }
 
-    private func emphasizedStoryTableIDs(for storyCards: [StoryGraphCard]) -> Set<String> {
+    private var storyStarHubID: String? {
+        storyStarModeSourceID ?? selectedStoryID
+    }
+
+    private func isStarModeConnectedStory(_ storyID: String, in storyCards: [StoryGraphCard]) -> Bool {
+        guard let sourceID = storyStarModeSourceID, sourceID != storyID else { return false }
+        return relatedStoryIDs(for: sourceID, in: storyCards).contains(storyID)
+    }
+
+    private func commitStarModeStoryPositions() {
+        for (storyID, point) in pulledStoryGraphPositions {
+            session.pinStoryGraphPosition(storyID, at: point)
+        }
+    }
+
+    private func clearGraphFocusSession(
+        animated: Bool = true,
+        restoreViewport: Bool = true,
+        clearSavedViewport: Bool = true
+    ) {
+        guard storyStarModeSourceID != nil
+            || graphFocusTableRelation != nil
+            || !pulledGraphPositions.isEmpty
+            || !pulledStoryGraphPositions.isEmpty
+        else {
+            return
+        }
+
+        commitStarModeStoryPositions()
+        let savedViewport = preGraphFocusViewport
+        let applyClear = {
+            pulledGraphPositions.removeAll()
+            pulledStoryGraphPositions.removeAll()
+            storyStarModeSourceID = nil
+            graphFocusTableRelation = nil
+            tappedRelationTarget = nil
+            if clearSavedViewport {
+                preGraphFocusViewport = nil
+            }
+        }
+        if animated {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                applyClear()
+            }
+        } else {
+            applyClear()
+        }
+        session.persistStoryGraphLayout()
+        if restoreViewport, let savedViewport {
+            setViewport(savedViewport, animated: animated)
+        }
+    }
+
+    private func emphasizedStoryTableIDs(
+        for storyCards: [StoryGraphCard],
+        focusPlan: GraphFocusPlan? = nil
+    ) -> Set<String> {
+        if let focusPlan {
+            return focusPlan.visibleTableIDs()
+        }
+
         let emphasizedIDs = Set([hoveredStoryID, selectedStoryID, activeStory?.id].compactMap { $0 })
         guard !emphasizedIDs.isEmpty else { return [] }
 
@@ -2060,6 +2924,164 @@ public struct SchemaGraphView: View {
             tableIDs.formUnion(card.tableIDs)
         }
         return tableIDs
+    }
+
+    private var graphFocusPlan: GraphFocusPlan? {
+        if let hubID = storyStarModeSourceID {
+            return storyGraphFocusPlan(hubStoryID: hubID)
+        }
+        if let target = graphFocusTableRelation {
+            return tableRelationFocusPlan(target: target)
+        }
+        return nil
+    }
+
+    private var effectiveFocusPlan: GraphFocusPlan? {
+        if let activeStory {
+            return storyPlaybackFocusPlan(for: activeStory)
+        }
+        return graphFocusPlan
+    }
+
+    private func storyPlaybackFocusPlan(for story: SchemaSidecar.Story) -> GraphFocusPlan {
+        let storyCards = storyGraphCards()
+        let hubCard = storyCards.first { $0.id == story.id }
+        let relatedStories = relatedStoryIDs(for: story.id, in: storyCards)
+        let graphTableIDs = Set(session.graph.nodes.map(\.id))
+        let storyTables = Set((hubCard?.tableIDs ?? []).filter { graphTableIDs.contains($0) })
+        let activeTables = Set([storyFocusNodeID].compactMap { $0 })
+        let relatedTables = storyTables.union(storyHighlightedTableIDs).subtracting(activeTables)
+        return GraphFocusPlan(
+            activeStoryIDs: [story.id],
+            relatedStoryIDs: relatedStories,
+            activeTableIDs: activeTables,
+            relatedTableIDs: relatedTables
+        )
+    }
+
+    private func storyGraphFocusPlan(hubStoryID: String) -> GraphFocusPlan {
+        let storyCards = storyGraphCards()
+        let graphTableIDs = Set(session.graph.nodes.map(\.id))
+        let hubCard = storyCards.first { $0.id == hubStoryID }
+        let relatedStories = relatedStoryIDs(for: hubStoryID, in: storyCards)
+        let relatedTables = Set(
+            (hubCard?.tableIDs ?? []).filter { graphTableIDs.contains($0) }
+        )
+
+        return GraphFocusPlan(
+            activeStoryIDs: [hubStoryID],
+            relatedStoryIDs: relatedStories,
+            activeTableIDs: [],
+            relatedTableIDs: relatedTables
+        )
+    }
+
+    private func tableRelationFocusPlan(target: GraphRelationHoverTarget) -> GraphFocusPlan {
+        let relatedTables = Set(relatedNodeIDs(for: target))
+
+        return GraphFocusPlan(
+            activeStoryIDs: [],
+            relatedStoryIDs: [],
+            activeTableIDs: [target.tableID],
+            relatedTableIDs: relatedTables
+        )
+    }
+
+    private func focusOpacity(for tier: GraphFocusTier?) -> Double {
+        switch tier {
+        case .related:
+            return 0.94
+        case .active, .none:
+            return 1
+        case .hidden:
+            return 0
+        }
+    }
+
+    private func enterGraphFocusSession() {
+        if preGraphFocusViewport == nil {
+            preGraphFocusViewport = GraphViewportTransform(zoom: zoom, pan: pan)
+        }
+    }
+
+    private func fitGraphFocusViewport(in size: CGSize) {
+        guard let plan = effectiveFocusPlan, size != .zero else { return }
+
+        var bounds = CGRect.null
+        for tableID in plan.visibleTableIDs() {
+            let center = pulledGraphPositions[tableID] ?? session.graphLayout.position(for: tableID)
+            let nodeSize = nodeSize(for: tableID)
+            let frame = CGRect(
+                x: center.x - nodeSize.width / 2,
+                y: center.y - nodeSize.height / 2,
+                width: nodeSize.width,
+                height: nodeSize.height
+            )
+            bounds = bounds.isNull ? frame : bounds.union(frame)
+        }
+
+        for card in storyGraphCards() where plan.tierForStory(card.id) != .hidden {
+            let center = storyGraphPoint(for: card)
+            let frame = CGRect(
+                x: center.x - StoryGraphCardLayout.width / 2,
+                y: center.y - StoryGraphCardLayout.height / 2,
+                width: StoryGraphCardLayout.width,
+                height: StoryGraphCardLayout.height
+            )
+            bounds = bounds.isNull ? frame : bounds.union(frame)
+        }
+
+        guard !bounds.isNull else { return }
+        let transform = GraphViewportTransform.fit(
+            contentBounds: bounds,
+            in: size,
+            padding: 72,
+            minZoom: 0.22,
+            maxZoom: 1.05
+        )
+        setViewport(transform, animated: true)
+    }
+
+    @ViewBuilder
+    private func graphFocusBanner(focusPlan: GraphFocusPlan) -> some View {
+        VStack {
+            HStack(spacing: 10) {
+                Image(systemName: "scope")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(graphFocusBannerTitle(focusPlan: focusPlan))
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                Button("Done") {
+                    clearGraphFocusSession()
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.bold))
+            }
+            .foregroundStyle(StudioPalette.primaryText)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(StudioPalette.chromeFillStrong, in: Capsule())
+            .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
+            .padding(.top, 12)
+            .padding(.horizontal, 16)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(true)
+    }
+
+    private func graphFocusBannerTitle(focusPlan: GraphFocusPlan) -> String {
+        let storyCount = focusPlan.visibleStoryIDs().count
+        let tableCount = focusPlan.visibleTableIDs().count
+        var parts: [String] = ["Focus"]
+        if storyCount > 0 {
+            parts.append("\(storyCount) \(storyCount == 1 ? "story" : "stories")")
+        }
+        if tableCount > 0 {
+            parts.append("\(tableCount) \(tableCount == 1 ? "table" : "tables")")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func relatedStoryIDs(for storyID: String, in storyCards: [StoryGraphCard]) -> Set<String> {
@@ -2103,7 +3125,7 @@ public struct SchemaGraphView: View {
     }
 
     private func storyGraphPoint(for card: StoryGraphCard) -> CGPoint {
-        pulledStoryGraphPositions[card.id] ?? storyGraphPositions[card.id] ?? card.graphPosition
+        pulledStoryGraphPositions[card.id] ?? session.pinnedStoryGraphPosition(for: card.id) ?? card.graphPosition
     }
 
     private func storyFrame(for card: StoryGraphCard, in canvasSize: CGSize) -> CGRect {
@@ -2235,13 +3257,38 @@ public struct SchemaGraphView: View {
     }
 
     private func fitGraph(in size: CGSize) {
-        setViewport(
-            GraphViewportTransform.fit(contentBounds: graphContentBoundsForFit(), in: size),
-            animated: true
-        )
+        let bounds = graphContentBoundsForFit()
+        let transform: GraphViewportTransform
+        if shouldAutoFitStoryViewport {
+            transform = GraphViewportTransform.fit(
+                contentBounds: bounds,
+                in: size,
+                padding: 56,
+                minZoom: 0.35,
+                maxZoom: 1.0
+            )
+        } else {
+            transform = GraphViewportTransform.fit(contentBounds: bounds, in: size)
+        }
+        setViewport(transform, animated: true)
     }
 
     private func graphContentBoundsForFit() -> CGRect {
+        if isStoryOnlyMode {
+            var storyBounds = CGRect.zero
+            for card in storyGraphCards() {
+                let graphPoint = storyGraphPoint(for: card)
+                let frame = CGRect(
+                    x: graphPoint.x - StoryGraphCardLayout.width / 2,
+                    y: graphPoint.y - StoryGraphCardLayout.height / 2,
+                    width: StoryGraphCardLayout.width,
+                    height: StoryGraphCardLayout.height
+                )
+                storyBounds = storyBounds.isEmpty ? frame : storyBounds.union(frame)
+            }
+            return storyBounds
+        }
+
         var bounds = graphBoundsAnchorMap().contentBounds
         guard session.showStoryCardsInGraph else { return bounds }
 
@@ -2302,9 +3349,31 @@ public struct SchemaGraphView: View {
             session.persistCurrentGraphLayout()
         }
 
-        if refit, shouldAutoFit {
-            fitGraph(in: size)
+        invalidateClusterTitleCache()
+
+        if refit {
+            if session.showStoryCardsInGraph || shouldAutoFit {
+                fitGraph(in: size)
+            }
         }
+    }
+
+    private func clusterTitleCacheToken(focusPlan: GraphFocusPlan?, playbackKey: Int) -> Int {
+        ClusterTitleCacheToken.make(
+            layoutRevision: layoutRevision,
+            sidecarRevision: clusterTitleCacheKey,
+            playbackKey: playbackKey,
+            isStoryOnlyMode: isStoryOnlyMode,
+            hasFocusPlan: focusPlan != nil,
+            showClusterHalos: session.showClusterHalos
+        )
+    }
+
+    private func invalidateClusterTitleCache() {
+        clusterTitleCacheKey &+= 1
+        clusterTitleCache.cacheKey = -1
+        clusterTitleCache.entries = []
+        invalidateStoryGraphCardsCache()
     }
 
     private func switchPresentationMode(isShowingAllCards: Bool, in size: CGSize) {
@@ -2602,100 +3671,64 @@ public struct SchemaGraphView: View {
         hoveredRelationTarget = nil
     }
 
-    // MARK: - Viewport pull for off-screen related nodes
+    // MARK: - Graph focus layout
 
-    /// Temporarily moves off-screen connected nodes adjacent to the source node within the
-    /// current viewport. The viewport itself never changes; source node never leaves the screen.
+    /// Enters table-relation focus: hides unrelated cards, lays out FK/PK neighbors without overlap, and zooms to fit.
     private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget) {
         guard draggedNodeID == nil else { return }
 
-        let connectedIDs = relatedNodeIDs(for: target)
+        let connectedIDs = relatedNodeIDs(for: target).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
         guard !connectedIDs.isEmpty else { return }
 
-        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
-        let viewport = CGRect(origin: .zero, size: viewportSize)
-
-        let offScreenIDs = connectedIDs.filter { id in
-            let center = transform.point(for: session.graphLayout.position(for: id), in: viewportSize)
-            return !viewport.contains(center)
-        }
-        guard !offScreenIDs.isEmpty else {
-            if !pulledGraphPositions.isEmpty || !pulledStoryGraphPositions.isEmpty {
-                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                    pulledGraphPositions.removeAll()
-                    pulledStoryGraphPositions.removeAll()
-                }
-                tappedRelationTarget = nil
-            }
-            return
-        }
-
-        let sourceGraphPos = session.graphLayout.position(for: target.tableID)
-        let sourceScreenCenter = transform.point(for: sourceGraphPos, in: viewportSize)
-        let sourceSize = nodeSize(for: target.tableID)
-        let sourceHalfW = sourceSize.width * zoom / 2
-        let sourceHalfH = sourceSize.height * zoom / 2
-
-        // Screen-space gap between source card edge and each connected card edge.
-        let gap: CGFloat = 70
-        // Minimum screen-space gap to enforce between adjacent pulled cards in the ring.
-        let interCardGap: CGFloat = 30
-        let n = offScreenIDs.count
-
-        // Compute the minimum ring radius that prevents adjacent cards from overlapping.
-        // For N cards on a circle of radius R, the chord between neighbours = 2R·sin(π/N).
-        // Use max(halfW, halfH) so tall expanded cards don't overlap vertically either.
-        let maxConnectedHalfExtent = offScreenIDs.map { id -> CGFloat in
-            let sz = nodeSize(for: id)
-            return max(sz.width, sz.height) * zoom / 2
-        }.max() ?? 0
-        let minRadiusForSpacing: CGFloat = n > 1
-            ? (maxConnectedHalfExtent + interCardGap / 2) / sin(.pi / CGFloat(n))
-            : 0
-
-        var newPositions: [String: CGPoint] = [:]
-
-        for (index, connectedID) in offScreenIDs.enumerated() {
-            // Evenly distribute angles starting from east (right), going counter-clockwise.
-            let angle = (2.0 * .pi * CGFloat(index)) / CGFloat(n)
-            let cosA = cos(angle)
-            let sinA = sin(angle)
-
-            let connectedSize = nodeSize(for: connectedID)
-            let connectedHalfW = connectedSize.width * zoom / 2
-            let connectedHalfH = connectedSize.height * zoom / 2
-
-            // Bounding-box support in the radial direction (halfW·|cos|+halfH·|sin|).
-            let srcExtent = sourceHalfW * abs(cosA) + sourceHalfH * abs(sinA)
-            let dstExtent = connectedHalfW * abs(cosA) + connectedHalfH * abs(sinA)
-            // Use whichever radius is larger: natural gap from source, or ring-spacing requirement.
-            let naturalRadius = srcExtent + gap + dstExtent
-            let radius = max(naturalRadius, minRadiusForSpacing)
-
-            let candidateX = sourceScreenCenter.x + radius * cosA
-            let candidateY = sourceScreenCenter.y + radius * sinA
-
-            // Clamp to viewport so the pulled card is fully on screen.
-            let clampedX = min(max(connectedHalfW + 8, candidateX), viewportSize.width  - connectedHalfW - 8)
-            let clampedY = min(max(connectedHalfH + 8, candidateY), viewportSize.height - connectedHalfH - 8)
-
-            newPositions[connectedID] = transform.graphPoint(for: CGPoint(x: clampedX, y: clampedY), in: viewportSize)
-        }
-
+        enterGraphFocusSession()
+        graphFocusTableRelation = target
+        storyStarModeSourceID = nil
+        pulledStoryGraphPositions.removeAll()
         tappedRelationTarget = GraphRelationHoverTarget(
             tableID: target.tableID,
             columnName: target.columnName,
             endpointKind: .column
         )
-        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-            pulledGraphPositions = newPositions
-            pulledStoryGraphPositions.removeAll()
+
+        let hubCenter = pulledGraphPositions[target.tableID] ?? session.graphLayout.position(for: target.tableID)
+        let hubSize = nodeSize(for: target.tableID)
+        let items = connectedIDs.map { connectedID in
+            GraphFocusRingLayout.Item(id: connectedID, size: nodeSize(for: connectedID))
         }
+        let layout = GraphFocusRingLayout.graphPositions(
+            hubCenter: hubCenter,
+            hubSize: hubSize,
+            items: items,
+            gap: 88,
+            interItemGap: 36
+        )
+
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+            pulledGraphPositions = layout
+        }
+        fitGraphFocusViewport(in: viewportSize)
     }
 
+    /// Enters story focus: hides unrelated cards, lays out linked stories and covered tables without overlap, and zooms to fit.
     private func pullStoryConnectionsIntoView(for card: StoryGraphCard) {
         guard draggedNodeID == nil else { return }
 
+        let currentStoryCards = storyGraphCards()
+        let graphTableIDs = Set(session.graph.nodes.map(\.id))
+        let relatedStoryIDs = relatedStoryIDs(for: card.id, in: currentStoryCards)
+        let tableIDs = card.tableIDs.filter { graphTableIDs.contains($0) }
+        guard !relatedStoryIDs.isEmpty || !tableIDs.isEmpty else { return }
+
+        enterGraphFocusSession()
+        graphFocusTableRelation = nil
+        tappedRelationTarget = nil
+        applyStoryStarFormation(for: card, animated: true)
+        fitGraphFocusViewport(in: viewportSize)
+    }
+
+    private func applyStoryStarFormation(for card: StoryGraphCard, animated: Bool) {
         let currentStoryCards = storyGraphCards()
         let storyCardsByID = Dictionary(uniqueKeysWithValues: currentStoryCards.map { ($0.id, $0) })
         let graphTableIDs = Set(session.graph.nodes.map(\.id))
@@ -2710,64 +3743,26 @@ public struct SchemaGraphView: View {
             .filter { graphTableIDs.contains($0) }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
 
-        let targets = relatedStoryIDs.map { StoryPullTarget(kind: .story, id: $0) }
-            + tableIDs.map { StoryPullTarget(kind: .table, id: $0) }
-        guard !targets.isEmpty else { return }
+        let hubCenter = storyGraphPoint(for: card)
+        let (nextTablePositions, nextStoryPositions) = StoryStarFormationLayout.graphPositions(
+            hubCenter: hubCenter,
+            relatedStoryIDs: relatedStoryIDs,
+            tableIDs: tableIDs,
+            tableSize: { nodeSize(for: $0) }
+        )
 
-        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
-        let sourceFrame = storyFrame(for: card, in: viewportSize)
-        let sourceCenter = sourceFrame.center
-        let sourceHalfW = sourceFrame.width / 2
-        let sourceHalfH = sourceFrame.height / 2
-        let gap: CGFloat = 78
-        let interCardGap: CGFloat = 30
-        let n = targets.count
-        let maxConnectedHalfExtent = targets.map { target -> CGFloat in
-            let size = storyPullTargetSize(for: target)
-            return max(size.width, size.height) * zoom / 2
-        }.max() ?? 0
-        let minRadiusForSpacing: CGFloat = n > 1
-            ? (maxConnectedHalfExtent + interCardGap / 2) / sin(.pi / CGFloat(n))
-            : 0
-
-        var nextTablePositions: [String: CGPoint] = [:]
-        var nextStoryPositions: [String: CGPoint] = [:]
-
-        for (index, target) in targets.enumerated() {
-            let angle: CGFloat = n == 1
-                ? -.pi / 2
-                : (-.pi / 2 + (2.0 * .pi * CGFloat(index)) / CGFloat(n))
-            let cosA = cos(angle)
-            let sinA = sin(angle)
-            let targetSize = storyPullTargetSize(for: target)
-            let targetHalfW = targetSize.width * zoom / 2
-            let targetHalfH = targetSize.height * zoom / 2
-            let sourceExtent = sourceHalfW * abs(cosA) + sourceHalfH * abs(sinA)
-            let targetExtent = targetHalfW * abs(cosA) + targetHalfH * abs(sinA)
-            let radius = max(sourceExtent + gap + targetExtent, minRadiusForSpacing)
-            let candidate = CGPoint(
-                x: sourceCenter.x + radius * cosA,
-                y: sourceCenter.y + radius * sinA
-            )
-            let clamped = CGPoint(
-                x: min(max(targetHalfW + 8, candidate.x), viewportSize.width - targetHalfW - 8),
-                y: min(max(targetHalfH + 8, candidate.y), viewportSize.height - targetHalfH - 8)
-            )
-            let graphPoint = transform.graphPoint(for: clamped, in: viewportSize)
-
-            switch target.kind {
-            case .table:
-                nextTablePositions[target.id] = graphPoint
-            case .story:
-                guard target.id != card.id else { continue }
-                nextStoryPositions[target.id] = graphPoint
-            }
-        }
-
-        tappedRelationTarget = nil
-        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+        let apply = {
             pulledGraphPositions = nextTablePositions
             pulledStoryGraphPositions = nextStoryPositions
+            storyStarModeSourceID = card.id
+        }
+
+        if animated {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                apply()
+            }
+        } else {
+            apply()
         }
     }
 
@@ -2927,6 +3922,7 @@ public struct SchemaGraphView: View {
         baseZoom = newZoom
         pan = nextPan
         panStart = nextPan
+        flushViewportSessionSync()
     }
 }
 
@@ -2934,9 +3930,21 @@ private struct StoryGraphCard: Identifiable {
     let story: SchemaSidecar.Story
     let tableIDs: [String]
     let primaryTableIDs: [String]
+    let clusterKey: String
     let clusterLabel: String?
+    let clusterColorHex: String?
     let clusterColor: Color?
     let graphPosition: CGPoint
+
+    var id: String { story.id }
+}
+
+private struct StoryMenuRow: Identifiable {
+    let story: SchemaSidecar.Story
+    let dateText: String
+    let rawDateText: String
+    let clusterLabel: String
+    let clusterColor: Color
 
     var id: String { story.id }
 }
@@ -2957,6 +3965,12 @@ private enum StoryPullTargetKind {
     case story
 }
 
+private struct StoryGraphCardsCache {
+    var isValid = false
+    var token = 0
+    var cards: [StoryGraphCard] = []
+}
+
 private struct StorySchemaCardView: View {
     let story: SchemaSidecar.Story
     let clusterLabel: String?
@@ -2968,10 +3982,12 @@ private struct StorySchemaCardView: View {
     let isHovered: Bool
     let isDragging: Bool
     let isConnected: Bool
+    var allowHoverEffects: Bool = true
     let selectStory: () -> Void
     let startStory: () -> Void
     let pullConnections: () -> Void
     let hoverChanged: (Bool) -> Void
+    let openDetail: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -3043,6 +4059,7 @@ private struct StorySchemaCardView: View {
                 .stroke(borderColor, lineWidth: isActive || isSelected || isHovered || isDragging ? 1.35 : 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onTapGesture(count: 2, perform: openDetail)
         .onTapGesture(perform: selectStory)
         .onHover { isHovered in
             if isHovered {
@@ -3052,9 +4069,9 @@ private struct StorySchemaCardView: View {
             }
             hoverChanged(isHovered)
         }
-        .scaleEffect(isDragging ? 1.025 : (isHovered ? 1.018 : 1))
-        .animation(.snappy(duration: 0.16), value: isHovered)
-        .help("Select story")
+        .scaleEffect(isDragging ? 1.025 : (allowHoverEffects && isHovered ? 1.018 : 1))
+        .animation(allowHoverEffects ? .snappy(duration: 0.16) : nil, value: isHovered)
+        .help("Double-click for details. Drag to move.")
     }
 
     private var backgroundFill: Color {
@@ -3209,6 +4226,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let isDragging: Bool
     let isStoryHighlighted: Bool
     let highlightState: GraphNodeHighlightState
+    let keepsTextReadableWhenZoomed: Bool
     let selectNode: () -> Void
     let toggleExpanded: () -> Void
     let openTable: () -> Void
@@ -3487,15 +4505,18 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var nameZoomOpacity: Double {
-        zoomOpacity(start: 0.82, end: 0.34, minimum: isSelected || isHovered ? 0.72 : 0.38)
+        if keepsTextReadableWhenZoomed { return 1 }
+        return zoomOpacity(start: 0.82, end: 0.34, minimum: isSelected || isHovered ? 0.72 : 0.38)
     }
 
     private var metadataZoomOpacity: Double {
-        zoomOpacity(start: 0.88, end: 0.42, minimum: isSelected || isHovered ? 0.56 : 0.08)
+        if keepsTextReadableWhenZoomed { return 0.96 }
+        return zoomOpacity(start: 0.88, end: 0.42, minimum: isSelected || isHovered ? 0.56 : 0.08)
     }
 
     private var columnZoomOpacity: Double {
-        zoomOpacity(start: 0.92, end: 0.48, minimum: isSelected || isHovered ? 0.62 : 0.16)
+        if keepsTextReadableWhenZoomed { return 1 }
+        return zoomOpacity(start: 0.92, end: 0.48, minimum: isSelected || isHovered ? 0.62 : 0.16)
     }
 
     private func zoomOpacity(start: CGFloat, end: CGFloat, minimum: Double) -> Double {
@@ -4022,8 +5043,19 @@ private final class GraphTrackpadInputView: NSView {
                 guard event.window === self.window else { return event }
                 guard isInside else { return event }
                 guard !self.ignoresInput else { return event }
-                guard event.hasPreciseScrollingDeltas else { return event }
-                self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
+                if event.hasPreciseScrollingDeltas {
+                    self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
+                } else {
+                    // Mouse wheel: vertical scroll zooms toward the cursor; horizontal scroll pans.
+                    let lineScale: CGFloat = 14
+                    let deltaX = event.scrollingDeltaX * lineScale
+                    let deltaY = event.scrollingDeltaY * lineScale
+                    if abs(deltaY) >= abs(deltaX), deltaY != 0 {
+                        self.onMagnify?(-deltaY * 0.09, point)
+                    } else if deltaX != 0 {
+                        self.onPan?(CGSize(width: deltaX, height: 0))
+                    }
+                }
                 return nil
             case .magnify:
                 guard event.window === self.window else { return event }
@@ -4294,8 +5326,9 @@ private final class ClusterTitleCache {
         let color: Color
         let path: Path
         let label: String?
+        let labelAnchor: CGPoint?
     }
 
-    var layoutRevision: Int = -1
+    var cacheKey: Int = -1
     var entries: [Entry] = []
 }

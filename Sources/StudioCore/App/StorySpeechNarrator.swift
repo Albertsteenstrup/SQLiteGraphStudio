@@ -133,24 +133,47 @@ public final class StorySpeechNarrator: NSObject, NSSoundDelegate {
             return true
         }
 
-        for (index, key) in missingKeys.enumerated() {
-            guard !Task.isCancelled else { return false }
-            status(.preparing("Preparing audio \(index + 1)/\(missingKeys.count)"))
+        let concurrency = Self.preparationConcurrency(for: missingKeys.count)
+        let chunkSize = max(1, Int(ceil(Double(missingKeys.count) / Double(concurrency))))
+        let chunks = missingKeys.chunked(into: chunkSize)
+        let totalCount = missingKeys.count
+        var completedCount = 0
 
-            do {
-                let data = try await Task.detached(priority: .utility) {
-                    try KokoroRuntime.generateSpeechAudioData(for: key)
-                }.value
-                audioCache[key] = data
-            } catch {
-                guard !Task.isCancelled else { return false }
-                status(.failed(KokoroRuntime.message(for: error)))
-                return false
+        do {
+            try await withThrowingTaskGroup(of: [String: Data].self) { group in
+                for chunk in chunks where !chunk.isEmpty {
+                    group.addTask {
+                        try await Task.detached(priority: .utility) {
+                            try KokoroRuntime.generateSpeechAudioDataBatch(for: chunk)
+                        }.value
+                    }
+                }
+
+                for try await batch in group {
+                    try Task.checkCancellation()
+                    for (key, data) in batch {
+                        audioCache[key] = data
+                        completedCount += 1
+                        status(.preparing("Preparing audio \(completedCount)/\(totalCount)"))
+                    }
+                }
             }
+        } catch {
+            guard !Task.isCancelled else { return false }
+            status(.failed(KokoroRuntime.message(for: error)))
+            return false
         }
 
         status(.idle)
         return true
+    }
+
+    /// Kokoro loads the full model per Python process; keep workers high but bounded by CPU and RAM.
+    nonisolated static func preparationConcurrency(for itemCount: Int) -> Int {
+        guard itemCount > 1 else { return 1 }
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        let memorySafeCap = max(1, min(cores, 6))
+        return min(itemCount, memorySafeCap)
     }
 
     public func playPrepared(
@@ -270,6 +293,15 @@ public final class StorySpeechNarrator: NSObject, NSSoundDelegate {
     }
 }
 
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
+        return stride(from: 0, to: count, by: size).map { start in
+            Array(self[start..<Swift.min(start + size, count)])
+        }
+    }
+}
+
 private enum KokoroRuntime {
     private static let markerVersion = "kokoro>=0.9.4|voice=af_bella|lang=a|speed=0.82|py=3.10-3.12|v2"
 
@@ -346,6 +378,79 @@ private enum KokoroRuntime {
         let audioURL = try generateSpeechAudio(for: text)
         defer { try? FileManager.default.removeItem(at: audioURL) }
         return try Data(contentsOf: audioURL)
+    }
+
+    static func generateSpeechAudioDataBatch(for texts: [String]) throws -> [String: Data] {
+        let keys = texts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !keys.isEmpty else { return [:] }
+        if keys.count == 1, let onlyKey = keys.first {
+            let audioURL = try generateSpeechAudio(for: onlyKey)
+            defer { try? FileManager.default.removeItem(at: audioURL) }
+            return [onlyKey: try Data(contentsOf: audioURL)]
+        }
+
+        let root = try runtimeRoot()
+        let runtime = try compatiblePythonRuntime()
+        guard isInstalled else {
+            throw KokoroRuntimeError.installRequired
+        }
+
+        let batchID = UUID().uuidString
+        let inputURL = root.appendingPathComponent("batch-input-\(batchID).json")
+        let outputDirectory = root.appendingPathComponent("batch-output-\(batchID)", isDirectory: true)
+        let scriptURL = try writeBatchGeneratorScript(in: root)
+
+        var payload: [String: String] = [:]
+        for (index, key) in keys.enumerated() {
+            payload[String(index)] = key
+        }
+
+        defer {
+            try? FileManager.default.removeItem(at: inputURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(payload).write(to: inputURL, options: .atomic)
+
+        try run(
+            executableURL: pythonURL(in: root, runtime: runtime),
+            arguments: [
+                scriptURL.path,
+                "--input-json",
+                inputURL.path,
+                "--output-dir",
+                outputDirectory.path,
+            ],
+            environment: kokoroEnvironment(in: root),
+            currentDirectoryURL: root
+        )
+
+        let manifestURL = outputDirectory.appendingPathComponent("manifest.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw KokoroRuntimeError.failed("Kokoro batch did not produce a manifest.")
+        }
+
+        let manifestData = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode([String: String].self, from: manifestData)
+
+        var results: [String: Data] = [:]
+        results.reserveCapacity(keys.count)
+        for (index, key) in keys.enumerated() {
+            guard let fileName = manifest[String(index)] else {
+                throw KokoroRuntimeError.failed("Kokoro batch missed audio for beat \(index + 1).")
+            }
+            let audioURL = outputDirectory.appendingPathComponent(fileName)
+            guard FileManager.default.fileExists(atPath: audioURL.path) else {
+                throw KokoroRuntimeError.failed("Kokoro batch audio file is missing for beat \(index + 1).")
+            }
+            results[key] = try Data(contentsOf: audioURL)
+        }
+        return results
     }
 
     static func message(for error: Error) -> String {
@@ -577,6 +682,57 @@ private enum KokoroRuntime {
 
         audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
         sf.write(args.output, audio, 24000)
+        """
+
+        if (try? String(contentsOf: scriptURL, encoding: .utf8)) != script {
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        }
+        return scriptURL
+    }
+
+    private static func writeBatchGeneratorScript(in root: URL) throws -> URL {
+        let scriptURL = root.appendingPathComponent("kokoro_generate_batch.py")
+        let script = """
+        import argparse
+        import json
+        import pathlib
+
+        import numpy as np
+        import soundfile as sf
+        from kokoro import KPipeline
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--input-json", required=True)
+        parser.add_argument("--output-dir", required=True)
+        args = parser.parse_args()
+
+        items = json.loads(pathlib.Path(args.input_json).read_text(encoding="utf-8"))
+        if not items:
+            raise SystemExit("No text supplied")
+
+        output_dir = pathlib.Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        pipeline = KPipeline(lang_code="a")
+        manifest = {}
+
+        for key in sorted(items, key=lambda value: int(value)):
+            text = str(items[key]).strip()
+            if not text:
+                continue
+
+            generator = pipeline(text, voice="af_bella", speed=0.82, split_pattern=r"\\n+")
+            chunks = [audio for _, _, audio in generator]
+            if not chunks:
+                raise SystemExit(f"Kokoro produced no audio for item {key}")
+
+            audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+            output_name = f"clip-{key}.wav"
+            output_path = output_dir / output_name
+            sf.write(output_path, audio, 24000)
+            manifest[key] = output_name
+
+        (output_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         """
 
         if (try? String(contentsOf: scriptURL, encoding: .utf8)) != script {

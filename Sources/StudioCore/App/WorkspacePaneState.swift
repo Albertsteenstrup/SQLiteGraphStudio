@@ -32,7 +32,7 @@ public enum PaneContentKind: String, CaseIterable, Codable, Identifiable, Sendab
     }
 }
 
-public enum WorkspacePaneSide: String, CaseIterable, Identifiable, Sendable {
+public enum WorkspacePaneSide: String, CaseIterable, Equatable, Identifiable, Sendable {
     case left
     case right
 
