@@ -55,6 +55,47 @@ struct DatabaseServiceTests {
         #expect(!edgePairs.contains("author_profiles->authors"))
     }
 
+    /// Junction tables with composite primary keys must produce N:1 edges to their
+    /// parents, not 1:1. Each component column of a composite PK is not unique on its
+    /// own — only the combination is — so the cardinality inference must exclude
+    /// composite-PK columns from the per-table "unique columns" set.
+    @Test
+    func compositePrimaryKeyJunctionsAreManyToOne() async throws {
+        let url = try TestSupport.createFixture(named: "junction-cardinality")
+        let service = DatabaseService()
+        try await service.open(url: url)
+
+        let graph = try await service.loadSchemaGraph()
+
+        // post_tags has PK (post_id, tag_id) plus an optional tagged_by FK to authors.
+        // All three edges should be N:1: composite-PK columns are not unique on their own,
+        // and tagged_by is a non-PK FK column.
+        let postTagsEdges = graph.edges.filter { $0.sourceID == "post_tags" }
+        #expect(postTagsEdges.count == 3)
+        for edge in postTagsEdges {
+            #expect(
+                edge.cardinality == .manyToOne,
+                "post_tags.\(edge.sourceColumn) -> \(edge.targetID).\(edge.targetColumn) should be N:1 but got \(edge.cardinality)"
+            )
+        }
+
+        // post_categories has PK (post_id, category_slug) — both edges should be N:1.
+        let postCategoriesEdges = graph.edges.filter { $0.sourceID == "post_categories" }
+        #expect(postCategoriesEdges.count == 2)
+        for edge in postCategoriesEdges {
+            #expect(
+                edge.cardinality == .manyToOne,
+                "post_categories.\(edge.sourceColumn) -> \(edge.targetID).\(edge.targetColumn) should be N:1 but got \(edge.cardinality)"
+            )
+        }
+
+        // posts.author_id -> authors.id is a non-PK FK that must still be N:1.
+        let postsToAuthors = try #require(
+            graph.edges.first { $0.sourceID == "posts" && $0.targetID == "authors" && $0.sourceColumn == "author_id" }
+        )
+        #expect(postsToAuthors.cardinality == .manyToOne)
+    }
+
     @Test
     func fetchChunkPagesLargeTablesWithoutLoadingEverything() async throws {
         let url = try TestSupport.createFixture(named: "paging")

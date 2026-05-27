@@ -932,9 +932,17 @@ public actor DatabaseService {
     }
 
     /// Computes the set of columns that are considered "unique" for cardinality inference:
-    /// the union of primary key columns and columns that are the sole column in a unique index.
+    /// a single-column primary key plus columns that are the sole column in a unique index.
+    ///
+    /// Composite primary keys are intentionally excluded: each component column is not
+    /// unique on its own (only the combination is), so columns from a multi-column PK
+    /// must not be treated as unique here. Without this guard, junction tables with
+    /// composite PKs incorrectly resolve to 1:1 edges with their parents instead of N:1.
     private func uniqueColumnSet(primaryKeyColumns: [String], indexes: [SchemaIndex]) -> Set<String> {
-        var unique = Set(primaryKeyColumns)
+        var unique = Set<String>()
+        if primaryKeyColumns.count == 1 {
+            unique.insert(primaryKeyColumns[0])
+        }
         for index in indexes where index.isUnique && index.columns.count == 1 {
             unique.insert(index.columns[0])
         }
