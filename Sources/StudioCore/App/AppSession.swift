@@ -147,8 +147,9 @@ public struct StoryPlaybackCommand: Identifiable, Sendable, Equatable {
 @Observable
 public final class AppSession {
     public var recentDatabaseURLs: [URL] = []
-    public var connectionProfiles: [DatabaseConnectionProfile] = []
+    public private(set) var databaseTarget: DatabaseTarget?
     public var databaseURL: URL?
+    public private(set) var databaseCapabilities: DatabaseCapabilities = .none
     public var tables: [TableSummary] = []
     public var graph: SchemaGraph = .empty
     public var schemaSidecar: SchemaSidecar = .empty
@@ -169,7 +170,6 @@ public final class AppSession {
     public var activeTabID: UUID?
     public var isRefreshing = false
     public var isTablePickerPresented = false
-    public var isProfileManagerPresented = false
     public var isCreateTablePresented = false
     public var isAlterTablePresented = false
     public var isSkillsPresented = false
@@ -195,7 +195,7 @@ public final class AppSession {
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
-    private static let profileStorageKey = "SQLiteGraphStudio.connection-profiles"
+    private static let legacyProfileStorageKey = "SQLiteGraphStudio.connection-profiles"
     private static let allowedDatabaseExtensions: Set<String> = [
         "sqlite",
         "sqlite3",
@@ -216,7 +216,7 @@ public final class AppSession {
             userDefaults: userDefaults
         )
         self.recentDatabaseURLs = Self.loadRecentDatabaseURLs(from: userDefaults)
-        self.connectionProfiles = Self.loadConnectionProfiles(from: userDefaults)
+        userDefaults.removeObject(forKey: Self.legacyProfileStorageKey)
     }
 
     public var activeTab: TableTabModel? {
@@ -224,11 +224,15 @@ public final class AppSession {
     }
 
     public var hasOpenDatabase: Bool {
-        databaseURL != nil
+        databaseTarget != nil
     }
 
     public var databaseDisplayName: String {
-        databaseURL?.lastPathComponent ?? "No Database"
+        databaseTarget?.displayName ?? "No Database"
+    }
+
+    public var isPostgreSQL: Bool {
+        databaseTarget?.isPostgres ?? false
     }
 
     public func presentOpenDatabasePanel() {
@@ -261,7 +265,8 @@ public final class AppSession {
         do {
             try await databaseService.open(url: url)
             let snapshot = try await databaseService.loadCatalogSnapshot()
-            apply(snapshot: snapshot, url: url)
+            apply(snapshot: snapshot, target: .sqlite(url))
+            databaseCapabilities = .sqlite
             if let changeBaseline {
                 refreshToast = Self.refreshSummary(
                     before: changeBaseline,
@@ -279,6 +284,49 @@ public final class AppSession {
         }
     }
 
+    public func presentOpenPostgreSQLDocumentPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "postgres"),
+            UTType(filenameExtension: "pgstudio"),
+        ].compactMap { $0 }
+        panel.prompt = "Open PostgreSQL Document"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await openPostgreSQLDocument(url: url) }
+    }
+
+    public func openDocument(url: URL) async {
+        if PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
+            await openPostgreSQLDocument(url: url)
+        } else {
+            await openDatabase(url: url)
+        }
+    }
+
+    public func openPostgreSQLDocument(url: URL) async {
+        isRefreshing = true
+        presentedError = nil
+        defer { isRefreshing = false }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let document = try JSONDecoder().decode(PostgresConnectionDocument.self, from: data)
+            try await databaseService.open(postgres: document.configuration)
+            let snapshot = try await databaseService.loadCatalogSnapshot()
+            apply(snapshot: snapshot, target: .postgres(document.configuration))
+            databaseCapabilities = .postgresReadOnly
+            StudioLog.ui.info(
+                "Loaded PostgreSQL document \(url.lastPathComponent, privacy: .public) for \(document.configuration.host, privacy: .public):\(document.configuration.port, privacy: .public)/\(document.configuration.database, privacy: .public)"
+            )
+        } catch {
+            presentedError = SQLiteUserError.from(error)
+        }
+    }
+
     public func openRecentDatabase(_ url: URL) {
         guard recentDatabaseURLs.contains(url.standardizedFileURL) else { return }
         Task { await openDatabase(url: url) }
@@ -288,7 +336,13 @@ public final class AppSession {
         Task {
             await databaseService.close()
         }
+        databaseTarget = nil
         databaseURL = nil
+        databaseCapabilities = .none
+        isTablePickerPresented = false
+        isCreateTablePresented = false
+        isAlterTablePresented = false
+        isSkillsPresented = false
         tables = []
         graph = .empty
         schemaSidecar = .empty
@@ -318,7 +372,7 @@ public final class AppSession {
     /// cluster hints. Does **not** touch node positions — call alongside a layout rebuild to
     /// actually re-position nodes.
     public func reloadSchemaSidecarFromDisk() {
-        guard let databaseURL else { return }
+        guard let target = databaseTarget, case .sqlite(let databaseURL) = target else { return }
         let before = schemaSidecar
         let sidecar = SchemaSidecarStore.load(for: databaseURL)
         schemaSidecar = sidecar
@@ -331,14 +385,14 @@ public final class AppSession {
     /// next layout pass regenerates fresh from cluster hints instead of restoring stale
     /// at-origin positions left over from earlier app builds.
     public func clearPersistedGraphLayout() {
-        guard let databaseURL else { return }
-        userDefaults.removeObject(forKey: graphLayoutStorageKey(for: databaseURL))
+        guard let target = databaseTarget else { return }
+        userDefaults.removeObject(forKey: graphLayoutStorageKey(for: target))
     }
 
     /// Removes cached story-card positions so the next layout pass recomputes cluster placement.
     public func clearPersistedStoryGraphLayout() {
-        guard let databaseURL else { return }
-        userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: databaseURL))
+        guard let target = databaseTarget else { return }
+        userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: target))
         pinnedStoryGraphPositionsByMode = [:]
     }
 
@@ -406,7 +460,7 @@ public final class AppSession {
     }
 
     public func refreshSchema() {
-        guard let databaseURL else { return }
+        guard let target = databaseTarget else { return }
         let baseline = SchemaRefreshSnapshot(
             descriptors: tableDescriptors,
             graph: graph,
@@ -414,7 +468,28 @@ public final class AppSession {
         )
         persistCurrentGraphLayout()
         persistStoryGraphLayout()
-        Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
+        switch target {
+        case .sqlite(let databaseURL):
+            Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
+        case .postgres:
+            Task {
+                do {
+                    let snapshot = try await databaseService.loadCatalogSnapshot()
+                    guard databaseTarget == target else { return }
+                    apply(snapshot: snapshot, target: target)
+                    refreshToast = Self.refreshSummary(
+                        before: baseline,
+                        after: SchemaRefreshSnapshot(
+                            descriptors: tableDescriptors,
+                            graph: graph,
+                            sidecar: schemaSidecar
+                        )
+                    ).map { RefreshToast(message: $0) }
+                } catch {
+                    presentedError = SQLiteUserError.from(error)
+                }
+            }
+        }
     }
 
     public func dismissRefreshToast() {
@@ -430,16 +505,8 @@ public final class AppSession {
         isTablePickerPresented = false
     }
 
-    public func showProfileManager() {
-        isProfileManagerPresented = true
-    }
-
-    public func dismissProfileManager() {
-        isProfileManagerPresented = false
-    }
-
     public func showCreateTable() {
-        guard hasOpenDatabase else { return }
+        guard hasOpenDatabase, databaseCapabilities.canCreateTable else { return }
         isCreateTablePresented = true
     }
 
@@ -448,7 +515,7 @@ public final class AppSession {
     }
 
     public func showAlterTable() {
-        guard activeTab != nil else { return }
+        guard activeTab != nil, databaseCapabilities.canAlterSchema else { return }
         isAlterTablePresented = true
     }
 
@@ -456,10 +523,14 @@ public final class AppSession {
         isAlterTablePresented = false
     }
 
-    public func showSkills() { isSkillsPresented = true }
+    public func showSkills() {
+        guard databaseCapabilities.supportsAIWorkspace else { return }
+        isSkillsPresented = true
+    }
     public func dismissSkills() { isSkillsPresented = false }
 
     public var skillsDirectory: URL? {
+        guard !isPostgreSQL else { return nil }
         guard let dbDir = databaseURL?.deletingLastPathComponent() else { return nil }
         return StudioSkills.gitRoot(from: dbDir) ?? dbDir
     }
@@ -608,7 +679,7 @@ public final class AppSession {
     }
 
     public func deleteStory(id storyID: String) {
-        guard let databaseURL else { return }
+        guard let target = databaseTarget, case .sqlite(let databaseURL) = target else { return }
         guard schemaSidecar.stories.contains(where: { $0.id == storyID }) else { return }
 
         let before = schemaSidecar
@@ -629,11 +700,11 @@ public final class AppSession {
     }
 
     public func persistCurrentGraphLayout() {
-        guard let databaseURL, !graph.nodes.isEmpty else { return }
+        guard let target = databaseTarget, !graph.nodes.isEmpty else { return }
         let snapshot = graphLayout.snapshot(for: graph)
         let persistedLayout = PersistedGraphLayout(snapshot: snapshot)
         guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
-        userDefaults.set(data, forKey: graphLayoutStorageKey(for: databaseURL))
+        userDefaults.set(data, forKey: graphLayoutStorageKey(for: target))
     }
 
     public func pinnedStoryGraphPosition(for storyID: String) -> CGPoint? {
@@ -656,20 +727,20 @@ public final class AppSession {
     }
 
     public func persistStoryGraphLayout() {
-        guard let databaseURL else { return }
+        guard let target = databaseTarget else { return }
         guard !pinnedStoryGraphPositionsByMode.isEmpty else {
-            userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: databaseURL))
+            userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: target))
             return
         }
 
         let persistedLayout = PersistedStoryGraphLayout(positionsByMode: pinnedStoryGraphPositionsByMode)
         guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
-        userDefaults.set(data, forKey: storyGraphLayoutStorageKey(for: databaseURL))
+        userDefaults.set(data, forKey: storyGraphLayoutStorageKey(for: target))
     }
 
     public func restoreCompactGraphLayoutForCurrentDatabase() {
-        guard let databaseURL else { return }
-        restorePersistedGraphLayoutIfAvailable(for: databaseURL, graph: graph)
+        guard let target = databaseTarget else { return }
+        restorePersistedGraphLayoutIfAvailable(for: target, graph: graph)
     }
 
     public func openSelectedGraphNode() {
@@ -698,7 +769,7 @@ public final class AppSession {
     }
 
     public func runTopRowsQuery(for tableName: String) {
-        guard tableDescriptors[tableName] != nil else {
+        guard let descriptor = tableDescriptors[tableName] else {
             presentedError = SQLiteUserError(kind: .notFound, message: "Table \(tableName) was not found.")
             return
         }
@@ -707,62 +778,18 @@ public final class AppSession {
             title: "\(tableName) Top 10",
             sqlText: """
             SELECT *
-            FROM \(quoteIdentifier(tableName))
+            FROM \(descriptor.qualifiedSQLIdentifier)
             LIMIT 10;
             """,
             runImmediately: true
         )
     }
 
-    public func openConnectionProfile(_ profile: DatabaseConnectionProfile) {
-        let url = resolvedURL(for: profile)
-        Task { await openDatabase(url: url) }
-        touchConnectionProfile(id: profile.id)
-    }
-
-    public func saveCurrentConnectionProfile(name rawName: String? = nil) {
-        guard let databaseURL else { return }
-        let normalizedURL = databaseURL.standardizedFileURL
-        let fallbackName = normalizedURL.deletingPathExtension().lastPathComponent
-        let name = rawName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? rawName!.trimmingCharacters(in: .whitespacesAndNewlines) : fallbackName
-        let bookmarkData = try? normalizedURL.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-
-        if let existingIndex = connectionProfiles.firstIndex(where: { $0.url == normalizedURL }) {
-            connectionProfiles[existingIndex].name = name
-            connectionProfiles[existingIndex].bookmarkData = bookmarkData
-            connectionProfiles[existingIndex].lastOpenedAt = Date()
-        } else {
-            connectionProfiles.insert(
-                DatabaseConnectionProfile(
-                    name: name,
-                    filePath: normalizedURL.path,
-                    bookmarkData: bookmarkData,
-                    lastOpenedAt: Date()
-                ),
-                at: 0
-            )
-        }
-        persistConnectionProfiles()
-    }
-
-    public func renameConnectionProfile(_ profile: DatabaseConnectionProfile, to rawName: String) {
-        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty,
-              let index = connectionProfiles.firstIndex(where: { $0.id == profile.id })
-        else {
+    public func createTable(_ draft: TableCreateDraft) {
+        guard databaseCapabilities.canCreateTable else {
+            presentedError = SQLiteUserError(kind: .readOnly, message: "This database connection is read-only.")
             return
         }
-
-        connectionProfiles[index].name = name
-        persistConnectionProfiles()
-    }
-
-    public func deleteConnectionProfile(_ profile: DatabaseConnectionProfile) {
-        connectionProfiles.removeAll { $0.id == profile.id }
-        persistConnectionProfiles()
-    }
-
-    public func createTable(_ draft: TableCreateDraft) {
         Task {
             do {
                 try await databaseService.createTable(draft)
@@ -775,7 +802,7 @@ public final class AppSession {
     }
 
     public func renameActiveTable(to newName: String) {
-        guard let descriptor = activeTab?.descriptor else { return }
+        guard databaseCapabilities.canAlterSchema, let descriptor = activeTab?.descriptor else { return }
         Task {
             do {
                 try await databaseService.renameTable(from: descriptor.name, to: newName)
@@ -788,7 +815,7 @@ public final class AppSession {
     }
 
     public func addColumnToActiveTable(_ draft: TableColumnDraft) {
-        guard let descriptor = activeTab?.descriptor else { return }
+        guard databaseCapabilities.canAlterSchema, let descriptor = activeTab?.descriptor else { return }
         Task {
             do {
                 try await databaseService.addColumn(draft, to: descriptor)
@@ -801,7 +828,7 @@ public final class AppSession {
     }
 
     public func renameColumnInActiveTable(from oldName: String, to newName: String) {
-        guard let descriptor = activeTab?.descriptor else { return }
+        guard databaseCapabilities.canAlterSchema, let descriptor = activeTab?.descriptor else { return }
         Task {
             do {
                 try await databaseService.renameColumn(from: oldName, to: newName, in: descriptor)
@@ -814,7 +841,7 @@ public final class AppSession {
     }
 
     public func dropColumnFromActiveTable(_ columnName: String) {
-        guard let tab = activeTab else { return }
+        guard databaseCapabilities.canDropColumns, let tab = activeTab else { return }
         Task {
             do {
                 try await tab.dropColumn(columnName)
@@ -859,7 +886,7 @@ public final class AppSession {
     }
 
     public func importRowsIntoActiveTable(format: DataTransferFormat) {
-        guard let activeTab else { return }
+        guard databaseCapabilities.canImportRows, let activeTab else { return }
 
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -990,47 +1017,6 @@ public final class AppSession {
         userDefaults.set(recentDatabaseURLs.map(\.path), forKey: Self.recentDatabaseStorageKey)
     }
 
-    private func touchConnectionProfile(id: UUID) {
-        guard let index = connectionProfiles.firstIndex(where: { $0.id == id }) else { return }
-        connectionProfiles[index].lastOpenedAt = Date()
-        persistConnectionProfiles()
-    }
-
-    private func persistConnectionProfiles() {
-        guard let data = try? JSONEncoder().encode(connectionProfiles) else { return }
-        userDefaults.set(data, forKey: Self.profileStorageKey)
-    }
-
-    private static func loadConnectionProfiles(from userDefaults: UserDefaults) -> [DatabaseConnectionProfile] {
-        guard let data = userDefaults.data(forKey: profileStorageKey),
-              let profiles = try? JSONDecoder().decode([DatabaseConnectionProfile].self, from: data)
-        else {
-            return []
-        }
-
-        return profiles.filter { profile in
-            FileManager.default.fileExists(atPath: profile.filePath)
-        }
-    }
-
-    private func resolvedURL(for profile: DatabaseConnectionProfile) -> URL {
-        guard let bookmarkData = profile.bookmarkData else {
-            return profile.url
-        }
-
-        var isStale = false
-        if let url = try? URL(
-            resolvingBookmarkData: bookmarkData,
-            options: [.withSecurityScope],
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale
-        ) {
-            return url.standardizedFileURL
-        }
-
-        return profile.url
-    }
-
     private func presentExportPanel(defaultName: String, format: DataTransferFormat, text: String) throws {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format == .csv ? .commaSeparatedText : .json]
@@ -1057,17 +1043,27 @@ public final class AppSession {
     }
 
     private func apply(snapshot: CatalogSnapshot, url: URL) {
-        databaseURL = url
+        apply(snapshot: snapshot, target: .sqlite(url))
+    }
+
+    private func apply(snapshot: CatalogSnapshot, target: DatabaseTarget) {
+        databaseTarget = target
+        databaseURL = target.fileURL
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
         tables = snapshot.descriptors.map(\.summary)
         graph = snapshot.graph
-        let sidecar = SchemaSidecarStore.load(for: url)
+        let sidecar: SchemaSidecar
+        if case .sqlite(let url) = target {
+            sidecar = SchemaSidecarStore.load(for: url)
+        } else {
+            sidecar = .empty
+        }
         schemaSidecar = sidecar
         graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
         graphLayout.reset(for: snapshot.graph)
         pinnedStoryGraphPositionsByMode = [:]
-        restorePersistedGraphLayoutIfAvailable(for: url, graph: snapshot.graph)
-        restorePersistedStoryGraphLayoutIfAvailable(for: url)
+        restorePersistedGraphLayoutIfAvailable(for: target, graph: snapshot.graph)
+        restorePersistedStoryGraphLayoutIfAvailable(for: target)
         activePaneSide = .right
         selectedGraphNodeID = nil
         expandedGraphNodeIDs = []
@@ -1076,7 +1072,7 @@ public final class AppSession {
         showAllGraphTableCards = false
         showStoryCardsInGraph = false
         showOnlyStoryCardsInGraph = false
-        queryWorkspace.loadSavedQueries(for: url)
+        queryWorkspace.loadSavedQueries(for: target)
         openTabs = openTabs.compactMap { existingTab in
             guard let descriptor = tableDescriptors[existingTab.descriptor.name] else { return nil }
             let replacement = TableTabModel(
@@ -1091,15 +1087,27 @@ public final class AppSession {
     }
 
     private func graphLayoutStorageKey(for url: URL) -> String {
-        "SQLiteGraphStudio.graph-layout.\(url.path)"
+        graphLayoutStorageKey(for: .sqlite(url))
     }
 
     private func storyGraphLayoutStorageKey(for url: URL) -> String {
-        "SQLiteGraphStudio.story-graph-layout.\(url.path)"
+        storyGraphLayoutStorageKey(for: .sqlite(url))
+    }
+
+    private func graphLayoutStorageKey(for target: DatabaseTarget) -> String {
+        "SQLiteGraphStudio.graph-layout.\(target.stableStorageKey)"
+    }
+
+    private func storyGraphLayoutStorageKey(for target: DatabaseTarget) -> String {
+        "SQLiteGraphStudio.story-graph-layout.\(target.stableStorageKey)"
     }
 
     private func restorePersistedStoryGraphLayoutIfAvailable(for url: URL) {
-        guard let data = userDefaults.data(forKey: storyGraphLayoutStorageKey(for: url)),
+        restorePersistedStoryGraphLayoutIfAvailable(for: .sqlite(url))
+    }
+
+    private func restorePersistedStoryGraphLayoutIfAvailable(for target: DatabaseTarget) {
+        guard let data = userDefaults.data(forKey: storyGraphLayoutStorageKey(for: target)),
               let persistedLayout = try? JSONDecoder().decode(PersistedStoryGraphLayout.self, from: data)
         else {
             return
@@ -1109,7 +1117,11 @@ public final class AppSession {
     }
 
     private func restorePersistedGraphLayoutIfAvailable(for url: URL, graph: SchemaGraph) {
-        guard let data = userDefaults.data(forKey: graphLayoutStorageKey(for: url)),
+        restorePersistedGraphLayoutIfAvailable(for: .sqlite(url), graph: graph)
+    }
+
+    private func restorePersistedGraphLayoutIfAvailable(for target: DatabaseTarget, graph: SchemaGraph) {
+        guard let data = userDefaults.data(forKey: graphLayoutStorageKey(for: target)),
               let persistedLayout = try? JSONDecoder().decode(PersistedGraphLayout.self, from: data)
         else {
             return

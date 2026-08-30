@@ -2,6 +2,15 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## PostgreSQL Read-Only Connections
+
+- Files: Sources/StudioCore/Database/, Sources/StudioCore/App/, Sources/StudioCore/TableWorkspace/
+- Change: Added a PostgresNIO-backed PostgreSQL target behind a neutral database facade. PostgreSQL catalog browsing, schema graph metadata, paging/search/filter/sort, safe query execution, query history, exports, and non-executing explain plans are supported.
+- Security boundary: PostgreSQL sessions request default_transaction_read_only=on, use explicit read-only transactions, apply a preflight SQL policy, expose no mutation capability, and keep credentials outside Graph Studio.
+- UX: PostgreSQL opens from a user-selected .postgres or .pgstudio document containing endpoint properties only. The app has no login form and no connection-profile feature.
+- Compatibility: Existing SQLite opening, sidecars, graph behavior, editing, imports, and schema actions remain unchanged.
+- Status: ACTIVE
+
 ## Schema Graph View
 
 ### Trackpad Scrolling Direction

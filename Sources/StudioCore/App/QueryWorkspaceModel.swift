@@ -51,6 +51,7 @@ public final class QueryWorkspaceModel {
 
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
+    private var currentTarget: DatabaseTarget?
     private var currentDatabaseStorageKey: String?
     private var currentHistoryStorageKey: String?
     private var requestTokens: [UUID: Int] = [:]
@@ -74,9 +75,14 @@ public final class QueryWorkspaceModel {
     }
 
     public func loadSavedQueries(for databaseURL: URL?) {
+        loadSavedQueries(for: databaseURL.map { .sqlite($0.standardizedFileURL) })
+    }
+
+    public func loadSavedQueries(for target: DatabaseTarget?) {
         requestTokens.removeAll()
-        currentDatabaseStorageKey = databaseURL.map(storageKey(for:))
-        currentHistoryStorageKey = databaseURL.map(historyStorageKey(for:))
+        currentTarget = target
+        currentDatabaseStorageKey = target.map(storageKey(for:))
+        currentHistoryStorageKey = target.map(historyStorageKey(for:))
         loadHistory()
 
         guard let currentDatabaseStorageKey,
@@ -107,6 +113,7 @@ public final class QueryWorkspaceModel {
     public func reset() {
         queries = []
         activeQueryID = nil
+        currentTarget = nil
         currentDatabaseStorageKey = nil
         currentHistoryStorageKey = nil
         history = []
@@ -123,7 +130,7 @@ public final class QueryWorkspaceModel {
     ) -> QueryDocument {
         let query = QueryDocument(
             title: title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? title! : nextUntitledName(),
-            sqlText: sqlText ?? Self.defaultSQL,
+            sqlText: sqlText ?? Self.defaultSQL(for: currentTarget),
             isSaved: isSaved
         )
         queries.append(query)
@@ -348,7 +355,7 @@ public final class QueryWorkspaceModel {
     }
 
     private func makeDefaultQuery() -> QueryDocument {
-        QueryDocument(title: nextUntitledName(), sqlText: Self.defaultSQL)
+        QueryDocument(title: nextUntitledName(), sqlText: Self.defaultSQL(for: currentTarget))
     }
 
     private func persistSavedQueries() {
@@ -398,16 +405,44 @@ public final class QueryWorkspaceModel {
         "SQLiteGraphStudio.saved-queries.\(databaseURL.path)"
     }
 
+    private func storageKey(for target: DatabaseTarget) -> String {
+        switch target {
+        case .sqlite(let url):
+            return storageKey(for: url)
+        case .postgres:
+            return "SQLiteGraphStudio.saved-queries.\(target.stableStorageKey)"
+        }
+    }
+
     private func historyStorageKey(for databaseURL: URL) -> String {
         "SQLiteGraphStudio.query-history.\(databaseURL.path)"
     }
 
-    private static let defaultSQL = """
-    SELECT name, type
-    FROM sqlite_master
-    WHERE type IN ('table', 'view')
-    ORDER BY name;
-    """
+    private func historyStorageKey(for target: DatabaseTarget) -> String {
+        switch target {
+        case .sqlite(let url):
+            return historyStorageKey(for: url)
+        case .postgres:
+            return "SQLiteGraphStudio.query-history.\(target.stableStorageKey)"
+        }
+    }
+
+    private static func defaultSQL(for target: DatabaseTarget?) -> String {
+        if target?.isPostgres == true {
+            return """
+            SELECT table_schema, table_name, table_type
+            FROM information_schema.tables
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY table_schema, table_name;
+            """
+        }
+        return """
+        SELECT name, type
+        FROM sqlite_master
+        WHERE type IN ('table', 'view')
+        ORDER BY name;
+        """
+    }
 }
 
 private struct PersistedQueryDocument: Codable {

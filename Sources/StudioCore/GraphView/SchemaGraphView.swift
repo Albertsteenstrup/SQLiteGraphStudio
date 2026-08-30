@@ -248,7 +248,7 @@ public struct SchemaGraphView: View {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.system(size: 34))
                 .foregroundStyle(StudioPalette.secondaryText)
-            Text("Open a SQLite database to inspect declared foreign keys.")
+            Text("Open a database to inspect declared foreign keys.")
                 .foregroundStyle(StudioPalette.secondaryText)
                 .multilineTextAlignment(.center)
         }

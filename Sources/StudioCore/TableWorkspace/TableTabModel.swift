@@ -140,6 +140,12 @@ public final class TableTabModel: Identifiable {
     }
 
     public func commitEdit(row absoluteRow: Int, columnName: String, rawValue: String) {
+        guard isEditable,
+              descriptor.columns.contains(where: { $0.name == columnName && $0.isEditable })
+        else {
+            inlineErrorMessage = "This table is read-only."
+            return
+        }
         guard let row = row(at: absoluteRow) else { return }
         let change = CellEditChange(
             descriptor: descriptor,
@@ -166,7 +172,7 @@ public final class TableTabModel: Identifiable {
     }
 
     public func retryPendingEdit() {
-        guard let pendingRetryChange else { return }
+        guard isEditable, let pendingRetryChange else { return }
         busyError = nil
         self.pendingRetryChange = nil
         Task {
@@ -191,10 +197,17 @@ public final class TableTabModel: Identifiable {
     }
 
     public func dropColumn(_ columnName: String) async throws {
+        guard isEditable, descriptor.columns.contains(where: { $0.name == columnName && $0.canDropInSQLite }) else {
+            throw DatabaseUserError(kind: .readOnly, message: "Columns cannot be changed on a read-only table.")
+        }
         try await databaseService.dropColumn(columnName: columnName, from: descriptor)
     }
 
     public func insertEmptyRow() {
+        guard isEditable else {
+            inlineErrorMessage = "This table is read-only."
+            return
+        }
         Task {
             do {
                 try await databaseService.insertDefaultRow(into: descriptor)
@@ -207,6 +220,10 @@ public final class TableTabModel: Identifiable {
     }
 
     public func cloneRow(at absoluteRow: Int) {
+        guard isEditable else {
+            inlineErrorMessage = "This table is read-only."
+            return
+        }
         guard let row = row(at: absoluteRow) else { return }
         Task {
             do {
@@ -220,6 +237,10 @@ public final class TableTabModel: Identifiable {
     }
 
     public func deleteRow(at absoluteRow: Int) {
+        guard isEditable else {
+            inlineErrorMessage = "This table is read-only."
+            return
+        }
         guard let row = row(at: absoluteRow) else { return }
         Task {
             do {

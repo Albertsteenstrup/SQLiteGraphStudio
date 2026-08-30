@@ -1,6 +1,6 @@
 # SQLite Graph Studio
 
-A macOS app for browsing and editing SQLite databases. Open a file, explore the schema as an interactive graph, and edit rows directly in the table view.
+A macOS app for browsing SQLite databases and connecting to PostgreSQL in a strictly read-only mode. Explore schemas as interactive graphs, browse rows, run safe read queries, and export results.
 
 ![SQLite Graph Studio in use](docs/demo-20261405.gif)
 
@@ -20,7 +20,7 @@ A macOS app for browsing and editing SQLite databases. Open a file, explore the 
 - Inline row editing with right-click row actions (add, clone, delete)
 - Column sorting, filtering, and search
 - SQL query runner with explain plan
-- Connection profiles for quick re-opening
+- User-selected PostgreSQL connection documents with schema-qualified catalog browsing, paging, search, filtering, sorting, exports, query history, and non-executing EXPLAIN
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
 - AI-authored flow stories — agents can append user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, and narrated graph playback to the sidecar; **Features → Stories** plays them back and can show them as minimal graph-native cards connected to the schema tables they cover (via the [story-flows](Skills/story-flows/SKILL.md) skill)
@@ -37,12 +37,38 @@ Download them from inside the app: **Database → AI Skills…** — or from the
 
 For Codex, create `.agents/skills` in your repo first; the app will install `graph-clusters`, `schema-descriptions`, and `story-flows` there. Use `/skills` or mention `$graph-clusters`, `$schema-descriptions`, or `$story-flows` in Codex to invoke them.
 
+## PostgreSQL connections
+
+Choose Open PostgreSQL Document… from the toolbar, the Database menu, or the empty state. A PostgreSQL document is a user-managed .postgres or .pgstudio JSON file containing only endpoint properties:
+
+    {
+      "name": "Read-only database",
+      "host": "database.example.test",
+      "port": 5432,
+      "database": "catalog",
+      "username": "reader",
+      "tlsMode": "required"
+    }
+
+Graph Studio does not show a login form, save connection profiles, or put credentials in documents. PostgreSQL authentication is delegated to the server's configured passwordless mechanism or to the user's existing PGPASSWORD/PGPASSFILE environment configuration. TLS required verifies the server certificate; TLS disabled is intended only for a deliberately local, trusted endpoint.
+
+PostgreSQL sessions are permanently read-only:
+
+- The connection requests default_transaction_read_only=on.
+- Catalog, table browsing, query execution, and EXPLAIN each run inside an explicit READ ONLY transaction.
+- Every PostgreSQL table descriptor and column is non-editable. Row edits, inserts, deletes, imports, table creation, schema changes, and write SQL are disabled in the UI and fail closed in the backend.
+- The query gate accepts SELECT, VALUES, SHOW, read-only WITH queries, and EXPLAIN. It rejects multiple statements, comments/literal bypasses, transaction control, DDL/DML, COPY, CALL, DO, SET/RESET, VACUUM, EXPLAIN ANALYZE, and known side-effecting functions before sending the statement.
+
+PostgreSQL metadata is read from pg_catalog in set-based queries. System and temporary schemas are excluded. Tables, partitioned tables, views, and materialized views include columns, format_type output, nullability, defaults, generated and identity metadata, primary keys, indexes, foreign keys, row estimates, and graph cardinality. Initial catalog loading does not count table rows. Query results are capped at 500 visible rows by default (up to 10,000 for the backend request) and report truncation; table browsing uses bound search/filter/paging values.
+
+The PostgreSQL connection intentionally does not create a SQLite-style schema sidecar or install AI skills for the remote target. Query history, saved queries, and graph layout use a password-free, hashed target key. No connection profile data is written to app preferences.
+
 ## Install
 
 1. Go to [Releases](../../releases/latest)
 2. Download `SQLiteGraphStudio.dmg`
 3. Open the DMG and drag `SQLiteGraphStudio.app` to `/Applications`
-4. Open a `.sqlite` file with it
+4. Open a .sqlite file or .postgres document with it
 
 > **First launch:** macOS may block the app since it isn't notarized. If you see a "damaged" or Gatekeeper warning, run this once in Terminal:
 >
@@ -65,6 +91,20 @@ git clone https://github.com/Albertsteenstrup/SQLiteGraphStudio.git
 cd SQLiteGraphStudio
 swift run SQLiteGraphStudio /path/to/database.sqlite
 ```
+
+### PostgreSQL verification
+
+The normal unit suite does not require a running PostgreSQL server. To run the opt-in integration tests, provide an explicitly chosen test database through environment variables and set SGS_POSTGRES_TESTS=1:
+
+    SGS_POSTGRES_TESTS=1 \
+    SGS_POSTGRES_HOST=... \
+    SGS_POSTGRES_PORT=... \
+    SGS_POSTGRES_DATABASE=... \
+    SGS_POSTGRES_USER=... \
+    SGS_POSTGRES_PASSWORD=... \
+    swift test --filter PostgreSQLIntegrationTests
+
+The integration suite is skipped unless the opt-in flag and all required connection variables are present. It does not use application defaults, fixtures, source data, or a bundled PostgreSQL document.
 
 ## Reporting issues
 

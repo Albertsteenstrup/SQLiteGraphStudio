@@ -54,29 +54,29 @@ struct SQLiteGraphStudioApp: App {
         didConfigureLaunchHandling = true
 
         appDelegate.onOpenURLs = { urls in
-            guard let databaseURL = urls.first else { return }
+            guard let documentURL = urls.first else { return }
             Task {
-                await session.openDatabase(url: databaseURL)
+                await session.openDocument(url: documentURL)
             }
         }
         appDelegate.deliverPendingOpenURLs()
 
         let launchURLs = LaunchRequestResolver.databaseURLs(fromArguments: ProcessInfo.processInfo.arguments)
-        guard let databaseURL = launchURLs.first else { return }
+        guard let documentURL = launchURLs.first else { return }
         Task {
-            await session.openDatabase(url: databaseURL)
+            await session.openDocument(url: documentURL)
         }
     }
 }
 
 private enum LaunchRequestResolver {
-    private static let allowedExtensions: Set<String> = [
+    private static let allowedExtensions: Set<String> = Set([
         "sqlite",
         "sqlite3",
         "db",
         "sqlite-db",
         "sqlitedb",
-    ]
+    ]).union(PostgresConnectionDocument.supportedFileExtensions)
 
     static func databaseURLs(fromArguments arguments: [String]) -> [URL] {
         databaseURLs(

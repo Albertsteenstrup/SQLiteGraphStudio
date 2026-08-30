@@ -17,6 +17,11 @@ public final class GraphLayoutModel {
     /// so the user can pan freely without nodes being squashed together.
     public static let crowdedNodeThreshold = 14
 
+    /// Force-directed physics and pairwise overlap cleanup are quadratic in the node
+    /// count. Large database schemas still get deterministic initial placement, but do
+    /// not spend hundreds of full passes on the main actor.
+    private static let largeGraphPhysicsThreshold = 128
+
     private var positions: [String: CGPoint] = [:]
     private var velocities: [String: CGVector] = [:]
     private var pinnedPositions: [String: CGPoint] = [:]
@@ -153,7 +158,14 @@ public final class GraphLayoutModel {
         isAnimating = true
         settledSteps = 0
 
-        for _ in 0..<maxIterations where isAnimating {
+        let boundedMaxIterations: Int
+        if graph.nodes.count > Self.largeGraphPhysicsThreshold {
+            boundedMaxIterations = min(maxIterations, max(6, 4_000 / graph.nodes.count))
+        } else {
+            boundedMaxIterations = maxIterations
+        }
+
+        for _ in 0..<boundedMaxIterations where isAnimating {
             step(
                 graph: graph,
                 presentation: presentation,
@@ -162,18 +174,22 @@ public final class GraphLayoutModel {
             )
         }
 
+        let overlapIterations = graph.nodes.count > Self.largeGraphPhysicsThreshold ? 0 : 80
+
         resolveRemainingOverlaps(
             graph: graph,
             presentation: presentation,
             nodeSizeLookup: nodeSizeLookup,
-            gap: layoutParameters(for: presentation).nodeGap
+            gap: layoutParameters(for: presentation).nodeGap,
+            maxIterations: overlapIterations
         )
         limitSpreadIfNeeded(graph: graph, presentation: presentation, nodeSizeLookup: nodeSizeLookup)
         resolveRemainingOverlaps(
             graph: graph,
             presentation: presentation,
             nodeSizeLookup: nodeSizeLookup,
-            gap: layoutParameters(for: presentation).nodeGap * 0.72
+            gap: layoutParameters(for: presentation).nodeGap * 0.72,
+            maxIterations: overlapIterations
         )
         isAnimating = false
         velocities = Dictionary(uniqueKeysWithValues: velocities.keys.map { ($0, .zero) })

@@ -52,6 +52,7 @@ public struct TableWorkspaceView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(StudioPalette.accent)
+                    .disabled(!session.databaseCapabilities.canCreateTable)
                 }
             }
         }
@@ -186,7 +187,7 @@ public struct TableWorkspaceView: View {
                 }
             },
             message: { column in
-                Text("This alters the SQLite schema and removes `\(column.name)` from `\(activeTab.title)`.")
+                Text("This changes the schema and removes `\(column.name)` from `\(activeTab.title)`.")
             }
         )
     }
@@ -261,6 +262,7 @@ public struct TableWorkspaceView: View {
                     } label: {
                         Label("Alter Table", systemImage: "slider.horizontal.3")
                     }
+                    .disabled(!session.databaseCapabilities.canAlterSchema)
 
                     Divider()
 
@@ -269,14 +271,14 @@ public struct TableWorkspaceView: View {
                     } label: {
                         Label("Import CSV", systemImage: "square.and.arrow.down")
                     }
-                    .disabled(!activeTab.isEditable)
+                    .disabled(!session.databaseCapabilities.canImportRows || !activeTab.isEditable)
 
                     Button {
                         session.importRowsIntoActiveTable(format: .json)
                     } label: {
                         Label("Import JSON", systemImage: "square.and.arrow.down")
                     }
-                    .disabled(!activeTab.isEditable)
+                    .disabled(!session.databaseCapabilities.canImportRows || !activeTab.isEditable)
 
                     Divider()
 
@@ -324,6 +326,13 @@ public struct TableWorkspaceView: View {
                     "\(descriptor.generatedColumns.count) generated",
                     systemImage: "function",
                     items: descriptor.generatedColumns.map { "\($0.name): \($0.storedKind)" }
+                )
+                metadataMenu(
+                    "\(descriptor.identityColumns.count) identity",
+                    systemImage: "person.badge.key",
+                    items: descriptor.identityColumns.compactMap { column in
+                        column.identityLabel.map { "\(column.name): \($0)" }
+                    }
                 )
             }
             .padding(.bottom, 2)

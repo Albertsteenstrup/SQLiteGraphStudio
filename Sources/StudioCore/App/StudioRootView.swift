@@ -84,6 +84,19 @@ public struct StudioRootView: View {
             }
             .padding(.bottom, session.storyPlaybackOverlay == nil ? 20 : 132)
         }
+        .overlay(alignment: .top) {
+            if session.isPostgreSQL {
+                Label("PostgreSQL connection · strictly read-only", systemImage: "lock.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(StudioPalette.primaryText)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.thinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(StudioPalette.border, lineWidth: 1))
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
+            }
+        }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
         .animation(.snappy(duration: 0.3), value: session.refreshToast?.id)
         .animation(.snappy(duration: 0.32), value: session.storyPlaybackOverlay != nil)
@@ -107,7 +120,8 @@ public struct StudioRootView: View {
             }
         }
         .onChange(of: session.tables) { _, newTables in
-            guard newTables.count > 10,
+            guard session.databaseCapabilities.supportsAIWorkspace,
+                  newTables.count > 10,
                   !session.skillsInstalled,
                   skillsToastDismissedForURL != session.databaseURL,
                   skillsRepeatTask == nil
@@ -124,7 +138,7 @@ public struct StudioRootView: View {
                 withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
             }
         }
-        .onChange(of: session.databaseURL) { _, _ in
+        .onChange(of: session.databaseTarget) { _, _ in
             skillsRepeatTask?.cancel()
             skillsRepeatTask = nil
             refreshToastTask?.cancel()
@@ -138,18 +152,18 @@ public struct StudioRootView: View {
                 Button {
                     session.presentOpenDatabasePanel()
                 } label: {
-                    Label("Open Database", systemImage: "folder")
+                    Label("Open SQLite File", systemImage: "folder")
                 }
-                .help("Open Database")
+                .help("Open SQLite File")
             }
 
             ToolbarItem {
                 Button {
-                    session.showProfileManager()
+                    session.presentOpenPostgreSQLDocumentPanel()
                 } label: {
-                    Label("Profiles", systemImage: "person.crop.rectangle.stack")
+                    Label("Open PostgreSQL Document", systemImage: "server.rack")
                 }
-                .help("Connection Profiles")
+                .help("Open PostgreSQL Document")
             }
 
             ToolbarItem {
@@ -178,7 +192,7 @@ public struct StudioRootView: View {
                 } label: {
                     Label("Create Table", systemImage: "plus.square.on.square")
                 }
-                .disabled(!session.hasOpenDatabase)
+                .disabled(!session.databaseCapabilities.canCreateTable)
                 .help("Create Table")
             }
 
@@ -188,7 +202,7 @@ public struct StudioRootView: View {
                 } label: {
                     Label("Alter Table", systemImage: "slider.horizontal.3")
                 }
-                .disabled(session.activeTab == nil)
+                .disabled(session.activeTab == nil || !session.databaseCapabilities.canAlterSchema)
                 .help("Alter Active Table")
             }
         }
@@ -198,9 +212,6 @@ public struct StudioRootView: View {
         .sheet(isPresented: $session.isSkillsPresented) {
             SkillsPickerView(session: session)
         }
-        .sheet(isPresented: $session.isProfileManagerPresented) {
-            ConnectionProfileManagerView(session: session)
-        }
         .sheet(isPresented: $session.isCreateTablePresented) {
             CreateTableSheetView(session: session)
         }
@@ -208,7 +219,7 @@ public struct StudioRootView: View {
             AlterTableSheetView(session: session)
         }
         .alert(
-            "SQLite Error",
+            "Database Error",
             isPresented: Binding(
                 get: { session.presentedError != nil },
                 set: { newValue in
@@ -1659,24 +1670,33 @@ private struct EmptyDatabaseView: View {
                 StudioAppLogoView()
 
                 VStack(spacing: 8) {
-                    Text("Open a SQLite database")
+                    Text("Open a database")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(StudioPalette.primaryText)
-                    Text("Choose a `.sqlite`, `.sqlite3`, or `.db` file to explore the schema, edit rows, and run SQL.")
+                    Text("Open a SQLite file to explore and edit it, or choose a PostgreSQL document for strictly read-only browsing and SQL.")
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                 }
 
-                Button {
-                    session.presentOpenDatabasePanel()
-                } label: {
-                    Label("Choose Database", systemImage: "folder")
-                        .frame(minWidth: 200)
+                HStack(spacing: 10) {
+                    Button {
+                        session.presentOpenDatabasePanel()
+                    } label: {
+                        Label("Choose SQLite File", systemImage: "folder")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(StudioPalette.accent)
+                    .controlSize(.large)
+
+                    Button {
+                        session.presentOpenPostgreSQLDocumentPanel()
+                    } label: {
+                        Label("Choose PostgreSQL Document", systemImage: "server.rack")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(StudioPalette.accent)
-                .controlSize(.large)
             }
             .frame(maxWidth: .infinity)
 
@@ -1851,110 +1871,6 @@ private struct MaximizedPaneView: View {
         .padding(.horizontal, 18)
         .padding(.top, 18)
         .padding(.bottom, 4)
-    }
-}
-
-private struct ConnectionProfileManagerView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Bindable var session: AppSession
-    @State private var newProfileName = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Connection Profiles")
-                .font(.title2.weight(.semibold))
-
-            if session.hasOpenDatabase {
-                HStack(spacing: 10) {
-                    TextField("Profile name", text: $newProfileName)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Save Current") {
-                        session.saveCurrentConnectionProfile(name: newProfileName)
-                        newProfileName = ""
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StudioPalette.accent)
-                }
-            }
-
-            if session.connectionProfiles.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "person.crop.rectangle.stack")
-                        .font(.system(size: 28))
-                        .foregroundStyle(StudioPalette.secondaryText)
-                    Text("Save the current database as a reusable SQLite profile.")
-                        .foregroundStyle(StudioPalette.secondaryText)
-                }
-                .frame(width: 520, height: 220)
-            } else {
-                List {
-                    ForEach(session.connectionProfiles) { profile in
-                        ConnectionProfileRow(session: session, profile: profile)
-                    }
-                }
-                .frame(width: 560, height: 300)
-            }
-
-            HStack {
-                Spacer()
-                Button("Done") {
-                    session.dismissProfileManager()
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-    }
-}
-
-private struct ConnectionProfileRow: View {
-    @Bindable var session: AppSession
-    let profile: DatabaseConnectionProfile
-    @State private var name: String
-
-    init(session: AppSession, profile: DatabaseConnectionProfile) {
-        self.session = session
-        self.profile = profile
-        _name = State(initialValue: profile.name)
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "externaldrive")
-                .foregroundStyle(StudioPalette.secondaryText)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 4) {
-                TextField("Name", text: $name)
-                    .textFieldStyle(.plain)
-                    .font(.subheadline.weight(.semibold))
-                    .onSubmit {
-                        session.renameConnectionProfile(profile, to: name)
-                    }
-                Text(profile.filePath)
-                    .font(.caption)
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            Spacer()
-
-            Button("Open") {
-                session.openConnectionProfile(profile)
-            }
-            .buttonStyle(.bordered)
-            .tint(StudioPalette.accent)
-
-            Button(role: .destructive) {
-                session.deleteConnectionProfile(profile)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.bordered)
-        }
-        .padding(.vertical, 6)
     }
 }
 

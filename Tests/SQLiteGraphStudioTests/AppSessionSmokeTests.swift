@@ -5,6 +5,19 @@ import Testing
 @MainActor
 struct AppSessionSmokeTests {
     @Test
+    func sessionRemovesLegacyConnectionProfileStorage() throws {
+        let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+        userDefaults.set(Data("legacy".utf8), forKey: "SQLiteGraphStudio.connection-profiles")
+
+        _ = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
+
+        #expect(userDefaults.data(forKey: "SQLiteGraphStudio.connection-profiles") == nil)
+        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
+
+    @Test
     func sessionOpensDatabaseAndSurfacesEditFailures() async throws {
         let url = try TestSupport.createFixture(named: "session")
         let service = DatabaseService()
@@ -440,40 +453,6 @@ struct AppSessionSmokeTests {
 
             let secondSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
             #expect(secondSession.recentDatabaseURLs.first == url.standardizedFileURL)
-        }
-
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
-    }
-
-    @Test
-    func sessionPersistsConnectionProfiles() async throws {
-        let url = try TestSupport.createFixture(named: "profiles")
-        let defaultsSuiteName = "SQLiteGraphStudioTests.profiles.\(UUID().uuidString)"
-        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
-
-        do {
-            let firstSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-            await firstSession.openDatabase(url: url)
-            firstSession.saveCurrentConnectionProfile(name: "Fixture")
-
-            let profile = try #require(firstSession.connectionProfiles.first)
-            #expect(profile.name == "Fixture")
-            #expect(profile.url == url.standardizedFileURL)
-
-            firstSession.renameConnectionProfile(profile, to: "Renamed Fixture")
-            #expect(firstSession.connectionProfiles.first?.name == "Renamed Fixture")
-
-            let secondSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-            #expect(secondSession.connectionProfiles.first?.name == "Renamed Fixture")
-            #expect(secondSession.connectionProfiles.first?.url == url.standardizedFileURL)
-
-            if let loadedProfile = secondSession.connectionProfiles.first {
-                secondSession.deleteConnectionProfile(loadedProfile)
-            }
-
-            let thirdSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-            #expect(thirdSession.connectionProfiles.isEmpty)
         }
 
         userDefaults.removePersistentDomain(forName: defaultsSuiteName)

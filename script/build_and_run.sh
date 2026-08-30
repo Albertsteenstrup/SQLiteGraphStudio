@@ -60,6 +60,34 @@ cat >"$INFO_PLIST" <<PLIST
   <true/>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>sqlite</string>
+        <string>sqlite3</string>
+        <string>db</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+    </dict>
+    <dict>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>postgres</string>
+        <string>pgstudio</string>
+      </array>
+      <key>CFBundleTypeName</key>
+      <string>PostgreSQL Connection Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

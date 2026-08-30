@@ -1,16 +1,25 @@
 @preconcurrency import GRDB
 import Foundation
 
-struct CatalogSnapshot: Sendable {
-    let descriptors: [EditableTableDescriptor]
-    let graph: SchemaGraph
+public struct CatalogSnapshot: Sendable {
+    public let descriptors: [EditableTableDescriptor]
+    public let graph: SchemaGraph
+
+    public init(descriptors: [EditableTableDescriptor], graph: SchemaGraph) {
+        self.descriptors = descriptors
+        self.graph = graph
+    }
 }
 
-public actor DatabaseService {
+public actor SQLiteDatabaseBackend {
     private var pool: DatabasePool?
     private var currentURL: URL?
 
     public init() {}
+
+    public nonisolated var capabilities: DatabaseCapabilities {
+        .sqlite
+    }
 
     public func open(url: URL) throws {
         var configuration = Configuration()
@@ -38,7 +47,7 @@ public actor DatabaseService {
         try loadCatalogSnapshot().graph
     }
 
-    func loadCatalogSnapshot() throws -> CatalogSnapshot {
+    public func loadCatalogSnapshot() throws -> CatalogSnapshot {
         guard let pool else {
             throw SQLiteUserError(kind: .generic, message: "No database is open.")
         }
@@ -1133,7 +1142,13 @@ private extension SQLiteValue {
             return String(value)
         case .double(let value):
             return String(value)
+        case .boolean(let value):
+            return value ? "true" : "false"
+        case .exactNumeric(let value):
+            return value
         case .text(let value):
+            return value
+        case .uuid(let value), .dateTime(let value), .json(let value), .array(let value):
             return value
         case .blob(let data):
             return data.base64EncodedString()
@@ -1148,7 +1163,18 @@ private extension SQLiteValue {
             return value
         case .double(let value):
             return value
+        case .boolean(let value):
+            return value
+        case .exactNumeric(let value):
+            return value
         case .text(let value):
+            return value
+        case .uuid(let value), .dateTime(let value):
+            return value
+        case .json(let value), .array(let value):
+            if let data = value.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) {
+                return object
+            }
             return value
         case .blob(let data):
             return data.base64EncodedString()

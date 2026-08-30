@@ -30,6 +30,19 @@
             <key>LSHandlerRank</key>
             <string>Alternate</string>
         </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>postgres</string>
+                <string>pgstudio</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PostgreSQL Connection Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
     </array>
 </dict>
 </plist>

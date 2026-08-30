@@ -325,7 +325,7 @@ private struct QueryPlanView: View {
                     Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
                         .font(.system(size: 28))
                         .foregroundStyle(StudioPalette.secondaryText)
-                    Text("Run Explain to inspect SQLite's query plan.")
+                    Text("Run Explain to inspect the database's query plan.")
                         .foregroundStyle(StudioPalette.secondaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

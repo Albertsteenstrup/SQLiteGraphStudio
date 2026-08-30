@@ -9,10 +9,14 @@ public struct StudioCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("Open Database…") {
+            Button("Open SQLite File…") {
                 session.presentOpenDatabasePanel()
             }
             .keyboardShortcut("o")
+
+            Button("Open PostgreSQL Document…") {
+                session.presentOpenPostgreSQLDocumentPanel()
+            }
 
             Menu("Open Recent") {
                 if session.recentDatabaseURLs.isEmpty {
@@ -26,23 +30,6 @@ public struct StudioCommands: Commands {
                 }
             }
             .disabled(session.recentDatabaseURLs.isEmpty)
-
-            Menu("Open Profile") {
-                if session.connectionProfiles.isEmpty {
-                    Text("No Saved Profiles")
-                } else {
-                    ForEach(session.connectionProfiles) { profile in
-                        Button(profile.name) {
-                            session.openConnectionProfile(profile)
-                        }
-                    }
-                }
-            }
-            .disabled(session.connectionProfiles.isEmpty)
-
-            Button("Connection Profiles…") {
-                session.showProfileManager()
-            }
 
             Button("Close Database") {
                 session.closeDatabase()
@@ -67,12 +54,12 @@ public struct StudioCommands: Commands {
             Button("Create Table…") {
                 session.showCreateTable()
             }
-            .disabled(!session.hasOpenDatabase)
+            .disabled(!session.databaseCapabilities.canCreateTable)
 
             Button("Alter Active Table…") {
                 session.showAlterTable()
             }
-            .disabled(session.activeTab == nil)
+            .disabled(session.activeTab == nil || !session.databaseCapabilities.canAlterSchema)
 
             Divider()
 
@@ -84,7 +71,7 @@ public struct StudioCommands: Commands {
                     session.importRowsIntoActiveTable(format: .json)
                 }
             }
-            .disabled(session.activeTab?.isEditable != true)
+            .disabled(!session.databaseCapabilities.canImportRows || session.activeTab?.isEditable != true)
 
             Menu("Export Active Table") {
                 Button("CSV…") {
@@ -111,7 +98,7 @@ public struct StudioCommands: Commands {
             Button("AI Skills…") {
                 session.showSkills()
             }
-            .disabled(!session.hasOpenDatabase)
+            .disabled(!session.databaseCapabilities.supportsAIWorkspace)
         }
     }
 }
