@@ -195,7 +195,6 @@ public final class AppSession {
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
-    private static let legacyProfileStorageKey = "SQLiteGraphStudio.connection-profiles"
     private static let allowedDatabaseExtensions: Set<String> = [
         "sqlite",
         "sqlite3",
@@ -216,7 +215,6 @@ public final class AppSession {
             userDefaults: userDefaults
         )
         self.recentDatabaseURLs = Self.loadRecentDatabaseURLs(from: userDefaults)
-        userDefaults.removeObject(forKey: Self.legacyProfileStorageKey)
     }
 
     public var activeTab: TableTabModel? {

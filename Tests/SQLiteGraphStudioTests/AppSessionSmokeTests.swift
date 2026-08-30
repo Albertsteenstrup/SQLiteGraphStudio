@@ -5,19 +5,6 @@ import Testing
 @MainActor
 struct AppSessionSmokeTests {
     @Test
-    func sessionRemovesLegacyConnectionProfileStorage() throws {
-        let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"
-        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
-        userDefaults.set(Data("legacy".utf8), forKey: "SQLiteGraphStudio.connection-profiles")
-
-        _ = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-
-        #expect(userDefaults.data(forKey: "SQLiteGraphStudio.connection-profiles") == nil)
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
-    }
-
-    @Test
     func sessionOpensDatabaseAndSurfacesEditFailures() async throws {
         let url = try TestSupport.createFixture(named: "session")
         let service = DatabaseService()
