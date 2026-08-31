@@ -195,6 +195,7 @@ public final class AppSession {
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
+    private static let graphLayoutStorageVersion = 2
     private static let allowedDatabaseExtensions: Set<String> = [
         "sqlite",
         "sqlite3",
@@ -287,10 +288,12 @@ public final class AppSession {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [
-            UTType(filenameExtension: "postgres"),
-            UTType(filenameExtension: "pgstudio"),
-        ].compactMap { $0 }
+        // These are app-owned JSON documents, not a system-provided UTI. Use
+        // a data filter plus the delegate's explicit extension check instead
+        // of relying on dynamic UTI inference for the custom suffixes.
+        panel.allowedContentTypes = [.data]
+        let documentFilter = PostgreSQLDocumentOpenPanelDelegate()
+        panel.delegate = documentFilter
         panel.prompt = "Open PostgreSQL Document"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -1093,7 +1096,7 @@ public final class AppSession {
     }
 
     private func graphLayoutStorageKey(for target: DatabaseTarget) -> String {
-        "SQLiteGraphStudio.graph-layout.\(target.stableStorageKey)"
+        "SQLiteGraphStudio.graph-layout.v\(Self.graphLayoutStorageVersion).\(target.stableStorageKey)"
     }
 
     private func storyGraphLayoutStorageKey(for target: DatabaseTarget) -> String {
@@ -1230,6 +1233,12 @@ private struct SchemaRefreshSnapshot {
     let descriptors: [String: EditableTableDescriptor]
     let graph: SchemaGraph
     let sidecar: SchemaSidecar
+}
+
+private final class PostgreSQLDocumentOpenPanelDelegate: NSObject, NSOpenSavePanelDelegate {
+    func panel(_ sender: Any, shouldEnable url: URL) -> Bool {
+        PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased())
+    }
 }
 
 private struct PersistedGraphLayout: Codable {

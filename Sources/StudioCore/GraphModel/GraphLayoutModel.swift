@@ -13,14 +13,15 @@ public struct GraphLayoutSnapshot: Sendable, Equatable {
 
 @MainActor
 public final class GraphLayoutModel {
-    /// Threshold above which auto-fit, spread-limit, and refit-on-relayout are skipped
-    /// so the user can pan freely without nodes being squashed together.
+    /// Threshold used by the crowded-schema heuristics that keep ordinary layouts from
+    /// being squeezed into a small viewport or from collapsing isolated nodes together.
     public static let crowdedNodeThreshold = 14
 
     /// Force-directed physics and pairwise overlap cleanup are quadratic in the node
-    /// count. Large database schemas still get deterministic initial placement, but do
-    /// not spend hundreds of full passes on the main actor.
-    private static let largeGraphPhysicsThreshold = 128
+    /// count. Large database schemas use a bounded deterministic overview instead of
+    /// physics, which can become numerically unstable when thousands of edge-path forces
+    /// accumulate in a single pass.
+    public static let largeGraphOverviewThreshold = 128
 
     private var positions: [String: CGPoint] = [:]
     private var velocities: [String: CGVector] = [:]
@@ -159,8 +160,8 @@ public final class GraphLayoutModel {
         settledSteps = 0
 
         let boundedMaxIterations: Int
-        if graph.nodes.count > Self.largeGraphPhysicsThreshold {
-            boundedMaxIterations = min(maxIterations, max(6, 4_000 / graph.nodes.count))
+        if graph.nodes.count > Self.largeGraphOverviewThreshold {
+            boundedMaxIterations = 0
         } else {
             boundedMaxIterations = maxIterations
         }
@@ -174,7 +175,7 @@ public final class GraphLayoutModel {
             )
         }
 
-        let overlapIterations = graph.nodes.count > Self.largeGraphPhysicsThreshold ? 0 : 80
+        let overlapIterations = graph.nodes.count > Self.largeGraphOverviewThreshold ? 0 : 80
 
         resolveRemainingOverlaps(
             graph: graph,
@@ -225,6 +226,13 @@ public final class GraphLayoutModel {
                 return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
             }
             return lhsWeight > rhsWeight
+        }
+
+        if presentation == .compact, graph.nodes.count > Self.largeGraphOverviewThreshold {
+            generateLargeCompactOverviewPositions(for: rankedNodes, clusters: clusters, weights: nodeWeights)
+            isAnimating = !graph.nodes.isEmpty
+            StudioLog.graph.info("Reset large graph layout for \(graph.nodes.count, privacy: .public) nodes using bounded overview placement")
+            return
         }
 
         // Use hierarchical layout within each cluster
@@ -387,6 +395,46 @@ public final class GraphLayoutModel {
 
         isAnimating = !graph.nodes.isEmpty
         StudioLog.graph.info("Reset graph layout for \(graph.nodes.count, privacy: .public) nodes with \(clusterCount, privacy: .public) clusters")
+    }
+
+    private func generateLargeCompactOverviewPositions(
+        for rankedNodes: [GraphNode],
+        clusters: [String: Int],
+        weights: [String: Int]
+    ) {
+        let overviewNodes = rankedNodes.sorted { lhs, rhs in
+            let lhsCluster = clusters[lhs.id] ?? Int.max
+            let rhsCluster = clusters[rhs.id] ?? Int.max
+            if lhsCluster != rhsCluster {
+                return lhsCluster < rhsCluster
+            }
+
+            let lhsWeight = weights[lhs.id] ?? 0
+            let rhsWeight = weights[rhs.id] ?? 0
+            if lhsWeight == rhsWeight {
+                return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
+            }
+            return lhsWeight > rhsWeight
+        }
+
+        // Keep the overview close to the viewport's aspect ratio while leaving enough
+        // room for the widest collapsed card. Cards are rendered at the fitted zoom, so
+        // this grid remains legible and clickable without the radial layout's enormous
+        // outer rings.
+        let columns = max(1, Int(ceil(sqrt(Double(overviewNodes.count) * 0.45))))
+        let rows = max(1, Int(ceil(Double(overviewNodes.count) / Double(columns))))
+        let columnSpacing: CGFloat = 410
+        let rowSpacing: CGFloat = 74
+
+        for (index, node) in overviewNodes.enumerated() {
+            let row = index / columns
+            let column = index % columns
+            positions[node.id] = CGPoint(
+                x: (CGFloat(column) - CGFloat(columns - 1) * 0.5) * columnSpacing,
+                y: (CGFloat(row) - CGFloat(rows - 1) * 0.5) * rowSpacing
+            )
+            velocities[node.id] = .zero
+        }
     }
     
     private func buildHierarchy(for nodes: [GraphNode], in graph: SchemaGraph, weights: [String: Int]) -> [[String]] {

@@ -236,6 +236,47 @@ struct GraphLayoutTests {
         #expect(width <= 3_200)
         #expect(height <= 3_200)
     }
+
+    @Test
+    func veryLargeCompactLayoutsUseBoundedOverviewPlacement() {
+        let nodeCount = 585
+        let nodes = (0..<nodeCount).map { index in
+            GraphNode(
+                id: index == 0 ? "hub" : "table_\(index)",
+                title: index == 0 ? "hub" : "table_\(index)",
+                isEditable: false
+            )
+        }
+        let edges = (1..<nodeCount).map { index in
+            GraphEdge(
+                id: "table_\(index)-hub",
+                sourceID: "table_\(index)",
+                targetID: "hub",
+                sourceColumn: "hub_id",
+                targetColumn: "id"
+            )
+        }
+        let graph = SchemaGraph(nodes: nodes, edges: edges)
+        let layout = GraphLayoutModel()
+
+        layout.reset(for: graph, presentation: .compact, descriptorLookup: nil)
+        layout.stabilize(
+            graph: graph,
+            presentation: .compact,
+            descriptorLookup: nil,
+            nodeSizeLookup: nil,
+            maxIterations: 260
+        )
+
+        let points = layout.allPositions(for: graph).values
+        let width = (points.map(\.x).max() ?? 0) - (points.map(\.x).min() ?? 0)
+        let height = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
+
+        #expect(width <= 7_000)
+        #expect(height <= 3_000)
+        #expect(!layout.isAnimating)
+        #expect(layout.hasSettledLayout)
+    }
 }
 
 private func makeDescriptor(name: String, columnCount: Int) -> EditableTableDescriptor {

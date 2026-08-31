@@ -48,6 +48,19 @@ struct PostgreSQLIntegrationTests {
             #expect(snapshot.descriptors.allSatisfy { $0.schemaName != "pg_catalog" && $0.schemaName != "information_schema" })
             #expect(snapshot.descriptors.allSatisfy { !($0.schemaName ?? "").hasPrefix("pg_temp_") })
 
+            let visibleObjectCount = try await backend.executeReadOnlyQuery(sql: """
+                SELECT count(*) AS object_count
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                  AND n.nspname !~ '^pg_temp_'
+                  AND c.relkind IN ('r', 'p', 'v', 'm')
+                  AND has_schema_privilege(n.oid, 'USAGE')
+                  AND has_table_privilege(c.oid, 'SELECT')
+                """)
+            #expect(visibleObjectCount.rows.first?.values.first?.displayText == String(snapshot.descriptors.count))
+            #expect(snapshot.graph.nodes.count == snapshot.descriptors.count)
+
             let scalar = try await backend.executeReadOnlyQuery(sql: "SELECT 1 AS value")
             #expect(scalar.rows.first?.values.first == .integer(1))
             _ = try await backend.explainQueryPlan(sql: "SELECT 1")

@@ -3259,6 +3259,8 @@ public struct SchemaGraphView: View {
     private func fitGraph(in size: CGSize) {
         let bounds = graphContentBoundsForFit()
         let transform: GraphViewportTransform
+        let fitMinimumZoom: CGFloat = session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 0.08 : 0.45
+        let fitPadding: CGFloat = session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 72 : 120
         if shouldAutoFitStoryViewport {
             transform = GraphViewportTransform.fit(
                 contentBounds: bounds,
@@ -3268,7 +3270,12 @@ public struct SchemaGraphView: View {
                 maxZoom: 1.0
             )
         } else {
-            transform = GraphViewportTransform.fit(contentBounds: bounds, in: size)
+            transform = GraphViewportTransform.fit(
+                contentBounds: bounds,
+                in: size,
+                padding: fitPadding,
+                minZoom: fitMinimumZoom
+            )
         }
         setViewport(transform, animated: true)
     }
@@ -3306,10 +3313,10 @@ public struct SchemaGraphView: View {
         return bounds
     }
 
-    /// Crowded graphs (>10 nodes) skip auto-fit so nodes aren't squashed into the viewport.
-    /// The user pans/zooms manually and clustering does the visual organization.
+    /// Fit every schema on first open. Large schemas use a bounded overview layout and a
+    /// lower minimum zoom so their nodes remain reachable instead of opening off-canvas.
     private var shouldAutoFit: Bool {
-        session.graph.nodes.count <= GraphLayoutModel.crowdedNodeThreshold
+        true
     }
 
     private func performInitialLayout(in size: CGSize) {
@@ -3352,9 +3359,7 @@ public struct SchemaGraphView: View {
         invalidateClusterTitleCache()
 
         if refit {
-            if session.showStoryCardsInGraph || shouldAutoFit {
-                fitGraph(in: size)
-            }
+            fitGraph(in: size)
         }
     }
 
