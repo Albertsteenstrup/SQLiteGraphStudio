@@ -5,6 +5,7 @@ enum TestSupport {
     static func temporaryDatabaseURL(named name: String = UUID().uuidString) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("SQLiteGraphStudioTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent("\(name).sqlite", isDirectory: false)
     }
 
