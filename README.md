@@ -75,6 +75,10 @@ Both database types use the same graph engine. For more than 128 tables, it divi
 - Zoomed-out overviews draw inexpensive table marks and group relationships. Zoom in or select a table for details. Detailed card views are capped at 160; remaining visible tables stay represented by marks, including when a large selection is active.
 - **Show All Table Cards** uses the same size-aware layout and refits large views. Return to all groups to recover the overview; ordinary panning and hovering do not rerun layout.
 
+Canvas interaction reuses relationship indexes, group connections and table sizes while the camera moves. Only visible detailed cards prepare column rows; overview marks use a spatial hit index. Camera updates keep the minimap moving during continuous gestures, and the active drag stays mounted at the viewport edge. The minimap batches its table and relationship drawing. These limits apply equally to PostgreSQL and SQLite.
+
+See [verification evidence](docs/postgres-parity-scale-verification.md) for measured layout and canvas preparation work, test coverage and the limits of the native interaction checks.
+
 Dragging and saved pins remain available. Relayout deliberately rebuilds positions; obsolete large-grid snapshots are regenerated while preserving saved pins. If saved pins themselves overlap, their explicit positions take precedence.
 
 See [query, browsing, export and metadata contracts](docs/query-data-contracts.md) for value formats and consistency guarantees.

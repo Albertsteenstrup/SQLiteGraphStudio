@@ -153,12 +153,18 @@ public final class AppSession {
     public var databaseURL: URL?
     public private(set) var databaseCapabilities: DatabaseCapabilities = .none
     public var tables: [TableSummary] = []
-    public var graph: SchemaGraph = .empty
+    public var graph: SchemaGraph = .empty {
+        didSet { graphRevision &+= 1 }
+    }
+    private(set) var graphRevision = 0
     public private(set) var schemaMetadataState = SchemaMetadataState()
     public var metadataDiagnostics: [String] { schemaMetadataState.diagnostics }
 
     public var schemaSidecar: SchemaSidecar = .empty
-    public private(set) var graphGrouping: GraphGrouping = .empty
+    public private(set) var graphGrouping: GraphGrouping = .empty {
+        didSet { graphGroupingRevision &+= 1 }
+    }
+    private(set) var graphGroupingRevision = 0
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
@@ -719,8 +725,12 @@ public final class AppSession {
     }
     
     public func setGraphSelection(_ nodeIDs: Set<String>) {
-        selectedGraphNodeIDs = nodeIDs.filter { graph.contains(nodeID: $0) }
-        selectedGraphNodeID = selectedGraphNodeIDs.first
+        let validIDs = nodeIDs.filter { graph.contains(nodeID: $0) }
+        guard validIDs != selectedGraphNodeIDs else { return }
+        selectedGraphNodeIDs = validIDs
+        if selectedGraphNodeID.map({ validIDs.contains($0) }) != true {
+            selectedGraphNodeID = validIDs.min()
+        }
     }
     
     public func clearGraphSelection() {

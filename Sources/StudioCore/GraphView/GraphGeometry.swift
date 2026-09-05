@@ -42,6 +42,23 @@ struct GraphViewportTransform: Sendable, Equatable {
         )
     }
 
+    func magnified(by magnification: CGFloat, at anchor: CGPoint, in viewportSize: CGSize,
+                   minZoom: CGFloat = 0.12, maxZoom: CGFloat = 2.4) -> GraphViewportTransform {
+        guard viewportSize.width > 0, viewportSize.height > 0, magnification.isFinite,
+              zoom.isFinite, zoom > 0, minZoom > 0, maxZoom >= minZoom else { return self }
+        let oldZoom = zoom
+        let newZoom = max(minZoom, min(oldZoom * (1 + magnification), maxZoom))
+        guard newZoom != oldZoom else { return self }
+        let centeredAnchor = CGPoint(x: anchor.x - viewportSize.width / 2,
+                                    y: anchor.y - viewportSize.height / 2)
+        let anchoredPoint = CGPoint(x: (centeredAnchor.x - pan.width) / oldZoom,
+                                    y: (centeredAnchor.y - pan.height) / oldZoom)
+        return GraphViewportTransform(zoom: newZoom, pan: CGSize(
+            width: centeredAnchor.x - anchoredPoint.x * newZoom,
+            height: centeredAnchor.y - anchoredPoint.y * newZoom
+        ))
+    }
+
     static func fit(
         contentBounds: CGRect,
         in viewportSize: CGSize,
@@ -224,7 +241,7 @@ struct GraphCardGeometry: Sendable, Equatable {
         tableID: String,
         frame: CGRect,
         role: GraphCardRole,
-        descriptor: EditableTableDescriptor?,
+        descriptor: @autoclosure () -> EditableTableDescriptor?,
         displayedColumns: [String]? = nil,
         scale: CGFloat = 1
     ) {
@@ -233,7 +250,7 @@ struct GraphCardGeometry: Sendable, Equatable {
         self.role = role
 
         var rowFrames: [String: CGRect] = [:]
-        if let descriptor {
+        if role != .collapsedNode, let descriptor = descriptor() {
             let visibleColumnNames = displayedColumns ?? Self.defaultDisplayedColumns(for: descriptor, role: role)
             for (index, columnName) in visibleColumnNames.enumerated() {
                 if let rowFrame = GraphCardLayout.rowFrame(columnIndex: index, in: frame, role: role, scale: scale) {
@@ -248,7 +265,9 @@ struct GraphCardGeometry: Sendable, Equatable {
         switch role {
         case .expandedNode:
             return descriptor.columns.prefix(GraphCardLayout.maxExpandedVisibleRows).map(\.name)
-        case .collapsedNode, .previewNode, .floatingDetails:
+        case .collapsedNode:
+            return []
+        case .previewNode, .floatingDetails:
             return descriptor.columns.map(\.name)
         }
     }

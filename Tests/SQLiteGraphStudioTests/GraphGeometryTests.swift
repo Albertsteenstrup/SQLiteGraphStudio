@@ -3,6 +3,32 @@ import Testing
 @testable import StudioCore
 
 struct GraphGeometryTests {
+    @Test func tinyMagnificationAtLargeOverviewKeepsThePointerAnchorWithoutJumping() {
+        let original = GraphViewportTransform(zoom: 0.008, pan: CGSize(width: 50, height: -20))
+        let size = CGSize(width: 1_000, height: 700)
+        let anchor = CGPoint(x: 750, y: 250)
+        let world = original.graphPoint(for: anchor, in: size)
+        let next = original.magnified(by: 0.01, at: anchor, in: size, minZoom: 0.005)
+        #expect(abs(next.zoom - 0.00808) < 0.00000001)
+        let projected = next.point(for: world, in: size)
+        #expect(abs(projected.x - anchor.x) < 0.00001)
+        #expect(abs(projected.y - anchor.y) < 0.00001)
+    }
+
+    @Test func overviewZoomCanReturnToItsFitScaleAndKeepsOrdinaryLimits() {
+        let size = CGSize(width: 1_000, height: 700)
+        let origin = GraphViewportTransform(zoom: 0.02, pan: .zero)
+        #expect(origin.magnified(by: -0.99, at: .zero, in: size, minZoom: 0.005).zoom == 0.005)
+        #expect(origin.magnified(by: -0.99, at: .zero, in: size).zoom == 0.12)
+        #expect(GraphViewportTransform(zoom: 2, pan: .zero).magnified(by: 1, at: .zero, in: size).zoom == 2.4)
+    }
+
+    @Test func invalidMagnificationInputPreservesTheCamera() {
+        let origin = GraphViewportTransform(zoom: 0.5, pan: CGSize(width: 10, height: 20))
+        #expect(origin.magnified(by: 1, at: .zero, in: .zero) == origin)
+        #expect(origin.magnified(by: .nan, at: .zero, in: CGSize(width: 500, height: 500)) == origin)
+    }
+
     @Test
     func expandedCardAnchorsResolveToForeignKeyAndReferencedRows() throws {
         let posts = makeDescriptor(name: "posts", columns: [

@@ -28,6 +28,11 @@ enum GraphExploration {
 
     static func page(_ ids: [String], index: Int) -> Page {
         let ordered = Set(ids).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return pageOrdered(ordered, index: index)
+    }
+
+    /// Group memberships are already unique and sorted by the grouping model.
+    static func pageOrdered(_ ordered: [String], index: Int) -> Page {
         let count = max(1, (ordered.count + pageSize - 1) / pageSize)
         let index = min(max(index, 0), count - 1)
         let start = index * pageSize
@@ -38,6 +43,12 @@ enum GraphExploration {
         let detailIDs: Set<String>
         let markerIDs: Set<String>
         var interactiveIDs: Set<String> { detailIDs.union(markerIDs) }
+    }
+
+    private struct RenderCandidate {
+        let id: String
+        let priority: Int
+        let distanceSquared: CGFloat
     }
 
     static func selection(in rectangle: CGRect, frames: [String: CGRect]) -> Set<String> {
@@ -54,29 +65,50 @@ enum GraphExploration {
 
     static func renderPlan(
         frames: [String: CGRect], viewport: CGRect, zoom: CGFloat,
-        isLarge: Bool, emphasized: Set<String>, primary: Set<String> = []
+        isLarge: Bool, emphasized: Set<String>, primary: Set<String> = [], retained: Set<String> = []
     ) -> RenderPlan {
-        let visible = frames.filter { $0.value.intersects(viewport.insetBy(dx: -80, dy: -80)) }
-        let visibleIDs = Set(visible.keys)
-        guard isLarge else { return RenderPlan(detailIDs: visibleIDs, markerIDs: []) }
-        let priorities = emphasized.intersection(visibleIDs).sorted { lhs, rhs in
-            if primary.contains(lhs) != primary.contains(rhs) { return primary.contains(lhs) }
-            let a = visible[lhs]!, b = visible[rhs]!
-            let da = hypot(a.midX - viewport.midX, a.midY - viewport.midY)
-            let db = hypot(b.midX - viewport.midX, b.midY - viewport.midY)
-            return da == db ? lhs < rhs : da < db
+        let paddedViewport = viewport.insetBy(dx: -80, dy: -80)
+        let centerX = viewport.midX, centerY = viewport.midY
+        let includesOrdinaryDetails = zoom >= detailZoom
+        var visibleIDs: Set<String> = []
+        var retainedIDs: Set<String> = []
+        var candidates: [RenderCandidate] = []
+        if isLarge { candidates.reserveCapacity(frames.count) }
+
+        for (id, frame) in frames {
+            let isVisible = frame.intersects(paddedViewport)
+            let isRetained = retained.contains(id)
+            guard isVisible || isRetained else { continue }
+            if isVisible { visibleIDs.insert(id) }
+            if isRetained { retainedIDs.insert(id) }
+            guard isLarge else { continue }
+
+            // Resolve membership once per candidate. Sorting uses scalar ranks and
+            // distances instead of repeatedly hashing IDs into sets/dictionaries.
+            let isPrimary = primary.contains(id)
+            let priority: Int
+            if isRetained {
+                priority = isPrimary ? 0 : 1
+            } else if isPrimary {
+                priority = 2
+            } else if emphasized.contains(id) {
+                priority = 3
+            } else {
+                guard includesOrdinaryDetails else { continue }
+                priority = 4
+            }
+            let dx = frame.midX - centerX, dy = frame.midY - centerY
+            candidates.append(RenderCandidate(id: id, priority: priority, distanceSquared: dx * dx + dy * dy))
         }
-        let priorityIDs = Set(priorities.prefix(maximumDetailedCards))
-        guard zoom >= detailZoom else {
-            return RenderPlan(detailIDs: priorityIDs, markerIDs: visibleIDs.subtracting(priorityIDs))
+
+        guard isLarge else { return RenderPlan(detailIDs: visibleIDs.union(retainedIDs), markerIDs: []) }
+        candidates.sort { lhs, rhs in
+            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+            return lhs.distanceSquared == rhs.distanceSquared
+                ? lhs.id < rhs.id
+                : lhs.distanceSquared < rhs.distanceSquared
         }
-        let candidates = visible.keys.filter { !priorityIDs.contains($0) }.sorted { lhs, rhs in
-            let a = visible[lhs]!, b = visible[rhs]!
-            let da = hypot(a.midX - viewport.midX, a.midY - viewport.midY)
-            let db = hypot(b.midX - viewport.midX, b.midY - viewport.midY)
-            return da == db ? lhs < rhs : da < db
-        }
-        let details = priorityIDs.union(candidates.prefix(max(0, maximumDetailedCards - priorityIDs.count)))
+        let details = Set(candidates.prefix(maximumDetailedCards).map(\.id))
         return RenderPlan(detailIDs: details, markerIDs: visibleIDs.subtracting(details))
     }
 

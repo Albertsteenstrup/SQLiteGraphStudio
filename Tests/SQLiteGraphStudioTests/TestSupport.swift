@@ -2,6 +2,7 @@ import Foundation
 @testable import StudioCore
 
 enum TestSupport {
+
     static func temporaryDatabaseURL(named name: String = UUID().uuidString) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("SQLiteGraphStudioTests", isDirectory: true)

@@ -57,6 +57,29 @@ struct GraphExplorationTests {
         #expect(plan.detailIDs.isDisjoint(with: plan.markerIDs))
     }
 
+    @Test func hoveredOrExpandedCardKeepsDetailPriorityWithoutSelection() {
+        let frames = Dictionary(uniqueKeysWithValues: (0..<2_000).map {
+            (String($0), CGRect(x: $0 % 50 * 8, y: $0 / 50 * 8, width: 6, height: 6))
+        })
+        let plan = GraphExploration.renderPlan(
+            frames: frames, viewport: CGRect(x: 0, y: 0, width: 500, height: 500),
+            zoom: 1, isLarge: true, emphasized: [], primary: ["1999"]
+        )
+        #expect(plan.detailIDs.contains("1999"))
+        #expect(plan.detailIDs.count == GraphExploration.maximumDetailedCards)
+    }
+
+    @Test func expandedUnselectedCardStaysDetailedAtOverviewZoom() {
+        let frames = ["expanded": CGRect(x: 40, y: 40, width: 60, height: 40),
+                      "other": CGRect(x: 120, y: 40, width: 30, height: 8)]
+        let plan = GraphExploration.renderPlan(
+            frames: frames, viewport: CGRect(x: 0, y: 0, width: 500, height: 500),
+            zoom: 0.1, isLarge: true, emphasized: [], primary: ["expanded"]
+        )
+        #expect(plan.detailIDs == ["expanded"])
+        #expect(plan.markerIDs == ["other"])
+    }
+
     @Test(arguments: [0.08, 1.0]) func selectingEveryTableStillBoundsDetailedViews(zoom: Double) {
         let frames = Dictionary(uniqueKeysWithValues: (0..<2_000).map {
             (String($0), CGRect(x: $0 % 50 * 8, y: $0 / 50 * 8, width: 6, height: 6))
@@ -65,6 +88,59 @@ struct GraphExplorationTests {
         #expect(plan.detailIDs.count == GraphExploration.maximumDetailedCards)
         #expect(plan.detailIDs.contains("1999"))
         #expect(plan.markerIDs.count == 2_000 - GraphExploration.maximumDetailedCards)
+    }
+
+    @Test(arguments: [0.08, 1.0])
+    func retainedAndPrimaryPriorityPrecedeDistanceWithStableIDTies(zoom: Double) {
+        let selectedIDs = (0..<158).map { "selected_\($0)" }.sorted()
+        var entries = selectedIDs.map { ($0, CGRect(x: 240, y: 240, width: 20, height: 20)) }
+        entries += [
+            ("retained-primary", CGRect(x: 20_000, y: 20_000, width: 20, height: 20)),
+            ("retained", CGRect(x: 30_000, y: 30_000, width: 20, height: 20)),
+            ("primary", CGRect(x: 0, y: 0, width: 20, height: 20)),
+            ("outside-primary", CGRect(x: 40_000, y: 40_000, width: 20, height: 20)),
+            ("plain", CGRect(x: 240, y: 240, width: 20, height: 20)),
+        ]
+        let expected = Set(selectedIDs.prefix(157)).union(["retained-primary", "retained", "primary"])
+        for orderedEntries in [entries, Array(entries.reversed())] {
+            let plan = GraphExploration.renderPlan(
+                frames: Dictionary(uniqueKeysWithValues: orderedEntries),
+                viewport: CGRect(x: 0, y: 0, width: 500, height: 500), zoom: zoom, isLarge: true,
+                emphasized: Set(selectedIDs), primary: ["retained-primary", "primary", "outside-primary"],
+                retained: ["retained-primary", "retained", "missing"]
+            )
+            #expect(plan.detailIDs == expected)
+            #expect(plan.markerIDs == [selectedIDs.last!, "plain"])
+            #expect(!plan.interactiveIDs.contains("outside-primary"))
+            #expect(!plan.interactiveIDs.contains("missing"))
+        }
+    }
+
+    @Test func nearestSelectedTablesBeatEarlierIDsAtTheDetailBudgetBoundary() {
+        let nearIDs = (0..<160).map { "near_\($0)" }
+        var frames = Dictionary(uniqueKeysWithValues: nearIDs.map { ($0, CGRect(x: 240, y: 240, width: 20, height: 20)) })
+        frames["alphabetically-first"] = CGRect(x: 0, y: 0, width: 20, height: 20)
+        let plan = GraphExploration.renderPlan(
+            frames: frames, viewport: CGRect(x: 0, y: 0, width: 500, height: 500),
+            zoom: 0.08, isLarge: true, emphasized: Set(frames.keys)
+        )
+
+        #expect(plan.detailIDs == Set(nearIDs))
+        #expect(plan.markerIDs == ["alphabetically-first"])
+    }
+
+    @Test func smallGraphCullingKeepsRetainedNodesWithoutApplyingLargeGraphBudget() {
+        let visibleIDs = (0..<200).map { "visible_\($0)" }
+        var frames = Dictionary(uniqueKeysWithValues: visibleIDs.map { ($0, CGRect(x: 40, y: 40, width: 20, height: 20)) })
+        frames["retained"] = CGRect(x: 20_000, y: 20_000, width: 20, height: 20)
+        frames["outside"] = CGRect(x: 30_000, y: 30_000, width: 20, height: 20)
+        let plan = GraphExploration.renderPlan(
+            frames: frames, viewport: CGRect(x: 0, y: 0, width: 500, height: 500),
+            zoom: 0.08, isLarge: false, emphasized: [], retained: ["retained"]
+        )
+
+        #expect(plan.detailIDs == Set(visibleIDs).union(["retained"]))
+        #expect(plan.markerIDs.isEmpty)
     }
 
     @Test func groupEdgesAggregateDeterministically() {
