@@ -878,7 +878,7 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     )
                     return TableRow(identity: identity, values: values)
                 }
-                return TableChunk(rows: tableRows, totalRowCount: countState.navigationCount, offset: query.offset, limit: limit, countState: countState, hasMore: rows.rows.count > limit)
+                return TableChunk(rows: tableRows, totalRowCount: max(countState.navigationCount, query.offset + min(rows.rows.count, limit) + (rows.rows.count > limit ? 1 : 0)), offset: query.offset, limit: limit, countState: countState, hasMore: rows.rows.count > limit)
             }
         } catch {
             throw Self.mapError(error)

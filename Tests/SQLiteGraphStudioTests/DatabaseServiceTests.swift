@@ -108,7 +108,9 @@ struct DatabaseServiceTests {
             descriptor: descriptor
         )
 
-        #expect(chunk.totalRowCount == 100_000)
+        #expect(chunk.countState == .atLeast(5_250))
+        #expect(chunk.hasMore)
+        #expect(try await service.countRows(query: .init(), descriptor: descriptor) == 100_000)
         #expect(chunk.rows.count == 250)
         #expect(chunk.offset == 5_000)
 
@@ -274,7 +276,7 @@ struct DatabaseServiceTests {
             descriptor: descriptor
         )
 
-        #expect(refreshed.totalRowCount == 13)
+        #expect(try await service.countRows(query: .init(), descriptor: descriptor) == 13)
         #expect(refreshed.rows.first?.values[1] == .text(""))
     }
 }

@@ -201,7 +201,30 @@ struct PostgreSQLIntegrationTests {
         } catch { await backend.close(); throw error }
     }
 
- }
+    @MainActor
+    private static func verifySharedExploration(snapshot: CatalogSnapshot) {
+        let descriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
+        let grouping = GraphGrouping.resolve(graph: snapshot.graph, descriptors: descriptors)
+        #expect(grouping.nodeCount == snapshot.graph.nodes.count)
+        let layout = GraphLayoutModel()
+        layout.setClusterHints(grouping.nodeToGroup)
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            layout.reset(for: snapshot.graph, presentation: .compact, descriptorLookup: { descriptors[$0] })
+            layout.stabilize(graph: snapshot.graph, presentation: .compact,
+                             descriptorLookup: { descriptors[$0] }, nodeSizeLookup: nil)
+        }
+        let positions = layout.allPositions(for: snapshot.graph)
+        #expect(positions.count == snapshot.graph.nodes.count)
+        #expect(positions.values.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+        let sizes = Dictionary(uniqueKeysWithValues: snapshot.graph.nodes.map {
+            ($0.id, GraphCardLayout.nodeSize(title: $0.title, descriptor: descriptors[$0.id], style: .collapsed, hovered: false))
+        })
+        #expect(LargeGraphLayout.isNonOverlapping(positions, sizes: sizes))
+        print("Live PostgreSQL: \(snapshot.graph.nodes.count) objects, \(snapshot.graph.edges.count) relationships, \(grouping.groupCount) groups; shared layout \(elapsed)")
+    }
+
+}
 
 struct PostgreSQLTestConfiguration {
     static var isEnabled: Bool { ProcessInfo.processInfo.environment["SGS_POSTGRES_TESTS"] == "1" }

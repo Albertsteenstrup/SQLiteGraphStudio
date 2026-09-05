@@ -439,7 +439,7 @@ private struct QueryResultsView: View {
     }
 }
 
-private struct QueryResultsGridRepresentable: NSViewRepresentable {
+struct QueryResultsGridRepresentable: NSViewRepresentable {
     let result: QueryResult
     let columnDescription: (String) -> String?
     let inspectRow: (QueryResultRow) -> Void
@@ -666,10 +666,10 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             copySelection()
         }
 
-        private func copySelection() {
-            guard let tableView else { return }
+        func selectionText() -> String? {
+            guard let tableView else { return nil }
             let selectedRows = tableView.selectedRowIndexes
-            guard !selectedRows.isEmpty else { return }
+            guard !selectedRows.isEmpty else { return nil }
             let visualColumns = tableView.selectedColumnIndexes.isEmpty
                 ? IndexSet(integersIn: tableView.tableColumns.indices)
                 : tableView.selectedColumnIndexes
@@ -690,8 +690,13 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
                 lines.append(values.joined(separator: "\t"))
             }
 
+            return lines.joined(separator: "\n")
+        }
+
+        private func copySelection() {
+            guard let text = selectionText() else { return }
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+            NSPasteboard.general.setString(text, forType: .string)
         }
     }
 }

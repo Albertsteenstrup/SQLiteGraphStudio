@@ -1182,6 +1182,7 @@ func parseSQLiteValue(_ rawValue: String, for column: TableColumn) throws -> SQL
 extension TableCountState {
     static func forPage(query: TableQueryState, rowCount: Int, hasMore: Bool, exactCount: Int?) -> Self {
         let end = query.offset + rowCount
+        if query.after != nil { return exactCount.map(Self.exact) ?? .unknown }
         if let exactCount, exactCount >= end + (hasMore ? 1 : 0) { return .exact(exactCount) }
         if hasMore { return .atLeast(end) }
         return rowCount > 0 || query.offset == 0 ? .exact(end) : .unknown

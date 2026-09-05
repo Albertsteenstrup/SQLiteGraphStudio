@@ -234,7 +234,7 @@ public actor SQLiteDatabaseBackend {
 
                         return TableRow(identity: identity, values: rowValues)
                     },
-                    totalRowCount: countState.navigationCount,
+                    totalRowCount: max(countState.navigationCount, query.offset + min(rows.count, limit) + (rows.count > limit ? 1 : 0)),
                     offset: query.offset,
                     limit: limit,
                     countState: countState, hasMore: rows.count > limit

@@ -4,6 +4,13 @@ import Testing
 @testable import StudioCore
 
 @MainActor struct SessionOpenLifecycleTests {
+    @Test func documentPanelUsesExtensionsAndAllowsDirectoryNavigation() throws {
+        let filter = DatabaseDocumentOpenPanelDelegate(extensions: ["sqlite", "db"])
+        #expect(filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.sqlite")))
+        #expect(filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.DB")))
+        #expect(!filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.txt")))
+        #expect(filter.panel(NSNull(), shouldEnable: FileManager.default.temporaryDirectory))
+    }
     @Test func closeDuringCatalogLoadCannotReopenSession() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-open-\(UUID().uuidString).sqlite")
         let database = try DatabaseQueue(path: url.path)

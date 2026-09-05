@@ -131,6 +131,25 @@ struct StreamingExportTests {
         await service.close()
     }
 
+    @Test func staleDisplayedTargetCannotExportDifferentDatabase() async throws {
+        let directory = try exportDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first.sqlite")
+        let second = directory.appendingPathComponent("second.sqlite")
+        let service = DatabaseService()
+        let fixture = try DatabaseQueue(path: first.path)
+        try await fixture.write { db in try db.execute(sql: "CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)") }
+        try await service.open(url: first)
+        let descriptor = try await service.fetchDescriptor(named: "items")
+        try await service.open(url: second)
+        let destination = directory.appendingPathComponent("result.csv")
+        await #expect(throws: CancellationError.self) {
+            try await service.exportTableRows(query: .init(), descriptor: descriptor, to: destination, format: .csv, expectedTarget: .sqlite(first))
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        await service.close()
+    }
+
     private func exportDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -290,13 +290,9 @@ public final class AppSession {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [
-            UTType(filenameExtension: "sqlite"),
-            UTType(filenameExtension: "sqlite3"),
-            UTType(filenameExtension: "db"),
-            UTType(filenameExtension: "sqlite-db"),
-            UTType(filenameExtension: "sqlitedb"),
-        ].compactMap { $0 }
+        panel.allowedContentTypes = [.data]
+        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: ["sqlite", "sqlite3", "db", "sqlite-db", "sqlitedb"])
+        panel.delegate = documentFilter
         panel.prompt = "Open Database"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -352,7 +348,7 @@ public final class AppSession {
         // a data filter plus the delegate's explicit extension check instead
         // of relying on dynamic UTI inference for the custom suffixes.
         panel.allowedContentTypes = [.data]
-        let documentFilter = PostgreSQLDocumentOpenPanelDelegate()
+        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: PostgresConnectionDocument.supportedFileExtensions)
         panel.delegate = documentFilter
         panel.prompt = "Open PostgreSQL Document"
 
@@ -615,7 +611,7 @@ public final class AppSession {
     }
 
     public func showCreateTable() {
-        guard hasOpenDatabase, databaseCapabilities.canCreateTable else { return }
+        guard !isRefreshing, hasOpenDatabase, databaseCapabilities.canCreateTable else { return }
         isCreateTablePresented = true
     }
 
@@ -624,7 +620,7 @@ public final class AppSession {
     }
 
     public func showAlterTable() {
-        guard activeTab != nil, databaseCapabilities.canAlterSchema else { return }
+        guard !isRefreshing, activeTab != nil, databaseCapabilities.canAlterSchema else { return }
         isAlterTablePresented = true
     }
 
@@ -1064,7 +1060,7 @@ public final class AppSession {
     }
 
     public func importRowsIntoActiveTable(format: DataTransferFormat) {
-        guard databaseCapabilities.canImportRows, let activeTab else { return }
+        guard !isRefreshing, databaseCapabilities.canImportRows, let activeTab else { return }
 
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -1432,9 +1428,12 @@ private struct SchemaRefreshSnapshot {
     let sidecar: SchemaSidecar
 }
 
-private final class PostgreSQLDocumentOpenPanelDelegate: NSObject, NSOpenSavePanelDelegate {
+final class DatabaseDocumentOpenPanelDelegate: NSObject, NSOpenSavePanelDelegate {
+    private let extensions: Set<String>
+    init(extensions: Set<String>) { self.extensions = extensions }
     func panel(_ sender: Any, shouldEnable url: URL) -> Bool {
-        PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased())
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { return true }
+        return extensions.contains(url.pathExtension.lowercased())
     }
 }
 

@@ -74,6 +74,13 @@ struct TableBrowsingRegressionTests {
         await service.close()
     }
 
+    @Test func cursorOffsetsAreNotCurrentCountEvidence() {
+        var query = TableQueryState(offset: 300, limit: 50)
+        query.after = .init(values: ["id": .integer(300)])
+        #expect(TableCountState.forPage(query: query, rowCount: 10, hasMore: false, exactCount: nil) == .unknown)
+        #expect(TableCountState.forPage(query: query, rowCount: 50, hasMore: true, exactCount: nil) == .unknown)
+        #expect(TableCountState.forPage(query: query, rowCount: 10, hasMore: false, exactCount: 500) == .exact(500))
+    }
     @Test func emptyPastEndIsUnknownAndStaleCountCannotEnableNext() async throws {
         let url = try Self.fixture()
         let service = DatabaseService()
