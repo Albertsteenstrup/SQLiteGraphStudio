@@ -162,7 +162,8 @@ public struct QueryWorkspaceView: View {
                         case .results:
                             QueryResultsView(
                                 result: activeQuery.result,
-                                columnDescription: { session.descriptionForQueryResultColumn($0) }
+                                columnDescription: { session.descriptionForQueryResultColumn($0) },
+                                inspectRow: { session.inspectQueryRecord(result: activeQuery.result, row: $0) }
                             )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         case .plan:
@@ -369,6 +370,7 @@ private struct QueryPlanView: View {
 private struct QueryResultsView: View {
     let result: QueryResult
     let columnDescription: (String) -> String?
+    let inspectRow: (QueryResultRow) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -403,7 +405,8 @@ private struct QueryResultsView: View {
             } else {
                 QueryResultsGridRepresentable(
                     result: result,
-                    columnDescription: columnDescription
+                    columnDescription: columnDescription,
+                    inspectRow: inspectRow
                 )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(StudioPalette.gridSurface)
@@ -420,9 +423,10 @@ private struct QueryResultsView: View {
 private struct QueryResultsGridRepresentable: NSViewRepresentable {
     let result: QueryResult
     let columnDescription: (String) -> String?
+    let inspectRow: (QueryResultRow) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(result: result, columnDescription: columnDescription)
+        Coordinator(result: result, columnDescription: columnDescription, inspectRow: inspectRow)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -433,7 +437,8 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
         context.coordinator.update(
             result: result,
             columnDescription: columnDescription,
-            scrollView: nsView
+            scrollView: nsView,
+            inspectRow: inspectRow
         )
     }
 
@@ -441,11 +446,13 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         private var result: QueryResult
         private var columnDescription: (String) -> String?
+        private var inspectRow: (QueryResultRow) -> Void
         private weak var tableView: NSTableView?
         private weak var headerView: QueryResultsHeaderView?
 
-        init(result: QueryResult, columnDescription: @escaping (String) -> String?) {
+        init(result: QueryResult, columnDescription: @escaping (String) -> String?, inspectRow: @escaping (QueryResultRow) -> Void) {
             self.result = result
+            self.inspectRow = inspectRow
             self.columnDescription = columnDescription
         }
 
@@ -495,9 +502,11 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
         func update(
             result: QueryResult,
             columnDescription: @escaping (String) -> String?,
-            scrollView: NSScrollView
+            scrollView: NSScrollView,
+            inspectRow: @escaping (QueryResultRow) -> Void
         ) {
             self.result = result
+            self.inspectRow = inspectRow
             self.columnDescription = columnDescription
             headerView?.descriptionForColumn = columnDescription
             guard let tableView else { return }
@@ -588,6 +597,12 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             let clickedColumnIndex = tableView.column(at: point)
 
             let menu = NSMenu()
+            let inspectItem = NSMenuItem(title: "Inspect Record…", action: #selector(contextMenuInspect(_:)), keyEquivalent: "")
+            inspectItem.target = self
+            inspectItem.representedObject = clickedRow
+            inspectItem.isEnabled = result.rows.indices.contains(clickedRow)
+            menu.addItem(inspectItem)
+            menu.addItem(.separator())
 
             // Copy cell value
             let copyCellItem = NSMenuItem(title: "Copy Cell", action: #selector(contextMenuCopyCell(_:)), keyEquivalent: "")
@@ -606,6 +621,11 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             menu.addItem(copyRowsItem)
 
             return menu
+        }
+
+        @objc func contextMenuInspect(_ sender: NSMenuItem) {
+            guard let row = sender.representedObject as? Int, result.rows.indices.contains(row) else { return }
+            inspectRow(result.rows[row])
         }
 
         @objc func contextMenuCopyCell(_ sender: NSMenuItem) {

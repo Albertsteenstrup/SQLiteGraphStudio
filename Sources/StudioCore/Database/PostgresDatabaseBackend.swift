@@ -277,7 +277,20 @@ public enum PostgresCatalogMapper {
 
         return CatalogSnapshot(
             descriptors: descriptors.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
-            graph: SchemaGraph(nodes: graphNodes, edges: edges)
+            graph: SchemaGraph(nodes: graphNodes, edges: edges),
+            recordRelationshipMetadata: foreignKeys.map { foreignKey in
+                let sourceTable = RecordTableID(schemaName: foreignKey.sourceSchemaName, objectName: foreignKey.sourceObjectName)
+                let targetTable = RecordTableID(schemaName: foreignKey.targetSchemaName, objectName: foreignKey.targetObjectName)
+                return RecordRelationship(
+                    id: sourceTable.id + ":fk:" + foreignKey.id,
+                    sourceTable: sourceTable,
+                    targetTable: targetTable,
+                    sourceColumns: foreignKey.sourceColumns,
+                    targetColumns: foreignKey.targetColumns,
+                    sourceDescriptor: descriptors.first { RecordTableID(descriptor: $0) == sourceTable },
+                    targetDescriptor: descriptors.first { RecordTableID(descriptor: $0) == targetTable }
+                )
+            }
         )
     }
 
@@ -301,7 +314,7 @@ public enum PostgresValueMapper {
         guard data.value != nil else { return .null }
 
         if data.type.knownSQLName?.hasSuffix("[]") == true {
-            return .array(data.array.map { arrayLiteral($0) } ?? rawText(data))
+            return .array(arrayText(data))
         }
 
         switch data.type {
@@ -316,7 +329,7 @@ public enum PostgresValueMapper {
         case .uuid:
             return .uuid(data.uuid?.uuidString ?? rawText(data))
         case .date, .time, .timetz, .timestamp, .timestamptz:
-            return .dateTime(rawText(data))
+            return .dateTime(temporalText(data) ?? rawText(data))
         case .json:
             return .json(data.json.flatMap { String(data: $0, encoding: .utf8) } ?? rawText(data))
         case .jsonb:
@@ -349,28 +362,122 @@ public enum PostgresValueMapper {
         return "0x" + (data.bytes ?? []).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func arrayText(_ data: PostgresData) -> String {
-        guard let values = data.array else {
-            return rawText(data)
+    /// PostgreSQL timestamps are integer microseconds from 2000-01-01.
+    /// Going through Foundation Date.description would discard the key's fraction.
+    private static func temporalText(_ data: PostgresData) -> String? {
+        guard data.formatCode == .binary, var buffer = data.value else { return nil }
+        if data.type == .date {
+            guard let days = buffer.readInteger(as: Int32.self) else { return nil }
+            if days == Int32.max { return "infinity" }
+            if days == Int32.min { return "-infinity" }
+            let date = calendarDate(Int64(days))
+            return date.text + (date.beforeCommonEra ? " BC" : "")
         }
-        return arrayLiteral(values)
+        guard let micros = buffer.readInteger(as: Int64.self) else { return nil }
+        if data.type == .time || data.type == .timetz {
+            guard (0...86_400_000_000).contains(micros) else { return nil }
+            var result = clockText(micros)
+            if data.type == .timetz {
+                guard let secondsWest = buffer.readInteger(as: Int32.self) else { return nil }
+                let secondsEast = -Int64(secondsWest)
+                let absolute = abs(secondsEast)
+                result += (secondsEast < 0 ? "-" : "+") + padded(absolute / 3600, 2) + ":" + padded(absolute / 60 % 60, 2)
+                if absolute % 60 != 0 { result += ":" + padded(absolute % 60, 2) }
+            }
+            return result
+        }
+        if micros == Int64.max { return "infinity" }
+        if micros == Int64.min { return "-infinity" }
+        var days = micros / 86_400_000_000
+        var remainder = micros % 86_400_000_000
+        if remainder < 0 { days -= 1; remainder += 86_400_000_000 }
+        let date = calendarDate(days)
+        return date.text + " " + clockText(remainder) + (data.type == .timestamptz ? "+00" : "") + (date.beforeCommonEra ? " BC" : "")
     }
 
-    private static func arrayLiteral(_ values: [PostgresData]) -> String {
-        "{\(values.map(arrayElementText).joined(separator: ","))}"
+    private static func clockText(_ micros: Int64) -> String {
+        let seconds = micros / 1_000_000
+        return padded(seconds / 3600, 2) + ":" + padded(seconds / 60 % 60, 2) + ":" + padded(seconds % 60, 2) + "." + padded(micros % 1_000_000, 6)
+    }
+
+    private static func padded(_ value: Int64, _ width: Int) -> String {
+        let text = String(value)
+        return String(repeating: "0", count: max(0, width - text.count)) + text
+    }
+
+    /// Proleptic Gregorian conversion using integer days, including PostgreSQL's
+    /// extended year range and BC dates, without floating-point rounding.
+    private static func calendarDate(_ postgresDays: Int64) -> (text: String, beforeCommonEra: Bool) {
+        let shifted = postgresDays + 10_957 + 719_468
+        let era = (shifted >= 0 ? shifted : shifted - 146_096) / 146_097
+        let dayOfEra = shifted - era * 146_097
+        let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36_524 - dayOfEra / 146_096) / 365
+        var year = yearOfEra + era * 400
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+        let monthPart = (5 * dayOfYear + 2) / 153
+        let day = dayOfYear - (153 * monthPart + 2) / 5 + 1
+        let month = monthPart + (monthPart < 10 ? 3 : -9)
+        if month <= 2 { year += 1 }
+        return (padded(year > 0 ? year : 1 - year, 4) + "-" + padded(month, 2) + "-" + padded(day, 2), year <= 0)
+    }
+
+    private static func arrayText(_ data: PostgresData) -> String {
+        guard data.formatCode == .binary, var buffer = data.value else { return rawText(data) }
+        guard let dimensionCount = buffer.readInteger(as: Int32.self), (0...6).contains(dimensionCount),
+              buffer.readInteger(as: Int32.self) != nil,
+              let elementOID = buffer.readInteger(as: UInt32.self),
+              let elementType = PostgresDataType(rawValue: elementOID) else { return rawText(data) }
+        if dimensionCount == 0 { return "{}" }
+        var dimensions: [(length: Int, lowerBound: Int)] = []
+        var elementCount = 1
+        for _ in 0..<dimensionCount {
+            guard let length = buffer.readInteger(as: Int32.self), length >= 0,
+                  let lowerBound = buffer.readInteger(as: Int32.self) else { return rawText(data) }
+            let product = elementCount.multipliedReportingOverflow(by: Int(length))
+            guard !product.overflow else { return rawText(data) }
+            elementCount = product.partialValue
+            dimensions.append((Int(length), Int(lowerBound)))
+        }
+        // Every element requires at least its four-byte length header.
+        guard elementCount <= buffer.readableBytes / 4 else { return rawText(data) }
+        var elements: [String] = []
+        for _ in 0..<elementCount {
+            guard let length = buffer.readInteger(as: Int32.self) else { return rawText(data) }
+            if length == -1 {
+                elements.append("NULL")
+            } else {
+                guard length >= 0, let value = buffer.readSlice(length: Int(length)) else { return rawText(data) }
+                elements.append(arrayElementText(PostgresData(type: elementType, value: value)))
+            }
+        }
+        var index = 0
+        func render(_ depth: Int) -> String {
+            let parts = (0..<dimensions[depth].length).map { _ -> String in
+                if depth + 1 < dimensions.count { return render(depth + 1) }
+                defer { index += 1 }
+                return elements[index]
+            }
+            return "{" + parts.joined(separator: ",") + "}"
+        }
+        let bounds = dimensions.contains { $0.lowerBound != 1 }
+            ? dimensions.map { "[\($0.lowerBound):\($0.lowerBound + $0.length - 1)]" }.joined() + "="
+            : ""
+        return bounds + render(0)
     }
 
     private static func arrayElementText(_ data: PostgresData) -> String {
         guard data.value != nil else { return "NULL" }
-        let value = rawText(data)
-        guard !value.contains(where: { character in
-            character == "{" || character == "}" || character == "," || character == "\""
-                || character == "\\" || character == "\n" || character == "\r"
-        }) else {
-            return value
+        let value: String
+        switch map(data) {
+        case .blob(let bytes): value = "\\x" + bytes.map { String(format: "%02x", $0) }.joined()
+        case let mapped: value = mapped.editorText
         }
-        return "\"\(value.replacingOccurrences(of: "\\\\", with: "\\\\\\\\").replacingOccurrences(of: "\"", with: "\\\\\""))\""
+        // Quote every non-NULL element: literal NULL, empty strings, delimiters,
+        // whitespace, quotes and backslashes all round-trip through array input.
+        return "\"" + value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
+
 }
 
 public actor PostgresDatabaseBackend: DatabaseBackend {
@@ -508,11 +615,11 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                            ix.indisprimary AS is_primary,
                            (ix.indpred IS NOT NULL) AS is_partial,
                            COALESCE((
-                               SELECT pg_catalog.json_agg(att.attname ORDER BY keys.ord)::text
+                               SELECT pg_catalog.json_agg(COALESCE(att.attname, '') ORDER BY keys.ord)::text
                                FROM unnest(ix.indkey) WITH ORDINALITY AS keys(attnum, ord)
-                               JOIN pg_catalog.pg_attribute AS att
+                               LEFT JOIN pg_catalog.pg_attribute AS att
                                  ON att.attrelid = ix.indrelid AND att.attnum = keys.attnum
-                               WHERE keys.attnum > 0
+                               WHERE keys.ord <= ix.indnkeyatts
                            ), '[]') AS columns_json
                     FROM pg_catalog.pg_index AS ix
                     JOIN pg_catalog.pg_class AS c ON c.oid = ix.indrelid
@@ -521,6 +628,7 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
                       AND n.nspname !~ '^pg_temp_'
                       AND c.relkind IN ('r', 'p', 'v', 'm')
+                      AND ix.indisvalid AND ix.indisready
                       AND has_table_privilege(c.oid, 'SELECT')
                     ORDER BY n.nspname, c.relname, index_class.relname
                     """),
@@ -618,6 +726,46 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 }
                 return TableChunk(rows: tableRows, totalRowCount: total, offset: query.offset, limit: query.limit)
             }
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
+    public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
+        let plan = try RecordAccess.plan(descriptor: descriptor, predicates: predicates, offset: offset, limit: limit, postgres: true)
+        return try await executeRecordPlan(plan)
+    }
+
+    public func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
+        do {
+            guard let plan = try RecordAccess.relatedPlan(record: record, relationship: relationship, direction: direction, offset: offset, limit: limit, postgres: true) else { return .empty(.nullReference) }
+            return try await executeRecordPlan(plan, missingReference: direction == .outgoing)
+        } catch RecordAccessError.unavailableTable {
+            return .empty(.unavailable)
+        }
+    }
+
+    private func executeRecordPlan(_ plan: RecordQueryPlan, missingReference: Bool = false) async throws -> RecordPage {
+        try Task.checkCancellation()
+        do {
+            return try await withReadOnlyTransaction { connection in
+                _ = try await Self.query(Self.command("SET LOCAL statement_timeout = '5000ms'"), on: connection)
+                var binds = PostgresBindings(capacity: plan.parameters.count)
+                for value in plan.parameters {
+                    // Text on the wire plus a validated target-type cast preserves
+                    // UUID, exact numerics, arrays and bytea without interpolation.
+                    switch value {
+                    case .null: binds.appendNull()
+                    case .blob(let data): binds.append("\\x" + data.map { String(format: "%02x", $0) }.joined())
+                    default: binds.append(value.editorText)
+                    }
+                }
+                let result = try await Self.query(PostgresQuery(unsafeSQL: plan.sql, binds: binds), on: connection, rowLimit: plan.limit + 1)
+                try Task.checkCancellation()
+                return try RecordAccess.page(values: result.rows, plan: plan, missingReference: missingReference)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw Self.mapError(error)
         }

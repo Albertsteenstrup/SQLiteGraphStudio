@@ -1,0 +1,11 @@
+PRAGMA foreign_keys=ON;
+CREATE TABLE people (tenant INTEGER NOT NULL, code INTEGER NOT NULL, name TEXT, note TEXT, payload TEXT, PRIMARY KEY(tenant,code));
+CREATE TABLE links (key INTEGER PRIMARY KEY, tenant INTEGER, source INTEGER, target INTEGER, FOREIGN KEY(tenant,source) REFERENCES people(tenant,code), FOREIGN KEY(tenant,target) REFERENCES people(tenant,code));
+CREATE TABLE tree (key INTEGER PRIMARY KEY, parent INTEGER REFERENCES tree(key), label TEXT);
+CREATE VIEW names AS SELECT name FROM people;
+INSERT INTO people VALUES (1,1,'Ada','','{"n":123456789012345678901234567890}'),(1,2,'Ben',NULL,'[1,2,3]'),(2,1,'Cleo','Long text','{}');
+WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<180) INSERT INTO links SELECT x,1,1,2 FROM n;
+INSERT INTO links VALUES(181,1,NULL,NULL);
+INSERT INTO tree VALUES(1,NULL,'Root'),(2,1,'Child');
+UPDATE tree SET parent=2 WHERE key=1;
+INSERT INTO tree VALUES(3,3,'Self');

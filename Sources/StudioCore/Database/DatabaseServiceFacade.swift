@@ -11,6 +11,8 @@ public protocol DatabaseBackend: AnyObject, Sendable {
     func loadCatalogSnapshot() async throws -> CatalogSnapshot
     func fetchDescriptor(named tableName: String) async throws -> EditableTableDescriptor
     func fetchChunk(query: TableQueryState, descriptor: EditableTableDescriptor) async throws -> TableChunk
+    func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int, limit: Int) async throws -> RecordPage
+    func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int, limit: Int) async throws -> RecordPage
     func commitEdit(_ change: CellEditChange) async throws
     func insertDefaultRow(into descriptor: EditableTableDescriptor) async throws
     func insertClonedRow(from sourceRow: TableRow, into descriptor: EditableTableDescriptor) async throws
@@ -108,6 +110,18 @@ public actor DatabaseService {
 
     public func fetchChunk(query: TableQueryState, descriptor: EditableTableDescriptor) async throws -> TableChunk {
         try await requireBackend().fetchChunk(query: query, descriptor: descriptor)
+    }
+
+    public nonisolated func recordRelationships(catalog: CatalogSnapshot) -> [RecordRelationship] {
+        RecordAccess.relationships(catalog: catalog)
+    }
+
+    public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
+        try await requireBackend().fetchRecords(descriptor: descriptor, predicates: predicates, offset: offset, limit: limit)
+    }
+
+    public func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
+        try await requireBackend().fetchRelated(record: record, relationship: relationship, direction: direction, offset: offset, limit: limit)
     }
 
     public func commitEdit(_ change: CellEditChange) async throws {

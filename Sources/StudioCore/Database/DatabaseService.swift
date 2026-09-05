@@ -4,10 +4,12 @@ import Foundation
 public struct CatalogSnapshot: Sendable {
     public let descriptors: [EditableTableDescriptor]
     public let graph: SchemaGraph
+    public let recordRelationshipMetadata: [RecordRelationship]?
 
-    public init(descriptors: [EditableTableDescriptor], graph: SchemaGraph) {
+    public init(descriptors: [EditableTableDescriptor], graph: SchemaGraph, recordRelationshipMetadata: [RecordRelationship]? = nil) {
         self.descriptors = descriptors
         self.graph = graph
+        self.recordRelationshipMetadata = recordRelationshipMetadata
     }
 }
 
@@ -240,6 +242,33 @@ public actor SQLiteDatabaseBackend {
             "Fetched \(result.rows.count, privacy: .public) rows from \(descriptor.name, privacy: .public) in \(elapsed, format: .fixed(precision: 2)) ms"
         )
         return result
+    }
+
+    public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) throws -> RecordPage {
+        let plan = try RecordAccess.plan(descriptor: descriptor, predicates: predicates, offset: offset, limit: limit, postgres: false)
+        return try executeRecordPlan(plan)
+    }
+
+    public func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int = 0, limit: Int = 50) throws -> RecordPage {
+        do {
+            guard let plan = try RecordAccess.relatedPlan(record: record, relationship: relationship, direction: direction, offset: offset, limit: limit, postgres: false) else { return .empty(.nullReference) }
+            return try executeRecordPlan(plan, missingReference: direction == .outgoing)
+        } catch RecordAccessError.unavailableTable {
+            return .empty(.unavailable)
+        }
+    }
+
+    private func executeRecordPlan(_ plan: RecordQueryPlan, missingReference: Bool = false) throws -> RecordPage {
+        try Task.checkCancellation()
+        guard let pool else { throw SQLiteUserError(kind: .generic, message: "No database is open.") }
+        let values = try pool.read { db in
+            try db.readOnly {
+                try Row.fetchAll(db, sql: plan.sql, arguments: StatementArguments(plan.parameters.map(\.databaseValue)))
+                    .map { row in (0..<row.count).map { SQLiteValue(databaseValue: row[$0] as DatabaseValue) } }
+            }
+        }
+        try Task.checkCancellation()
+        return try RecordAccess.page(values: values, plan: plan, missingReference: missingReference)
     }
 
     public func commitEdit(_ change: CellEditChange) throws {
@@ -775,9 +804,8 @@ public actor SQLiteDatabaseBackend {
         try Row.fetchAll(db, sql: "PRAGMA index_list(\(quoteStringLiteral(tableName)))").map { row in
             let name: String = row["name"]
             let columns = try Row.fetchAll(db, sql: "PRAGMA index_info(\(quoteStringLiteral(name)))")
-                .compactMap { indexRow -> String? in
-                    let columnName: String? = indexRow["name"]
-                    return columnName?.isEmpty == false ? columnName : nil
+                .map { indexRow -> String in
+                    (indexRow["name"] as String?) ?? ""
                 }
             let sql = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?", arguments: [name])
             return SchemaIndex(
@@ -906,7 +934,11 @@ public actor SQLiteDatabaseBackend {
             let sequence: Int = (row["seq"] as Int?) ?? 0
             let targetTable: String = row["table"]
             let fromColumn: String = row["from"]
-            let toColumn: String = row["to"]
+            let explicitTarget: String? = row["to"]
+            let targetPK = try loadColumns(for: targetTable, database: db)
+                .filter { $0.primaryKeyOrdinal > 0 }
+                .sorted { $0.primaryKeyOrdinal < $1.primaryKeyOrdinal }
+            let toColumn = explicitTarget ?? (targetPK.indices.contains(sequence) ? targetPK[sequence].name : "")
             let targetUniqueColumns = uniqueColumnsByTable[targetTable]
             let cardinality = inferCardinality(
                 sourceColumn: fromColumn,

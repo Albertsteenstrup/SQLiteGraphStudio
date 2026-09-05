@@ -5,25 +5,29 @@ public struct TableGridRepresentable: NSViewRepresentable {
     public let tab: TableTabModel
     public let revision: Int
     public let columnDescription: (String) -> String?
+    public let inspectRow: (Int) -> Void
     public let requestColumnDrop: (TableColumn) -> Void
 
     public init(
         tab: TableTabModel,
         revision: Int,
         columnDescription: @escaping (String) -> String?,
-        requestColumnDrop: @escaping (TableColumn) -> Void
+        requestColumnDrop: @escaping (TableColumn) -> Void,
+        inspectRow: @escaping (Int) -> Void = { _ in }
     ) {
         self.tab = tab
         self.revision = revision
         self.columnDescription = columnDescription
         self.requestColumnDrop = requestColumnDrop
+        self.inspectRow = inspectRow
     }
 
     public func makeCoordinator() -> Coordinator {
         Coordinator(
             tab: tab,
             columnDescription: columnDescription,
-            requestColumnDrop: requestColumnDrop
+            requestColumnDrop: requestColumnDrop,
+            inspectRow: inspectRow
         )
     }
 
@@ -39,7 +43,8 @@ public struct TableGridRepresentable: NSViewRepresentable {
             revision: revision,
             columnDescription: columnDescription,
             requestColumnDrop: requestColumnDrop,
-            scrollView: nsView
+            scrollView: nsView,
+            inspectRow: inspectRow
         )
     }
 
@@ -47,6 +52,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
     public final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         private var tab: TableTabModel
         private var columnDescription: (String) -> String?
+        private var inspectRow: (Int) -> Void
         private var requestColumnDrop: (TableColumn) -> Void
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
@@ -60,11 +66,13 @@ public struct TableGridRepresentable: NSViewRepresentable {
         init(
             tab: TableTabModel,
             columnDescription: @escaping (String) -> String?,
-            requestColumnDrop: @escaping (TableColumn) -> Void
+            requestColumnDrop: @escaping (TableColumn) -> Void,
+            inspectRow: @escaping (Int) -> Void
         ) {
             self.tab = tab
             self.columnDescription = columnDescription
             self.requestColumnDrop = requestColumnDrop
+            self.inspectRow = inspectRow
         }
 
         deinit {
@@ -133,9 +141,11 @@ public struct TableGridRepresentable: NSViewRepresentable {
             revision: Int,
             columnDescription: @escaping (String) -> String?,
             requestColumnDrop: @escaping (TableColumn) -> Void,
-            scrollView: NSScrollView
+            scrollView: NSScrollView,
+            inspectRow: @escaping (Int) -> Void
         ) {
             self.tab = tab
+            self.inspectRow = inspectRow
             self.columnDescription = columnDescription
             self.requestColumnDrop = requestColumnDrop
             self.scrollView = scrollView
@@ -436,6 +446,11 @@ public struct TableGridRepresentable: NSViewRepresentable {
             let itemStates = contextMenuItemStates(for: state)
 
             let menu = NSMenu()
+            let inspectItem = NSMenuItem(title: "Inspect Record…", action: #selector(contextMenuInspect(_:)), keyEquivalent: "")
+            inspectItem.target = self
+            inspectItem.isEnabled = isRowLoaded
+            menu.addItem(inspectItem)
+            menu.addItem(.separator())
 
             let setNullItem = NSMenuItem(title: "Set Null", action: #selector(contextMenuSetNull(_:)), keyEquivalent: "")
             setNullItem.target = self
@@ -472,6 +487,11 @@ public struct TableGridRepresentable: NSViewRepresentable {
             menu.addItem(deleteRowItem)
 
             return menu
+        }
+
+        @objc func contextMenuInspect(_ sender: Any?) {
+            guard let row = contextMenuRow, tab.row(at: row) != nil else { return }
+            inspectRow(row)
         }
 
         @objc func contextMenuSetNull(_ sender: Any?) {

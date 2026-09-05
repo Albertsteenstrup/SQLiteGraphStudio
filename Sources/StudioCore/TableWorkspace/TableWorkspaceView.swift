@@ -126,7 +126,8 @@ public struct TableWorkspaceView: View {
                 },
                 requestColumnDrop: { column in
                     pendingColumnDrop = column
-                }
+                },
+                inspectRow: { session.inspectRecord(in: activeTab, row: $0) }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(StudioPalette.gridSurface.opacity(0.96))

@@ -187,6 +187,8 @@ public final class AppSession {
     public var graphPan: CGSize = .zero
     public var presentedError: SQLiteUserError?
 
+    public let records: RecordWorkspace
+
     public let graphLayout = GraphLayoutModel()
     public var queryWorkspace: QueryWorkspaceModel
 
@@ -209,6 +211,11 @@ public final class AppSession {
         databaseService: DatabaseService = DatabaseService(),
         userDefaults: UserDefaults = .standard
     ) {
+        self.records = RecordWorkspace(mappingLoader: { mapping, root, direction, offset, catalog in
+            try await RecordGraphMappingAccess.load(mapping: mapping, root: root, direction: direction, offset: offset, catalog: catalog, database: databaseService)
+        }) { record, relationship, direction, offset, limit in
+            try await databaseService.fetchRelated(record: record, relationship: relationship, direction: direction, offset: offset, limit: limit)
+        }
         self.databaseService = databaseService
         self.userDefaults = userDefaults
         self.queryWorkspace = QueryWorkspaceModel(
@@ -216,6 +223,40 @@ public final class AppSession {
             userDefaults: userDefaults
         )
         self.recentDatabaseURLs = Self.loadRecentDatabaseURLs(from: userDefaults)
+    }
+
+    func configureRecordMappings(_ sidecar: SchemaSidecar) {
+        records.mappings = []; records.mappingValidationMessages = []
+        var seen = Set<String>()
+        for mapping in sidecar.recordGraphMappings {
+            do {
+                guard seen.insert(mapping.id).inserted else {
+                    records.mappingValidationMessages.append("Duplicate graph mapping ID: \(mapping.id)"); continue
+                }
+                _ = try RecordGraphMappingAccess.validate(mapping: mapping, catalog: records.catalog)
+                records.mappings.append(mapping)
+            } catch { records.mappingValidationMessages.append("\(mapping.id): \(error.localizedDescription)") }
+        }
+    }
+
+    public func inspectRecord(in tab: TableTabModel, row: Int) {
+        guard let loaded = tab.row(at: row) else { return }
+        do {
+            let record = try RecordAccess.snapshot(
+                descriptor: tab.descriptor,
+                columns: tab.descriptor.columns.map { QueryResultColumn(name: $0.name, typeLabel: $0.typeLabel) },
+                values: loaded.values, rowIdentity: loaded.identity
+            )
+            records.open(record)
+            records.originLabel = "\(tab.title) · row \(row + 1)"
+        } catch { presentedError = SQLiteUserError.from(error) }
+    }
+
+    public func inspectQueryRecord(result: QueryResult, row: QueryResultRow) {
+        do {
+            records.open(try RecordAccess.snapshot(descriptor: nil, columns: result.columns, values: row.values))
+            records.originLabel = "Query result · row \(row.id + 1)"
+        } catch { presentedError = SQLiteUserError.from(error) }
     }
 
     public var activeTab: TableTabModel? {
@@ -257,6 +298,7 @@ public final class AppSession {
     }
 
     private func openDatabase(url: URL, changeBaseline: SchemaRefreshSnapshot?) async {
+        records.reset()
         isRefreshing = true
         presentedError = nil
         defer { isRefreshing = false }
@@ -309,6 +351,7 @@ public final class AppSession {
     }
 
     public func openPostgreSQLDocument(url: URL) async {
+        records.reset()
         isRefreshing = true
         presentedError = nil
         defer { isRefreshing = false }
@@ -334,6 +377,7 @@ public final class AppSession {
     }
 
     public func closeDatabase() {
+        records.reset()
         Task {
             await databaseService.close()
         }
@@ -377,6 +421,7 @@ public final class AppSession {
         let before = schemaSidecar
         let sidecar = SchemaSidecarStore.load(for: databaseURL)
         schemaSidecar = sidecar
+        configureRecordMappings(sidecar)
         graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
         refreshToast = Self.sidecarSummary(before: before, after: sidecar)
             .map { RefreshToast(message: $0) }
@@ -1048,6 +1093,9 @@ public final class AppSession {
     }
 
     private func apply(snapshot: CatalogSnapshot, target: DatabaseTarget) {
+        records.reset()
+        records.catalog = snapshot
+        records.relationships = RecordAccess.relationships(catalog: snapshot)
         databaseTarget = target
         databaseURL = target.fileURL
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
@@ -1060,6 +1108,7 @@ public final class AppSession {
             sidecar = .empty
         }
         schemaSidecar = sidecar
+        configureRecordMappings(sidecar)
         graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
         graphLayout.reset(for: snapshot.graph)
         pinnedStoryGraphPositionsByMode = [:]

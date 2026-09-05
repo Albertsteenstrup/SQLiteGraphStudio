@@ -12,17 +12,20 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
     public var clusters: [ClusterHint]
     public var tables: [String: TableDescription]
     public var stories: [Story]
+    public var recordGraphMappings: [RecordGraphMapping]
 
     public init(
         version: Int = 1,
         clusters: [ClusterHint] = [],
         tables: [String: TableDescription] = [:],
-        stories: [Story] = []
+        stories: [Story] = [],
+        recordGraphMappings: [RecordGraphMapping] = []
     ) {
         self.version = version
         self.clusters = clusters
         self.tables = tables
         self.stories = stories
+        self.recordGraphMappings = recordGraphMappings
     }
 
     public static let empty = SchemaSidecar()
@@ -32,6 +35,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         case clusters
         case tables
         case stories
+        case recordGraphMappings
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +44,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         clusters = try container.decodeIfPresent([ClusterHint].self, forKey: .clusters) ?? []
         tables = try container.decodeIfPresent([String: TableDescription].self, forKey: .tables) ?? [:]
         stories = try container.decodeIfPresent([Story].self, forKey: .stories) ?? []
+        recordGraphMappings = try container.decodeIfPresent([RecordGraphMapping].self, forKey: .recordGraphMappings) ?? []
     }
 
     public struct ClusterHint: Codable, Sendable, Hashable, Identifiable {

@@ -113,3 +113,7 @@ Open a [GitHub Issue](../../issues) — include your macOS version and what you 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Record inspection and navigation
+
+Right-click a loaded row and choose **Inspect Record…** to read full values, follow foreign keys, and explore a bounded graph of actual records on SQLite or read-only PostgreSQL. Back/forward preserves the originating table or query context. The record graph has separate state from the schema graph and supports catalog-validated mappings for explicit node/edge tables. See [Record exploration](docs/record-exploration.md) for controls, limits, and mapping examples.

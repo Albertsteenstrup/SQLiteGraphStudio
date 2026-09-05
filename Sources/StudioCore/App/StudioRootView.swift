@@ -147,7 +147,18 @@ public struct StudioRootView: View {
             withAnimation(.snappy(duration: 0.3)) { session.dismissRefreshToast() }
         }
         .containerBackground(.thinMaterial, for: .window)
+        .sheet(isPresented: Binding(get: { session.records.isPresented }, set: { session.records.isPresented = $0 }), onDismiss: { session.records.cancel() }) {
+            RecordExplorationView(session: session)
+        }
         .toolbar {
+            ToolbarItem {
+                Button {
+                    if session.records.current == nil { session.records.forward() }
+                    session.records.isPresented = true
+                } label: { Label("Records", systemImage: "point.3.connected.trianglepath.dotted") }
+                .disabled(session.records.history.isEmpty)
+                .help("Return to the record inspector and record graph")
+            }
             ToolbarItem {
                 Button {
                     session.presentOpenDatabasePanel()

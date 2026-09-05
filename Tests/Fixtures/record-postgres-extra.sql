@@ -1,0 +1,16 @@
+CREATE TABLE alpha.expression_unique (a text, b text);
+CREATE UNIQUE INDEX expression_idx ON alpha.expression_unique(a,lower(b));
+INSERT INTO alpha.expression_unique VALUES ('repeat','one'),('repeat','two');
+CREATE TABLE alpha.array_keys (key uuid[] PRIMARY KEY, label text);
+CREATE TABLE alpha.array_refs (key integer PRIMARY KEY, ref uuid[] REFERENCES alpha.array_keys(key));
+INSERT INTO alpha.array_keys VALUES (ARRAY['12345678-1234-1234-1234-123456789abc'::uuid],'Array identity');
+INSERT INTO alpha.array_refs SELECT 1,key FROM alpha.array_keys;
+CREATE TABLE alpha.binary_keys (key bytea PRIMARY KEY);
+CREATE TABLE alpha.binary_refs (key integer PRIMARY KEY, ref bytea REFERENCES alpha.binary_keys(key));
+INSERT INTO alpha.binary_keys VALUES (decode('00ff','hex'));
+INSERT INTO alpha.binary_refs SELECT 1,key FROM alpha.binary_keys;
+CREATE TABLE alpha.numeric_keys (key numeric(40,8) PRIMARY KEY);
+CREATE TABLE alpha.numeric_refs (key integer PRIMARY KEY, ref numeric(40,8) REFERENCES alpha.numeric_keys(key));
+INSERT INTO alpha.numeric_keys VALUES (123456789012345678901234567890.12345678);
+INSERT INTO alpha.numeric_refs SELECT 1,key FROM alpha.numeric_keys;
+GRANT SELECT ON ALL TABLES IN SCHEMA alpha TO record_reader;
