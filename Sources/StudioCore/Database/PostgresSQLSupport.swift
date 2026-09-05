@@ -69,6 +69,9 @@ public enum PostgresTableQueryBuilder {
         func operand(_ text: String, column: TableColumn) throws -> String {
             let type = column.declaredType.lowercased()
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if dialect == .postgres && (type.hasSuffix("[]") || type == "money") {
+                return "\(bind(.text(text)))::text::\(try Self.postgresCast(column.declaredType))"
+            }
             if type == "boolean" || type == "bool" {
                 guard ["true", "false", "1", "0"].contains(trimmed.lowercased()) else { throw invalid("\(column.name) requires true or false.") }
                 return bind(.boolean(trimmed == "1" || trimmed.lowercased() == "true"))
@@ -78,17 +81,16 @@ public enum PostgresTableQueryBuilder {
                 return bind(.integer(value))
             }
             if column.affinity == .real {
-                guard let value = Double(trimmed), value.isFinite else { throw invalid("\(column.name) requires a finite number.") }
+                guard let value = Double(trimmed), value.isFinite || dialect == .postgres else { throw invalid("\(column.name) requires a finite number.") }
                 return bind(.double(value))
             }
             if type.hasPrefix("numeric") || type.hasPrefix("decimal") {
-                guard trimmed.range(of: #"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"#, options: .regularExpression) != nil else { throw invalid("\(column.name) requires a decimal number.") }
+                guard (dialect == .postgres && ["nan", "infinity", "+infinity", "-infinity"].contains(trimmed.lowercased())) || trimmed.range(of: #"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"#, options: .regularExpression) != nil else { throw invalid("\(column.name) requires a decimal number.") }
                 return "CAST(\(bind(.text(trimmed))) AS NUMERIC)"
             }
             let parameter = bind(.text(text))
             guard dialect == .postgres else { return parameter }
-            let casts = ["uuid", "date", "time", "time without time zone", "time with time zone", "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz", "timetz", "jsonb"]
-            return casts.contains(type) ? "CAST(\(parameter) AS \(type))" : parameter
+            return "\(parameter)::text::\(try Self.postgresCast(column.declaredType))"
         }
         if !query.sanitizedSearchText.isEmpty {
             let searchable = dialect == .postgres ? descriptor.columns.filter { $0.affinity == .text || $0.affinity == .none } : descriptor.searchableColumns
@@ -147,6 +149,36 @@ public enum PostgresTableQueryBuilder {
         let limit = bind(.integer(Int64(query.limit)))
         let offset = bind(.integer(Int64(query.after == nil ? query.offset : 0)))
         return PostgresTableQueryPlan(countSQL: "SELECT COUNT(*) FROM \(table)\(countWhere)", selectSQL: "SELECT \(projection.joined(separator: ", ")) FROM \(table)\(whereClause)\(orderClause) LIMIT \(limit) OFFSET \(offset)", parameters: parameters, countParameterCount: countParameterCount)
+    }
+    /// Only a type name/typmod/array grammar may enter a cast; values stay bound.
+    static func postgresCast(_ type: String) throws -> String {
+        let identifier = #"(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)"#
+        let namedType = identifier + #"(?:\."# + identifier + #")?"#
+        let builtIn = #"(?:double precision|character varying|bit varying|timestamp(?:\([0-9]+\))? (?:with|without) time zone|time(?:\([0-9]+\))? (?:with|without) time zone)"#
+        let pattern = "^(?:" + builtIn + "|" + namedType + #")(?:\(-?[0-9]+(?:\s*,\s*-?[0-9]+)?\))?(?:\[\])*$"#
+        guard type.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil else { throw invalid("Unsupported PostgreSQL type: \(type)") }
+        if type.lowercased() == "money" { return "numeric::money" }
+        if type.lowercased() == "money[]" { return "numeric[]::money[]" }
+        // Comparison operands must not inherit storage limits: varchar(3)
+        // would truncate "abcd" to "abc" and silently produce a false match.
+        // Keep parentheses inside quoted type names intact.
+        var comparisonType = ""
+        var quoted = false
+        var modifier = false
+        for character in type {
+            if character == "\"" { quoted.toggle() }
+            if !quoted && character == "(" { modifier = true; continue }
+            if modifier && character == ")" { modifier = false; continue }
+            if !modifier { comparisonType.append(character) }
+        }
+        // SQL's bare CHARACTER and BIT spellings imply length 1. Qualified
+        // catalog names select the unrestricted type, including array elements.
+        for (name, catalogName) in [("character", "bpchar"), ("bit", "bit")] {
+            if comparisonType.lowercased() == name || comparisonType.lowercased().hasPrefix(name + "[]") {
+                return "pg_catalog." + catalogName + comparisonType.dropFirst(name.count)
+            }
+        }
+        return comparisonType
     }
     private static func invalid(_ message: String) -> DatabaseUserError { .init(kind: .invalidInput, message: message) }
 }

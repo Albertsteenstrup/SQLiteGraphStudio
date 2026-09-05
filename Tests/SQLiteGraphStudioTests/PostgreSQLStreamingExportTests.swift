@@ -135,6 +135,62 @@ struct PostgreSQLStreamingExportTests {
         }
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SGS_POSTGRES_FIXTURE_OWNER"] != nil, "Requires explicit owned-fixture owner role"))
+    func typedArraysEnumsAndMoneySupportStableNextPages() async throws {
+        try await withOwnedFixture({ schema in
+            """
+            CREATE TYPE \(schema).stage AS ENUM ('queued','done');
+            CREATE TABLE \(schema).enum_rows(id integer PRIMARY KEY, value \(schema).stage NOT NULL);
+            INSERT INTO \(schema).enum_rows VALUES(1,'queued'),(2,'done');
+            CREATE TABLE \(schema).array_rows(id integer PRIMARY KEY, value integer[] NOT NULL);
+            INSERT INTO \(schema).array_rows VALUES(1,ARRAY[1]),(2,ARRAY[2]);
+            CREATE TABLE \(schema).money_rows(id integer PRIMARY KEY, value money NOT NULL);
+            INSERT INTO \(schema).money_rows VALUES(1,'-0.01'::numeric::money),(2,0::numeric::money);
+            CREATE TABLE \(schema).numeric_rows(id integer PRIMARY KEY, value numeric NOT NULL);
+            INSERT INTO \(schema).numeric_rows VALUES(1,'-Infinity'),(2,0),(3,'Infinity'),(4,'NaN');
+            CREATE TABLE \(schema).float_rows(id integer PRIMARY KEY, value double precision NOT NULL);
+            INSERT INTO \(schema).float_rows VALUES(1,'-Infinity'),(2,0),(3,'Infinity'),(4,'NaN');
+            CREATE TABLE \(schema).short_text(id integer PRIMARY KEY, value varchar(3) NOT NULL, fixed char(3), fixed_array char(3)[], flags bit(4), flag_array bit(4)[]);
+            INSERT INTO \(schema).short_text VALUES(1,'abc','abc',ARRAY['abc']::char(3)[],B'1010',ARRAY[B'1010']::bit(4)[])
+            """
+        }) { backend, schema, _ in
+            for table in ["enum_rows", "array_rows", "money_rows", "numeric_rows", "float_rows"] {
+                do {
+                    let descriptor = try await backend.fetchDescriptor(named: "\(schema).\(table)")
+                    var query = TableQueryState(sort: .init(columnName: "value", direction: .ascending), limit: 1)
+                    let first = try await backend.fetchChunk(query: query, descriptor: descriptor)
+                    let row = try #require(first.rows.first)
+                    query.offset = 1
+                    query.after = .init(values: Dictionary(uniqueKeysWithValues: zip(descriptor.columns.map(\.name), row.values)))
+                    let second = try await backend.fetchChunk(query: query, descriptor: descriptor)
+                    #expect(second.rows.first?.values.first == .integer(2))
+                    var page = second
+                    var seen = [row.values[0]] + second.rows.map { $0.values[0] }
+                    for _ in 0..<5 where page.hasMore {
+                        let last = try #require(page.rows.last)
+                        query.offset = seen.count
+                        query.after = .init(values: Dictionary(uniqueKeysWithValues: zip(descriptor.columns.map(\.name), last.values)))
+                        page = try await backend.fetchChunk(query: query, descriptor: descriptor)
+                        seen += page.rows.map { $0.values[0] }
+                    }
+                    #expect(seen == (1...(table == "numeric_rows" || table == "float_rows" ? 4 : 2)).map { .integer(Int64($0)) })
+                    #expect(!page.hasMore)
+                    let exact = try await backend.fetchChunk(query: .init(columnFilters: [.init(columnName: "value", value: ResultSerialization.exactText(row.values[1]), comparison: .equal)]), descriptor: descriptor)
+                    #expect(exact.rows.count == 1)
+                } catch { Issue.record("Typed paging failed for \(table): \(error)") }
+            }
+            let short = try await backend.fetchDescriptor(named: "\(schema).short_text")
+            for (column, value) in [("flags", "1010"), ("flag_array", "{1010}")] {
+                let match = try await backend.fetchChunk(query: .init(columnFilters: [.init(columnName: column, value: value, comparison: .equal)]), descriptor: short)
+                #expect(match.rows.count == 1)
+            }
+            for (column, value) in [("value", "abcd"), ("fixed", "abcd"), ("fixed_array", #"{"abcd"}"#), ("flags", "101011"), ("flag_array", "{101011}")] {
+                let noMatch = try await backend.fetchChunk(query: .init(columnFilters: [.init(columnName: column, value: value, comparison: .equal)]), descriptor: short)
+                #expect(noMatch.rows.isEmpty)
+            }
+        }
+    }
+
     private func withOwnedFixture(_ definition: (String) -> String,
                                   body: (PostgresDatabaseBackend, String, URL) async throws -> Void) async throws {
         let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)

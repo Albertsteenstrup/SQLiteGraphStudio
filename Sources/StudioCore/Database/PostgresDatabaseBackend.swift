@@ -1054,45 +1054,69 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         }
         return try await withQueryTimeout(seconds: timeoutSeconds) {
             try await client.withConnection { connection in
-                try await withTaskCancellationHandler {
-                    try Task.checkCancellation()
-                    let logger = Logger(label: "SQLiteGraphStudio.PostgreSQL")
-                    do {
-                        try await Self.drain(Self.command("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"), on: connection, logger: logger)
-                        let milliseconds = max(1, Int(timeoutSeconds * 1_000))
-                        try await Self.drain(Self.command("SET LOCAL statement_timeout = \(milliseconds)"), on: connection, logger: logger)
-                        // Detect a cancelled client's closed socket during server work.
-                        try await Self.drain(Self.command("SET LOCAL client_connection_check_interval = '100ms'"), on: connection, logger: logger)
-                        // This constant metadata read is transaction setup; record
-                        // graph budgets count bounded data fetches, not setup commands.
-                        let moneyScale = try await Self.moneyScale(on: connection)
-                        let value = try await PostgresValueMapper.$moneyFractionDigits.withValue(moneyScale) {
-                            try await body(connection)
+                do {
+                    let value = try await withTaskCancellationHandler {
+                        let logger = Logger(label: "SQLiteGraphStudio.PostgreSQL")
+                        do {
+                            try Task.checkCancellation()
+                            try await Self.drain(Self.command("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"), on: connection, logger: logger)
+                            let milliseconds = max(1, Int(timeoutSeconds * 1_000))
+                            try await Self.drain(Self.command("SET LOCAL statement_timeout = \(milliseconds)"), on: connection, logger: logger)
+                            // Detect a cancelled client's closed socket during server work.
+                            try await Self.drain(Self.command("SET LOCAL client_connection_check_interval = '100ms'"), on: connection, logger: logger)
+                            // Decode money using this transaction's server-side precision.
+                            let moneyScale = try await Self.moneyScale(on: connection)
+                            let value = try await PostgresValueMapper.$moneyFractionDigits.withValue(moneyScale) {
+                                try await body(connection)
+                            }
+                            try Task.checkCancellation()
+                            if discardConnectionAfterBody {
+                                // Utility statements cannot use a SQL cursor. Their
+                                // capped reader may already have closed this lease.
+                                // Discard it without issuing COMMIT on a closed channel.
+                                try await connection.close()
+                            } else {
+                                try await Self.drain(Self.command("COMMIT"), on: connection, logger: logger)
+                            }
+                            return value
+                        } catch {
+                            if Task.isCancelled || error is CancellationError {
+                                // Wait until the pool has observed the physical close
+                                // before releasing this lease. Merely scheduling close
+                                // can let the next checkout reuse a closing connection.
+                                _ = try? await connection.close()
+                                _ = try? await connection.closeFuture.get()
+                                throw CancellationError()
+                            }
+                            if connection.isClosed {
+                                _ = try? await connection.closeFuture.get()
+                            } else {
+                                do {
+                                    try await Self.drain(Self.command("ROLLBACK"), on: connection, logger: logger)
+                                } catch {
+                                    // A failed rollback leaves the session state uncertain.
+                                    _ = try? await connection.close()
+                                    _ = try? await connection.closeFuture.get()
+                                }
+                            }
+                            throw error
                         }
-                        try Task.checkCancellation()
-                        if discardConnectionAfterBody {
-                            // Utility statements cannot use a SQL cursor. Their
-                            // capped reader may already have closed this lease.
-                            // Discard it without issuing COMMIT on a closed channel.
-                            try await connection.close()
-                        } else {
-                            try await Self.drain(Self.command("COMMIT"), on: connection, logger: logger)
-                        }
-                        return value
-                    } catch {
-                        // Querying an already closed channel can leave the driver's
-                        // response promise unresolved. Cancellation discards the
-                        // connection, so there is no transaction left to roll back.
-                        try Task.checkCancellation()
-                        if !connection.isClosed {
-                            _ = try? await Self.drain(Self.command("ROLLBACK"), on: connection, logger: logger)
-                        }
-                        throw error
+                    } onCancel: {
+                        // Discard only this lease. The pool creates a fresh physical
+                        // connection, preserving backend usability after Stop/timeout.
+                        let _: Void = connection.close()
                     }
-                } onCancel: {
-                    // Discard only this lease. The pool creates a fresh physical
-                    // connection, preserving backend usability after Stop/timeout.
-                    let _: Void = connection.close()
+                    // The handler is unregistered before this check, so no late
+                    // cancellation can schedule a close after we release the lease.
+                    try Task.checkCancellation()
+                    return value
+                } catch {
+                    if Task.isCancelled || connection.isClosed {
+                        _ = try? await connection.close()
+                        _ = try? await connection.closeFuture.get()
+                    }
+                    if Task.isCancelled { throw CancellationError() }
+                    throw error
                 }
             }
         }
@@ -1120,13 +1144,32 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         _ = try await PostgresDatabaseBackend.query(request, on: connection, logger: logger).rows
     }
 
+    static func querySequence(
+        _ query: PostgresQuery,
+        on connection: PostgresConnection,
+        logger: Logger = Logger(label: "SQLiteGraphStudio.PostgreSQL")
+    ) async throws -> PostgresRowSequence {
+        let executor = PostgresQueryExecutor(connection: connection)
+        return try await withTaskExecutorPreference(executor) {
+            // The driver creates its response promise and enqueues the query
+            // before its first suspension. Keep that initiation on the channel's
+            // event loop so close cannot interleave with this liveness check.
+            connection.eventLoop.assertInEventLoop()
+            try Task.checkCancellation()
+            guard !connection.isClosed else {
+                throw DatabaseUserError(kind: .network, message: "The PostgreSQL connection is closed.")
+            }
+            return try await connection.query(query, logger: logger)
+        }
+    }
+
     private static func query(
         _ query: PostgresQuery,
         on connection: PostgresConnection,
         logger: Logger = Logger(label: "SQLiteGraphStudio.PostgreSQL"),
         rowLimit: Int? = nil
     ) async throws -> RawPostgresResult {
-        let sequence = try await connection.query(query, logger: logger)
+        let sequence = try await querySequence(query, on: connection, logger: logger)
         let columns = sequence.columns.map {
             QueryResultColumn(name: $0.name, typeLabel: $0.dataType.knownSQLName ?? "OID \($0.dataType.rawValue)")
         }
@@ -1444,5 +1487,22 @@ private enum PostgresExternalCredential {
 
     private static func matches(_ pattern: String, _ value: String) -> Bool {
         pattern == "*" || pattern.caseInsensitiveCompare(value) == .orderedSame
+    }
+}
+
+/// Applies only while registering a query. The returned driver sequence keeps
+/// its native streaming and backpressure behavior on the caller's executor.
+private final class PostgresQueryExecutor: TaskExecutor {
+    private let connection: PostgresConnection
+
+    init(connection: PostgresConnection) {
+        self.connection = connection
+    }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let unownedJob = UnownedJob(job)
+        connection.eventLoop.execute {
+            unownedJob.runSynchronously(on: self.asUnownedTaskExecutor())
+        }
     }
 }

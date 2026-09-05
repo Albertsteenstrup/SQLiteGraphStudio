@@ -52,7 +52,7 @@ extension PostgresDatabaseBackend {
             defer { writer.abort() }
             try await withReadOnlyTransaction(timeoutSeconds: timeoutSeconds) { connection in
                 progress(0)
-                let sequence = try await connection.query(PostgresQuery(unsafeSQL: plan.selectSQL, binds: try Self.bindings(plan.parameters)), logger: Logger(label: "SQLiteGraphStudio.Export"))
+                let sequence = try await Self.querySequence(PostgresQuery(unsafeSQL: plan.selectSQL, binds: try Self.bindings(plan.parameters)), on: connection, logger: Logger(label: "SQLiteGraphStudio.Export"))
                 for try await row in sequence {
                     try Task.checkCancellation()
                     let values = row.makeRandomAccess()

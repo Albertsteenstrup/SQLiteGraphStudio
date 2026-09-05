@@ -140,9 +140,9 @@ struct PostgreSQLIntegrationTests {
         let backend = PostgresDatabaseBackend(configuration: config.connection, password: config.password)
         try await backend.open()
         do {
-            for index in 0..<30 {
+            for index in 0..<300 {
                 let task = Task { try await backend.executeReadOnlyQuery(sql: "SELECT pg_sleep(1)") }
-                if index % 3 != 0 { try await Task.sleep(for: .microseconds(100 * index)) }
+                if index % 3 != 0 { try await Task.sleep(for: .microseconds(100 * (index % 30))) }
                 task.cancel()
                 do { _ = try await task.value; Issue.record("Early cancellation returned a result") } catch { }
             }
@@ -178,6 +178,18 @@ struct PostgreSQLIntegrationTests {
         } catch { await backend.close(); throw error }
     }
 
+    @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to verify exact special numeric values"))
+    func numericSpecialsMoneyAndScaleSurviveTheWire() async throws {
+        let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)
+        let backend = PostgresDatabaseBackend(configuration: config.connection, password: config.password)
+        try await backend.open()
+        do {
+            let result = try await backend.executeReadOnlyQuery(sql: "SELECT 'NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric, 1.2::numeric(20,8), '-0.01'::numeric::money, ARRAY[1::numeric(20,8)]")
+            #expect(result.rows.first?.values == [.exactNumeric("NaN"), .exactNumeric("Infinity"), .exactNumeric("-Infinity"), .exactNumeric("1.20000000"), .exactNumeric("-0.01"), .array(#"{"1.00000000"}"#)])
+            await backend.close()
+        } catch { await backend.close(); throw error }
+    }
+
     @MainActor
     private static func verifySharedExploration(snapshot: CatalogSnapshot) {
         let descriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
@@ -201,6 +213,68 @@ struct PostgreSQLIntegrationTests {
             #expect(LargeGraphLayout.isNonOverlapping(positions, sizes: sizes))
         }
         print("Live PostgreSQL: \(snapshot.graph.nodes.count) objects, \(snapshot.graph.edges.count) relationships, \(grouping.groupCount) groups; shared layout \(elapsed)")
+    }
+
+    @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to run PostgreSQL integration tests"))
+    func startingAQueryAfterLeaseClosureCompletesWithAnError() async throws {
+        let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)
+        let backend = PostgresDatabaseBackend(configuration: config.connection, password: config.password)
+        try await backend.open()
+        let completion = ClosedLeaseQueryCompletion()
+        let task = Task {
+            defer { completion.finish() }
+            do {
+                try await backend.withReadOnlyTransaction { connection in
+                    try await connection.close()
+                    _ = try await PostgresDatabaseBackend.querySequence("SELECT 1", on: connection)
+                }
+                Issue.record("A query on a closed lease unexpectedly succeeded")
+            } catch { }
+        }
+        // Keep the regression itself bounded even if the driver strands its
+        // response promise. The external runner also enforces a process deadline.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(completion.didFinish, "A closed-channel query stranded its response promise")
+        if completion.didFinish {
+            await task.value
+            await backend.close()
+        } else {
+            task.cancel()
+        }
+    }
+
+    @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to run PostgreSQL integration tests"))
+    func cancellationAroundFailedStatementRollbackKeepsPoolReusable() async throws {
+        let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)
+        let backend = PostgresDatabaseBackend(configuration: config.connection, password: config.password)
+        try await backend.open()
+        do {
+            for index in 0..<300 {
+                let failureReached = ClosedLeaseQueryCompletion()
+                let task = Task {
+                    do {
+                        try await backend.withReadOnlyTransaction { connection in
+                            do {
+                                let rows = try await PostgresDatabaseBackend.querySequence("SELECT 1 / 0", on: connection)
+                                for try await _ in rows { }
+                            } catch {
+                                failureReached.finish()
+                                throw error
+                            }
+                        }
+                    } catch { }
+                }
+                let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+                while !failureReached.didFinish, ContinuousClock.now < deadline { await Task.yield() }
+                #expect(failureReached.didFinish)
+                if index % 3 != 0 { try await Task.sleep(for: .microseconds(50 * (index % 3))) }
+                task.cancel()
+                await task.value
+                let reused = try await backend.executeReadOnlyQuery(sql: "SELECT 123")
+                #expect(reused.rows.first?.values == [.integer(123)])
+            }
+            await backend.close()
+        } catch { await backend.close(); throw error }
     }
 
 }
@@ -266,4 +340,11 @@ struct PostgreSQLIntegrationConfigurationTests {
             }
         }
     }
+}
+
+private final class ClosedLeaseQueryCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    var didFinish: Bool { lock.withLock { finished } }
+    func finish() { lock.withLock { finished = true } }
 }

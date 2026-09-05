@@ -74,6 +74,17 @@ struct TableBrowsingRegressionTests {
         await service.close()
     }
 
+    @Test func postgresTypeCastsRejectSQLAndPreserveQuotedNames() throws {
+        #expect(try PostgresTableQueryBuilder.postgresCast(#""Custom Schema"."CaseType"[]"#) == #""Custom Schema"."CaseType"[]"#)
+        #expect(try PostgresTableQueryBuilder.postgresCast("numeric(10,-2)[]") == "numeric[]")
+        #expect(try PostgresTableQueryBuilder.postgresCast("character(3)[]") == "pg_catalog.bpchar[]")
+        #expect(try PostgresTableQueryBuilder.postgresCast("bit(3)") == "pg_catalog.bit")
+        #expect(try PostgresTableQueryBuilder.postgresCast(#""Type(3)""#) == #""Type(3)""#)
+        #expect(try PostgresTableQueryBuilder.postgresCast("money[]") == "numeric[]::money[]")
+        for invalid in ["text; DROP TABLE x", "text) OR TRUE --", "text /* comment */", "text\n; SELECT 1"] {
+            #expect(throws: DatabaseUserError.self) { try PostgresTableQueryBuilder.postgresCast(invalid) }
+        }
+    }
     @Test func cursorOffsetsAreNotCurrentCountEvidence() {
         var query = TableQueryState(offset: 300, limit: 50)
         query.after = .init(values: ["id": .integer(300)])
