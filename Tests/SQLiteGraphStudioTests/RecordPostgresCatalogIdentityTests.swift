@@ -3,6 +3,8 @@ import Testing
 
 struct RecordPostgresCatalogIdentityTests {
     @Test func displayKeysDisambiguateQuotedComponentsWithoutChangingSimpleNames() {
+        #expect(RecordTableID(schemaName: "a.b", objectName: "c").displayName == "\"a.b\".c")
+        #expect(RecordTableID(schemaName: "a", objectName: "b.c").displayName == "a.\"b.c\"")
         #expect(PostgresCatalogMapper.catalogDisplayKey("public", "people") == "public.people")
         #expect(PostgresCatalogMapper.catalogDisplayKey("a.b", "c") == "\"a.b\".c")
         #expect(PostgresCatalogMapper.catalogDisplayKey("a", "b.c") == "a.\"b.c\"")

@@ -13,7 +13,7 @@ public struct RecordTableID: Codable, Sendable, Hashable, Identifiable {
         self.init(schemaName: descriptor.schemaName, objectName: descriptor.objectName)
     }
     public var id: String { recordToken([schemaName.map { "schema:" + $0 } ?? "default", objectName]) }
-    public var displayName: String { schemaName.map { $0 + "." + objectName } ?? objectName }
+    public var displayName: String { schemaName.map { PostgresCatalogMapper.catalogDisplayKey($0, objectName) } ?? objectName }
     public var qualifiedSQLIdentifier: String {
         schemaName.map { qualifiedIdentifier(schema: $0, object: objectName) } ?? quoteIdentifier(objectName)
     }

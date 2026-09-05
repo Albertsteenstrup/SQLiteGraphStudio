@@ -200,6 +200,11 @@ public enum RecordAccess {
         let builtIn = #"(?:double precision|character varying|bit varying|timestamp(?:\([0-9]+\))? (?:with|without) time zone|time(?:\([0-9]+\))? (?:with|without) time zone)"#
         let pattern = "^(?:" + builtIn + "|" + namedType + #")(?:\([0-9]+(?:\s*,\s*[0-9]+)?\))?(?:\[\])*$"#
         guard type.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil else { throw RecordAccessError.unsupportedType(type) }
+        // Money input uses lc_monetary separators; our exact amounts use the
+        // locale-independent numeric syntax, including each array element.
+        let lower = type.lowercased()
+        if lower == "money" { return "numeric::money" }
+        if lower == "money[]" { return "numeric[]::money[]" }
         return type
     }
 }

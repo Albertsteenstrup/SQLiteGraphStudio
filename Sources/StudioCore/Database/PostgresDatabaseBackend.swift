@@ -372,6 +372,10 @@ public enum PostgresCatalogMapper {
 }
 
 public enum PostgresValueMapper {
+    // Money's binary Int64 contains minor units; its decimal scale comes from
+    // lc_monetary on the leased connection, never from a client locale assumption.
+    @TaskLocal static var moneyFractionDigits: Int?
+
     public static func map(_ data: PostgresData) -> PostgresValue {
         guard data.value != nil else { return .null }
 
@@ -386,8 +390,12 @@ public enum PostgresValueMapper {
             return data.int64.map(PostgresValue.integer) ?? .text(rawText(data))
         case .float4, .float8:
             return data.double.map(PostgresValue.double) ?? .text(rawText(data))
-        case .numeric, .money:
-            return .exactNumeric(data.numeric?.string ?? rawText(data))
+        case .numeric:
+            return .exactNumeric(numericText(data) ?? rawText(data))
+        case .money:
+            if let text = moneyText(data) { return .exactNumeric(text) }
+            // Without server scale, preserve the bytes instead of inventing an amount.
+            return data.formatCode == .text ? .text(rawText(data)) : .blob(Data(data.bytes ?? []))
         case .uuid:
             return .uuid(data.uuid?.uuidString ?? rawText(data))
         case .date, .time, .timetz, .timestamp, .timestamptz:
@@ -422,6 +430,41 @@ public enum PostgresValueMapper {
             return String(decoding: value.readableBytesView, as: UTF8.self)
         }
         return "0x" + (data.bytes ?? []).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func numericText(_ data: PostgresData) -> String? {
+        guard data.formatCode == .binary else { return rawText(data) }
+        guard let buffer = data.value, buffer.readableBytes >= 8,
+              let sign = buffer.getInteger(at: buffer.readerIndex + 4, as: UInt16.self),
+              let scale = buffer.getInteger(at: buffer.readerIndex + 6, as: UInt16.self) else { return nil }
+        // NIO returns zero for ndigits=0 before inspecting these special signs.
+        switch sign {
+        case 0xC000: return "NaN"
+        case 0xD000: return "Infinity"
+        case 0xF000: return "-Infinity"
+        default: break
+        }
+        guard var text = data.numeric?.string else { return nil }
+        // PostgreSQL trims zero base-10000 groups on the wire but retains dscale.
+        // Restore presentation scale without rounding through floating point.
+        if scale > 0 {
+            let existing = text.firstIndex(of: ".").map { text.distance(from: text.index(after: $0), to: text.endIndex) } ?? 0
+            if existing == 0 { text += "." }
+            if Int(scale) > existing { text += String(repeating: "0", count: Int(scale) - existing) }
+        }
+        return text
+    }
+
+    private static func moneyText(_ data: PostgresData) -> String? {
+        guard data.formatCode == .binary, let scale = moneyFractionDigits,
+              (0...10).contains(scale), var buffer = data.value,
+              buffer.readableBytes == 8, let minorUnits = buffer.readInteger(as: Int64.self) else { return nil }
+        var digits = String(minorUnits.magnitude)
+        if scale > 0 {
+            digits = String(repeating: "0", count: max(0, scale + 1 - digits.count)) + digits
+            digits.insert(".", at: digits.index(digits.endIndex, offsetBy: -scale))
+        }
+        return (minorUnits < 0 ? "-" : "") + digits
     }
 
     /// PostgreSQL timestamps are integer microseconds from 2000-01-01.
@@ -1004,7 +1047,12 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                         try await Self.drain(Self.command("SET LOCAL statement_timeout = \(milliseconds)"), on: connection, logger: logger)
                         // Detect a cancelled client's closed socket during server work.
                         try await Self.drain(Self.command("SET LOCAL client_connection_check_interval = '100ms'"), on: connection, logger: logger)
-                        let value = try await body(connection)
+                        // This constant metadata read is transaction setup; record
+                        // graph budgets count bounded data fetches, not setup commands.
+                        let moneyScale = try await Self.moneyScale(on: connection)
+                        let value = try await PostgresValueMapper.$moneyFractionDigits.withValue(moneyScale) {
+                            try await body(connection)
+                        }
                         try Task.checkCancellation()
                         if discardConnectionAfterBody {
                             // Utility statements cannot use a SQL cursor. Their
@@ -1032,6 +1080,20 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 }
             }
         }
+    }
+
+    private static func moneyScale(on connection: PostgresConnection) async throws -> Int {
+        let result = try await Self.query(Self.command("SELECT pg_catalog.cash_send(1::numeric::money)"), on: connection)
+        guard case .blob(let bytes) = result.rows.first?.first, bytes.count == 8 else {
+            throw DatabaseUserError(kind: .generic, message: "PostgreSQL did not return its money precision.")
+        }
+        var units = bytes.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        var scale = 0
+        while units > 1, units % 10 == 0, scale < 10 { units /= 10; scale += 1 }
+        guard units == 1 else {
+            throw DatabaseUserError(kind: .generic, message: "PostgreSQL returned an unsupported money precision.")
+        }
+        return scale
     }
 
     private static func command(_ sql: String) -> PostgresQuery {

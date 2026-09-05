@@ -43,4 +43,62 @@ struct RecordPostgresValueTests {
         #expect(PostgresValueMapper.map(PostgresData(type: .timestamp, value: PostgresData(int64: Int64.max).value)) == .dateTime("infinity"))
     }
 
+    @Test func numericSpecialSignsPreserveScalarAndArrayIdentities() throws {
+        let cases: [(UInt16, String)] = [(0xC000, "NaN"), (0xD000, "Infinity"), (0xF000, "-Infinity")]
+        var array: [PostgresData?] = []
+        for (sign, expected) in cases {
+            var buffer = try #require(PostgresData(int64: 0).value)
+            buffer.clear()
+            buffer.writeInteger(Int16(0)) // ndigits
+            buffer.writeInteger(Int16(0)) // weight
+            buffer.writeInteger(sign)
+            buffer.writeInteger(Int16(0)) // scale
+            let data = PostgresData(type: .numeric, value: buffer)
+            #expect(PostgresValueMapper.map(data) == .exactNumeric(expected))
+            array.append(data)
+        }
+        #expect(PostgresValueMapper.map(PostgresData(array: array, elementType: .numeric)) == .array(#"{"NaN","Infinity","-Infinity"}"#))
+    }
+    @Test func finiteNumericScaleSurvivesTrimmedWireDigits() throws {
+        for (digits, scale, expected): ([Int16], Int16, String) in [([], 4, "0.0000"), ([1], 4, "1.0000"), ([1, 2000], 8, "1.20000000")] {
+            var buffer = try #require(PostgresData(int64: 0).value)
+            buffer.clear()
+            buffer.writeInteger(Int16(digits.count)); buffer.writeInteger(Int16(0))
+            buffer.writeInteger(Int16(0)); buffer.writeInteger(scale)
+            for digit in digits { buffer.writeInteger(digit) }
+            #expect(PostgresValueMapper.map(PostgresData(type: .numeric, value: buffer)) == .exactNumeric(expected))
+        }
+    }
+    @Test func moneyMinorUnitsUseServerScaleWithoutRounding() {
+        for (scale, expected): (Int, [String]) in [
+            (0, ["0", "-1", "12345", "-9223372036854775808"]),
+            (2, ["0.00", "-0.01", "123.45", "-92233720368547758.08"]),
+            (3, ["0.000", "-0.001", "12.345", "-9223372036854775.808"])
+        ] {
+            PostgresValueMapper.$moneyFractionDigits.withValue(scale) {
+                let data = [Int64(0), -1, 12345, Int64.min].map { PostgresData(type: .money, value: PostgresData(int64: $0).value) }
+                for (value, text) in zip(data, expected) {
+                    #expect(PostgresValueMapper.map(value) == .exactNumeric(text))
+                }
+                let literal = "{" + expected.map { "\"" + $0 + "\"" }.joined(separator: ",") + "}"
+                #expect(PostgresValueMapper.map(PostgresData(array: data.map { Optional($0) }, elementType: .money)) == .array(literal))
+            }
+        }
+        let unknownScale = PostgresData(type: .money, value: PostgresData(int64: 12345).value)
+        #expect(PostgresValueMapper.map(unknownScale) == .blob(Data([0, 0, 0, 0, 0, 0, 48, 57])))
+    }
+    @Test func moneyPredicatesBindThroughLocaleIndependentNumericInput() throws {
+        for type in ["money", "money[]"] {
+            let catalog = PostgresCatalogMapper.makeSnapshot(
+                objects: [.init(schemaName: "public", objectName: "amounts", relkind: "r", rowEstimate: nil)],
+                columns: [.init(schemaName: "public", objectName: "amounts", name: "key", declaredType: type, notNull: true, defaultValueSQL: nil, ordinal: 1)],
+                indexes: [.init(schemaName: "public", objectName: "amounts", name: "pk", columns: ["key"], isUnique: true, isPrimary: true, isPartial: false)], foreignKeys: [])
+            let descriptor = try #require(catalog.descriptors.first)
+            let value: SQLiteValue = type == "money" ? .exactNumeric("-0.01") : .array(#"{"-0.01"}"#)
+            let plan = try RecordAccess.plan(descriptor: descriptor, predicates: [.init(columnName: "key", value: value)], offset: 0, limit: 5, postgres: true)
+            #expect(plan.sql.contains(type == "money" ? "$1::text::numeric::money" : "$1::text::numeric[]::money[]"))
+            #expect(plan.parameters == [value])
+        }
+    }
+
 }
