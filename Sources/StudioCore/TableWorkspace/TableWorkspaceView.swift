@@ -4,6 +4,7 @@ import SwiftUI
 public struct TableWorkspaceView: View {
     @Bindable private var session: AppSession
     @State private var pendingColumnDrop: TableColumn?
+    @State private var showsFilters = false
 
     public init(session: AppSession) {
         self.session = session
@@ -47,12 +48,10 @@ public struct TableWorkspaceView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(StudioPalette.accent)
 
-                    Button("Create Table") {
-                        session.showCreateTable()
+                    if session.databaseCapabilities.canCreateTable {
+                        Button("Create Table") { session.showCreateTable() }
+                            .buttonStyle(.bordered).tint(StudioPalette.accent)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(StudioPalette.accent)
-                    .disabled(!session.databaseCapabilities.canCreateTable)
                 }
             }
         }
@@ -110,6 +109,16 @@ public struct TableWorkspaceView: View {
     private func tableContent(for activeTab: TableTabModel) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             header(for: activeTab)
+            HStack {
+                Button("Previous Page") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
+                Button("Next Page") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
+                Text(activeTab.chunk.rows.isEmpty ? "No loaded rows" : "Loaded rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
+                Spacer()
+                Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
+                Button("Filters…") { showsFilters = true }
+                    .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
+            }
+            Text(activeTab.descriptor.pagingDescription).font(.caption2).foregroundStyle(.secondary)
             schemaMetadataStrip(for: activeTab.descriptor)
 
             if let error = activeTab.inlineErrorMessage {
@@ -248,7 +257,7 @@ public struct TableWorkspaceView: View {
                 .help("Search rows")
 
                 Button {
-                    Task { await activeTab.reload() }
+                    activeTab.refresh()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -258,42 +267,31 @@ public struct TableWorkspaceView: View {
                 .help("Refresh table")
 
                 Menu {
-                    Button {
-                        session.showAlterTable()
-                    } label: {
-                        Label("Alter Table", systemImage: "slider.horizontal.3")
+                    if session.databaseCapabilities.canAlterSchema {
+                        Button { session.showAlterTable() } label: {
+                            Label("Alter Table", systemImage: "slider.horizontal.3")
+                        }
                     }
-                    .disabled(!session.databaseCapabilities.canAlterSchema)
-
-                    Divider()
-
-                    Button {
-                        session.importRowsIntoActiveTable(format: .csv)
-                    } label: {
-                        Label("Import CSV", systemImage: "square.and.arrow.down")
-                    }
-                    .disabled(!session.databaseCapabilities.canImportRows || !activeTab.isEditable)
-
-                    Button {
-                        session.importRowsIntoActiveTable(format: .json)
-                    } label: {
-                        Label("Import JSON", systemImage: "square.and.arrow.down")
-                    }
-                    .disabled(!session.databaseCapabilities.canImportRows || !activeTab.isEditable)
-
-                    Divider()
-
-                    Button {
-                        session.exportActiveTableRows(format: .csv)
-                    } label: {
-                        Label("Export CSV", systemImage: "square.and.arrow.up")
+                    if session.databaseCapabilities.canImportRows && activeTab.isEditable {
+                        Button { session.importRowsIntoActiveTable(format: .csv) } label: {
+                            Label("Import CSV", systemImage: "square.and.arrow.down")
+                        }
+                        Button { session.importRowsIntoActiveTable(format: .json) } label: {
+                            Label("Import JSON", systemImage: "square.and.arrow.down")
+                        }
+                        Divider()
                     }
 
-                    Button {
-                        session.exportActiveTableRows(format: .json)
-                    } label: {
-                        Label("Export JSON", systemImage: "square.and.arrow.up")
+                    Menu("Export loaded rows (\(activeTab.chunk.rows.count))") {
+                        Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .loadedRows) }
+                        Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .loadedRows) }
                     }
+                    .disabled(session.exportProgress?.isRunning == true)
+                    Menu("Export all matching rows") {
+                        Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .allMatchingRows) }
+                        Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .allMatchingRows) }
+                    }
+                    .disabled(session.exportProgress?.isRunning == true)
                 } label: {
                     Image(systemName: "ellipsis")
                 }

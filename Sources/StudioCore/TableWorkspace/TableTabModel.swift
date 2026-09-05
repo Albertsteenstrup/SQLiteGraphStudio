@@ -12,11 +12,15 @@ public final class TableTabModel: Identifiable {
     public var inlineErrorMessage: String?
     public var busyError: SQLiteUserError?
     public private(set) var revision = 0
+    public private(set) var viewportRequestID = 0
+    public private(set) var viewportRow = 0
 
     private let databaseService: DatabaseService
     private var latestRequestID = 0
     private var pendingRetryChange: CellEditChange?
     private var pendingOffset: Int?
+    private var cursors: [Int: TablePageCursor] = [:]
+    private var loadedQuery: TableQueryState?
 
     public init(
         descriptor: EditableTableDescriptor,
@@ -34,7 +38,7 @@ public final class TableTabModel: Identifiable {
     }
 
     public var rowCountLabel: String {
-        "\(chunk.totalRowCount.formatted()) rows"
+        chunk.countState.label
     }
 
     public var isEditable: Bool {
@@ -65,8 +69,22 @@ public final class TableTabModel: Identifiable {
         return tableRow.values[column].displayText
     }
 
-    public func reload(centeringRow targetRow: Int? = nil) async {
-        let nextOffset = targetRow.map { max(0, $0 - queryState.limit / 2) } ?? queryState.offset
+    public func reload(centeringRow targetRow: Int? = nil, moveViewport: Bool = false) async {
+        let nextOffset = targetRow.map { $0 >= chunk.rowRange.upperBound ? chunk.rowRange.upperBound : max(0, $0 - queryState.limit / 2) } ?? queryState.offset
+        if let previous = loadedQuery, previous.searchText != queryState.searchText || previous.sanitizedFilters != queryState.sanitizedFilters || previous.sort != queryState.sort {
+            cursors = [:]
+            queryState.after = nil
+            queryState.cachedExactCount = nil
+        }
+        if nextOffset == chunk.rowRange.upperBound, nextOffset > 0, !descriptor.paginationKeyColumns.isEmpty, let last = chunk.rows.last {
+            var values = Dictionary(uniqueKeysWithValues: zip(descriptor.columns.map(\.name), last.values))
+            if case .rowID(let id) = last.identity { values["_rowid_"] = .integer(id) }
+            // A cursor is valid only for the predicates/order that produced it.
+            if loadedQuery?.searchText == queryState.searchText && loadedQuery?.sanitizedFilters == queryState.sanitizedFilters && loadedQuery?.sort == queryState.sort {
+                cursors[nextOffset] = .init(values: values)
+            }
+        }
+        queryState.after = cursors[nextOffset]
         queryState.offset = nextOffset
         pendingOffset = nextOffset
         latestRequestID += 1
@@ -75,10 +93,14 @@ public final class TableTabModel: Identifiable {
         isLoading = true
         inlineErrorMessage = nil
 
+        let requestedQuery = queryState
         do {
-            let result = try await databaseService.fetchChunk(query: queryState, descriptor: descriptor)
+            let result = try await databaseService.fetchChunk(query: requestedQuery, descriptor: descriptor)
             guard requestID == latestRequestID else { return }
             chunk = result
+            loadedQuery = requestedQuery
+            if queryState == requestedQuery, case .exact(let count) = result.countState { queryState.cachedExactCount = count }
+            if moveViewport { viewportRow = result.offset; viewportRequestID &+= 1 }
             pendingOffset = nil
             revision &+= 1
         } catch {
@@ -104,7 +126,32 @@ public final class TableTabModel: Identifiable {
                 return
             }
         }
-        Task { await reload(centeringRow: row) }
+        Task { await reload(centeringRow: row, moveViewport: row >= chunk.rowRange.upperBound) }
+    }
+
+    public func nextPage() { guard chunk.hasMore, !isLoading else { return }; queryState.offset = chunk.rowRange.upperBound; Task { await reload(moveViewport: true) } }
+    public func previousPage() { guard !isLoading else { return }; queryState.offset = max(0, chunk.offset - queryState.limit); Task { await reload(moveViewport: true) } }
+    private func invalidatePagination() {
+        queryState.cachedExactCount = nil
+        queryState.after = nil
+        cursors = [:]
+        loadedQuery = nil
+    }
+    public func refresh() {
+        invalidatePagination()
+        queryState.offset = 0
+        Task { await reload() }
+    }
+    public func countExactly() {
+        let filters = queryState
+        Task {
+            do {
+                let count = try await databaseService.countRows(query: filters, descriptor: descriptor)
+                guard queryState.searchText == filters.searchText, queryState.sanitizedFilters == filters.sanitizedFilters else { return }
+                queryState.cachedExactCount = count
+                await reload()
+            } catch { inlineErrorMessage = SQLiteUserError.from(error).message }
+        }
     }
 
     public func updateSearch(_ value: String) {
@@ -158,6 +205,7 @@ public final class TableTabModel: Identifiable {
             do {
                 try await databaseService.commitEdit(change)
                 inlineErrorMessage = nil
+                invalidatePagination()
                 await reload(centeringRow: absoluteRow)
             } catch {
                 let mapped = SQLiteUserError.from(error)
@@ -178,6 +226,7 @@ public final class TableTabModel: Identifiable {
         Task {
             do {
                 try await databaseService.commitEdit(pendingRetryChange)
+                invalidatePagination()
                 await reload()
             } catch {
                 let mapped = SQLiteUserError.from(error)
@@ -212,6 +261,7 @@ public final class TableTabModel: Identifiable {
             do {
                 try await databaseService.insertDefaultRow(into: descriptor)
                 inlineErrorMessage = nil
+                invalidatePagination()
                 await reload(centeringRow: 0)
             } catch {
                 inlineErrorMessage = SQLiteUserError.from(error).message
@@ -229,6 +279,7 @@ public final class TableTabModel: Identifiable {
             do {
                 try await databaseService.insertClonedRow(from: row, into: descriptor)
                 inlineErrorMessage = nil
+                invalidatePagination()
                 await reload(centeringRow: 0)
             } catch {
                 inlineErrorMessage = SQLiteUserError.from(error).message
@@ -246,6 +297,7 @@ public final class TableTabModel: Identifiable {
             do {
                 try await databaseService.deleteRow(row.identity, from: descriptor)
                 inlineErrorMessage = nil
+                invalidatePagination()
                 await reload(centeringRow: max(0, absoluteRow - 1))
             } catch {
                 inlineErrorMessage = SQLiteUserError.from(error).message

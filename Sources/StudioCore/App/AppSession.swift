@@ -154,6 +154,9 @@ public final class AppSession {
     public private(set) var databaseCapabilities: DatabaseCapabilities = .none
     public var tables: [TableSummary] = []
     public var graph: SchemaGraph = .empty
+    public private(set) var schemaMetadataState = SchemaMetadataState()
+    public var metadataDiagnostics: [String] { schemaMetadataState.diagnostics }
+
     public var schemaSidecar: SchemaSidecar = .empty
     public private(set) var graphGrouping: GraphGrouping = .empty
     public var leftPane = WorkspacePaneState(kind: .schema)
@@ -197,6 +200,8 @@ public final class AppSession {
     public let graphLayout = GraphLayoutModel()
     public var queryWorkspace: QueryWorkspaceModel
 
+    private var openGeneration = UUID()
+    private var pendingDatabaseClose: Task<Void, Never>?
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
@@ -304,13 +309,22 @@ public final class AppSession {
 
     private func openDatabase(url: URL, changeBaseline: SchemaRefreshSnapshot?) async {
         records.reset()
+        let generation = UUID()
+        openGeneration = generation
+        queryWorkspace.stopAll()
+        cancelExport()
+
         isRefreshing = true
         presentedError = nil
-        defer { isRefreshing = false }
+        defer { if openGeneration == generation { isRefreshing = false } }
 
         do {
+            await pendingDatabaseClose?.value
+            guard openGeneration == generation else { return }
             try await databaseService.open(url: url)
+            guard openGeneration == generation else { return }
             let snapshot = try await databaseService.loadCatalogSnapshot()
+            guard openGeneration == generation else { return }
             apply(snapshot: snapshot, target: .sqlite(url))
             if let changeBaseline {
                 refreshToast = Self.refreshSummary(
@@ -324,6 +338,7 @@ public final class AppSession {
             }
             StudioLog.ui.info("Loaded database session for \(url.lastPathComponent, privacy: .public)")
         } catch {
+            guard openGeneration == generation else { return }
             presentedError = SQLiteUserError.from(error)
         }
     }
@@ -355,20 +370,31 @@ public final class AppSession {
 
     public func openPostgreSQLDocument(url: URL) async {
         records.reset()
+        let generation = UUID()
+        openGeneration = generation
+        queryWorkspace.stopAll()
+        cancelExport()
+
         isRefreshing = true
         presentedError = nil
-        defer { isRefreshing = false }
+        defer { if openGeneration == generation { isRefreshing = false } }
 
         do {
             let data = try Data(contentsOf: url)
             let document = try JSONDecoder().decode(PostgresConnectionDocument.self, from: data)
+            await pendingDatabaseClose?.value
+            guard openGeneration == generation else { return }
             try await databaseService.open(postgres: document.configuration)
+            guard openGeneration == generation else { return }
             let snapshot = try await databaseService.loadCatalogSnapshot()
+            guard openGeneration == generation else { return }
             apply(snapshot: snapshot, target: .postgres(document.configuration), documentURL: url)
+            databaseCapabilities = .postgresReadOnly
             StudioLog.ui.info(
                 "Loaded PostgreSQL document \(url.lastPathComponent, privacy: .public) for \(document.configuration.host, privacy: .public):\(document.configuration.port, privacy: .public)/\(document.configuration.database, privacy: .public)"
             )
         } catch {
+            guard openGeneration == generation else { return }
             presentedError = SQLiteUserError.from(error)
         }
     }
@@ -380,7 +406,13 @@ public final class AppSession {
 
     public func closeDatabase() {
         records.reset()
-        Task {
+        openGeneration = UUID()
+        isRefreshing = false
+        queryWorkspace.stopAll()
+        cancelExport()
+        let previousClose = pendingDatabaseClose
+        pendingDatabaseClose = Task {
+            await previousClose?.value
             await databaseService.close()
         }
         databaseTarget = nil
@@ -396,6 +428,7 @@ public final class AppSession {
         graph = .empty
         schemaSidecar = .empty
         graphGrouping = .empty
+        schemaMetadataState = SchemaMetadataState()
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
         activePaneSide = .right
@@ -425,7 +458,8 @@ public final class AppSession {
     public func reloadSchemaSidecarFromDisk() {
         guard hasOpenDatabase, let databaseURL else { return }
         let before = schemaSidecar
-        let sidecar = SchemaSidecarStore.load(for: databaseURL)
+        schemaMetadataState.reload(for: databaseURL, descriptors: Array(tableDescriptors.values))
+        let sidecar = schemaMetadataState.sidecar
         schemaSidecar = sidecar
         configureRecordMappings(sidecar)
         updateGraphGrouping()
@@ -537,6 +571,8 @@ public final class AppSession {
         case .sqlite(let databaseURL):
             Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
         case .postgres:
+            let generation = openGeneration
+            let documentURL = databaseURL
             Task {
                 guard databaseTarget == target, databaseURL == documentURL else { return }
                 isRefreshing = true
@@ -547,7 +583,7 @@ public final class AppSession {
                 }
                 do {
                     let snapshot = try await databaseService.loadCatalogSnapshot()
-                    guard databaseTarget == target, databaseURL == documentURL else { return }
+                    guard openGeneration == generation, databaseTarget == target, databaseURL == documentURL else { return }
                     apply(snapshot: snapshot, target: target, documentURL: documentURL)
                     refreshToast = Self.refreshSummary(
                         before: baseline,
@@ -558,7 +594,7 @@ public final class AppSession {
                         )
                     ).map { RefreshToast(message: $0) }
                 } catch {
-                    guard databaseTarget == target, databaseURL == documentURL else { return }
+                    guard openGeneration == generation, databaseTarget == target, databaseURL == documentURL else { return }
                     presentedError = SQLiteUserError.from(error)
                 }
             }
@@ -753,6 +789,10 @@ public final class AppSession {
     public func deleteStory(id storyID: String) {
         guard hasOpenDatabase, let databaseURL else { return }
         guard schemaSidecar.stories.contains(where: { $0.id == storyID }) else { return }
+        if case .failed(let error) = schemaMetadataState.status {
+            presentedError = DatabaseUserError(kind: .invalidInput, message: error.localizedDescription + " Reload valid metadata before changing stories.")
+            return
+        }
 
         let before = schemaSidecar
         var next = schemaSidecar
@@ -761,6 +801,7 @@ public final class AppSession {
         do {
             try SchemaSidecarStore.save(next, for: databaseURL)
             schemaSidecar = next
+            schemaMetadataState.reload(for: databaseURL, descriptors: Array(tableDescriptors.values))
             refreshToast = Self.sidecarSummary(before: before, after: next)
                 .map { RefreshToast(message: $0) }
         } catch {
@@ -929,31 +970,96 @@ public final class AppSession {
         (try? databaseService.makeCreateTableSQL(draft)) ?? ""
     }
 
-    public func exportActiveTableRows(format: DataTransferFormat) {
-        guard let activeTab else { return }
-        Task {
-            do {
-                let text = try await databaseService.serializeTableRows(
-                    descriptor: activeTab.descriptor,
-                    rows: activeTab.chunk.rows,
-                    format: format
-                )
-                try presentExportPanel(defaultName: activeTab.title, format: format, text: text)
-            } catch {
-                presentedError = SQLiteUserError.from(error)
+    public var exportProgress: RowExportProgress?
+    @ObservationIgnored private var exportTask: Task<Void, Never>?
+    @ObservationIgnored private var exportCancellation: ExportCancellation?
+
+    public func cancelExport() {
+        exportCancellation?.cancel()
+        exportTask?.cancel()
+    }
+
+    public func dismissExportProgress() {
+        guard exportTask == nil else { return }
+        exportProgress = nil
+    }
+
+    public var queryExportScopeLabel: String {
+        guard let result = queryWorkspace.activeQuery?.result else { return "Executed result" }
+        return Self.queryExportLabel(result)
+    }
+
+    private static func queryExportLabel(_ result: QueryResult) -> String {
+        result.isTruncated
+            ? "Executed result: \(result.rows.count) retained rows (truncated at \(result.rowLimit))"
+            : "Executed result: \(result.rows.count) rows"
+    }
+
+    public func exportActiveTableRows(format: DataTransferFormat, scope: TableExportScope = .loadedRows) {
+        guard let activeTab, exportTask == nil else { return }
+        let generation = openGeneration
+        let descriptor = activeTab.descriptor
+        let rows = activeTab.chunk.rows.map(\.values)
+        let query = activeTab.queryState
+        let loaded = scope == .loadedRows
+        let label = loaded ? "Loaded rows: \(rows.count) · \(activeTab.title)" : "All matching rows · \(activeTab.title) · total determined during export"
+        let suffix = loaded ? "loaded-\(rows.count)" : "all-matching"
+        guard let destination = presentExportPanel(defaultName: "\(activeTab.title)-\(suffix)", format: format,
+            message: "\(label). Uses the captured filters and ordering. Switching databases cancels the export.") else { return }
+        guard openGeneration == generation else { return }
+        let source = databaseService
+        beginExport(scope: label, totalRows: loaded ? rows.count : nil) { cancellation, progress in
+            if loaded {
+                return try await StreamingRowExport.write(names: descriptor.columns.map(\.name), rows: rows, to: destination, format: format, cancellation: cancellation, progress: progress)
             }
+            return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, cancellation: cancellation, progress: progress)
         }
     }
 
     public func exportActiveQueryResult(format: DataTransferFormat) {
-        guard let activeQuery = queryWorkspace.activeQuery else { return }
-        Task {
+        guard let activeQuery = queryWorkspace.activeQuery, !activeQuery.result.columns.isEmpty, exportTask == nil else { return }
+        let generation = openGeneration
+        let result = activeQuery.result
+        let label = Self.queryExportLabel(result)
+        let suffix = result.isTruncated ? "truncated-\(result.rows.count)" : "result-\(result.rows.count)"
+        guard let destination = presentExportPanel(defaultName: "\(activeQuery.title)-\(suffix)", format: format,
+            message: "\(label). Exports the displayed executed result. Editing SQL does not change this snapshot.") else { return }
+        guard openGeneration == generation else { return }
+        beginExport(scope: label, totalRows: result.rows.count) { cancellation, progress in
+            try await StreamingRowExport.write(names: result.columns.map(\.name), rows: result.rows.map(\.values), to: destination, format: format, cancellation: cancellation, progress: progress)
+        }
+    }
+
+    private func beginExport(scope: String, totalRows: Int?, operation: @escaping @Sendable (ExportCancellation, @escaping @Sendable (Int) -> Void) async throws -> Int) {
+        let id = UUID()
+        let cancellation = ExportCancellation()
+        exportCancellation = cancellation
+        exportProgress = RowExportProgress(id: id, scope: scope, totalRows: totalRows)
+        exportTask = Task { [weak self] in
             do {
-                let text = try await databaseService.serializeQueryResult(activeQuery.result, format: format)
-                try presentExportPanel(defaultName: activeQuery.title, format: format, text: text)
+                let session = self
+                let count = try await operation(cancellation) { count in
+                    Task { @MainActor [weak session] in
+                        guard session?.exportProgress?.id == id, session?.exportProgress?.isRunning == true else { return }
+                        session?.exportProgress?.rowsWritten = max(session?.exportProgress?.rowsWritten ?? 0, count)
+                    }
+                }
+                guard let self, self.exportProgress?.id == id else { return }
+                self.exportProgress?.rowsWritten = count
+                self.exportProgress?.outcome = "Exported \(count) rows"
             } catch {
-                presentedError = SQLiteUserError.from(error)
+                guard let self, self.exportProgress?.id == id else { return }
+                if error is CancellationError || Task.isCancelled {
+                    self.exportProgress?.outcome = "Cancelled · destination unchanged"
+                } else {
+                    self.exportProgress?.outcome = "Failed · destination unchanged"
+                    self.presentedError = SQLiteUserError.from(error)
+                }
             }
+            guard let self, self.exportProgress?.id == id else { return }
+            self.exportProgress?.isRunning = false
+            self.exportTask = nil
+            self.exportCancellation = nil
         }
     }
 
@@ -1089,14 +1195,15 @@ public final class AppSession {
         userDefaults.set(recentDatabaseURLs.map(\.path), forKey: Self.recentDatabaseStorageKey)
     }
 
-    private func presentExportPanel(defaultName: String, format: DataTransferFormat, text: String) throws {
+    private func presentExportPanel(defaultName: String, format: DataTransferFormat, message: String) -> URL? {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format == .csv ? .commaSeparatedText : .json]
         panel.nameFieldStringValue = "\(defaultName).\(format.fileExtension)"
+        panel.message = message
         panel.canCreateDirectories = true
         panel.prompt = "Export"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        try text.write(to: url, atomically: true, encoding: .utf8)
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 
     private static func loadRecentDatabaseURLs(from userDefaults: UserDefaults) -> [URL] {
@@ -1127,7 +1234,15 @@ public final class AppSession {
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
         tables = snapshot.descriptors.map(\.summary)
         graph = snapshot.graph
-        schemaSidecar = localURL.map { SchemaSidecarStore.load(for: $0) } ?? .empty
+        let sidecar: SchemaSidecar
+        if let url = databaseURL {
+            schemaMetadataState.reload(for: url, descriptors: snapshot.descriptors)
+            sidecar = schemaMetadataState.sidecar
+        } else {
+            schemaMetadataState = SchemaMetadataState()
+            sidecar = .empty
+        }
+        schemaSidecar = sidecar
         configureRecordMappings(schemaSidecar)
         updateGraphGrouping()
         graphLayout.reset(for: snapshot.graph)

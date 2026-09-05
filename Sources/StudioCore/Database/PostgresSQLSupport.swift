@@ -6,6 +6,7 @@ public enum PostgresQueryParameter: Sendable, Hashable {
     case integer(Int64)
     case double(Double)
     case boolean(Bool)
+    case bytes(Data)
 }
 
 public struct PostgresTableQueryPlan: Sendable, Hashable {
@@ -31,80 +32,134 @@ public struct PostgresTableQueryPlan: Sendable, Hashable {
     }
 }
 
+public enum TableSQLDialect: Sendable { case sqlite, postgres }
+
 public enum PostgresTableQueryBuilder {
-    public static func makePlan(
-        query: TableQueryState,
-        descriptor: TableDescriptor
-    ) throws -> PostgresTableQueryPlan {
-        let knownColumns = Set(descriptor.columns.map(\.name))
-        var conditions: [String] = []
-        var parameters: [PostgresQueryParameter] = []
-
-        let searchText = query.sanitizedSearchText
-        let searchColumns = descriptor.columns.filter { column in
-            column.affinity == .text || column.affinity == .none
-        }
-        if !searchText.isEmpty, !searchColumns.isEmpty {
-            let pattern = "%\(searchText)%"
-            let searchConditions = searchColumns.map { column in
-                parameters.append(.text(pattern))
-                return "CAST(\(quoteIdentifier(column.name)) AS TEXT) ILIKE $\(parameters.count)"
-            }
-            conditions.append("(\(searchConditions.joined(separator: " OR ")))" )
-        }
-
-        for filter in query.sanitizedFilters {
-            guard knownColumns.contains(filter.columnName) else {
-                throw DatabaseUserError(kind: .invalidInput, message: "Unknown column \(filter.columnName).")
-            }
-            parameters.append(.text("%\(filter.value)%"))
-            conditions.append("CAST(\(quoteIdentifier(filter.columnName)) AS TEXT) ILIKE $\(parameters.count)")
-        }
-
-        let whereClause = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
-        var orderTerms: [String] = []
-
+    public static func order(query: TableQueryState, descriptor: TableDescriptor) throws -> [SortState] {
+        let known = Set(descriptor.columns.map(\.name))
+        var order: [SortState] = []
         if let sort = query.sort {
-            guard knownColumns.contains(sort.columnName) else {
-                throw DatabaseUserError(kind: .invalidInput, message: "Unknown sort column \(sort.columnName).")
-            }
-            orderTerms.append("\(quoteIdentifier(sort.columnName)) \(sort.direction.sqlKeyword) NULLS LAST")
+            guard known.contains(sort.columnName) else { throw invalid("Unknown sort column \(sort.columnName).") }
+            order.append(sort)
         }
-
-        for fallback in descriptor.fallbackSortColumns where knownColumns.contains(fallback) {
-            guard !orderTerms.contains(where: { $0.hasPrefix(quoteIdentifier(fallback) + " ") }) else { continue }
-            orderTerms.append("\(quoteIdentifier(fallback)) ASC NULLS LAST")
+        let fallback = descriptor.paginationKeyColumns.isEmpty
+            ? descriptor.fallbackSortColumns.filter { name in descriptor.columns.first(where: { $0.name == name })?.declaredType.lowercased() != "json" }
+            : descriptor.paginationKeyColumns
+        for name in fallback where !order.contains(where: { $0.columnName == name }) {
+            order.append(.init(columnName: name, direction: .ascending))
         }
-        if orderTerms.isEmpty, let firstColumn = descriptor.columns.first {
-            orderTerms.append("\(quoteIdentifier(firstColumn.name)) ASC NULLS LAST")
-        }
-
-        parameters.append(.integer(Int64(max(0, query.limit))))
-        let limitParameter = parameters.count
-        parameters.append(.integer(Int64(max(0, query.offset))))
-        let offsetParameter = parameters.count
-
-        let orderClause = orderTerms.isEmpty ? "" : " ORDER BY " + orderTerms.joined(separator: ", ")
-        let selectedColumns = descriptor.columns.map { quoteIdentifier($0.name) }.joined(separator: ", ")
-        let table = descriptor.qualifiedSQLIdentifier
-        let countParameterCount = parameters.count - 2
-
-        let countSQL = "SELECT COUNT(*) FROM \(table)\(whereClause)"
-        let selectSQL = "SELECT \(selectedColumns) FROM \(table)\(whereClause)\(orderClause) LIMIT $\(limitParameter) OFFSET $\(offsetParameter)"
-
-        return PostgresTableQueryPlan(
-            countSQL: countSQL,
-            selectSQL: selectSQL,
-            parameters: parameters,
-            countParameterCount: countParameterCount
-        )
+        return order
     }
+
+    public static func makePlan(query: TableQueryState, descriptor: TableDescriptor, dialect: TableSQLDialect = .postgres) throws -> PostgresTableQueryPlan {
+        guard query.offset >= 0, query.limit >= 0 else { throw invalid("Page offset and limit must not be negative.") }
+        let columns = Dictionary(uniqueKeysWithValues: descriptor.columns.map { ($0.name, $0) })
+        var parameters: [PostgresQueryParameter] = []
+        var conditions: [String] = []
+        func bind(_ value: PostgresQueryParameter) -> String {
+            parameters.append(value)
+            return dialect == .postgres ? "$\(parameters.count)" : "?"
+        }
+        func literalPattern(_ value: String) -> String {
+            "%" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_") + "%"
+        }
+        func contains(_ name: String, _ value: String) -> String {
+            "CAST(\(quoteIdentifier(name)) AS TEXT) \(dialect == .postgres ? "ILIKE" : "LIKE") \(bind(.text(literalPattern(value)))) ESCAPE '\\'"
+        }
+        func operand(_ text: String, column: TableColumn) throws -> String {
+            let type = column.declaredType.lowercased()
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if type == "boolean" || type == "bool" {
+                guard ["true", "false", "1", "0"].contains(trimmed.lowercased()) else { throw invalid("\(column.name) requires true or false.") }
+                return bind(.boolean(trimmed == "1" || trimmed.lowercased() == "true"))
+            }
+            if column.affinity == .integer {
+                guard let value = Int64(trimmed) else { throw invalid("\(column.name) requires a whole number in the 64-bit range.") }
+                return bind(.integer(value))
+            }
+            if column.affinity == .real {
+                guard let value = Double(trimmed), value.isFinite else { throw invalid("\(column.name) requires a finite number.") }
+                return bind(.double(value))
+            }
+            if type.hasPrefix("numeric") || type.hasPrefix("decimal") {
+                guard trimmed.range(of: #"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"#, options: .regularExpression) != nil else { throw invalid("\(column.name) requires a decimal number.") }
+                return "CAST(\(bind(.text(trimmed))) AS NUMERIC)"
+            }
+            let parameter = bind(.text(text))
+            guard dialect == .postgres else { return parameter }
+            let casts = ["uuid", "date", "time", "time without time zone", "time with time zone", "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz", "timetz", "jsonb"]
+            return casts.contains(type) ? "CAST(\(parameter) AS \(type))" : parameter
+        }
+        if !query.sanitizedSearchText.isEmpty {
+            let searchable = dialect == .postgres ? descriptor.columns.filter { $0.affinity == .text || $0.affinity == .none } : descriptor.searchableColumns
+            if !searchable.isEmpty { conditions.append("(" + searchable.map { contains($0.name, query.sanitizedSearchText) }.joined(separator: " OR ") + ")") }
+        }
+        for filter in query.sanitizedFilters {
+            guard let column = columns[filter.columnName] else { throw invalid("Unknown column \(filter.columnName).") }
+            let name = quoteIdentifier(column.name)
+            switch filter.comparison {
+            case .contains: conditions.append(contains(column.name, filter.value))
+            case .isNull: conditions.append("\(name) IS NULL")
+            case .isNotNull: conditions.append("\(name) IS NOT NULL")
+            case .between:
+                guard let upper = filter.upperValue else { throw invalid("A range needs both lower and upper values.") }
+                conditions.append("\(name) BETWEEN \(try operand(filter.value, column: column)) AND \(try operand(upper, column: column))")
+            default:
+                let operators: [ColumnFilterComparison: String] = [.equal: "=", .notEqual: "<>", .lessThan: "<", .lessThanOrEqual: "<=", .greaterThan: ">", .greaterThanOrEqual: ">="]
+                conditions.append("\(name) \(operators[filter.comparison]!) \(try operand(filter.value, column: column))")
+            }
+        }
+        let table = descriptor.qualifiedSQLIdentifier
+        let countWhere = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
+        let countParameterCount = parameters.count
+        let order = try order(query: query, descriptor: descriptor)
+        if let cursor = query.after {
+            guard !descriptor.paginationKeyColumns.isEmpty else { throw invalid("This table has no reliable key for cursor paging.") }
+            var alternatives: [String] = []
+            for index in order.indices {
+                var terms: [String] = []
+                for previous in order[..<index] {
+                    guard let value = cursor.values[previous.columnName] else { throw invalid("Incomplete page cursor.") }
+                    let name = quoteIdentifier(previous.columnName)
+                    if value == .null { terms.append("\(name) IS NULL") }
+                    else { terms.append("\(name) = \(try cursorOperand(value, name: previous.columnName))") }
+                }
+                let sort = order[index]
+                guard let value = cursor.values[sort.columnName] else { throw invalid("Incomplete page cursor.") }
+                guard value != .null else { continue } // NULLS LAST; only later tie-breakers can advance.
+                let name = quoteIdentifier(sort.columnName)
+                let comparison = sort.direction == .ascending ? ">" : "<"
+                terms.append("(\(name) \(comparison) \(try cursorOperand(value, name: sort.columnName)) OR \(name) IS NULL)")
+                alternatives.append("(" + terms.joined(separator: " AND ") + ")")
+            }
+            conditions.append(alternatives.isEmpty ? "FALSE" : "(" + alternatives.joined(separator: " OR ") + ")")
+        }
+        func cursorOperand(_ value: DatabaseResultValue, name: String) throws -> String {
+            if name == "_rowid_", case .integer(let id) = value { return bind(.integer(id)) }
+            guard let column = columns[name] else { throw invalid("Unknown cursor column.") }
+            if case .blob(let data) = value { return bind(.bytes(data)) }
+            return try operand(ResultSerialization.exactText(value), column: column)
+        }
+        let whereClause = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
+        let orderClause = order.isEmpty ? "" : " ORDER BY " + order.map { "\(quoteIdentifier($0.columnName)) \($0.direction.sqlKeyword) NULLS LAST" }.joined(separator: ", ")
+        var projection = descriptor.columns.map { quoteIdentifier($0.name) }
+        if dialect == .sqlite && descriptor.rowIdentityStrategy == .rowID { projection.append("_rowid_ AS __sgs_rowid__") }
+        let limit = bind(.integer(Int64(query.limit)))
+        let offset = bind(.integer(Int64(query.after == nil ? query.offset : 0)))
+        return PostgresTableQueryPlan(countSQL: "SELECT COUNT(*) FROM \(table)\(countWhere)", selectSQL: "SELECT \(projection.joined(separator: ", ")) FROM \(table)\(whereClause)\(orderClause) LIMIT \(limit) OFFSET \(offset)", parameters: parameters, countParameterCount: countParameterCount)
+    }
+    private static func invalid(_ message: String) -> DatabaseUserError { .init(kind: .invalidInput, message: message) }
 }
 
 /// A conservative lexical gate for the user query editor. It deliberately
 /// rejects suspicious words anywhere outside literals/comments: PostgreSQL's
 /// server-side read-only transaction remains the final authority.
 public enum ReadOnlySQLPolicy {
+    static func statementRoot(_ sql: String) throws -> String? {
+        var scanner = SQLScanner(sql)
+        return try scanner.scan().first
+    }
+
     public static func validate(_ sql: String) throws -> Void? {
         var scanner = SQLScanner(sql)
         let tokens = try scanner.scan()

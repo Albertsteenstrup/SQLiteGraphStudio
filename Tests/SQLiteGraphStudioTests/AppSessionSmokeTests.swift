@@ -341,7 +341,7 @@ struct AppSessionSmokeTests {
         session.deleteStory(id: "delete-me")
 
         #expect(session.stories.isEmpty)
-        #expect(SchemaSidecarStore.load(for: url).stories.isEmpty)
+        #expect(try SchemaSidecarStore.load(for: url).stories.isEmpty)
         #expect(session.refreshToast?.message == "Updated: -1 story")
     }
 

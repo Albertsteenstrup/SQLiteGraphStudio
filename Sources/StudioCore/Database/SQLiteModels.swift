@@ -741,12 +741,12 @@ public typealias PostgresValue = SQLiteValue
 public typealias DatabaseResultValue = SQLiteValue
 
 public struct QueryResultColumn: Identifiable, Sendable, Hashable {
-    public let id: String
+    public let id: Int
     public let name: String
     public let typeLabel: String
 
-    public init(name: String, typeLabel: String) {
-        self.id = name
+    public init(index: Int = 0, name: String, typeLabel: String) {
+        self.id = index
         self.name = name
         self.typeLabel = typeLabel
     }
@@ -769,7 +769,7 @@ public struct QueryResult: Sendable, Hashable {
     public let rowLimit: Int
 
     public init(columns: [QueryResultColumn], rows: [QueryResultRow], isTruncated: Bool, rowLimit: Int) {
-        self.columns = columns
+        self.columns = columns.enumerated().map { QueryResultColumn(index: $0.offset, name: $0.element.name, typeLabel: $0.element.typeLabel) }
         self.rows = rows
         self.isTruncated = isTruncated
         self.rowLimit = rowLimit
@@ -894,15 +894,65 @@ public struct TableRow: Sendable, Hashable {
     }
 }
 
+public enum TableCountState: Sendable, Hashable {
+    case unknown
+    case atLeast(Int)
+    case exact(Int)
+
+    public var navigationCount: Int {
+        switch self {
+        case .unknown: return 0
+        case .atLeast(let count): return count + 1
+        case .exact(let count): return count
+        }
+    }
+    public var label: String {
+        switch self {
+        case .unknown: return "Count unknown"
+        case .atLeast(let count): return "At least \(count.formatted()) rows"
+        case .exact(let count): return "\(count.formatted()) rows (last count)"
+        }
+    }
+}
+
+public struct TablePageCursor: Sendable, Hashable {
+    public let values: [String: DatabaseResultValue]
+    public init(values: [String: DatabaseResultValue]) { self.values = values }
+}
+
+extension TableDescriptor {
+    /// Nullable unique constraints and partial/expression indexes cannot locate every row.
+    public var paginationKeyColumns: [String] {
+        guard objectType == .table || objectType == .partitionedTable else { return [] }
+        if rowIdentityStrategy == .rowID { return ["_rowid_"] }
+        let required = Set(columns.filter(\.notNull).map(\.name))
+        if !primaryKeyColumns.isEmpty,
+           Set(primaryKeyColumns).isSubset(of: required) || (schemaName == nil && !isWithoutRowID && primaryKeyColumns.count == 1 && columns.first(where: { $0.name == primaryKeyColumns[0] })?.declaredType.uppercased() == "INTEGER") {
+            return primaryKeyColumns
+        }
+        return indexes.first { $0.isUnique && !$0.isPartial && !$0.columns.isEmpty && Set($0.columns).isSubset(of: required) }?.columns ?? []
+    }
+
+    public var pagingDescription: String {
+        paginationKeyColumns.isEmpty
+            ? "Offset pages: no unique key. Concurrent changes can move or repeat rows; use a snapshot export for a consistent result."
+            : "Key-based next pages. Pages read live data; changes to sort or key values can move rows. Export all matching rows for one consistent snapshot."
+    }
+}
+
 public struct TableChunk: Sendable, Hashable {
     public let rows: [TableRow]
     public let totalRowCount: Int
+    public let hasMore: Bool
+    public let countState: TableCountState
     public let offset: Int
     public let limit: Int
 
-    public init(rows: [TableRow], totalRowCount: Int, offset: Int, limit: Int) {
+    public init(rows: [TableRow], totalRowCount: Int, offset: Int, limit: Int, countState: TableCountState? = nil, hasMore: Bool? = nil) {
         self.rows = rows
         self.totalRowCount = totalRowCount
+        self.hasMore = hasMore ?? (offset + rows.count < totalRowCount)
+        self.countState = countState ?? .exact(totalRowCount)
         self.offset = offset
         self.limit = limit
     }
@@ -930,17 +980,45 @@ public struct SortState: Sendable, Hashable {
     }
 }
 
+public enum ColumnFilterComparison: String, CaseIterable, Identifiable, Sendable, Hashable {
+    case contains, equal, notEqual, lessThan, lessThanOrEqual, greaterThan, greaterThanOrEqual, between, isNull, isNotNull
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .contains: return "Text contains"
+        case .equal: return "Equals"
+        case .notEqual: return "Does not equal"
+        case .lessThan: return "Less than"
+        case .lessThanOrEqual: return "At most"
+        case .greaterThan: return "Greater than"
+        case .greaterThanOrEqual: return "At least"
+        case .between: return "Between (inclusive)"
+        case .isNull: return "Is NULL"
+        case .isNotNull: return "Is not NULL"
+        }
+    }
+    public var requiresValue: Bool { self != .isNull && self != .isNotNull }
+}
+
 public struct ColumnFilter: Sendable, Hashable {
     public let columnName: String
     public let value: String
 
-    public init(columnName: String, value: String) {
+    public let comparison: ColumnFilterComparison
+    public let upperValue: String?
+
+    public init(columnName: String, value: String = "", comparison: ColumnFilterComparison = .contains, upperValue: String? = nil) {
         self.columnName = columnName
         self.value = value
+        self.comparison = comparison
+        self.upperValue = upperValue
     }
 }
 
 public struct TableQueryState: Sendable, Hashable {
+    public var after: TablePageCursor? = nil
+    public var requestExactCount = false
+    public var cachedExactCount: Int? = nil
     public var searchText: String
     public var columnFilters: [ColumnFilter]
     public var sort: SortState?
@@ -967,8 +1045,7 @@ public struct TableQueryState: Sendable, Hashable {
 
     public var sanitizedFilters: [ColumnFilter] {
         columnFilters
-            .map { ColumnFilter(columnName: $0.columnName, value: $0.value.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            .filter { !$0.value.isEmpty }
+            .filter { $0.comparison != .contains || !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .sorted { $0.columnName.localizedStandardCompare($1.columnName) == .orderedAscending }
     }
 }
@@ -1099,5 +1176,14 @@ func parseSQLiteValue(_ rawValue: String, for column: TableColumn) throws -> SQL
         return .text(rawValue)
     case .text, .none:
         return .text(rawValue)
+    }
+}
+
+extension TableCountState {
+    static func forPage(query: TableQueryState, rowCount: Int, hasMore: Bool, exactCount: Int?) -> Self {
+        let end = query.offset + rowCount
+        if let exactCount, exactCount >= end + (hasMore ? 1 : 0) { return .exact(exactCount) }
+        if hasMore { return .atLeast(end) }
+        return rowCount > 0 || query.offset == 0 ? .exact(end) : .unknown
     }
 }

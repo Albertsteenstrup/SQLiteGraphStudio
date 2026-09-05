@@ -5,6 +5,8 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
     public let id: UUID
     public var title: String
     public var sqlText: String
+    /// Original editor text that produced the currently displayed result.
+    public var executedSQL: String?
     public var result: QueryResult
     public var isRunning: Bool
     public var errorMessage: String?
@@ -17,6 +19,7 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
         title: String,
         sqlText: String,
         result: QueryResult = .empty,
+        executedSQL: String? = nil,
         isRunning: Bool = false,
         errorMessage: String? = nil,
         isSaved: Bool = false,
@@ -27,6 +30,7 @@ public struct QueryDocument: Identifiable, Sendable, Hashable {
         self.title = title
         self.sqlText = sqlText
         self.result = result
+        self.executedSQL = executedSQL
         self.isRunning = isRunning
         self.errorMessage = errorMessage
         self.isSaved = isSaved
@@ -48,13 +52,15 @@ public final class QueryWorkspaceModel {
     public var queries: [QueryDocument] = []
     public var activeQueryID: UUID?
     public var history: [QueryHistoryEntry] = []
+    public var timeoutSeconds: TimeInterval = 30
 
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var currentTarget: DatabaseTarget?
     private var currentDatabaseStorageKey: String?
     private var currentHistoryStorageKey: String?
-    private var requestTokens: [UUID: Int] = [:]
+    private var requestTokens: [UUID: UUID] = [:]
+    @ObservationIgnored private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private static let maxHistoryCount = 7
 
     public init(
@@ -79,7 +85,7 @@ public final class QueryWorkspaceModel {
     }
 
     public func loadSavedQueries(for target: DatabaseTarget?) {
-        requestTokens.removeAll()
+        cancelAllExecutions()
         currentTarget = target
         currentDatabaseStorageKey = target.map(storageKey(for:))
         currentHistoryStorageKey = target.map(historyStorageKey(for:))
@@ -111,6 +117,7 @@ public final class QueryWorkspaceModel {
     }
 
     public func reset() {
+        cancelAllExecutions()
         queries = []
         activeQueryID = nil
         currentTarget = nil
@@ -161,6 +168,7 @@ public final class QueryWorkspaceModel {
     }
 
     public func closeQuery(id: UUID) {
+        cancelExecution(for: id)
         queries.removeAll { $0.id == id }
         requestTokens[id] = nil
 
@@ -225,6 +233,35 @@ public final class QueryWorkspaceModel {
         explain(queryID: queryID)
     }
 
+    public func stop() {
+        guard let queryID = activeQuery?.id else { return }
+        cancelExecution(for: queryID)
+        if let index = index(for: queryID) {
+            queries[index].isRunning = false
+            queries[index].errorMessage = "Query stopped."
+        }
+    }
+
+    public func stopAll() {
+        cancelAllExecutions()
+        for index in queries.indices where queries[index].isRunning {
+            queries[index].isRunning = false
+            queries[index].errorMessage = "Query stopped."
+        }
+    }
+
+    private func cancelExecution(for queryID: UUID) {
+        requestTokens[queryID] = nil
+        runningTasks.removeValue(forKey: queryID)?.cancel()
+    }
+
+    private func cancelAllExecutions() {
+        requestTokens.removeAll()
+        let tasks = runningTasks.values
+        runningTasks.removeAll()
+        for task in tasks { task.cancel() }
+    }
+
     public func selectActiveOutput(_ output: QueryOutputKind) {
         guard let activeQueryIndex else { return }
         queries[activeQueryIndex].selectedOutput = output
@@ -243,7 +280,8 @@ public final class QueryWorkspaceModel {
     private func run(queryID: UUID) {
         guard let queryIndex = index(for: queryID) else { return }
 
-        let requestToken = (requestTokens[queryID] ?? 0) + 1
+        cancelExecution(for: queryID)
+        let requestToken = UUID()
         requestTokens[queryID] = requestToken
 
         queries[queryIndex].isRunning = true
@@ -253,16 +291,19 @@ public final class QueryWorkspaceModel {
         let clock = ContinuousClock()
         let startedAt = clock.now
 
-        Task {
+        let timeout = timeoutSeconds
+        runningTasks[queryID] = Task { [weak self, databaseService] in
             do {
-                let result = try await databaseService.executeReadOnlyQuery(sql: sqlText)
+                let result = try await databaseService.executeReadOnlyQuery(sql: sqlText, timeoutSeconds: timeout)
                 let elapsed = startedAt.duration(to: clock.now).milliseconds
-                guard requestTokens[queryID] == requestToken,
+                guard let self, self.requestTokens[queryID] == requestToken,
                       let queryIndex = index(for: queryID)
                 else {
                     return
                 }
+                runningTasks[queryID] = nil
                 queries[queryIndex].result = result
+                queries[queryIndex].executedSQL = sqlText
                 queries[queryIndex].isRunning = false
                 queries[queryIndex].selectedOutput = .results
                 recordHistory(
@@ -277,12 +318,13 @@ public final class QueryWorkspaceModel {
                 )
             } catch {
                 let elapsed = startedAt.duration(to: clock.now).milliseconds
-                guard requestTokens[queryID] == requestToken,
+                guard let self, self.requestTokens[queryID] == requestToken,
                       let queryIndex = index(for: queryID)
                 else {
                     return
                 }
-                let message = SQLiteUserError.from(error).message
+                runningTasks[queryID] = nil
+                let message = error is CancellationError ? "Query cancelled." : SQLiteUserError.from(error).message
                 queries[queryIndex].errorMessage = message
                 queries[queryIndex].isRunning = false
                 recordHistory(
@@ -302,31 +344,35 @@ public final class QueryWorkspaceModel {
     private func explain(queryID: UUID) {
         guard let queryIndex = index(for: queryID) else { return }
 
-        let requestToken = (requestTokens[queryID] ?? 0) + 1
+        cancelExecution(for: queryID)
+        let requestToken = UUID()
         requestTokens[queryID] = requestToken
 
         queries[queryIndex].isRunning = true
         queries[queryIndex].errorMessage = nil
         let sqlText = queries[queryIndex].sqlText
 
-        Task {
+        let timeout = timeoutSeconds
+        runningTasks[queryID] = Task { [weak self, databaseService] in
             do {
-                let plan = try await databaseService.explainQueryPlan(sql: sqlText)
-                guard requestTokens[queryID] == requestToken,
+                let plan = try await databaseService.explainQueryPlan(sql: sqlText, timeoutSeconds: timeout)
+                guard let self, self.requestTokens[queryID] == requestToken,
                       let queryIndex = index(for: queryID)
                 else {
                     return
                 }
+                runningTasks[queryID] = nil
                 queries[queryIndex].explainPlan = plan
                 queries[queryIndex].selectedOutput = .plan
                 queries[queryIndex].isRunning = false
             } catch {
-                guard requestTokens[queryID] == requestToken,
+                guard let self, self.requestTokens[queryID] == requestToken,
                       let queryIndex = index(for: queryID)
                 else {
                     return
                 }
-                queries[queryIndex].errorMessage = SQLiteUserError.from(error).message
+                runningTasks[queryID] = nil
+                queries[queryIndex].errorMessage = error is CancellationError ? "Query cancelled." : SQLiteUserError.from(error).message
                 queries[queryIndex].isRunning = false
             }
         }

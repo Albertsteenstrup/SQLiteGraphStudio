@@ -58,6 +58,8 @@ public struct TableGridRepresentable: NSViewRepresentable {
         private weak var scrollView: NSScrollView?
         private weak var headerView: InteractiveTableHeaderView?
         private var revision = -1
+        private var viewportRequestID = -1
+        private var isAdjustingViewport = false
         private var headerPopover: NSPopover?
         private var hoveredColumnName: String?
         private var contextMenuRow: Int?
@@ -158,6 +160,15 @@ public struct TableGridRepresentable: NSViewRepresentable {
                 self.revision = revision
                 tableView.noteNumberOfRowsChanged()
                 tableView.reloadData()
+                if viewportRequestID != tab.viewportRequestID {
+                    viewportRequestID = tab.viewportRequestID
+                    isAdjustingViewport = true
+                    let row = min(tab.viewportRow, max(0, tableView.numberOfRows - 1))
+                    let origin = NSPoint(x: scrollView.contentView.bounds.origin.x, y: tableView.rect(ofRow: row).minY)
+                    scrollView.contentView.scroll(to: origin)
+                    scrollView.reflectScrolledClipView(scrollView.contentView)
+                    isAdjustingViewport = false
+                }
             }
 
             visibleRectDidChange()
@@ -327,13 +338,18 @@ public struct TableGridRepresentable: NSViewRepresentable {
         }
 
         private func visibleRectDidChange() {
-            guard let tableView, let scrollView else { return }
+            guard !isAdjustingViewport, !tab.isLoading, let tableView, let scrollView else { return }
             guard tab.chunk.totalRowCount > 0, !tab.chunk.rows.isEmpty else { return }
             let visibleRows = tableView.rows(in: scrollView.contentView.documentVisibleRect)
             guard visibleRows.location != NSNotFound, visibleRows.length > 0 else { return }
-            let targetRow = visibleRows.location + max(visibleRows.length / 2, 0)
-            guard targetRow < tab.chunk.totalRowCount else { return }
-            tab.ensureVisible(row: targetRow)
+            let visibleEnd = NSMaxRange(visibleRows)
+            if tab.chunk.hasMore && visibleEnd > tab.chunk.rowRange.upperBound {
+                tab.ensureVisible(row: tab.chunk.rowRange.upperBound)
+            } else if visibleEnd <= tab.chunk.offset || visibleRows.location >= tab.chunk.rowRange.upperBound {
+                let targetRow = visibleRows.location + max(visibleRows.length / 2, 0)
+                guard targetRow < tab.chunk.totalRowCount else { return }
+                tab.ensureVisible(row: targetRow)
+            }
         }
 
         private func restoreTableFocus() {

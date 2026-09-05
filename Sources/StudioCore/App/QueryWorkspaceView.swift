@@ -96,13 +96,31 @@ public struct QueryWorkspaceView: View {
                         .keyboardShortcut(.return, modifiers: .command)
                         .help("Run Query (Command-Enter)")
 
+                        Menu {
+                            Picker("Query timeout", selection: $session.queryWorkspace.timeoutSeconds) {
+                                ForEach([5.0, 15.0, 30.0, 60.0, 120.0], id: \.self) { seconds in
+                                    Text("\(Int(seconds)) seconds").tag(seconds)
+                                }
+                            }
+                        } label: {
+                            Label("\(Int(session.queryWorkspace.timeoutSeconds))s", systemImage: "timer")
+                        }
+                        .help("Maximum query execution time")
+
                         if activeQuery.isRunning {
+                            Button("Stop", systemImage: "stop.fill") {
+                                session.queryWorkspace.stop()
+                            }
+                            .buttonStyle(.bordered)
+                            .keyboardShortcut(".", modifiers: .command)
+                            .help("Stop query (Command-Period)")
                             ProgressView()
                                 .controlSize(.small)
                                 .tint(StudioPalette.accent)
                         }
 
                         Menu {
+                            Text(session.queryExportScopeLabel)
                             Button("Export CSV") {
                                 session.exportActiveQueryResult(format: .csv)
                             }
@@ -116,6 +134,7 @@ public struct QueryWorkspaceView: View {
                         .buttonBorderShape(.capsule)
                         .tint(StudioPalette.accent)
                         .help("Export query results")
+                        .disabled(session.exportProgress?.isRunning == true)
                     }
 
                     TextEditor(
@@ -445,6 +464,7 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         private var result: QueryResult
+        private var renderedColumns: [QueryResultColumn] = []
         private var columnDescription: (String) -> String?
         private var inspectRow: (QueryResultRow) -> Void
         private weak var tableView: NSTableView?
@@ -532,7 +552,7 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard let tableColumn,
-                  let columnIndex = result.columns.firstIndex(where: { $0.name == tableColumn.identifier.rawValue })
+                  let columnIndex = result.columns.firstIndex(where: { String($0.id) == tableColumn.identifier.rawValue })
             else {
                 return nil
             }
@@ -546,16 +566,15 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
         }
 
         private func syncColumns(on tableView: NSTableView) {
-            let currentNames = tableView.tableColumns.map(\.identifier.rawValue)
-            let desiredNames = result.columns.map(\.name)
-            guard currentNames != desiredNames else { return }
+            guard renderedColumns != result.columns else { return }
+            renderedColumns = result.columns
 
             for column in tableView.tableColumns {
                 tableView.removeTableColumn(column)
             }
 
             for column in result.columns {
-                let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.name))
+                let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(String(column.id)))
                 let headerCell = MetadataHeaderCell(title: column.name, subtitle: column.typeLabel)
                 headerCell.showsChevron = false
                 headerCell.hasDescription = columnDescription(column.name) != nil
@@ -572,7 +591,7 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             for tableColumn in tableView.tableColumns {
                 tableColumn.headerToolTip = nil
                 guard let headerCell = tableColumn.headerCell as? MetadataHeaderCell else { continue }
-                headerCell.hasDescription = columnDescription(tableColumn.identifier.rawValue) != nil
+                headerCell.hasDescription = columnDescription(tableColumn.title) != nil
             }
             headerView?.rebuildDescriptionToolTips()
             tableView.headerView?.needsDisplay = true
@@ -633,11 +652,12 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
                   indices.count == 2
             else { return }
             let row = indices[0]
-            let col = indices[1]
+            guard let tableView, tableView.tableColumns.indices.contains(indices[1]),
+                  let col = Int(tableView.tableColumns[indices[1]].identifier.rawValue) else { return }
             guard result.rows.indices.contains(row),
                   result.columns.indices.contains(col)
             else { return }
-            let text = result.rows[row].values[col].displayText
+            let text = ResultSerialization.exactText(result.rows[row].values[col])
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         }
@@ -650,9 +670,10 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
             guard let tableView else { return }
             let selectedRows = tableView.selectedRowIndexes
             guard !selectedRows.isEmpty else { return }
-            let selectedColumns = tableView.selectedColumnIndexes.isEmpty
-                ? IndexSet(integersIn: result.columns.indices)
+            let visualColumns = tableView.selectedColumnIndexes.isEmpty
+                ? IndexSet(integersIn: tableView.tableColumns.indices)
                 : tableView.selectedColumnIndexes
+            let selectedColumns = visualColumns.compactMap { Int(tableView.tableColumns[$0].identifier.rawValue) }
 
             var lines: [String] = []
             let header = selectedColumns.compactMap { index in
@@ -664,7 +685,7 @@ private struct QueryResultsGridRepresentable: NSViewRepresentable {
                 guard result.rows.indices.contains(rowIndex) else { continue }
                 let row = result.rows[rowIndex]
                 let values = selectedColumns.compactMap { columnIndex in
-                    row.values.indices.contains(columnIndex) ? row.values[columnIndex].displayText : nil
+                    row.values.indices.contains(columnIndex) ? ResultSerialization.exactText(row.values[columnIndex]) : nil
                 }
                 lines.append(values.joined(separator: "\t"))
             }
@@ -728,7 +749,7 @@ private final class QueryResultsHeaderView: NSTableHeaderView {
         guard let tableView else { return }
         for columnIndex in tableView.tableColumns.indices {
             let tableColumn = tableView.tableColumns[columnIndex]
-            guard descriptionForColumn?(tableColumn.identifier.rawValue) != nil,
+            guard descriptionForColumn?(tableColumn.title) != nil,
                   let headerCell = tableColumn.headerCell as? MetadataHeaderCell,
                   headerCell.hasDescription
             else {
@@ -784,7 +805,7 @@ private final class QueryResultsHeaderView: NSTableHeaderView {
         }
 
         let tableColumn = tableView.tableColumns[columnIndex]
-        let columnName = tableColumn.identifier.rawValue
+        let columnName = tableColumn.title
         guard let description = descriptionForColumn?(columnName),
               let headerCell = tableColumn.headerCell as? MetadataHeaderCell,
               headerCell.hasDescription

@@ -14,7 +14,7 @@ public struct CatalogSnapshot: Sendable {
 }
 
 public actor SQLiteDatabaseBackend {
-    private var pool: DatabasePool?
+    var pool: DatabasePool?
     private var currentURL: URL?
 
     public init() {}
@@ -186,20 +186,24 @@ public actor SQLiteDatabaseBackend {
         return descriptor
     }
 
-    public func fetchChunk(query: TableQueryState, descriptor: EditableTableDescriptor) throws -> TableChunk {
+    public func fetchChunk(query: TableQueryState, descriptor: EditableTableDescriptor) async throws -> TableChunk {
+        guard query.limit >= 0, query.offset >= 0, query.offset <= Int.max - 10_001 else { throw DatabaseUserError(kind: .invalidInput, message: "Invalid page bounds.") }
         guard let pool else {
             throw SQLiteUserError(kind: .generic, message: "No database is open.")
         }
 
-        let queryPlan = makeQueryPlan(query: query, descriptor: descriptor)
+        var page = query
+        page.limit = min(query.limit, 10_000) + 1
+        let queryPlan = try makeQueryPlan(query: page, descriptor: descriptor)
         let clock = ContinuousClock()
         let startedAt = clock.now
-        let result = try StudioLog.dbSignposter.withIntervalSignpost("FetchChunk") {
-            try pool.read { db in
-                let totalRowCount = try Int.fetchOne(db, sql: queryPlan.countSQL, arguments: queryPlan.countArguments) ?? 0
+        let result = try await pool.read { db in
+                let exactCount = query.requestExactCount ? try Int.fetchOne(db, sql: queryPlan.countSQL, arguments: queryPlan.countArguments) : query.cachedExactCount
                 let rows = try Row.fetchAll(db, sql: queryPlan.selectSQL, arguments: queryPlan.selectArguments)
+                let limit = min(query.limit, 10_000)
+                let countState = TableCountState.forPage(query: query, rowCount: min(rows.count, limit), hasMore: rows.count > limit, exactCount: exactCount)
                 return TableChunk(
-                    rows: rows.map { row in
+                    rows: rows.prefix(limit).map { row in
                         let rowValues = descriptor.columns.map { column in
                             let dbValue: DatabaseValue = row[column.name]
                             return SQLiteValue(databaseValue: dbValue)
@@ -230,11 +234,11 @@ public actor SQLiteDatabaseBackend {
 
                         return TableRow(identity: identity, values: rowValues)
                     },
-                    totalRowCount: totalRowCount,
+                    totalRowCount: countState.navigationCount,
                     offset: query.offset,
-                    limit: query.limit
+                    limit: limit,
+                    countState: countState, hasMore: rows.count > limit
                 )
-            }
         }
 
         let elapsed = startedAt.duration(to: clock.now).milliseconds
@@ -549,7 +553,7 @@ public actor SQLiteDatabaseBackend {
         }
     }
 
-    public func executeReadOnlyQuery(sql rawSQL: String, rowLimit: Int = 500) throws -> QueryResult {
+    public func executeReadOnlyQuery(sql rawSQL: String, rowLimit: Int = 500, timeoutSeconds: TimeInterval = 30) async throws -> QueryResult {
         guard let pool else {
             throw SQLiteUserError(kind: .generic, message: "No database is open.")
         }
@@ -575,8 +579,8 @@ public actor SQLiteDatabaseBackend {
         let clock = ContinuousClock()
         let startedAt = clock.now
 
-        let result = try StudioLog.dbSignposter.withIntervalSignpost("ExecuteQuery") {
-            try pool.read { db in
+        let result = try await withQueryTimeout(seconds: timeoutSeconds) {
+            try await pool.read { db in
                 let statement = try db.makeStatement(sql: sql)
                 let columnNames = statement.columnNames
                 let cursor = try Row.fetchCursor(statement)
@@ -592,8 +596,8 @@ public actor SQLiteDatabaseBackend {
                         break
                     }
 
-                    let values = columnNames.map { columnName in
-                        SQLiteValue(databaseValue: row[columnName])
+                    let values = columnNames.indices.map { columnIndex in
+                        SQLiteValue(databaseValue: row[columnIndex])
                     }
 
                     for valueIndex in values.indices where inferredTypes[valueIndex].isEmpty && values[valueIndex] != .null {
@@ -625,7 +629,7 @@ public actor SQLiteDatabaseBackend {
         return result
     }
 
-    public func explainQueryPlan(sql rawSQL: String) throws -> [ExplainPlanRow] {
+    public func explainQueryPlan(sql rawSQL: String, timeoutSeconds: TimeInterval = 30) async throws -> [ExplainPlanRow] {
         guard let pool else {
             throw SQLiteUserError(kind: .generic, message: "No database is open.")
         }
@@ -645,7 +649,8 @@ public actor SQLiteDatabaseBackend {
         }
 
         let planSQL = normalized.hasPrefix("EXPLAIN") ? sql : "EXPLAIN QUERY PLAN \(sql)"
-        return try pool.read { db in
+        return try await withQueryTimeout(seconds: timeoutSeconds) {
+            try await pool.read { db in
             try Row.fetchAll(db, sql: planSQL).map { row in
                 ExplainPlanRow(
                     id: row["id"] ?? 0,
@@ -654,39 +659,16 @@ public actor SQLiteDatabaseBackend {
                     detail: row["detail"] ?? ""
                 )
             }
+            }
         }
     }
 
     public func serializeQueryResult(_ result: QueryResult, format: DataTransferFormat) throws -> String {
-        switch format {
-        case .csv:
-            let header = result.columns.map(\.name)
-            let rows = result.rows.map { row in row.values.map(\.exportText) }
-            return serializeCSV(rows: [header] + rows)
-        case .json:
-            let objects = result.rows.map { row in
-                Dictionary(uniqueKeysWithValues: result.columns.enumerated().map { index, column in
-                    (column.name, row.values[index].jsonObject)
-                })
-            }
-            return try serializeJSONObject(objects)
-        }
+        try ResultSerialization.serializeQueryResult(result, format: format)
     }
 
     public func serializeTableRows(descriptor: EditableTableDescriptor, rows: [TableRow], format: DataTransferFormat) throws -> String {
-        switch format {
-        case .csv:
-            let header = descriptor.columns.map(\.name)
-            let values = rows.map { row in row.values.map(\.exportText) }
-            return serializeCSV(rows: [header] + values)
-        case .json:
-            let objects = rows.map { row in
-                Dictionary(uniqueKeysWithValues: descriptor.columns.enumerated().map { index, column in
-                    (column.name, row.values[index].jsonObject)
-                })
-            }
-            return try serializeJSONObject(objects)
-        }
+        try ResultSerialization.serializeTableRows(descriptor: descriptor, rows: rows, format: format)
     }
 
     public func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat) throws -> ImportRowsResult {
@@ -805,7 +787,8 @@ public actor SQLiteDatabaseBackend {
             let name: String = row["name"]
             let columns = try Row.fetchAll(db, sql: "PRAGMA index_info(\(quoteStringLiteral(name)))")
                 .map { indexRow -> String in
-                    (indexRow["name"] as String?) ?? ""
+                    let columnName: String? = indexRow["name"]
+                    return columnName ?? ""
                 }
             let sql = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?", arguments: [name])
             return SchemaIndex(
@@ -995,66 +978,21 @@ public actor SQLiteDatabaseBackend {
         return unique
     }
 
-    private func makeQueryPlan(query: TableQueryState, descriptor: EditableTableDescriptor) -> QueryPlan {
-        var conditions: [String] = []
-        var arguments = StatementArguments()
-
-        let searchText = query.sanitizedSearchText
-        if !searchText.isEmpty, !descriptor.searchableColumns.isEmpty {
-            let pattern = "%\(searchText)%"
-            let searchSQL = descriptor.searchableColumns
-                .map { "CAST(\(quoteIdentifier($0.name)) AS TEXT) LIKE ?" }
-                .joined(separator: " OR ")
-            conditions.append("(\(searchSQL))")
-            descriptor.searchableColumns.forEach { _ in
-                arguments += [pattern]
-            }
+    func makeQueryPlan(query: TableQueryState, descriptor: EditableTableDescriptor) throws -> QueryPlan {
+        let plan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor, dialect: .sqlite)
+        func arguments(_ parameters: [PostgresQueryParameter]) -> StatementArguments {
+            StatementArguments(parameters.map { parameter -> DatabaseValue in
+                switch parameter {
+                case .null: return .null
+                case .text(let value): return value.databaseValue
+                case .integer(let value): return value.databaseValue
+                case .double(let value): return value.databaseValue
+                case .boolean(let value): return value.databaseValue
+                case .bytes(let value): return value.databaseValue
+                }
+            })
         }
-
-        for filter in query.sanitizedFilters {
-            conditions.append("CAST(\(quoteIdentifier(filter.columnName)) AS TEXT) LIKE ?")
-            arguments += ["%\(filter.value)%"]
-        }
-
-        let whereClause = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
-
-        var orderTerms: [String] = []
-        if let sort = query.sort {
-            orderTerms.append("\(quoteIdentifier(sort.columnName)) \(sort.direction.sqlKeyword)")
-        }
-
-        for fallback in descriptor.fallbackSortColumns where !orderTerms.contains(where: { $0.contains(quoteIdentifier(fallback)) }) {
-            if fallback == "_rowid_" {
-                orderTerms.append("_rowid_ ASC")
-            } else {
-                orderTerms.append("\(quoteIdentifier(fallback)) ASC")
-            }
-        }
-
-        let orderClause = orderTerms.isEmpty ? "" : " ORDER BY " + orderTerms.joined(separator: ", ")
-
-        let selectedColumns = descriptor.columns.map { quoteIdentifier($0.name) }
-        var projection = selectedColumns
-        if descriptor.rowIdentityStrategy == .rowID {
-            projection.append("_rowid_ AS __sgs_rowid__")
-        }
-
-        let countSQL = "SELECT COUNT(*) FROM \(quoteIdentifier(descriptor.name))\(whereClause)"
-        var selectArguments = arguments
-        selectArguments += [query.limit, query.offset]
-
-        let selectSQL = """
-        SELECT \(projection.joined(separator: ", "))
-        FROM \(quoteIdentifier(descriptor.name))\(whereClause)\(orderClause)
-        LIMIT ? OFFSET ?
-        """
-
-        return QueryPlan(
-            countSQL: countSQL,
-            countArguments: arguments,
-            selectSQL: selectSQL,
-            selectArguments: selectArguments
-        )
+        return QueryPlan(countSQL: plan.countSQL, countArguments: arguments(Array(plan.countParameters)), selectSQL: plan.selectSQL, selectArguments: arguments(plan.parameters))
     }
 
     private func updateStatement(for change: CellEditChange, newValue: SQLiteValue) throws -> QueryStatement {
@@ -1158,7 +1096,7 @@ func inferEdgeCardinality(sourceUnique: Bool, targetUnique: Bool) -> EdgeCardina
     }
 }
 
-private struct QueryPlan {
+struct QueryPlan {
     let countSQL: String
     let countArguments: StatementArguments
     let selectSQL: String

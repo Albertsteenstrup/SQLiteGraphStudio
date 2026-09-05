@@ -798,16 +798,17 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
     }
 
     public func fetchChunk(query: TableQueryState, descriptor: TableDescriptor) async throws -> TableChunk {
-        let plan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor)
+        guard query.limit >= 0, query.offset >= 0, query.offset <= Int.max - 10_001 else { throw DatabaseUserError(kind: .invalidInput, message: "Invalid page bounds.") }
+        var page = query
+        page.limit = min(query.limit, 10_000) + 1
+        let plan = try PostgresTableQueryBuilder.makePlan(query: page, descriptor: descriptor)
         do {
             return try await withReadOnlyTransaction { connection in
-                let count = try await Self.query(
-                    PostgresQuery(
-                        unsafeSQL: plan.countSQL,
-                        binds: try Self.bindings(Array(plan.countParameters))
-                    ),
-                    on: connection
-                )
+                var exactCount = query.cachedExactCount
+                if query.requestExactCount {
+                    let count = try await Self.query(PostgresQuery(unsafeSQL: plan.countSQL, binds: try Self.bindings(Array(plan.countParameters))), on: connection)
+                    exactCount = count.rows.first?.first.flatMap(Self.integerValue)
+                }
                 let rows = try await Self.query(
                     PostgresQuery(
                         unsafeSQL: plan.selectSQL,
@@ -815,8 +816,9 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     ),
                     on: connection
                 )
-                let total = count.rows.first?.first.flatMap(Self.integerValue) ?? 0
-                let tableRows = rows.rows.map { values in
+                let limit = min(query.limit, 10_000)
+                let countState = TableCountState.forPage(query: query, rowCount: min(rows.rows.count, limit), hasMore: rows.rows.count > limit, exactCount: exactCount)
+                let tableRows = rows.rows.prefix(limit).map { values in
                     let identityValues = descriptor.primaryKeyColumns.compactMap { columnName -> IdentityComponent? in
                         guard let index = descriptor.columns.firstIndex(where: { $0.name == columnName }), values.indices.contains(index) else {
                             return nil
@@ -833,7 +835,7 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     )
                     return TableRow(identity: identity, values: values)
                 }
-                return TableChunk(rows: tableRows, totalRowCount: total, offset: query.offset, limit: query.limit)
+                return TableChunk(rows: tableRows, totalRowCount: countState.navigationCount, offset: query.offset, limit: limit, countState: countState, hasMore: rows.rows.count > limit)
             }
         } catch {
             throw Self.mapError(error)
@@ -880,16 +882,24 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         }
     }
 
-    public func executeReadOnlyQuery(sql: String, rowLimit: Int = 500) async throws -> QueryResult {
+    public func executeReadOnlyQuery(sql: String, rowLimit: Int = 500, timeoutSeconds: TimeInterval = 30) async throws -> QueryResult {
         _ = try ReadOnlySQLPolicy.validate(sql)
         let boundedLimit = min(max(rowLimit, 1), 10_000)
         do {
-            let rawResult = try await withReadOnlyTransaction { connection in
-                try await Self.query(
-                    PostgresQuery(unsafeSQL: sql),
-                    on: connection,
-                    rowLimit: boundedLimit
-                )
+            let root = try ReadOnlySQLPolicy.statementRoot(sql)
+            let isUtilityResponse = root == "SHOW" || root == "EXPLAIN"
+            let rawResult = try await withReadOnlyTransaction(
+                timeoutSeconds: timeoutSeconds,
+                discardConnectionAfterBody: isUtilityResponse
+            ) { connection in
+                if isUtilityResponse {
+                    return try await Self.query(PostgresQuery(unsafeSQL: sql), on: connection, rowLimit: boundedLimit)
+                }
+                // PostgreSQL parses the original statement as a cursor query.
+                // FETCH bounds server execution and transfer without rewriting SQL.
+                try await Self.drain(Self.command("DECLARE sgs_query_cursor NO SCROLL CURSOR FOR \(sql)"), on: connection, logger: Logger(label: "SQLiteGraphStudio.PostgreSQL"))
+                let fetched = try await Self.query(Self.command("FETCH FORWARD \(boundedLimit + 1) FROM sgs_query_cursor"), on: connection)
+                return RawPostgresResult(columns: fetched.columns, rows: fetched.rows, isTruncated: fetched.rows.count > boundedLimit)
             }
             let rows = rawResult.rows.prefix(boundedLimit).enumerated().map { index, values in
                 QueryResultRow(id: index, values: values)
@@ -901,17 +911,18 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 rowLimit: boundedLimit
             )
         } catch {
+            if error is CancellationError { throw error }
             throw Self.mapError(error)
         }
     }
 
-    public func explainQueryPlan(sql: String) async throws -> [ExplainPlanRow] {
+    public func explainQueryPlan(sql: String, timeoutSeconds: TimeInterval = 30) async throws -> [ExplainPlanRow] {
         _ = try ReadOnlySQLPolicy.validate(sql)
         let trimmed = sql.trimmingCharacters(in: .whitespacesAndNewlines)
-        let explainSQL = trimmed.uppercased().hasPrefix("EXPLAIN")
+        let explainSQL = try ReadOnlySQLPolicy.statementRoot(trimmed) == "EXPLAIN"
             ? trimmed
             : "EXPLAIN (FORMAT TEXT) \(trimmed)"
-        let result = try await executeReadOnlyQuery(sql: explainSQL, rowLimit: 500)
+        let result = try await executeReadOnlyQuery(sql: explainSQL, rowLimit: 500, timeoutSeconds: timeoutSeconds)
         return result.rows.enumerated().map { index, row in
             ExplainPlanRow(
                 id: index,
@@ -974,23 +985,51 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         DatabaseUserError(kind: .readOnly, message: message)
     }
 
-    private func withReadOnlyTransaction<T>(
-        _ body: (PostgresConnection) async throws -> T
+    func withReadOnlyTransaction<T: Sendable>(
+        timeoutSeconds: TimeInterval = 30,
+        discardConnectionAfterBody: Bool = false,
+        _ body: @escaping @Sendable (PostgresConnection) async throws -> T
     ) async throws -> T {
         guard let client else {
             throw DatabaseUserError(kind: .generic, message: "No PostgreSQL connection is open.")
         }
-
-        return try await client.withConnection { connection in
-            let logger = Logger(label: "SQLiteGraphStudio.PostgreSQL")
-            try await Self.drain(Self.command("BEGIN TRANSACTION READ ONLY"), on: connection, logger: logger)
-            do {
-                let value = try await body(connection)
-                try await Self.drain(Self.command("COMMIT"), on: connection, logger: logger)
-                return value
-            } catch {
-                _ = try? await Self.drain(Self.command("ROLLBACK"), on: connection, logger: logger)
-                throw error
+        return try await withQueryTimeout(seconds: timeoutSeconds) {
+            try await client.withConnection { connection in
+                try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    let logger = Logger(label: "SQLiteGraphStudio.PostgreSQL")
+                    do {
+                        try await Self.drain(Self.command("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"), on: connection, logger: logger)
+                        let milliseconds = max(1, Int(timeoutSeconds * 1_000))
+                        try await Self.drain(Self.command("SET LOCAL statement_timeout = \(milliseconds)"), on: connection, logger: logger)
+                        // Detect a cancelled client's closed socket during server work.
+                        try await Self.drain(Self.command("SET LOCAL client_connection_check_interval = '100ms'"), on: connection, logger: logger)
+                        let value = try await body(connection)
+                        try Task.checkCancellation()
+                        if discardConnectionAfterBody {
+                            // Utility statements cannot use a SQL cursor. Their
+                            // capped reader may already have closed this lease.
+                            // Discard it without issuing COMMIT on a closed channel.
+                            try await connection.close()
+                        } else {
+                            try await Self.drain(Self.command("COMMIT"), on: connection, logger: logger)
+                        }
+                        return value
+                    } catch {
+                        // Querying an already closed channel can leave the driver's
+                        // response promise unresolved. Cancellation discards the
+                        // connection, so there is no transaction left to roll back.
+                        try Task.checkCancellation()
+                        if !connection.isClosed {
+                            _ = try? await Self.drain(Self.command("ROLLBACK"), on: connection, logger: logger)
+                        }
+                        throw error
+                    }
+                } onCancel: {
+                    // Discard only this lease. The pool creates a fresh physical
+                    // connection, preserving backend usability after Stop/timeout.
+                    let _: Void = connection.close()
+                }
             }
         }
     }
@@ -1016,18 +1055,20 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         var rows: [[PostgresValue]] = []
         var isTruncated = false
         for try await row in sequence {
-            let random = row.makeRandomAccess()
             if let rowLimit, rows.count >= rowLimit {
-                // Drain the response without retaining rows beyond the UI cap.
                 isTruncated = true
-                continue
+                // Dropping the sequence alone can still drain server output.
+                // Close the utility lease at the sentinel row to stop receiving.
+                try await connection.close()
+                break
             }
+            let random = row.makeRandomAccess()
             rows.append((0..<random.count).map { PostgresValueMapper.map(random[data: $0]) })
         }
         return RawPostgresResult(columns: columns, rows: rows, isTruncated: isTruncated)
     }
 
-    private static func bindings(_ parameters: [PostgresQueryParameter]) throws -> PostgresBindings {
+    static func bindings(_ parameters: [PostgresQueryParameter]) throws -> PostgresBindings {
         var bindings = PostgresBindings(capacity: parameters.count)
         for parameter in parameters {
             switch parameter {
@@ -1041,6 +1082,8 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 bindings.append(value)
             case .boolean(let value):
                 bindings.append(value)
+            case .bytes(let value):
+                try bindings.append(value)
             }
         }
         return bindings
@@ -1322,73 +1365,5 @@ private enum PostgresExternalCredential {
 
     private static func matches(_ pattern: String, _ value: String) -> Bool {
         pattern == "*" || pattern.caseInsensitiveCompare(value) == .orderedSame
-    }
-}
-
-private enum ResultSerialization {
-    static func serializeQueryResult(_ result: QueryResult, format: DataTransferFormat) throws -> String {
-        switch format {
-        case .csv:
-            return csv(rows: [result.columns.map(\.name)] + result.rows.map { $0.values.map(exportText) })
-        case .json:
-            let objects = result.rows.map { row in
-                Dictionary(uniqueKeysWithValues: result.columns.enumerated().map { index, column in
-                    (column.name, jsonObject(row.values[index]))
-                })
-            }
-            return try json(objects)
-        }
-    }
-
-    static func serializeTableRows(descriptor: TableDescriptor, rows: [TableRow], format: DataTransferFormat) throws -> String {
-        switch format {
-        case .csv:
-            return csv(rows: [descriptor.columns.map(\.name)] + rows.map { $0.values.map(exportText) })
-        case .json:
-            let objects = rows.map { row in
-                Dictionary(uniqueKeysWithValues: descriptor.columns.enumerated().map { index, column in
-                    (column.name, jsonObject(row.values[index]))
-                })
-            }
-            return try json(objects)
-        }
-    }
-
-    private static func exportText(_ value: PostgresValue) -> String {
-        switch value {
-        case .null: return ""
-        case .integer(let value): return String(value)
-        case .double(let value): return String(value)
-        case .boolean(let value): return value ? "true" : "false"
-        case .exactNumeric(let value), .text(let value), .uuid(let value), .dateTime(let value), .json(let value), .array(let value): return value
-        case .blob(let data): return data.base64EncodedString()
-        }
-    }
-
-    private static func jsonObject(_ value: PostgresValue) -> Any {
-        switch value {
-        case .null: return NSNull()
-        case .integer(let value): return value
-        case .double(let value): return value
-        case .boolean(let value): return value
-        case .exactNumeric(let value), .text(let value), .uuid(let value), .dateTime(let value): return value
-        case .json(let value), .array(let value):
-            if let data = value.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) { return object }
-            return value
-        case .blob(let data): return data.base64EncodedString()
-        }
-    }
-
-    private static func csv(rows: [[String]]) -> String {
-        rows.map { $0.map(escape).joined(separator: ",") }.joined(separator: "\n")
-    }
-
-    private static func escape(_ value: String) -> String {
-        guard value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r") else { return value }
-        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
-    }
-
-    private static func json(_ object: Any) throws -> String {
-        String(data: try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]), encoding: .utf8) ?? "[]"
     }
 }

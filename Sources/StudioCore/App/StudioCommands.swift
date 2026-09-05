@@ -51,39 +51,36 @@ public struct StudioCommands: Commands {
             .keyboardShortcut("t")
             .disabled(session.tables.isEmpty)
 
-            Button("Create Table…") {
-                session.showCreateTable()
+            if session.databaseCapabilities.canCreateTable {
+                Button("Create Table…") { session.showCreateTable() }
             }
-            .disabled(!session.databaseCapabilities.canCreateTable)
-
-            Button("Alter Active Table…") {
-                session.showAlterTable()
+            if session.databaseCapabilities.canAlterSchema {
+                Button("Alter Active Table…") { session.showAlterTable() }
+                    .disabled(session.activeTab == nil)
             }
-            .disabled(session.activeTab == nil || !session.databaseCapabilities.canAlterSchema)
-
+            if session.databaseCapabilities.canImportRows {
+                Menu("Import Rows") {
+                    Button("CSV…") { session.importRowsIntoActiveTable(format: .csv) }
+                    Button("JSON…") { session.importRowsIntoActiveTable(format: .json) }
+                }
+                .disabled(session.activeTab?.isEditable != true)
+            }
             Divider()
 
-            Menu("Import Rows") {
-                Button("CSV…") {
-                    session.importRowsIntoActiveTable(format: .csv)
-                }
-                Button("JSON…") {
-                    session.importRowsIntoActiveTable(format: .json)
-                }
-            }
-            .disabled(!session.databaseCapabilities.canImportRows || session.activeTab?.isEditable != true)
-
             Menu("Export Active Table") {
-                Button("CSV…") {
-                    session.exportActiveTableRows(format: .csv)
+                Menu("Loaded rows (\(session.activeTab?.chunk.rows.count ?? 0))") {
+                    Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .loadedRows) }
+                    Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .loadedRows) }
                 }
-                Button("JSON…") {
-                    session.exportActiveTableRows(format: .json)
+                Menu("All matching rows…") {
+                    Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .allMatchingRows) }
+                    Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .allMatchingRows) }
                 }
             }
-            .disabled(session.activeTab == nil)
+            .disabled(session.activeTab == nil || session.exportProgress?.isRunning == true)
 
             Menu("Export Query Results") {
+                Text(session.queryExportScopeLabel)
                 Button("CSV…") {
                     session.exportActiveQueryResult(format: .csv)
                 }

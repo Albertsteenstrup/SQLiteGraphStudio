@@ -489,15 +489,30 @@ public enum SchemaSidecarStore {
         return databaseURL.deletingLastPathComponent().appendingPathComponent(name)
     }
 
-    public static func load(for databaseURL: URL) -> SchemaSidecar {
+    public static func load(for databaseURL: URL) throws -> SchemaSidecar {
         let url = sidecarURL(for: databaseURL)
-        guard let data = try? Data(contentsOf: url) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
             return .empty
+        } catch {
+            throw SchemaMetadataError.unreadable(error.localizedDescription)
         }
-        let decoder = JSONDecoder()
-        guard let sidecar = try? decoder.decode(SchemaSidecar.self, from: data) else {
-            StudioLog.db.warning("Sidecar at \(url.lastPathComponent, privacy: .public) failed to decode; ignoring")
-            return .empty
+        struct VersionEnvelope: Decodable { var version: Int? }
+        let version: Int
+        do { version = try JSONDecoder().decode(VersionEnvelope.self, from: data).version ?? 1 }
+        catch { throw SchemaMetadataError.malformed(error.localizedDescription) }
+        guard version == 1 else { throw SchemaMetadataError.unsupportedVersion(version) }
+        let sidecar: SchemaSidecar
+        do {
+            sidecar = try JSONDecoder().decode(SchemaSidecar.self, from: data)
+        } catch {
+            throw SchemaMetadataError.malformed(error.localizedDescription)
+        }
+        guard Set(sidecar.stories.map(\.id)).count == sidecar.stories.count,
+              Set(sidecar.clusters.map(\.id)).count == sidecar.clusters.count else {
+            throw SchemaMetadataError.malformed("Story and cluster identifiers must be unique.")
         }
         return sidecar
     }

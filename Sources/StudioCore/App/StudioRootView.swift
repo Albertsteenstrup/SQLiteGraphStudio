@@ -60,6 +60,42 @@ public struct StudioRootView: View {
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
+                if let export = session.exportProgress {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(export.scope).font(.caption.weight(.semibold))
+                        if export.isRunning {
+                            if let total = export.totalRows {
+                                ProgressView(value: Double(export.rowsWritten), total: Double(max(1, total)))
+                            } else { ProgressView().controlSize(.small) }
+                        }
+                        HStack {
+                            Text(export.outcome ?? "\(export.rowsWritten) rows written to temporary file")
+                                .font(.caption).monospacedDigit()
+                            Spacer()
+                            if export.isRunning {
+                                Button("Cancel Export") { session.cancelExport() }
+                            } else {
+                                Button("Dismiss") { session.dismissExportProgress() }
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: 620)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+                if !session.metadataDiagnostics.isEmpty {
+                    DisclosureGroup("Metadata: \(session.metadataDiagnostics.count) issue(s)") {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(session.metadataDiagnostics, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
+                            }
+                        }.frame(maxHeight: 140)
+                        Button("Reload Metadata") { session.reloadSchemaSidecarFromDisk() }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: 620)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
                 if let refreshToast = session.refreshToast {
                     RefreshToastView(message: refreshToast.message)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -198,23 +234,17 @@ public struct StudioRootView: View {
             }
 
             ToolbarItem {
-                Button {
-                    session.showCreateTable()
-                } label: {
-                    Label("Create Table", systemImage: "plus.square.on.square")
+                if session.databaseCapabilities.canCreateTable {
+                    Button { session.showCreateTable() } label: { Label("Create Table", systemImage: "plus.square.on.square") }
+                        .help("Create Table")
                 }
-                .disabled(!session.databaseCapabilities.canCreateTable)
-                .help("Create Table")
             }
-
             ToolbarItem {
-                Button {
-                    session.showAlterTable()
-                } label: {
-                    Label("Alter Table", systemImage: "slider.horizontal.3")
+                if session.databaseCapabilities.canAlterSchema {
+                    Button { session.showAlterTable() } label: { Label("Alter Table", systemImage: "slider.horizontal.3") }
+                        .disabled(session.activeTab == nil)
+                        .help("Alter Active Table")
                 }
-                .disabled(session.activeTab == nil || !session.databaseCapabilities.canAlterSchema)
-                .help("Alter Active Table")
             }
         }
         .sheet(isPresented: $session.isTablePickerPresented) {

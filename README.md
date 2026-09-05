@@ -18,8 +18,9 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 
 - Interactive schema graph showing foreign-key relationships and cardinality
 - Inline row editing with right-click row actions (add, clone, delete)
-- Column sorting, filtering, and search
-- SQL query runner with explain plan
+- Typed equality, comparison, range and NULL filters, explicit text search, key-based next pages, and on-demand exact counts
+- SQL query runner with Stop, timeouts, bounded fetching, duplicate-column-safe results and explain plan
+- Explicit loaded-row and all-matching exports, with snapshot consistency, progress, cancellation and atomic file publication
 - User-selected PostgreSQL connection documents with schema-qualified catalog browsing, paging, search, filtering, sorting, exports, query history, and non-executing EXPLAIN
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
@@ -76,6 +77,8 @@ Both database types use the same graph engine. For more than 128 tables, it divi
 
 Dragging and saved pins remain available. Relayout deliberately rebuilds positions; obsolete large-grid snapshots are regenerated while preserving saved pins. If saved pins themselves overlap, their explicit positions take precedence.
 
+See [query, browsing, export and metadata contracts](docs/query-data-contracts.md) for value formats and consistency guarantees.
+
 ## Install
 
 1. Go to [Releases](../../releases/latest)
@@ -115,9 +118,10 @@ The normal unit suite does not require a running PostgreSQL server. To run the o
     SGS_POSTGRES_DATABASE=... \
     SGS_POSTGRES_USER=... \
     SGS_POSTGRES_PASSWORD=... \
+    SGS_POSTGRES_TLS=required \
     swift test --filter PostgreSQLIntegrationTests
 
-The integration suite is skipped unless the opt-in flag and all required connection variables are present. It does not use application defaults, fixtures, source data, or a bundled PostgreSQL document.
+Without `SGS_POSTGRES_TESTS=1`, live tests explicitly report skipped coverage. With opt-in, missing or invalid configuration fails the run, including missing `SGS_POSTGRES_TLS` (`required` or `disabled`). An explicitly empty password is allowed for a deliberately passwordless test role. PostgreSQL 14 or later is required for server-side disconnected-client detection. Use a least-privilege reader and a disposable database. The generic integration tests only read; fixture-specific tests additionally require `SGS_POSTGRES_FIXTURE_TESTS=1` and the owned fixture described in [verification](docs/query-export-verification.md).
 
 ## Reporting issues
 

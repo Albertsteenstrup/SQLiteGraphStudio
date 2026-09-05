@@ -22,10 +22,12 @@ public protocol DatabaseBackend: AnyObject, Sendable {
     func renameTable(from currentName: String, to newName: String) async throws
     func addColumn(_ draft: TableColumnDraft, to descriptor: EditableTableDescriptor) async throws
     func renameColumn(from currentName: String, to newName: String, in descriptor: EditableTableDescriptor) async throws
-    func executeReadOnlyQuery(sql: String, rowLimit: Int) async throws -> QueryResult
-    func explainQueryPlan(sql: String) async throws -> [ExplainPlanRow]
+    func executeReadOnlyQuery(sql: String, rowLimit: Int, timeoutSeconds: TimeInterval) async throws -> QueryResult
+    func explainQueryPlan(sql: String, timeoutSeconds: TimeInterval) async throws -> [ExplainPlanRow]
     func serializeQueryResult(_ result: QueryResult, format: DataTransferFormat) async throws -> String
     func serializeTableRows(descriptor: EditableTableDescriptor, rows: [TableRow], format: DataTransferFormat) async throws -> String
+    func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
+                         timeoutSeconds: TimeInterval, cancellation: ExportCancellation, progress: @escaping @Sendable (Int) -> Void) async throws -> Int
     func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat) async throws -> ImportRowsResult
 }
 
@@ -45,6 +47,7 @@ public actor DatabaseService {
     }
 
     private var backend: Backend?
+    private var openGeneration = UUID()
     public private(set) var currentTarget: DatabaseTarget?
 
     public init() {}
@@ -59,18 +62,20 @@ public actor DatabaseService {
     }
 
     public func open(url: URL) async throws {
-        await close()
+        let generation = try await beginOpen()
         let normalizedURL = url.standardizedFileURL
         let sqlite = SQLiteDatabaseBackend()
         try await sqlite.open(url: normalizedURL)
+        guard openGeneration == generation, !Task.isCancelled else { await sqlite.close(); throw CancellationError() }
         backend = .sqlite(sqlite)
         currentTarget = .sqlite(normalizedURL)
     }
 
     public func open(postgres configuration: PostgresConnectionConfiguration) async throws {
-        await close()
+        let generation = try await beginOpen()
         let postgres = PostgresDatabaseBackend(configuration: configuration)
         try await postgres.open()
+        guard openGeneration == generation, !Task.isCancelled else { await postgres.close(); throw CancellationError() }
         backend = .postgres(postgres)
         currentTarget = .postgres(configuration)
     }
@@ -84,12 +89,23 @@ public actor DatabaseService {
         }
     }
 
-    public func close() async {
-        if let backend {
-            await backend.value.close()
-        }
+    private func beginOpen() async throws -> UUID {
+        let generation = UUID()
+        openGeneration = generation
+        let previous = backend
         backend = nil
         currentTarget = nil
+        await previous?.value.close()
+        guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+        return generation
+    }
+
+    public func close() async {
+        openGeneration = UUID()
+        let previous = backend
+        backend = nil
+        currentTarget = nil
+        await previous?.value.close()
     }
 
     public func listTables() async throws -> [TableSummary] {
@@ -122,6 +138,16 @@ public actor DatabaseService {
 
     public func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
         try await requireBackend().fetchRelated(record: record, relationship: relationship, direction: direction, offset: offset, limit: limit)
+    }
+
+    public func countRows(query: TableQueryState, descriptor: TableDescriptor) async throws -> Int {
+        var countQuery = query
+        countQuery.offset = 0
+        countQuery.limit = 0
+        countQuery.after = nil
+        countQuery.cachedExactCount = nil
+        countQuery.requestExactCount = true
+        return try await requireBackend().fetchChunk(query: countQuery, descriptor: descriptor).totalRowCount
     }
 
     public func commitEdit(_ change: CellEditChange) async throws {
@@ -160,12 +186,12 @@ public actor DatabaseService {
         try await requireBackend().renameColumn(from: currentName, to: newName, in: descriptor)
     }
 
-    public func executeReadOnlyQuery(sql: String, rowLimit: Int = 500) async throws -> QueryResult {
-        try await requireBackend().executeReadOnlyQuery(sql: sql, rowLimit: rowLimit)
+    public func executeReadOnlyQuery(sql: String, rowLimit: Int = 500, timeoutSeconds: TimeInterval = 30) async throws -> QueryResult {
+        try await requireBackend().executeReadOnlyQuery(sql: sql, rowLimit: rowLimit, timeoutSeconds: timeoutSeconds)
     }
 
-    public func explainQueryPlan(sql: String) async throws -> [ExplainPlanRow] {
-        try await requireBackend().explainQueryPlan(sql: sql)
+    public func explainQueryPlan(sql: String, timeoutSeconds: TimeInterval = 30) async throws -> [ExplainPlanRow] {
+        try await requireBackend().explainQueryPlan(sql: sql, timeoutSeconds: timeoutSeconds)
     }
 
     public func serializeQueryResult(_ result: QueryResult, format: DataTransferFormat) async throws -> String {
@@ -174,6 +200,14 @@ public actor DatabaseService {
 
     public func serializeTableRows(descriptor: EditableTableDescriptor, rows: [TableRow], format: DataTransferFormat) async throws -> String {
         try await requireBackend().serializeTableRows(descriptor: descriptor, rows: rows, format: format)
+    }
+
+    public func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
+                                timeoutSeconds: TimeInterval = 300, cancellation: ExportCancellation = ExportCancellation(),
+                                progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
+        try Task.checkCancellation()
+        let source = try requireBackend()
+        return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, timeoutSeconds: timeoutSeconds, cancellation: cancellation, progress: progress)
     }
 
     public func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat) async throws -> ImportRowsResult {
