@@ -242,6 +242,7 @@ public final class AppSession {
     }
 
     func configureRecordMappings(_ sidecar: SchemaSidecar) {
+        let previousMappings = records.mappings
         records.mappings = []; records.mappingValidationMessages = []
         var seen = Set<String>()
         for mapping in sidecar.recordGraphMappings {
@@ -253,6 +254,7 @@ public final class AppSession {
                 records.mappings.append(mapping)
             } catch { records.mappingValidationMessages.append("\(mapping.id): \(error.localizedDescription)") }
         }
+        if records.mappings != previousMappings { records.reset() }
     }
 
     public func inspectRecord(in tab: TableTabModel, row: Int) {
@@ -268,9 +270,10 @@ public final class AppSession {
         } catch { presentedError = SQLiteUserError.from(error) }
     }
 
-    public func inspectQueryRecord(result: QueryResult, row: QueryResultRow) {
+    public func inspectQueryRecord(result: QueryResult, row: QueryResultRow, executedSQL: String? = nil) {
         do {
-            records.open(try RecordAccess.snapshot(descriptor: nil, columns: result.columns, values: row.values))
+            let descriptor = RecordQueryOrigin.descriptor(executedSQL: executedSQL, result: result, catalog: records.catalog)
+            records.open(try RecordAccess.snapshot(descriptor: descriptor, columns: result.columns, values: row.values))
             records.originLabel = "Query result · row \(row.id + 1)"
         } catch { presentedError = SQLiteUserError.from(error) }
     }
@@ -561,7 +564,6 @@ public final class AppSession {
 
     public func refreshSchema() {
         guard let target = databaseTarget else { return }
-        let documentURL = databaseURL
         let baseline = SchemaRefreshSnapshot(
             descriptors: tableDescriptors,
             graph: graph,
@@ -576,10 +578,10 @@ public final class AppSession {
             let generation = openGeneration
             let documentURL = databaseURL
             Task {
-                guard databaseTarget == target, databaseURL == documentURL else { return }
+                guard openGeneration == generation, databaseTarget == target, databaseURL == documentURL else { return }
                 isRefreshing = true
                 defer {
-                    if databaseTarget == target, databaseURL == documentURL {
+                    if openGeneration == generation, databaseTarget == target, databaseURL == documentURL {
                         isRefreshing = false
                     }
                 }
@@ -1002,7 +1004,7 @@ public final class AppSession {
     }
 
     public func exportActiveTableRows(format: DataTransferFormat, scope: TableExportScope = .loadedRows) {
-        guard let activeTab, exportTask == nil else { return }
+        guard !isRefreshing, let target = databaseTarget, let activeTab, exportTask == nil else { return }
         let generation = openGeneration
         let descriptor = activeTab.descriptor
         let rows = activeTab.chunk.rows.map(\.values)
@@ -1012,18 +1014,18 @@ public final class AppSession {
         let suffix = loaded ? "loaded-\(rows.count)" : "all-matching"
         guard let destination = presentExportPanel(defaultName: "\(activeTab.title)-\(suffix)", format: format,
             message: "\(label). Uses the captured filters and ordering. Switching databases cancels the export.") else { return }
-        guard openGeneration == generation else { return }
+        guard !isRefreshing, openGeneration == generation else { return }
         let source = databaseService
         beginExport(scope: label, totalRows: loaded ? rows.count : nil) { cancellation, progress in
             if loaded {
                 return try await StreamingRowExport.write(names: descriptor.columns.map(\.name), rows: rows, to: destination, format: format, cancellation: cancellation, progress: progress)
             }
-            return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, cancellation: cancellation, progress: progress)
+            return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, expectedTarget: target, cancellation: cancellation, progress: progress)
         }
     }
 
     public func exportActiveQueryResult(format: DataTransferFormat) {
-        guard let activeQuery = queryWorkspace.activeQuery, !activeQuery.result.columns.isEmpty, exportTask == nil else { return }
+        guard !isRefreshing, let activeQuery = queryWorkspace.activeQuery, !activeQuery.result.columns.isEmpty, exportTask == nil else { return }
         let generation = openGeneration
         let result = activeQuery.result
         let label = Self.queryExportLabel(result)

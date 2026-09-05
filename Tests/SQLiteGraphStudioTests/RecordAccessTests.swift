@@ -118,7 +118,7 @@ struct RecordAccessTests {
         #expect(plan.parameters == values)
         #expect(plan.sql.contains("\"b\".\"weird\"\"table\""))
         #expect(plan.sql.contains("$1::text::uuid"))
-        #expect(plan.sql.contains("$2::text::numeric(20,4)"))
+        #expect(plan.sql.contains("$2::text::numeric AND"))
         #expect(plan.sql.contains("$3::text::uuid[]"))
         #expect(plan.sql.contains("$4::text::bytea"))
         #expect(!plan.sql.contains("550e8400"))

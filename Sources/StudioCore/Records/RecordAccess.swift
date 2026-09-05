@@ -198,14 +198,35 @@ public enum RecordAccess {
         let identifier = #"(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)"#
         let namedType = identifier + #"(?:\."# + identifier + #")?"#
         let builtIn = #"(?:double precision|character varying|bit varying|timestamp(?:\([0-9]+\))? (?:with|without) time zone|time(?:\([0-9]+\))? (?:with|without) time zone)"#
-        let pattern = "^(?:" + builtIn + "|" + namedType + #")(?:\([0-9]+(?:\s*,\s*[0-9]+)?\))?(?:\[\])*$"#
+        let pattern = "^(?:" + builtIn + "|" + namedType + #")(?:\([0-9]+(?:\s*,\s*-?[0-9]+)?\))?(?:\[\])*$"#
         guard type.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil else { throw RecordAccessError.unsupportedType(type) }
+        // A lookup parameter must retain its complete value. Reapplying the
+        // column's length/precision can truncate or round a missing FK into a match.
+        // Preserve quoted type names verbatim, even when they contain parentheses.
+        var comparisonType = "", quoted = false
+        var index = type.startIndex
+        while index < type.endIndex {
+            let character = type[index]
+            if character == "\"" { quoted.toggle() }
+            if character == "(" && !quoted {
+                while index < type.endIndex && type[index] != ")" { index = type.index(after: index) }
+            } else { comparisonType.append(character) }
+            index = type.index(after: index)
+        }
+        let base = comparisonType.lowercased()
+        // SQL character without a length defaults to one; bpchar has no typmod.
+        if base == "character" || base.hasPrefix("character[") {
+            return "pg_catalog.bpchar" + comparisonType.dropFirst("character".count)
+        }
+        if base == "bit" || base.hasPrefix("bit[") {
+            return "pg_catalog.varbit" + comparisonType.dropFirst("bit".count)
+        }
         // Money input uses lc_monetary separators; our exact amounts use the
         // locale-independent numeric syntax, including each array element.
-        let lower = type.lowercased()
+        let lower = comparisonType.lowercased()
         if lower == "money" { return "numeric::money" }
         if lower == "money[]" { return "numeric[]::money[]" }
-        return type
+        return comparisonType
     }
 }
 

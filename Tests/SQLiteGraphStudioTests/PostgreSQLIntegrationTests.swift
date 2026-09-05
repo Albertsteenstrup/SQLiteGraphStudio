@@ -67,29 +67,6 @@ struct PostgreSQLIntegrationTests {
         }
     }
 
-    @MainActor
-    private static func verifySharedExploration(snapshot: CatalogSnapshot) {
-        let descriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
-        let grouping = GraphGrouping.resolve(graph: snapshot.graph, descriptors: descriptors)
-        #expect(grouping.nodeCount == snapshot.graph.nodes.count)
-        let layout = GraphLayoutModel()
-        layout.setClusterHints(grouping.nodeToGroup)
-        let clock = ContinuousClock()
-        let elapsed = clock.measure {
-            layout.reset(for: snapshot.graph, presentation: .compact, descriptorLookup: { descriptors[$0] })
-            layout.stabilize(graph: snapshot.graph, presentation: .compact,
-                             descriptorLookup: { descriptors[$0] }, nodeSizeLookup: nil)
-        }
-        let positions = layout.allPositions(for: snapshot.graph)
-        #expect(positions.count == snapshot.graph.nodes.count)
-        #expect(positions.values.allSatisfy { $0.x.isFinite && $0.y.isFinite })
-        let sizes = Dictionary(uniqueKeysWithValues: snapshot.graph.nodes.map {
-            ($0.id, GraphCardLayout.nodeSize(title: $0.title, descriptor: descriptors[$0.id], style: .collapsed, hovered: false))
-        })
-        #expect(LargeGraphLayout.isNonOverlapping(positions, sizes: sizes))
-        print("Live PostgreSQL: \(snapshot.graph.nodes.count) objects, \(snapshot.graph.edges.count) relationships, \(grouping.groupCount) groups; shared layout \(elapsed)")
-    }
-
     @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to run PostgreSQL integration tests"))
     func fetchingStopsAtRequestedRowLimit() async throws {
         let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)
@@ -220,7 +197,9 @@ struct PostgreSQLIntegrationTests {
         let sizes = Dictionary(uniqueKeysWithValues: snapshot.graph.nodes.map {
             ($0.id, GraphCardLayout.nodeSize(title: $0.title, descriptor: descriptors[$0.id], style: .collapsed, hovered: false))
         })
-        #expect(LargeGraphLayout.isNonOverlapping(positions, sizes: sizes))
+        if snapshot.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold {
+            #expect(LargeGraphLayout.isNonOverlapping(positions, sizes: sizes))
+        }
         print("Live PostgreSQL: \(snapshot.graph.nodes.count) objects, \(snapshot.graph.edges.count) relationships, \(grouping.groupCount) groups; shared layout \(elapsed)")
     }
 

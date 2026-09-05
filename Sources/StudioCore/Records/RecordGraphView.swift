@@ -38,13 +38,13 @@ struct RecordGraphView: View {
                             var path = Path()
                             let control: CGPoint
                             if edge.sourceID == edge.targetID {
-                                path.move(to: CGPoint(x: a.x - 35, y: a.y - 15))
-                                control = CGPoint(x: a.x, y: a.y - 85 - lane * 15)
-                                path.addCurve(to: CGPoint(x: a.x + 35, y: a.y - 15), control1: CGPoint(x: a.x - 110, y: control.y), control2: CGPoint(x: a.x + 110, y: control.y))
+                                path.move(to: CGPoint(x: a.x - 35 * transform.zoom, y: a.y - 15 * transform.zoom))
+                                control = CGPoint(x: a.x, y: a.y - (85 + lane * 15) * transform.zoom)
+                                path.addCurve(to: CGPoint(x: a.x + 35 * transform.zoom, y: a.y - 15 * transform.zoom), control1: CGPoint(x: a.x - 110 * transform.zoom, y: control.y), control2: CGPoint(x: a.x + 110 * transform.zoom, y: control.y))
                             } else {
                                 path.move(to: a)
                                 let dx = b.x - a.x, dy = b.y - a.y, length = max(1, hypot(dx, dy))
-                                let bend = 24 + lane * 32
+                                let bend = (24 + lane * 32) * transform.zoom
                                 control = CGPoint(x: (a.x + b.x) / 2 - dy / length * bend, y: (a.y + b.y) / 2 + dx / length * bend)
                                 path.addQuadCurve(to: b, control: control)
                             }
@@ -58,7 +58,9 @@ struct RecordGraphView: View {
                                 arrow.addLine(to: CGPoint(x: center.x - 8 * cos(angle + 0.5), y: center.y - 8 * sin(angle + 0.5)))
                                 context.stroke(arrow, with: .color(.secondary), lineWidth: 2)
                             }
-                            context.draw(Text(edge.targetColumn.isEmpty ? edge.sourceColumn : "\(edge.sourceColumn) → \(edge.targetColumn)").font(.system(size: 9)).foregroundStyle(.secondary), at: control)
+                            if transform.zoom >= 0.6 {
+                                context.draw(Text(edge.targetColumn.isEmpty ? edge.sourceColumn : "\(edge.sourceColumn) → \(edge.targetColumn)").font(.system(size: 9 * transform.zoom)).foregroundStyle(.secondary), at: control)
+                            }
                         }
                     }.allowsHitTesting(false)
                     ForEach(graph.nodes) { node in
@@ -69,11 +71,15 @@ struct RecordGraphView: View {
                             VStack(spacing: 3) {
                                 Text(node.title).font(.subheadline.bold()).lineLimit(1)
                                 Text(workspace.recordGraph.records[node.id]?.table?.displayName ?? "Record").font(.caption2).lineLimit(1)
+                                if let identity = workspace.recordGraph.records[node.id]?.identity {
+                                    Text(identity.locator.map { "\($0.columnName)=\(RecordValuePresentation.summary($0.value))" }.joined(separator: ", "))
+                                        .font(.system(size: 8, design: .monospaced)).lineLimit(1)
+                                }
                                 if workspace.recordGraph.root?.id == node.id { Text("ROOT").font(.system(size: 8, weight: .bold)) }
                             }.padding(10).frame(width: 155)
                             .background(workspace.current?.id == node.id ? Color.accentColor.opacity(0.2) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(workspace.current?.id == node.id ? Color.accentColor : .secondary.opacity(0.4)))
-                        }.buttonStyle(.plain).position(position)
+                        }.buttonStyle(.plain).scaleEffect(transform.zoom).position(position)
                         .simultaneousGesture(DragGesture(minimumDistance: 5).onChanged { value in
                             let origin = nodeDragOrigins[node.id] ?? positions[node.id] ?? .zero
                             nodeDragOrigins[node.id] = origin
@@ -104,9 +110,11 @@ struct RecordGraphView: View {
                             if let branch = workspace.recordGraph.branches[key] {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("\(workspace.recordGraph.records[key.recordID]?.label ?? "Record") · \(key.direction.rawValue)").font(.caption.bold())
+                                    Text(workspace.relationships.first(where: { $0.id == key.relationshipID }).map { $0.sourceColumns.joined(separator: ", ") + " → " + $0.targetColumns.joined(separator: ", ") } ?? workspace.mappings.first(where: { "mapping:" + $0.id == key.relationshipID })?.name ?? "Relationship")
+                                        .font(.caption2).foregroundStyle(.secondary)
                                     if let message = branch.message { Text(message).font(.caption2).foregroundStyle(.orange) }
                                     HStack {
-                                        Button("Collapse branch") { workspace.recordGraph.collapse(key) }
+                                        Button("Collapse branch") { workspace.collapseBranch(key) }
                                         if branch.hasMore, let offset = branch.nextOffset {
                                             Button("Load more") {
                                                 guard let source = workspace.recordGraph.records[key.recordID] else { return }

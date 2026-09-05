@@ -58,6 +58,7 @@ public struct StudioRootView: View {
                 }
             }
         }
+        .disabled(session.isRefreshing)
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
                 if let export = session.exportProgress {

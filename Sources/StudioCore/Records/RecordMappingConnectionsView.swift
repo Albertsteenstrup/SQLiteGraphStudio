@@ -7,7 +7,7 @@ struct RecordMappingConnectionsView: View {
     var body: some View {
         let key = RecordExpansionKey(recordID: workspace.current?.id ?? "", relationshipID: "mapping:" + mapping.id, direction: direction)
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(mapping.id) · \(direction == .outgoing ? "source connections" : "target connections")").font(.subheadline.bold())
+            Text("\(mapping.name) · \(direction == .outgoing ? "source connections" : "target connections")").font(.subheadline.bold())
             Text(mapping.isDirected ? "Mapped directed edges" : "Mapped undirected edges").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Browse mapped records") { workspace.loadMapping(mapping, direction: direction) }

@@ -182,7 +182,7 @@ public struct QueryWorkspaceView: View {
                             QueryResultsView(
                                 result: activeQuery.result,
                                 columnDescription: { session.descriptionForQueryResultColumn($0) },
-                                inspectRow: { session.inspectQueryRecord(result: activeQuery.result, row: $0) }
+                                inspectRow: { session.inspectQueryRecord(result: activeQuery.result, row: $0, executedSQL: activeQuery.executedSQL) }
                             )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         case .plan:

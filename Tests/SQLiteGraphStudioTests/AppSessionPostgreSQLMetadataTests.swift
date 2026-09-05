@@ -59,7 +59,7 @@ struct AppSessionPostgreSQLMetadataTests {
         #expect(session.graphGrouping.group(for: "public.customers")?.isInferred == true)
         #expect(session.clusterColorHex(for: "public.orders") == "#7CC3FF")
         #expect(session.schemaSidecar == authored)
-        #expect(SchemaSidecarStore.load(for: fixture.documentURL) == authored)
+        #expect(try SchemaSidecarStore.load(for: fixture.documentURL) == authored)
 
         var updated = authored
         updated.clusters = [.init(id: "sales", label: "Sales", tables: ["public.orders"], color: "#F8B26A")]
@@ -88,7 +88,7 @@ struct AppSessionPostgreSQLMetadataTests {
 
         session.deleteStory(id: "checkout")
 
-        let saved = SchemaSidecarStore.load(for: fixture.documentURL)
+        let saved = try SchemaSidecarStore.load(for: fixture.documentURL)
         #expect(saved.stories.isEmpty)
         #expect(saved.tables == sidecar.tables)
         #expect(saved.clusters == sidecar.clusters)

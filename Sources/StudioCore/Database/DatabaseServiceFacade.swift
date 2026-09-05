@@ -203,9 +203,10 @@ public actor DatabaseService {
     }
 
     public func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
-                                timeoutSeconds: TimeInterval = 300, cancellation: ExportCancellation = ExportCancellation(),
+                                timeoutSeconds: TimeInterval = 300, expectedTarget: DatabaseTarget? = nil, cancellation: ExportCancellation = ExportCancellation(),
                                 progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
         try Task.checkCancellation()
+        if let expectedTarget, currentTarget != expectedTarget { throw CancellationError() }
         let source = try requireBackend()
         return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, timeoutSeconds: timeoutSeconds, cancellation: cancellation, progress: progress)
     }

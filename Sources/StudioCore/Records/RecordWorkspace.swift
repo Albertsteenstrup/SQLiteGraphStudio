@@ -53,6 +53,12 @@ public final class RecordWorkspace {
         cancel(); history = []; cursor = -1; pages = [:]; mappedPages = [:]; offsets = [:]; errors = [:]
         recordGraph.setRoot(nil); showsGraph = false; isPresented = false; notice = nil
     }
+    public func collapseBranch(_ key: RecordExpansionKey) {
+        // Invalidate before pruning: an in-flight continuation must not recreate this branch.
+        cancel()
+        recordGraph.collapse(key)
+    }
+
     public func cancel() {
         generation = UUID(); requests.values.forEach { $0.cancel() }
         requests = [:]; loading = []
