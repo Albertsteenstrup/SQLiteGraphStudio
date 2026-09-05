@@ -23,6 +23,26 @@ struct RecordPostgreSQLIntegrationTests {
             #expect(page.records.allSatisfy { $0.descriptor?.schemaName == "alpha" })
             let second = try await backend.fetchRelated(record: record, relationship: relationship, direction: .incoming, offset: 50, limit: 50)
             #expect(Set(page.records.map(\.id)).isDisjoint(with: second.records.map(\.id)))
+            let mapping = RecordGraphMapping(id: "owned-pg-mapping", name: "Owned mapping", nodeTable: .init(schemaName: "alpha", objectName: "people"), nodeIDColumns: ["tenant", "code"], labelColumn: "name", edgeTable: .init(schemaName: "alpha", objectName: "links"), sourceColumns: ["tenant", "source"], targetColumns: ["tenant", "target"], nodeScope: [.init(column: "tenant", value: .integer(1))], edgeScope: [.init(column: "tenant", value: .integer(1))])
+            let mappingDatabase = DatabaseService()
+            try await mappingDatabase.open(postgres: .init(host: "127.0.0.1", port: port, database: "record_fixture", username: "record_reader", tlsMode: .disabled))
+            do {
+                let mapped = try await RecordGraphMappingAccess.load(mapping: mapping, root: record, direction: .outgoing, offset: 0, catalog: catalog, database: mappingDatabase)
+                #expect(mapped.connections.count == 5)
+                #expect(Set(mapped.connections.map(\.id)).count == 5)
+                #expect(mapped.connections.allSatisfy { $0.target.label == "Ben" })
+                #expect(mapped.nextOffset == 5)
+                #expect(mapped.queryCount <= 7)
+                let targetRecord = try #require(mapped.connections.first?.target)
+                let incoming = try await RecordGraphMappingAccess.load(mapping: mapping, root: targetRecord, direction: .incoming, offset: 0, catalog: catalog, database: mappingDatabase)
+                #expect(incoming.connections.count == 5)
+                #expect(incoming.connections.allSatisfy { $0.source.label == "Ada" && $0.target.id == targetRecord.id })
+                #expect(incoming.queryCount <= 7)
+                await mappingDatabase.close()
+            } catch {
+                await mappingDatabase.close()
+                throw error
+            }
             let uuidRelationship = try #require(relationships.first { $0.sourceTable.objectName == "typed_refs" })
             let ref = try await backend.executeReadOnlyQuery(sql: "SELECT * FROM alpha.typed_refs WHERE key=1")
             let refRecord = try RecordAccess.snapshot(descriptor: uuidRelationship.sourceDescriptor, columns: ref.columns, values: try #require(ref.rows.first).values)

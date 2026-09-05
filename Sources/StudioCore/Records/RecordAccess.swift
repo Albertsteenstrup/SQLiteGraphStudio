@@ -63,18 +63,29 @@ public enum RecordAccess {
         return grouped.sorted { $0.key.order.lexicographicallyPrecedes($1.key.order) }.compactMap { group, edges in
             let ordered = edges.sorted { componentOrdinal($0.id) < componentOrdinal($1.id) }
             guard let first = ordered.first else { return nil }
-            let sourceMatches = catalog.descriptors.filter { $0.name == first.sourceID }
-            let targetMatches = catalog.descriptors.filter { $0.name == first.targetID }
+            let sourceMatches = catalog.descriptors.filter { $0.schemaName == nil ? sqliteIdentifierMatches($0.name, first.sourceID) : $0.name == first.sourceID }
+            let targetMatches = catalog.descriptors.filter { $0.schemaName == nil ? sqliteIdentifierMatches($0.name, first.targetID) : $0.name == first.targetID }
             guard sourceMatches.count == 1, let source = sourceMatches.first else { return nil }
             let target = targetMatches.count == 1 ? targetMatches.first : nil
             let targetColumns = ordered.enumerated().map { index, edge in
-                if !edge.targetColumn.isEmpty { return edge.targetColumn }
+                if !edge.targetColumn.isEmpty { return canonicalColumn(edge.targetColumn, descriptor: target) }
                 guard let target, target.primaryKeyColumns.count == ordered.count else { return "" }
                 return target.primaryKeyColumns[index]
             }
             let id = RecordTableID(descriptor: source).id + ":" + (target.map(RecordTableID.init(descriptor:)) ?? .init(schemaName: source.schemaName, objectName: first.targetID)).id + ":fk:" + group.constraint
-            return RecordRelationship(id: id, sourceTable: .init(descriptor: source), targetTable: target.map(RecordTableID.init(descriptor:)) ?? .init(schemaName: source.schemaName, objectName: first.targetID), sourceColumns: ordered.map(\.sourceColumn), targetColumns: targetColumns, sourceDescriptor: source, targetDescriptor: target)
+            return RecordRelationship(id: id, sourceTable: .init(descriptor: source), targetTable: target.map(RecordTableID.init(descriptor:)) ?? .init(schemaName: source.schemaName, objectName: first.targetID), sourceColumns: ordered.map { canonicalColumn($0.sourceColumn, descriptor: source) }, targetColumns: targetColumns, sourceDescriptor: source, targetDescriptor: target)
         }
+    }
+
+    /// SQLite folds ASCII identifier letters; non-ASCII identifiers stay distinct.
+    static func sqliteIdentifierMatches(_ lhs: String, _ rhs: String) -> Bool {
+        func folded(_ value: String) -> [UInt8] { value.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 } }
+        return folded(lhs) == folded(rhs)
+    }
+
+    private static func canonicalColumn(_ name: String, descriptor: TableDescriptor?) -> String {
+        guard let descriptor else { return name }
+        return descriptor.columns.first { descriptor.schemaName == nil ? sqliteIdentifierMatches($0.name, name) : $0.name == name }?.name ?? name
     }
 
     static func uniqueKeys(_ descriptor: TableDescriptor) -> [[String]] {
@@ -104,13 +115,25 @@ public enum RecordAccess {
         let values = sourceColumns.compactMap { record.value(for: $0) }
         if values.contains(.null) { return nil }
         guard let descriptor = direction == .outgoing ? relationship.targetDescriptor : relationship.sourceDescriptor else { throw RecordAccessError.unavailableTable }
+        if !postgres, direction == .incoming {
+            guard let parent = relationship.targetDescriptor else { throw RecordAccessError.unavailableTable }
+            let unknown = targetColumns.filter { name in !descriptor.columns.contains { $0.name == name } }
+            guard unknown.isEmpty else { throw RecordAccessError.missingColumns(unknown) }
+            let childAlias = "record_child"
+            let parentAlias = "record_parent"
+            func parentColumn(_ name: String) -> String { quoteIdentifier(parentAlias) + "." + quoteIdentifier(name) }
+            func childColumn(_ name: String) -> String { quoteIdentifier(childAlias) + "." + quoteIdentifier(name) }
+            let anchor = sourceColumns.map { parentColumn($0) + " = ?" }
+            // Unary + removes the child's column affinity. FK comparisons always
+            // use the parent key's affinity and collation, even for TEXT vs INTEGER.
+            let matching = zip(sourceColumns, targetColumns).map { parentColumn($0.0) + " = +" + childColumn($0.1) }
+            let exists = "EXISTS (SELECT 1 FROM \(RecordTableID(descriptor: parent).qualifiedSQLIdentifier) AS \(quoteIdentifier(parentAlias)) WHERE \((anchor + matching).joined(separator: " AND ")))"
+            return try selectionPlan(descriptor: descriptor, terms: [exists], parameters: values, offset: offset, limit: limit, postgres: false, alias: childAlias)
+        }
         return try plan(descriptor: descriptor, predicates: zip(targetColumns, values).map { .init(columnName: $0.0, value: $0.1) }, offset: offset, limit: limit, postgres: postgres)
     }
 
     static func plan(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int, limit: Int, postgres: Bool) throws -> RecordQueryPlan {
-        let boundedLimit = min(max(limit, 1), maximumPageSize)
-        let boundedOffset = min(max(offset, 0), Int.max - maximumPageSize - 1)
-        let table = RecordTableID(descriptor: descriptor)
         let columns = descriptor.columns
         guard !columns.isEmpty else { throw RecordAccessError.unavailableTable }
         let knownNames = Set(columns.map(\.name))
@@ -127,16 +150,29 @@ public enum RecordAccess {
             }
             return "\(name) = ?"
         }
+        return try selectionPlan(descriptor: descriptor, terms: terms, parameters: parameters, offset: offset, limit: limit, postgres: postgres)
+    }
+
+    private static func selectionPlan(descriptor: TableDescriptor, terms: [String], parameters: [SQLiteValue], offset: Int, limit: Int, postgres: Bool, alias: String? = nil) throws -> RecordQueryPlan {
+        let boundedLimit = min(max(limit, 1), maximumPageSize)
+        let boundedOffset = min(max(offset, 0), Int.max - maximumPageSize - 1)
+        let table = RecordTableID(descriptor: descriptor)
+        let columns = descriptor.columns
+        guard !columns.isEmpty else { throw RecordAccessError.unavailableTable }
+        func columnReference(_ name: String) -> String {
+            (alias.map { quoteIdentifier($0) + "." } ?? "") + quoteIdentifier(name)
+        }
         let rowIDColumn = postgres ? nil : sqliteRowIDColumn(descriptor)
         var order = uniqueKeys(descriptor).first { key in
             key.allSatisfy { name in columns.first { $0.name == name }?.notNull == true }
         } ?? []
         if let rowIDColumn, order.isEmpty { order = [rowIDColumn] }
         if order.isEmpty { order = descriptor.primaryKeyColumns }
-        let selected = columns.map { quoteIdentifier($0.name) } + (rowIDColumn.map { [quoteIdentifier($0)] } ?? [])
+        let selected = columns.map { columnReference($0.name) } + (rowIDColumn.map { [columnReference($0)] } ?? [])
         let whereSQL = terms.isEmpty ? "" : " WHERE " + terms.joined(separator: " AND ")
-        let orderSQL = order.isEmpty ? "" : " ORDER BY " + order.map(quoteIdentifier).joined(separator: ", ")
-        let sql = "SELECT \(selected.joined(separator: ", ")) FROM \(table.qualifiedSQLIdentifier)\(whereSQL)\(orderSQL) LIMIT \(boundedLimit + 1) OFFSET \(boundedOffset)"
+        let orderSQL = order.isEmpty ? "" : " ORDER BY " + order.map(columnReference).joined(separator: ", ")
+        let aliasSQL = alias.map { " AS " + quoteIdentifier($0) } ?? ""
+        let sql = "SELECT \(selected.joined(separator: ", ")) FROM \(table.qualifiedSQLIdentifier)\(aliasSQL)\(whereSQL)\(orderSQL) LIMIT \(boundedLimit + 1) OFFSET \(boundedOffset)"
         return RecordQueryPlan(sql: sql, parameters: parameters, descriptor: descriptor, offset: boundedOffset, limit: boundedLimit, rowIDColumn: rowIDColumn)
     }
 

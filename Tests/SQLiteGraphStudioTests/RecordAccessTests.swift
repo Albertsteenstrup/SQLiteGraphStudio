@@ -194,6 +194,78 @@ struct RecordAccessTests {
         #expect(Set(relationships.map(\.id)).count == 2)
     }
 
+    @Test func sqliteForeignKeyIdentifiersUseCanonicalCase() async throws {
+        let url = TestSupport.temporaryDatabaseURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let queue = try DatabaseQueue(path: url.path)
+        try await queue.write { db in
+            try db.execute(sql: "CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(key INTEGER PRIMARY KEY, ref INTEGER, FOREIGN KEY(REF) REFERENCES PARENT(ID)); INSERT INTO parent VALUES(1); INSERT INTO child VALUES(2,1)")
+        }
+        let database = DatabaseService()
+        try await database.open(url: url)
+        let catalog = try await database.loadCatalogSnapshot()
+        let relation = try #require(RecordAccess.relationships(catalog: catalog).first)
+        #expect(relation.targetTable.objectName == "parent")
+        #expect(relation.sourceColumns == ["ref"])
+        #expect(relation.targetColumns == ["id"])
+        #expect(catalog.graph.edges.first?.targetID == "parent")
+        let descriptor = try #require(catalog.descriptors.first { $0.name == "child" })
+        let children = try await database.fetchRecords(descriptor: descriptor, predicates: [])
+        let outgoing = try await database.fetchRelated(record: try #require(children.records.first), relationship: relation, direction: .outgoing)
+        #expect(outgoing.records.count == 1)
+        if let parent = outgoing.records.first {
+            let incoming = try await database.fetchRelated(record: parent, relationship: relation, direction: .incoming)
+            #expect(incoming.records.count == 1)
+        }
+        await database.close()
+    }
+
+    @Test func incomingSQLiteRelationsApplyParentCollationAndCompositeAffinity() async throws {
+        let url = TestSupport.temporaryDatabaseURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let queue = try DatabaseQueue(path: url.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE parent(code TEXT COLLATE NOCASE, number INTEGER, PRIMARY KEY(code,number)) WITHOUT ROWID;
+                CREATE TABLE child(key INTEGER PRIMARY KEY, ref TEXT, number TEXT, FOREIGN KEY(ref,number) REFERENCES parent(code,number));
+                INSERT INTO parent VALUES('ABC',1),('ABC',2),('other',1);
+                INSERT INTO child VALUES(1,'abc','01'),(2,'AbC','1'),(3,'abc','02'),(4,'other','1');
+                """)
+        }
+        let database = DatabaseService()
+        try await database.open(url: url)
+        let catalog = try await database.loadCatalogSnapshot()
+        let relation = try #require(RecordAccess.relationships(catalog: catalog).first)
+        let descriptor = try #require(relation.targetDescriptor)
+        let parent = try await database.fetchRecords(descriptor: descriptor, predicates: [.init(columnName: "code", value: .text("ABC")), .init(columnName: "number", value: .integer(1))])
+        let root = try #require(parent.records.first)
+        let incoming = try await database.fetchRelated(record: root, relationship: relation, direction: .incoming, limit: 1)
+        #expect(incoming.records.first?.value(for: "key") == .integer(1))
+        #expect(incoming.hasMore)
+        let next = try await database.fetchRelated(record: root, relationship: relation, direction: .incoming, offset: 1, limit: 1)
+        #expect(next.records.first?.value(for: "key") == .integer(2))
+        #expect(!next.hasMore)
+        await database.close()
+    }
+
+    @Test func incomingSQLiteRelationsDoNotApplyChildAffinityToTextParent() async throws {
+        let url = TestSupport.temporaryDatabaseURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let queue = try DatabaseQueue(path: url.path)
+        try await queue.write { db in
+            try db.execute(sql: "CREATE TABLE parent(code TEXT PRIMARY KEY); CREATE TABLE child(key INTEGER PRIMARY KEY, ref INTEGER REFERENCES parent(code)); INSERT INTO parent VALUES('001'),('1'); INSERT INTO child VALUES(1,1)")
+        }
+        let database = DatabaseService()
+        try await database.open(url: url)
+        let catalog = try await database.loadCatalogSnapshot()
+        let relation = try #require(RecordAccess.relationships(catalog: catalog).first)
+        let descriptor = try #require(relation.targetDescriptor)
+        let parents = try await database.fetchRecords(descriptor: descriptor, predicates: [.init(columnName: "code", value: .text("001"))])
+        let page = try await database.fetchRelated(record: try #require(parents.records.first), relationship: relation, direction: .incoming)
+        #expect(page.records.isEmpty)
+        await database.close()
+    }
+
     private func table(_ name: String, columns: [String], primaryKey: [String]) -> TableDescriptor {
         TableDescriptor(name: name, objectType: .table, columns: columns.map { name in
             TableColumn(name: name, declaredType: "TEXT", notNull: true, defaultValueSQL: nil, primaryKeyOrdinal: primaryKey.firstIndex(of: name).map { $0 + 1 } ?? 0, hiddenValue: 0)

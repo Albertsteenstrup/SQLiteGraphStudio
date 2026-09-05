@@ -244,24 +244,24 @@ public actor SQLiteDatabaseBackend {
         return result
     }
 
-    public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) throws -> RecordPage {
+    public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
         let plan = try RecordAccess.plan(descriptor: descriptor, predicates: predicates, offset: offset, limit: limit, postgres: false)
-        return try executeRecordPlan(plan)
+        return try await executeRecordPlan(plan)
     }
 
-    public func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int = 0, limit: Int = 50) throws -> RecordPage {
+    public func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
         do {
             guard let plan = try RecordAccess.relatedPlan(record: record, relationship: relationship, direction: direction, offset: offset, limit: limit, postgres: false) else { return .empty(.nullReference) }
-            return try executeRecordPlan(plan, missingReference: direction == .outgoing)
+            return try await executeRecordPlan(plan, missingReference: direction == .outgoing)
         } catch RecordAccessError.unavailableTable {
             return .empty(.unavailable)
         }
     }
 
-    private func executeRecordPlan(_ plan: RecordQueryPlan, missingReference: Bool = false) throws -> RecordPage {
+    private func executeRecordPlan(_ plan: RecordQueryPlan, missingReference: Bool = false) async throws -> RecordPage {
         try Task.checkCancellation()
         guard let pool else { throw SQLiteUserError(kind: .generic, message: "No database is open.") }
-        let values = try pool.read { db in
+        let values = try await pool.read { db in
             try db.readOnly {
                 try Row.fetchAll(db, sql: plan.sql, arguments: StatementArguments(plan.parameters.map(\.databaseValue)))
                     .map { row in (0..<row.count).map { SQLiteValue(databaseValue: row[$0] as DatabaseValue) } }
@@ -929,16 +929,21 @@ public actor SQLiteDatabaseBackend {
         uniqueColumnsByTable: [String: Set<String>],
         database db: Database
     ) throws -> [GraphEdge] {
-        try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(\(quoteStringLiteral(tableName)))").map { row in
+        let sourceColumns = try loadColumns(for: tableName, database: db)
+        return try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(\(quoteStringLiteral(tableName)))").map { row in
             let identifier: Int = (row["id"] as Int?) ?? 0
             let sequence: Int = (row["seq"] as Int?) ?? 0
-            let targetTable: String = row["table"]
-            let fromColumn: String = row["from"]
+            let declaredTarget: String = row["table"]
+            let targetTable = uniqueColumnsByTable.keys.first { RecordAccess.sqliteIdentifierMatches($0, declaredTarget) } ?? declaredTarget
+            let declaredSource: String = row["from"]
+            let fromColumn = sourceColumns.first { RecordAccess.sqliteIdentifierMatches($0.name, declaredSource) }?.name ?? declaredSource
             let explicitTarget: String? = row["to"]
-            let targetPK = try loadColumns(for: targetTable, database: db)
-                .filter { $0.primaryKeyOrdinal > 0 }
+            let targetColumns = try loadColumns(for: targetTable, database: db)
+            let targetPK = targetColumns.filter { $0.primaryKeyOrdinal > 0 }
                 .sorted { $0.primaryKeyOrdinal < $1.primaryKeyOrdinal }
-            let toColumn = explicitTarget ?? (targetPK.indices.contains(sequence) ? targetPK[sequence].name : "")
+            let toColumn = explicitTarget.map { declared in
+                targetColumns.first { RecordAccess.sqliteIdentifierMatches($0.name, declared) }?.name ?? declared
+            } ?? (targetPK.indices.contains(sequence) ? targetPK[sequence].name : "")
             let targetUniqueColumns = uniqueColumnsByTable[targetTable]
             let cardinality = inferCardinality(
                 sourceColumn: fromColumn,

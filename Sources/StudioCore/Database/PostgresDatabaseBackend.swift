@@ -349,7 +349,15 @@ public enum PostgresCatalogMapper {
     }
 
     private static func key(_ schema: String, _ object: String) -> String {
-        "\(schema).\(object)"
+        catalogDisplayKey(schema, object)
+    }
+
+    /// Keep ordinary display keys stable while preserving identifier boundaries.
+    static func catalogDisplayKey(_ schema: String, _ object: String) -> String {
+        func component(_ value: String) -> String {
+            value.range(of: #"^[A-Za-z_][A-Za-z0-9_$]*$"#, options: .regularExpression) != nil ? value : quoteIdentifier(value)
+        }
+        return component(schema) + "." + component(object)
     }
 
     private static func objectType(for relkind: String) -> DatabaseObjectType {
