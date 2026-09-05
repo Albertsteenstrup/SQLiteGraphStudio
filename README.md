@@ -86,17 +86,9 @@ See [query, browsing, export and metadata contracts](docs/query-data-contracts.m
 3. Open the DMG and drag `SQLiteGraphStudio.app` to `/Applications`
 4. Open a .sqlite file or .postgres document with it
 
-> **First launch:** macOS may block the app since it isn't notarized. If you see a "damaged" or Gatekeeper warning, run this once in Terminal:
->
-> ```bash
-> xattr -cr /Applications/SQLiteGraphStudio.app
-> ```
->
-> Then open the app normally. Alternatively:
->
-> 1. Open **System Settings → Privacy & Security**
-> 2. Scroll down and click **"Open Anyway"** next to the app name
-> 3. Confirm in the dialog that appears
+Release artifacts must be signed with Developer ID and notarized for normal Gatekeeper distribution. Older or local builds may be unsigned or unnotarized; see the release notes for that artifact. If macOS blocks an app, use a verified signed release or build from source. Removing quarantine attributes is not an installation requirement or a substitute for a trusted release.
+
+See [building, preference migration, and distribution signing](docs/packaging.md) for local build commands and the configured release workflow.
 
 ## Build from source
 

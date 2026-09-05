@@ -1,42 +1,28 @@
-#!/bin/bash
-# Creates a drag-to-Applications DMG for distribution.
-# Usage: ./script/create_dmg.sh /path/to/SQLiteGraphStudio.app
-# Output: dist/SQLiteGraphStudio.dmg
+#!/usr/bin/env bash
+# Repackage an existing app. This does not sign or notarize the resulting DMG.
+# Usage: bash script/create_dmg.sh [app-path] [output-dmg-path]
+set -euo pipefail
 
-set -e
-
-APP_PATH="${1:-dist/SQLiteGraphStudio.app}"
-DMG_NAME="SQLiteGraphStudio"
-DMG_PATH="dist/${DMG_NAME}.dmg"
-STAGING_DIR="dist/dmg_staging"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_PATH="${1:-$PROJECT_DIR/dist/SQLiteGraphStudio.app}"
+DMG_PATH="${2:-$PROJECT_DIR/dist/SQLiteGraphStudio.dmg}"
 
 if [ ! -d "$APP_PATH" ]; then
-    echo "Error: App not found at $APP_PATH"
-    echo "Build and export the app first, then run:"
-    echo "  ./script/create_dmg.sh /path/to/SQLiteGraphStudio.app"
+    echo "Error: App not found at $APP_PATH" >&2
     exit 1
 fi
 
-echo "Creating DMG from $APP_PATH..."
-
-# Clean up
-rm -rf "$STAGING_DIR"
-rm -f "$DMG_PATH"
-mkdir -p "$STAGING_DIR"
-
-# Copy app and add Applications symlink
+mkdir -p "$(dirname "$DMG_PATH")"
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sgs-dmg.XXXXXX")"
+trap 'rm -rf "$STAGING_DIR"' EXIT
 cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
 
-# Create DMG
 hdiutil create \
-    -volname "$DMG_NAME" \
+    -volname "SQLiteGraphStudio" \
     -srcfolder "$STAGING_DIR" \
     -ov \
     -format UDZO \
     "$DMG_PATH"
 
-# Clean up staging
-rm -rf "$STAGING_DIR"
-
-echo "Done: $DMG_PATH"
+echo "Created DMG: $DMG_PATH (container signing and notarization are separate steps)"

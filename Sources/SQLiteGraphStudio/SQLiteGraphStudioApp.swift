@@ -33,7 +33,10 @@ final class StudioAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SQLiteGraphStudioApp: App {
     @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var appDelegate
-    @State private var session = AppSession()
+    @State private var session: AppSession = {
+        PreferenceDomainMigration.migrateIfNeeded()
+        return AppSession()
+    }()
     @State private var didConfigureLaunchHandling = false
 
     var body: some Scene {

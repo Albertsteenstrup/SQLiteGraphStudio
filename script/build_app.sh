@@ -7,13 +7,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/bundle_metadata.sh"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
+NOTARYTOOL_PROFILE="${NOTARYTOOL_PROFILE:-}"
+if [[ -n "$NOTARYTOOL_PROFILE" && "$SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
+    echo "Notarization requires SIGNING_IDENTITY to name a Developer ID Application certificate." >&2
+    exit 2
+fi
 DIST_DIR="$PROJECT_DIR/dist"
 APP_NAME="SQLiteGraphStudio"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
-STAGING_DIR="$DIST_DIR/dmg_staging"
 ICNS_PATH="$SCRIPT_DIR/AppIcon.icns"
-MIN_MACOS_VERSION="15.0"
+MIN_MACOS_VERSION="$(sgs_metadata LSMinimumSystemVersion)"
 ARCHS=("arm64" "x86_64")
 UNIVERSAL_BINARY="$DIST_DIR/$APP_NAME.universal"
 
@@ -90,91 +96,32 @@ chmod -R u+rw "$APP_BUNDLE" 2>/dev/null || true
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 find "$APP_BUNDLE" -name ".DS_Store" -delete 2>/dev/null || true
 
-# Write Info.plist (must come after xattr strip)
+sgs_write_metadata "$APP_BUNDLE/Contents/Info.plist"
 
-# Write Info.plist
-cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>SQLiteGraphStudio</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.albertsteenstrup.sqlitegraphstudio</string>
-    <key>CFBundleName</key>
-    <string>SQLite Graph Studio</string>
-    <key>CFBundleDisplayName</key>
-    <string>SQLite Graph Studio</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.3.1</string>
-    <key>CFBundleVersion</key>
-    <string>2</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>sqlite</string>
-                <string>sqlite3</string>
-                <string>db</string>
-            </array>
-            <key>CFBundleTypeRole</key>
-            <string>Editor</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-        </dict>
-        <dict>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>postgres</string>
-                <string>pgstudio</string>
-            </array>
-            <key>CFBundleTypeName</key>
-            <string>PostgreSQL Connection Document</string>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-        </dict>
-    </array>
-</dict>
-</plist>
-PLIST
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    # The current app has one Mach-O executable and resource-only bundles.
+    codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
+    codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+else
+    echo "Unsigned artifact for local testing; not ready for distribution."
+fi
 
 echo "==> App bundle: $APP_BUNDLE"
 
-echo "==> Creating DMG..."
-rm -rf "$STAGING_DIR"
-rm -f "$DMG_PATH"
-mkdir -p "$STAGING_DIR"
-
-cp -R "$APP_BUNDLE" "$STAGING_DIR/"
-ln -s /Applications "$STAGING_DIR/Applications"
-
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "$STAGING_DIR" \
-    -ov \
-    -format UDZO \
-    "$DMG_PATH"
-
-rm -rf "$STAGING_DIR"
+bash "$SCRIPT_DIR/create_dmg.sh" "$APP_BUNDLE" "$DMG_PATH"
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG_PATH"
+    codesign --verify --strict --verbose=2 "$DMG_PATH"
+fi
 
 echo ""
 echo "==> Done: $DMG_PATH"
-echo "    Upload this file to your GitHub Release."
-echo ""
-echo "==> To sign the app (removes 'damaged' error for users):"
-echo "    codesign --deep --force --options runtime --sign \"Apple Development: YOUR_APPLE_ID (YOUR_TEAM_ID)\" $APP_BUNDLE"
-echo "    Then re-run: ./script/create_dmg.sh $APP_BUNDLE"
+if [[ -n "$NOTARYTOOL_PROFILE" ]]; then
+    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARYTOOL_PROFILE" --wait
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+    echo "Notarization and local assessment completed. Nothing was published or installed."
+else
+    echo "Not notarized. See docs/packaging.md before distribution."
+fi
