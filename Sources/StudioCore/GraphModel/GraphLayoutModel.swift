@@ -17,10 +17,8 @@ public final class GraphLayoutModel {
     /// being squeezed into a small viewport or from collapsing isolated nodes together.
     public static let crowdedNodeThreshold = 14
 
-    /// Force-directed physics and pairwise overlap cleanup are quadratic in the node
-    /// count. Large database schemas use a bounded deterministic overview instead of
-    /// physics, which can become numerically unstable when thousands of edge-path forces
-    /// accumulate in a single pass.
+    /// Above this threshold the same force solver runs only on bounded local pieces.
+    /// Card-aware packing separates those pieces and their authored parent groups.
     public static let largeGraphOverviewThreshold = 128
 
     private var positions: [String: CGPoint] = [:]
@@ -32,6 +30,10 @@ public final class GraphLayoutModel {
     private var settledSteps = 0
     private var tickCount = 0
     private var latestPresentationMode: GraphPresentationMode = .compact
+    private var largeNodeSizes: [String: CGSize] = [:]
+    private var cachedClusters: [String: Int] = [:]
+    private var repelsFromEdgePaths = true
+    private(set) var largeGraphLayoutMetrics: LargeGraphLayoutMetrics?
 
     public private(set) var isAnimating = false
     public private(set) var hasRestoredSnapshot = false
@@ -39,7 +41,7 @@ public final class GraphLayoutModel {
 
     public init() {}
 
-    /// Set AI-authored cluster hints. Empty dictionary clears any prior hints.
+    /// Set authored or inferred cluster hints. Empty dictionary clears prior hints.
     /// The next layout pass picks them up; call `relayout(...)` if positions are already settled.
     public func setClusterHints(_ hints: [String: String]) {
         clusterHintByNode = hints
@@ -85,6 +87,7 @@ public final class GraphLayoutModel {
         descriptorLookup: ((String) -> EditableTableDescriptor?)?
     ) {
         let currentPositions = positions
+        let currentPins = pinnedPositions
         layoutSeedOffset &+= 1
         latestGraphSignature = graph.hashValue
         latestPresentationMode = presentation
@@ -97,7 +100,11 @@ public final class GraphLayoutModel {
             velocities[node.id] = .zero
         }
 
-        pinnedPositions.removeAll()
+        if graph.nodes.count > Self.largeGraphOverviewThreshold {
+            pinnedPositions = currentPins.filter { positions[$0.key] != nil && LargeGraphLayout.isFinite($0.value) }
+        } else {
+            pinnedPositions.removeAll()
+        }
         settledSteps = 0
         tickCount = 0
         isAnimating = !graph.nodes.isEmpty
@@ -129,11 +136,26 @@ public final class GraphLayoutModel {
     ) {
         generateInitialPositions(for: graph, presentation: presentation, descriptorLookup: descriptorLookup)
 
-        for (nodeID, point) in snapshot.positions where positions[nodeID] != nil {
+        for (nodeID, point) in snapshot.positions where positions[nodeID] != nil && LargeGraphLayout.isFinite(point) {
             positions[nodeID] = point
         }
 
-        pinnedPositions = snapshot.pinnedPositions.filter { positions[$0.key] != nil }
+        pinnedPositions = snapshot.pinnedPositions.filter { positions[$0.key] != nil && LargeGraphLayout.isFinite($0.value) }
+        if graph.nodes.count > Self.largeGraphOverviewThreshold {
+            positions.merge(pinnedPositions) { _, pin in pin }
+            let validIDs = Set(graph.nodes.map(\.id))
+            let isLegacy = LargeGraphLayout.isLegacyOverview(snapshot, validIDs: validIDs)
+            let isComplete = graph.nodes.allSatisfy { node in
+                snapshot.positions[node.id].map(LargeGraphLayout.isFinite) ?? false
+            }
+            if isLegacy || !isComplete || !LargeGraphLayout.isNonOverlapping(positions, sizes: largeNodeSizes) {
+                layoutLargeGraph(
+                    graph: graph, presentation: presentation, descriptorLookup: descriptorLookup,
+                    nodeSizeLookup: nil, previousPositions: isLegacy ? nil : positions,
+                    maxIterations: isLegacy ? LargeGraphLayout.maximumPhysicsIterations : 0
+                )
+            }
+        }
         velocities = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, .zero) })
         latestGraphSignature = graph.hashValue
         latestPresentationMode = presentation
@@ -156,17 +178,19 @@ public final class GraphLayoutModel {
             return
         }
 
+        if graph.nodes.count > Self.largeGraphOverviewThreshold {
+            layoutLargeGraph(
+                graph: graph, presentation: presentation, descriptorLookup: descriptorLookup,
+                nodeSizeLookup: nodeSizeLookup, previousPositions: positions,
+                maxIterations: maxIterations
+            )
+            return
+        }
+
         isAnimating = true
         settledSteps = 0
 
-        let boundedMaxIterations: Int
-        if graph.nodes.count > Self.largeGraphOverviewThreshold {
-            boundedMaxIterations = 0
-        } else {
-            boundedMaxIterations = maxIterations
-        }
-
-        for _ in 0..<boundedMaxIterations where isAnimating {
+        for _ in 0..<max(0, maxIterations) where isAnimating {
             step(
                 graph: graph,
                 presentation: presentation,
@@ -175,7 +199,7 @@ public final class GraphLayoutModel {
             )
         }
 
-        let overlapIterations = graph.nodes.count > Self.largeGraphOverviewThreshold ? 0 : 80
+        let overlapIterations = 80
 
         resolveRemainingOverlaps(
             graph: graph,
@@ -209,9 +233,25 @@ public final class GraphLayoutModel {
         tickCount = 0
         hasRestoredSnapshot = false
         hasSettledLayout = false
+        largeGraphLayoutMetrics = nil
+        largeNodeSizes.removeAll(keepingCapacity: true)
+        cachedClusters.removeAll(keepingCapacity: true)
+
+        // Dispatch before clustering, initial collision scans, or any other ordinary
+        // solver path can accidentally run against the complete large graph.
+        if graph.nodes.count > Self.largeGraphOverviewThreshold {
+            layoutLargeGraph(
+                graph: graph, presentation: presentation, descriptorLookup: descriptorLookup,
+                nodeSizeLookup: nil, previousPositions: nil, maxIterations: 0
+            )
+            isAnimating = true
+            hasSettledLayout = false
+            return
+        }
 
         // Build clusters based on shared connections
         let clusters = buildClusters(for: graph)
+        cachedClusters = clusters
         
         // Calculate node importance (degree + column count)
         let nodeWeights = Dictionary(uniqueKeysWithValues: graph.nodes.map { node in
@@ -226,13 +266,6 @@ public final class GraphLayoutModel {
                 return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
             }
             return lhsWeight > rhsWeight
-        }
-
-        if presentation == .compact, graph.nodes.count > Self.largeGraphOverviewThreshold {
-            generateLargeCompactOverviewPositions(for: rankedNodes, clusters: clusters, weights: nodeWeights)
-            isAnimating = !graph.nodes.isEmpty
-            StudioLog.graph.info("Reset large graph layout for \(graph.nodes.count, privacy: .public) nodes using bounded overview placement")
-            return
         }
 
         // Use hierarchical layout within each cluster
@@ -397,44 +430,81 @@ public final class GraphLayoutModel {
         StudioLog.graph.info("Reset graph layout for \(graph.nodes.count, privacy: .public) nodes with \(clusterCount, privacy: .public) clusters")
     }
 
-    private func generateLargeCompactOverviewPositions(
-        for rankedNodes: [GraphNode],
-        clusters: [String: Int],
-        weights: [String: Int]
+    private func layoutLargeGraph(
+        graph: SchemaGraph,
+        presentation: GraphPresentationMode,
+        descriptorLookup: ((String) -> EditableTableDescriptor?)?,
+        nodeSizeLookup: ((String) -> CGSize)?,
+        previousPositions: [String: CGPoint]?,
+        maxIterations: Int
     ) {
-        let overviewNodes = rankedNodes.sorted { lhs, rhs in
-            let lhsCluster = clusters[lhs.id] ?? Int.max
-            let rhsCluster = clusters[rhs.id] ?? Int.max
-            if lhsCluster != rhsCluster {
-                return lhsCluster < rhsCluster
-            }
-
-            let lhsWeight = weights[lhs.id] ?? 0
-            let rhsWeight = weights[rhs.id] ?? 0
-            if lhsWeight == rhsWeight {
-                return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
-            }
-            return lhsWeight > rhsWeight
-        }
-
-        // Keep the overview close to the viewport's aspect ratio while leaving enough
-        // room for the widest collapsed card. Cards are rendered at the fitted zoom, so
-        // this grid remains legible and clickable without the radial layout's enormous
-        // outer rings.
-        let columns = max(1, Int(ceil(sqrt(Double(overviewNodes.count) * 0.45))))
-        let rows = max(1, Int(ceil(Double(overviewNodes.count) / Double(columns))))
-        let columnSpacing: CGFloat = 410
-        let rowSpacing: CGFloat = 74
-
-        for (index, node) in overviewNodes.enumerated() {
-            let row = index / columns
-            let column = index % columns
-            positions[node.id] = CGPoint(
-                x: (CGFloat(column) - CGFloat(columns - 1) * 0.5) * columnSpacing,
-                y: (CGFloat(row) - CGFloat(rows - 1) * 0.5) * rowSpacing
+        // External lookups may construct presentation metadata. Cache each exactly
+        // once per node; local edge/force loops only consult these dictionaries.
+        var descriptors: [String: EditableTableDescriptor] = [:]
+        var sizes: [String: CGSize] = [:]
+        for node in graph.nodes {
+            let descriptor = descriptorLookup?(node.id)
+            descriptors[node.id] = descriptor
+            let fallback = GraphCardLayout.nodeSize(
+                title: node.title, descriptor: descriptor,
+                style: presentation == .compact ? .collapsed : .expanded
             )
-            velocities[node.id] = .zero
+            let candidate = nodeSizeLookup?(node.id) ?? fallback
+            sizes[node.id] = candidate.width.isFinite && candidate.height.isFinite
+                && candidate.width > 0 && candidate.height > 0 ? candidate : fallback
         }
+        let iterations = min(max(0, maxIterations), LargeGraphLayout.maximumPhysicsIterations)
+        let seedOffset = layoutSeedOffset
+        let hints = clusterHintByNode
+        let result = LargeGraphLayout.calculate(
+            graph: graph, hints: hints, presentation: presentation, sizes: sizes,
+            previousPositions: previousPositions, pins: pinnedPositions
+        ) { localGraph, previous in
+            precondition(localGraph.nodes.count <= LargeGraphLayout.maximumLocalNodeCount)
+            let local = GraphLayoutModel()
+            local.layoutSeedOffset = seedOffset
+            // Packing replaces edge-path clearance after each local solve. Keep the
+            // shared node repulsion, FK springs, cluster forces and card alignment;
+            // avoid spending E * local-node-count work on paths that packing will move.
+            local.repelsFromEdgePaths = false
+            local.clusterHintByNode = Dictionary(uniqueKeysWithValues: localGraph.nodes.compactMap { node in
+                hints[node.id].map { (node.id, $0) }
+            })
+            if let previous, previous.count == localGraph.nodes.count {
+                local.latestGraphSignature = localGraph.hashValue
+                local.latestPresentationMode = presentation
+                local.cachedClusters = local.buildClusters(for: localGraph)
+                local.velocities = Dictionary(uniqueKeysWithValues: localGraph.nodes.map { ($0.id, .zero) })
+                local.isAnimating = true
+                let orderedPoints = localGraph.nodes.compactMap { previous[$0.id] }
+                let center = orderedPoints.reduce(CGPoint.zero) {
+                    CGPoint(x: $0.x + $1.x / CGFloat(orderedPoints.count), y: $0.y + $1.y / CGFloat(orderedPoints.count))
+                }
+                for node in localGraph.nodes {
+                    if let point = previous[node.id] {
+                        local.positions[node.id] = CGPoint(x: point.x - center.x, y: point.y - center.y)
+                    }
+                }
+            } else {
+                local.reset(for: localGraph, presentation: presentation, descriptorLookup: { descriptors[$0] })
+            }
+            var performedIterations = 0
+            for _ in 0..<iterations where local.isAnimating {
+                local.step(graph: localGraph, presentation: presentation,
+                           descriptorLookup: { descriptors[$0] }, nodeSizeLookup: { sizes[$0] ?? .zero })
+                performedIterations += 1
+            }
+            return LargeGraphLayout.LocalSolution(positions: local.positions, iterations: performedIterations,
+                                                  repelsFromEdgePaths: local.repelsFromEdgePaths)
+        }
+        positions = result.positions
+        latestGraphSignature = graph.hashValue
+        latestPresentationMode = presentation
+        largeNodeSizes = sizes
+        largeGraphLayoutMetrics = result.metrics
+        velocities = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, .zero) })
+        isAnimating = false
+        hasSettledLayout = true
     }
     
     private func buildHierarchy(for nodes: [GraphNode], in graph: SchemaGraph, weights: [String: Int]) -> [[String]] {
@@ -586,10 +656,17 @@ public final class GraphLayoutModel {
     ) {
         guard isAnimating, !graph.nodes.isEmpty else { return }
         reset(for: graph, presentation: presentation, descriptorLookup: descriptorLookup)
+        if graph.nodes.count > Self.largeGraphOverviewThreshold {
+            layoutLargeGraph(
+                graph: graph, presentation: presentation, descriptorLookup: descriptorLookup,
+                nodeSizeLookup: nodeSizeLookup, previousPositions: positions, maxIterations: 1
+            )
+            return
+        }
         tickCount += 1
 
         let parameters = layoutParameters(for: presentation)
-        let clusters = buildClusters(for: graph)
+        let clusters = cachedClusters
 
         // When AI cluster hints are active, suppress forces that collapse clusters:
         // cross-cluster FK springs pull groups together, compaction/centering squashes them
@@ -622,7 +699,7 @@ public final class GraphLayoutModel {
                                  presentation: presentation,
                                  nodeCount: nodes.count))
         })
-        let shouldRepelNodesFromEdgePaths = presentation != .allCards || nodes.count <= 24
+        let shouldRepelNodesFromEdgePaths = repelsFromEdgePaths && (presentation != .allCards || nodes.count <= 24)
         let centroid = positionsCentroid(for: nodes)
 
         for leftIndex in 0..<nodes.count {

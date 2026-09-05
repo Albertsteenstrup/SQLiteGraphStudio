@@ -110,16 +110,52 @@ public struct PostgresCatalogForeignKey: Sendable, Hashable {
     }
 }
 
+public struct PostgresCatalogTrigger: Sendable, Hashable {
+    public let schemaName: String
+    public let objectName: String
+    public let name: String
+    public let sql: String
+
+    public init(schemaName: String, objectName: String, name: String, sql: String) {
+        self.schemaName = schemaName
+        self.objectName = objectName
+        self.name = name
+        self.sql = sql
+    }
+}
+
+public struct PostgresCatalogCheckConstraint: Sendable, Hashable {
+    public let id: String
+    public let schemaName: String
+    public let objectName: String
+    public let name: String
+    public let columns: [String]
+    public let sql: String
+
+    public init(id: String, schemaName: String, objectName: String, name: String, columns: [String], sql: String) {
+        self.id = id
+        self.schemaName = schemaName
+        self.objectName = objectName
+        self.name = name
+        self.columns = columns
+        self.sql = sql
+    }
+}
+
 public enum PostgresCatalogMapper {
     public static func makeSnapshot(
         objects: [PostgresCatalogObject],
         columns: [PostgresCatalogColumn],
         indexes: [PostgresCatalogIndex],
-        foreignKeys: [PostgresCatalogForeignKey]
+        foreignKeys: [PostgresCatalogForeignKey],
+        triggers: [PostgresCatalogTrigger] = [],
+        checkConstraints: [PostgresCatalogCheckConstraint] = []
     ) -> CatalogSnapshot {
         let columnsByObject = Dictionary(grouping: columns) { key($0.schemaName, $0.objectName) }
         let indexesByObject = Dictionary(grouping: indexes) { key($0.schemaName, $0.objectName) }
         let foreignKeysByObject = Dictionary(grouping: foreignKeys) { key($0.sourceSchemaName, $0.sourceObjectName) }
+        let triggersByObject = Dictionary(grouping: triggers) { key($0.schemaName, $0.objectName) }
+        let checksByObject = Dictionary(grouping: checkConstraints) { key($0.schemaName, $0.objectName) }
 
         let descriptors = objects.map { object -> TableDescriptor in
             let objectKey = key(object.schemaName, object.objectName)
@@ -187,6 +223,19 @@ public enum PostgresCatalogMapper {
                     )
                 )
             }
+            for check in (checksByObject[objectKey] ?? []).sorted(by: {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }) {
+                constraints.append(
+                    SchemaConstraint(
+                        id: "\(descriptorName).check.\(check.id)",
+                        kind: .check,
+                        name: check.name,
+                        columns: check.columns,
+                        detail: check.sql
+                    )
+                )
+            }
 
             let generatedColumns = objectColumns.compactMap { column -> GeneratedColumnInfo? in
                 guard !column.generatedKind.isEmpty else { return nil }
@@ -226,6 +275,11 @@ public enum PostgresCatalogMapper {
                         isPartial: index.isPartial,
                         sql: nil
                     )
+                },
+                triggers: (triggersByObject[objectKey] ?? []).sorted {
+                    $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }.map { trigger in
+                    SchemaTrigger(name: trigger.name, tableName: descriptorName, sql: trigger.sql)
                 },
                 constraints: constraints,
                 generatedColumns: generatedColumns,
@@ -667,12 +721,59 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     """),
                     on: connection
                 )
+                let triggers = try await Self.query(
+                    PostgresQuery(unsafeSQL: """
+                    SELECT n.nspname AS schema_name,
+                           c.relname AS object_name,
+                           t.tgname AS trigger_name,
+                           pg_catalog.pg_get_triggerdef(t.oid, false) AS trigger_sql
+                    FROM pg_catalog.pg_trigger AS t
+                    JOIN pg_catalog.pg_class AS c ON c.oid = t.tgrelid
+                    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                    WHERE NOT t.tgisinternal
+                      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                      AND n.nspname !~ '^pg_temp_'
+                      AND c.relkind IN ('r', 'p', 'v', 'm')
+                      AND has_schema_privilege(n.oid, 'USAGE')
+                      AND has_table_privilege(c.oid, 'SELECT')
+                    ORDER BY n.nspname, c.relname, t.tgname
+                    """),
+                    on: connection
+                )
+                let checkConstraints = try await Self.query(
+                    PostgresQuery(unsafeSQL: """
+                    SELECT con.oid::text AS constraint_id,
+                           n.nspname AS schema_name,
+                           c.relname AS object_name,
+                           con.conname AS constraint_name,
+                           pg_catalog.pg_get_constraintdef(con.oid, false) AS constraint_sql,
+                           COALESCE((
+                               SELECT pg_catalog.json_agg(att.attname ORDER BY keys.ord)::text
+                               FROM unnest(con.conkey) WITH ORDINALITY AS keys(attnum, ord)
+                               JOIN pg_catalog.pg_attribute AS att
+                                 ON att.attrelid = con.conrelid AND att.attnum = keys.attnum
+                           ), '[]') AS columns_json
+                    FROM pg_catalog.pg_constraint AS con
+                    JOIN pg_catalog.pg_class AS c ON c.oid = con.conrelid
+                    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                    WHERE con.contype = 'c'
+                      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                      AND n.nspname !~ '^pg_temp_'
+                      AND c.relkind IN ('r', 'p', 'v', 'm')
+                      AND has_schema_privilege(n.oid, 'USAGE')
+                      AND has_table_privilege(c.oid, 'SELECT')
+                    ORDER BY n.nspname, c.relname, con.conname
+                    """),
+                    on: connection
+                )
 
                 return PostgresCatalogMapper.makeSnapshot(
                     objects: Self.objects(from: objects),
                     columns: Self.columns(from: columns),
                     indexes: Self.indexes(from: indexes),
-                    foreignKeys: Self.foreignKeys(from: foreignKeys)
+                    foreignKeys: Self.foreignKeys(from: foreignKeys),
+                    triggers: Self.triggers(from: triggers),
+                    checkConstraints: Self.checkConstraints(from: checkConstraints)
                 )
             }
         } catch {
@@ -1016,6 +1117,36 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 targetSchemaName: targetSchema,
                 targetObjectName: targetObject,
                 targetColumns: result.jsonStrings("target_columns_json", row: row)
+            )
+        }
+    }
+
+    private static func triggers(from result: RawPostgresResult) -> [PostgresCatalogTrigger] {
+        result.rows.compactMap { row in
+            guard let schema = result.text("schema_name", row: row),
+                  let object = result.text("object_name", row: row),
+                  let name = result.text("trigger_name", row: row),
+                  let sql = result.text("trigger_sql", row: row)
+            else { return nil }
+            return PostgresCatalogTrigger(schemaName: schema, objectName: object, name: name, sql: sql)
+        }
+    }
+
+    private static func checkConstraints(from result: RawPostgresResult) -> [PostgresCatalogCheckConstraint] {
+        result.rows.compactMap { row in
+            guard let id = result.text("constraint_id", row: row),
+                  let schema = result.text("schema_name", row: row),
+                  let object = result.text("object_name", row: row),
+                  let name = result.text("constraint_name", row: row),
+                  let sql = result.text("constraint_sql", row: row)
+            else { return nil }
+            return PostgresCatalogCheckConstraint(
+                id: id,
+                schemaName: schema,
+                objectName: object,
+                name: name,
+                columns: result.jsonStrings("columns_json", row: row),
+                sql: sql
             )
         }
     }

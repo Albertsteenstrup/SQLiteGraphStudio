@@ -146,12 +146,12 @@ public final class QueryWorkspaceModel {
         return query
     }
 
-    public func createTopRowsQuery(for tableName: String) {
+    public func createTopRowsQuery(for descriptor: TableDescriptor) {
         createQuery(
-            title: "\(tableName) Top 10",
+            title: "\(descriptor.name) Top 10",
             sqlText: """
             SELECT *
-            FROM \(quoteIdentifier(tableName))
+            FROM \(descriptor.qualifiedSQLIdentifier)
             LIMIT 10;
             """,
             activate: true,

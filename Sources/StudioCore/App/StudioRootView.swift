@@ -138,7 +138,7 @@ public struct StudioRootView: View {
                 withAnimation(.snappy(duration: 0.3)) { skillsToastVisible = false }
             }
         }
-        .onChange(of: session.databaseTarget) { _, _ in
+        .onChange(of: session.databaseURL) { _, _ in
             skillsRepeatTask?.cancel()
             skillsRepeatTask = nil
             refreshToastTask?.cancel()
@@ -1454,7 +1454,7 @@ private struct OpenTablePickerView: View {
     init(session: AppSession) {
         self.session = session
         // All groups start expanded
-        _expandedGroups = State(initialValue: Set(session.schemaSidecar.clusters.map(\.id)))
+        _expandedGroups = State(initialValue: Set(session.graphGrouping.groups.map(\.id)).union(["__ungrouped__"]))
     }
 
     // FK source columns per table derived from graph edges
@@ -1475,27 +1475,26 @@ private struct OpenTablePickerView: View {
 
     private var groups: [PickerGroup] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = session.tables.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
-        let clusters = session.schemaSidecar.clusters
-        let groupedNames = Set(clusters.flatMap(\.tables))
-
-        var result: [PickerGroup] = clusters.compactMap { cluster -> PickerGroup? in
-            let tables = filtered.filter { cluster.tables.contains($0.name) }
-            guard !tables.isEmpty else { return nil }
+        let filtered = session.tables.filter { table in
+            query.isEmpty || table.name.localizedCaseInsensitiveContains(query)
+                || session.graphGrouping.group(for: table.name)?.label.localizedCaseInsensitiveContains(query) == true
+        }
+        let tablesByGroup = Dictionary(grouping: filtered) { table in
+            session.graphGrouping.nodeToGroup[table.name] ?? "__ungrouped__"
+        }
+        var result: [PickerGroup] = session.graphGrouping.groups.compactMap { group in
+            guard let tables = tablesByGroup[group.id], !tables.isEmpty else { return nil }
             return PickerGroup(
-                id: cluster.id,
-                label: cluster.label ?? cluster.id,
-                color: cluster.color.flatMap { Color(studioHex: $0) },
+                id: group.id,
+                label: group.label,
+                color: Color(studioHex: group.colorHex),
                 tables: tables
             )
         }
-        let ungrouped = filtered.filter { !groupedNames.contains($0.name) }
-        if !ungrouped.isEmpty {
-            result.append(PickerGroup(id: "__ungrouped__", label: "Other", color: nil, tables: ungrouped))
-        }
-        // If no clusters defined just show everything as one flat group
-        if clusters.isEmpty {
-            return [PickerGroup(id: "__all__", label: "Tables", color: nil, tables: filtered)]
+        if let ungrouped = tablesByGroup["__ungrouped__"], !ungrouped.isEmpty {
+            result.append(PickerGroup(
+                id: "__ungrouped__", label: result.isEmpty ? "Tables" : "Other", color: nil, tables: ungrouped
+            ))
         }
         return result
     }
@@ -1511,7 +1510,7 @@ private struct OpenTablePickerView: View {
             List {
                 ForEach(groups) { group in
                     Section {
-                        if expandedGroups.contains(group.id) {
+                        if expandedGroups.contains(group.id) || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             ForEach(group.tables) { table in
                                 tableRow(table, fk: fkColumnsByTable)
                             }
@@ -2143,7 +2142,7 @@ private struct SkillsPickerView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("AI Skills")
                     .font(.title2.weight(.semibold))
-                Text("Install skills into your database directory for AI coding agents.")
+                Text("Install project skills for AI coding agents.")
                     .font(.subheadline)
                     .foregroundStyle(StudioPalette.secondaryText)
             }
@@ -2274,6 +2273,13 @@ private struct SkillsPickerView: View {
                         Label("Installed", systemImage: "checkmark.circle.fill")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Color.green)
+                        Button("Reinstall") {
+                            session.installSkill(skill)
+                            installRevision &+= 1
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Replace installed copies of this skill with the app's current version")
                     } else {
                         Button(installStatus.availableCount == 0 ? "No Target" : "Install") {
                             session.installSkill(skill)

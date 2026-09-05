@@ -48,10 +48,12 @@ public struct SchemaGraph: Sendable, Hashable {
     public let nodes: [GraphNode]
     public let edges: [GraphEdge]
     private let adjacency: [String: Set<String>]
+    private let nodeLookup: [String: GraphNode]
 
     public init(nodes: [GraphNode], edges: [GraphEdge]) {
         self.nodes = nodes
         self.edges = edges
+        self.nodeLookup = Dictionary(nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var adjacency: [String: Set<String>] = [:]
         for edge in edges {
@@ -68,6 +70,8 @@ public struct SchemaGraph: Sendable, Hashable {
     }
 
     public func contains(nodeID: String) -> Bool {
-        nodes.contains { $0.id == nodeID }
+        nodeLookup[nodeID] != nil
     }
+
+    public func node(id: String) -> GraphNode? { nodeLookup[id] }
 }

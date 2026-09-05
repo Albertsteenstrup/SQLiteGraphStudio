@@ -148,11 +148,14 @@ public struct StoryPlaybackCommand: Identifiable, Sendable, Equatable {
 public final class AppSession {
     public var recentDatabaseURLs: [URL] = []
     public private(set) var databaseTarget: DatabaseTarget?
+    /// The opened SQLite file or PostgreSQL connection document. Connection identity
+    /// and database operations use `databaseTarget`, independently of this local URL.
     public var databaseURL: URL?
     public private(set) var databaseCapabilities: DatabaseCapabilities = .none
     public var tables: [TableSummary] = []
     public var graph: SchemaGraph = .empty
     public var schemaSidecar: SchemaSidecar = .empty
+    public private(set) var graphGrouping: GraphGrouping = .empty
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
@@ -185,6 +188,8 @@ public final class AppSession {
     // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary
     public var graphZoom: CGFloat = 1.0
     public var graphPan: CGSize = .zero
+    // Layout positions can be restored before this session has fitted a camera.
+    var initializedGraphViewportDocument: String?
     public var presentedError: SQLiteUserError?
 
     public let records: RecordWorkspace
@@ -198,13 +203,13 @@ public final class AppSession {
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
     private static let graphLayoutStorageVersion = 2
-    private static let allowedDatabaseExtensions: Set<String> = [
+    private static let allowedDatabaseExtensions: Set<String> = Set([
         "sqlite",
         "sqlite3",
         "db",
         "sqlite-db",
         "sqlitedb",
-    ]
+    ]).union(PostgresConnectionDocument.supportedFileExtensions)
     private static let maxRecentDatabaseCount = 6
 
     public init(
@@ -307,7 +312,6 @@ public final class AppSession {
             try await databaseService.open(url: url)
             let snapshot = try await databaseService.loadCatalogSnapshot()
             apply(snapshot: snapshot, target: .sqlite(url))
-            databaseCapabilities = .sqlite
             if let changeBaseline {
                 refreshToast = Self.refreshSummary(
                     before: changeBaseline,
@@ -318,7 +322,6 @@ public final class AppSession {
                     )
                 ).map { RefreshToast(message: $0) }
             }
-            rememberRecentDatabase(url)
             StudioLog.ui.info("Loaded database session for \(url.lastPathComponent, privacy: .public)")
         } catch {
             presentedError = SQLiteUserError.from(error)
@@ -361,8 +364,7 @@ public final class AppSession {
             let document = try JSONDecoder().decode(PostgresConnectionDocument.self, from: data)
             try await databaseService.open(postgres: document.configuration)
             let snapshot = try await databaseService.loadCatalogSnapshot()
-            apply(snapshot: snapshot, target: .postgres(document.configuration))
-            databaseCapabilities = .postgresReadOnly
+            apply(snapshot: snapshot, target: .postgres(document.configuration), documentURL: url)
             StudioLog.ui.info(
                 "Loaded PostgreSQL document \(url.lastPathComponent, privacy: .public) for \(document.configuration.host, privacy: .public):\(document.configuration.port, privacy: .public)/\(document.configuration.database, privacy: .public)"
             )
@@ -373,7 +375,7 @@ public final class AppSession {
 
     public func openRecentDatabase(_ url: URL) {
         guard recentDatabaseURLs.contains(url.standardizedFileURL) else { return }
-        Task { await openDatabase(url: url) }
+        Task { await openDocument(url: url) }
     }
 
     public func closeDatabase() {
@@ -383,7 +385,9 @@ public final class AppSession {
         }
         databaseTarget = nil
         databaseURL = nil
+        initializedGraphViewportDocument = nil
         databaseCapabilities = .none
+        isRefreshing = false
         isTablePickerPresented = false
         isCreateTablePresented = false
         isAlterTablePresented = false
@@ -391,11 +395,13 @@ public final class AppSession {
         tables = []
         graph = .empty
         schemaSidecar = .empty
+        graphGrouping = .empty
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
         activePaneSide = .right
         maximizedPaneSide = nil
         selectedGraphNodeID = nil
+        selectedGraphNodeIDs = []
         expandedGraphNodeIDs = []
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
@@ -413,16 +419,16 @@ public final class AppSession {
         refreshToast = nil
     }
 
-    /// Re-reads `<db>.sqlite.studio.json` from disk and updates sidecar descriptions and
+    /// Re-reads `<document>.studio.json` from disk and updates sidecar descriptions and
     /// cluster hints. Does **not** touch node positions — call alongside a layout rebuild to
     /// actually re-position nodes.
     public func reloadSchemaSidecarFromDisk() {
-        guard let target = databaseTarget, case .sqlite(let databaseURL) = target else { return }
+        guard hasOpenDatabase, let databaseURL else { return }
         let before = schemaSidecar
         let sidecar = SchemaSidecarStore.load(for: databaseURL)
         schemaSidecar = sidecar
         configureRecordMappings(sidecar)
-        graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
+        updateGraphGrouping()
         refreshToast = Self.sidecarSummary(before: before, after: sidecar)
             .map { RefreshToast(message: $0) }
     }
@@ -457,29 +463,38 @@ public final class AppSession {
         let trimmed = columnName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let separatorIndex = trimmed.firstIndex(of: ".") {
-            let tableName = String(trimmed[..<separatorIndex])
-            let fieldName = String(trimmed[trimmed.index(after: separatorIndex)...])
-            if let description = columnDescription(for: tableName, column: fieldName) {
-                return description
-            }
-            if let description = tableDescription(for: tableName) {
-                return description
-            }
+        let knownTableNames = Set(tableDescriptors.keys).union(schemaSidecar.tables.keys)
+        if knownTableNames.contains(trimmed) {
+            return tableDescription(for: trimmed)
         }
 
-        if let description = tableDescription(for: trimmed) {
-            return description
+        // A PostgreSQL table ID is already schema-qualified, and both table and
+        // column names may contain dots. Match the most specific known table ID.
+        if let tableName = knownTableNames
+            .filter({ trimmed.hasPrefix($0 + ".") })
+            .max(by: { $0.count < $1.count }) {
+            let fieldName = String(trimmed.dropFirst(tableName.count + 1))
+            return columnDescription(for: tableName, column: fieldName)
+                ?? tableDescription(for: tableName)
         }
 
         let columnMatches = schemaSidecar.tables.compactMap { tableName, table in
-            table.columns[trimmed]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                ? (tableName, table.columns[trimmed]!)
-                : nil
+            guard let description = table.columns[trimmed]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !description.isEmpty else { return nil as (String, String)? }
+            return (tableName, description)
         }
 
         guard columnMatches.count == 1, let match = columnMatches.first else {
             return nil
+        }
+
+        // SQLite keeps its existing unique-note fallback. PostgreSQL also verifies
+        // catalog ownership so an unqualified alias cannot claim another schema's column.
+        if isPostgreSQL, !tableDescriptors.isEmpty {
+            let catalogMatches = tableDescriptors.values.filter { descriptor in
+                descriptor.columns.contains { $0.name == trimmed }
+            }
+            guard catalogMatches.count == 1, catalogMatches.first?.name == match.0 else { return nil }
         }
 
         return "\(match.0).\(trimmed): \(match.1)"
@@ -501,12 +516,16 @@ public final class AppSession {
     }
 
     public func clusterLabel(for tableName: String) -> String? {
-        guard let groupID = schemaSidecar.nodeToClusterGroup[tableName] else { return nil }
-        return schemaSidecar.clusters.first(where: { $0.id == groupID })?.label ?? groupID
+        graphGrouping.group(for: tableName)?.label
+    }
+
+    public func clusterColorHex(for tableName: String) -> String? {
+        graphGrouping.group(for: tableName)?.colorHex
     }
 
     public func refreshSchema() {
         guard let target = databaseTarget else { return }
+        let documentURL = databaseURL
         let baseline = SchemaRefreshSnapshot(
             descriptors: tableDescriptors,
             graph: graph,
@@ -519,10 +538,17 @@ public final class AppSession {
             Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
         case .postgres:
             Task {
+                guard databaseTarget == target, databaseURL == documentURL else { return }
+                isRefreshing = true
+                defer {
+                    if databaseTarget == target, databaseURL == documentURL {
+                        isRefreshing = false
+                    }
+                }
                 do {
                     let snapshot = try await databaseService.loadCatalogSnapshot()
-                    guard databaseTarget == target else { return }
-                    apply(snapshot: snapshot, target: target)
+                    guard databaseTarget == target, databaseURL == documentURL else { return }
+                    apply(snapshot: snapshot, target: target, documentURL: documentURL)
                     refreshToast = Self.refreshSummary(
                         before: baseline,
                         after: SchemaRefreshSnapshot(
@@ -532,6 +558,7 @@ public final class AppSession {
                         )
                     ).map { RefreshToast(message: $0) }
                 } catch {
+                    guard databaseTarget == target, databaseURL == documentURL else { return }
                     presentedError = SQLiteUserError.from(error)
                 }
             }
@@ -576,7 +603,6 @@ public final class AppSession {
     public func dismissSkills() { isSkillsPresented = false }
 
     public var skillsDirectory: URL? {
-        guard !isPostgreSQL else { return nil }
         guard let dbDir = databaseURL?.deletingLastPathComponent() else { return nil }
         return StudioSkills.gitRoot(from: dbDir) ?? dbDir
     }
@@ -725,7 +751,7 @@ public final class AppSession {
     }
 
     public func deleteStory(id storyID: String) {
-        guard let target = databaseTarget, case .sqlite(let databaseURL) = target else { return }
+        guard hasOpenDatabase, let databaseURL else { return }
         guard schemaSidecar.stories.contains(where: { $0.id == storyID }) else { return }
 
         let before = schemaSidecar
@@ -1088,28 +1114,22 @@ public final class AppSession {
         }
     }
 
-    private func apply(snapshot: CatalogSnapshot, url: URL) {
-        apply(snapshot: snapshot, target: .sqlite(url))
-    }
-
-    private func apply(snapshot: CatalogSnapshot, target: DatabaseTarget) {
+    func apply(snapshot: CatalogSnapshot, target: DatabaseTarget, documentURL: URL? = nil) {
         records.reset()
         records.catalog = snapshot
         records.relationships = RecordAccess.relationships(catalog: snapshot)
+        let localURL = (documentURL ?? target.fileURL)?.standardizedFileURL
+        let isSameDocument = databaseTarget == target && databaseURL == localURL
+        if !isSameDocument { initializedGraphViewportDocument = nil }
         databaseTarget = target
-        databaseURL = target.fileURL
+        databaseURL = localURL
+        databaseCapabilities = target.isPostgres ? .postgresReadOnly : .sqlite
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
         tables = snapshot.descriptors.map(\.summary)
         graph = snapshot.graph
-        let sidecar: SchemaSidecar
-        if case .sqlite(let url) = target {
-            sidecar = SchemaSidecarStore.load(for: url)
-        } else {
-            sidecar = .empty
-        }
-        schemaSidecar = sidecar
-        configureRecordMappings(sidecar)
-        graphLayout.setClusterHints(sidecar.nodeToClusterGroup)
+        schemaSidecar = localURL.map { SchemaSidecarStore.load(for: $0) } ?? .empty
+        configureRecordMappings(schemaSidecar)
+        updateGraphGrouping()
         graphLayout.reset(for: snapshot.graph)
         pinnedStoryGraphPositionsByMode = [:]
         restorePersistedGraphLayoutIfAvailable(for: target, graph: snapshot.graph)
@@ -1123,6 +1143,13 @@ public final class AppSession {
         showStoryCardsInGraph = false
         showOnlyStoryCardsInGraph = false
         queryWorkspace.loadSavedQueries(for: target)
+        if !isSameDocument {
+            selectedGraphNodeIDs = []
+            openTabs = []
+            isSkillsPresented = false
+            isCreateTablePresented = false
+            isAlterTablePresented = false
+        }
         openTabs = openTabs.compactMap { existingTab in
             guard let descriptor = tableDescriptors[existingTab.descriptor.name] else { return nil }
             let replacement = TableTabModel(
@@ -1134,6 +1161,12 @@ public final class AppSession {
             return replacement
         }
         activeTabID = openTabs.last?.id
+        if let localURL { rememberRecentDatabase(localURL) }
+    }
+
+    private func updateGraphGrouping() {
+        graphGrouping = GraphGrouping.resolve(graph: graph, descriptors: tableDescriptors, sidecar: schemaSidecar)
+        graphLayout.setClusterHints(graphGrouping.nodeToGroup)
     }
 
     private func graphLayoutStorageKey(for url: URL) -> String {

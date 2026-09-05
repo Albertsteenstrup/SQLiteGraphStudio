@@ -59,7 +59,7 @@ public struct DatabaseCapabilities: Sendable, Hashable {
         canAlterSchema: false,
         canDropColumns: false,
         canWriteSQL: false,
-        supportsAIWorkspace: false
+        supportsAIWorkspace: true
     )
 
     public static let none = DatabaseCapabilities(

@@ -61,6 +61,24 @@ struct PostgreSQLIntegrationTests {
             #expect(visibleObjectCount.rows.first?.values.first?.displayText == String(snapshot.descriptors.count))
             #expect(snapshot.graph.nodes.count == snapshot.descriptors.count)
 
+            let metadataCounts = try await backend.executeReadOnlyQuery(sql: """
+                SELECT
+                  (SELECT count(*) FROM pg_catalog.pg_trigger t WHERE t.tgrelid = c.oid AND NOT t.tgisinternal) AS triggers,
+                  (SELECT count(*) FROM pg_catalog.pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c') AS checks
+                FROM pg_catalog.pg_class c
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                  AND n.nspname !~ '^pg_temp_'
+                  AND c.relkind IN ('r', 'p', 'v', 'm')
+                  AND has_schema_privilege(n.oid, 'USAGE')
+                  AND has_table_privilege(c.oid, 'SELECT')
+                """, rowLimit: max(snapshot.descriptors.count, 1))
+            let expectedTriggers = metadataCounts.rows.reduce(0) { $0 + (Int($1.values[0].displayText) ?? 0) }
+            let expectedChecks = metadataCounts.rows.reduce(0) { $0 + (Int($1.values[1].displayText) ?? 0) }
+            #expect(snapshot.descriptors.reduce(0) { $0 + $1.triggers.count } == expectedTriggers)
+            #expect(snapshot.descriptors.reduce(0) { $0 + $1.constraints.filter { $0.kind == .check }.count } == expectedChecks)
+            await Self.verifySharedExploration(snapshot: snapshot)
+
             let scalar = try await backend.executeReadOnlyQuery(sql: "SELECT 1 AS value")
             #expect(scalar.rows.first?.values.first == .integer(1))
             _ = try await backend.explainQueryPlan(sql: "SELECT 1")
@@ -75,6 +93,29 @@ struct PostgreSQLIntegrationTests {
             await backend.close()
             throw error
         }
+    }
+
+    @MainActor
+    private static func verifySharedExploration(snapshot: CatalogSnapshot) {
+        let descriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
+        let grouping = GraphGrouping.resolve(graph: snapshot.graph, descriptors: descriptors)
+        #expect(grouping.nodeCount == snapshot.graph.nodes.count)
+        let layout = GraphLayoutModel()
+        layout.setClusterHints(grouping.nodeToGroup)
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            layout.reset(for: snapshot.graph, presentation: .compact, descriptorLookup: { descriptors[$0] })
+            layout.stabilize(graph: snapshot.graph, presentation: .compact,
+                             descriptorLookup: { descriptors[$0] }, nodeSizeLookup: nil)
+        }
+        let positions = layout.allPositions(for: snapshot.graph)
+        #expect(positions.count == snapshot.graph.nodes.count)
+        #expect(positions.values.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+        let sizes = Dictionary(uniqueKeysWithValues: snapshot.graph.nodes.map {
+            ($0.id, GraphCardLayout.nodeSize(title: $0.title, descriptor: descriptors[$0.id], style: .collapsed, hovered: false))
+        })
+        #expect(LargeGraphLayout.isNonOverlapping(positions, sizes: sizes))
+        print("Live PostgreSQL: \(snapshot.graph.nodes.count) objects, \(snapshot.graph.edges.count) relationships, \(grouping.groupCount) groups; shared layout \(elapsed)")
     }
 
     private func nonEmpty(_ value: String?) -> String? {

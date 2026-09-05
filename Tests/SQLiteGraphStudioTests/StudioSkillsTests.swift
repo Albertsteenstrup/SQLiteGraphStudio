@@ -4,6 +4,67 @@ import Testing
 
 struct StudioSkillsTests {
     @Test
+    func gitRootTerminatesForDirectoryOutsideARepository() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(StudioSkills.gitRoot(from: root) == nil)
+    }
+
+    @Test
+    func gitRootStopsAtFilesystemRoot() {
+        #expect(StudioSkills.gitRoot(from: URL(fileURLWithPath: "/", isDirectory: true)) == nil)
+    }
+
+    @Test
+    func gitRootRejectsNonFileURLs() throws {
+        let url = try #require(URL(string: "https://example.test/project/connections/"))
+        #expect(StudioSkills.gitRoot(from: url) == nil)
+    }
+
+    @Test(arguments: [true, false])
+    func gitRootFindsRepositoryDirectoriesAndWorktreeFiles(markerIsDirectory: Bool) throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent(".git", isDirectory: markerIsDirectory)
+        if markerIsDirectory {
+            try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        } else {
+            try Data("gitdir: /tmp/test-worktree-marker\n".utf8).write(to: marker)
+        }
+        let nested = root.appendingPathComponent("storage/connections", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+
+        #expect(StudioSkills.gitRoot(from: nested) == root.standardizedFileURL)
+    }
+
+    @Test
+    func embeddedSkillsMatchPackagedSources() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+
+        for skill in StudioSkills.all {
+            let packaged = try String(contentsOf: repositoryRoot.appendingPathComponent("Skills/\(skill.id)/SKILL.md"), encoding: .utf8)
+            #expect(skill.fullContent.trimmingCharacters(in: .whitespacesAndNewlines) == packaged.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    @Test
+    func everySkillSupportsPostgresDocumentSidecarsAndReadOnlyDiscovery() {
+        for skill in StudioSkills.all {
+            #expect(skill.fullContent.contains(".postgres.studio.json"))
+            #expect(skill.fullContent.contains(".pgstudio.studio.json"))
+            #expect(skill.fullContent.contains("schema-qualified"))
+            #expect(skill.fullContent.contains("public.orders"))
+            #expect(skill.fullContent.contains("read-only"))
+            #expect(skill.fullContent.contains("Relayout"))
+            #expect(!skill.fullContent.contains("Features → Schema Notes"))
+            #expect(!skill.fullContent.contains("Features -> Schema Notes"))
+        }
+        #expect(!StudioSkills.graphClusters.fullContent.contains("reserved for future visual cluster tinting"))
+    }
+
+    @Test
     func missingTargetsDetectsOneSkillMissingFromExistingSkillDirectory() throws {
         let root = try makeTemporaryRoot()
         try createDirectory(".agents/skills", in: root)

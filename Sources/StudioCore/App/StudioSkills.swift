@@ -165,15 +165,22 @@ public enum StudioSkills {
     /// Walks up from `directory` looking for a `.git` entry (directory or file for worktrees).
     /// Returns the containing directory if found, nil if no git repo is detected.
     public static func gitRoot(from directory: URL) -> URL? {
+        guard directory.isFileURL else { return nil }
         let fm = FileManager.default
-        var current = directory.standardized
-        while true {
+        var currentPath = directory.standardizedFileURL.path
+        guard currentPath.hasPrefix("/") else { return nil }
+        var visitedPaths: Set<String> = []
+
+        // Traverse filesystem path strings rather than retaining URL base chains.
+        // Foundation can produce relative parents above the root for composed URLs.
+        while !currentPath.isEmpty, currentPath != "/", visitedPaths.insert(currentPath).inserted {
+            let current = URL(fileURLWithPath: currentPath, isDirectory: true)
             if fm.fileExists(atPath: current.appendingPathComponent(".git").path) {
                 return current
             }
-            let parent = current.deletingLastPathComponent()
-            guard parent.path != current.path else { break }
-            current = parent
+            let parentPath = (currentPath as NSString).deletingLastPathComponent
+            guard !parentPath.isEmpty, parentPath.count < currentPath.count else { return nil }
+            currentPath = parentPath
         }
         return nil
     }
@@ -204,16 +211,26 @@ public enum StudioSkills {
 
     # graph-clusters
 
-    You write a JSON sidecar (`<db>.sqlite.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared.
+    You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared.
 
-    The sidecar is read once when a database opens and re-read when the user clicks **Features → Schema Notes** in the graph view. The user can edit your output by hand at any time.
+    The sidecar is loaded when a document opens and re-read when the user clicks **Relayout** in the graph view. The user can edit your output by hand at any time.
+
+    ## Database documents and read-only discovery
+
+    Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
+
+    For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
+
+    For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
+
+    The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
 
     ## Inputs you need
 
     Before writing the file, gather:
 
-    1. **The database path.** Ask the user if not obvious — the sidecar lives next to it (e.g. `app.sqlite` → `app.sqlite.studio.json`).
-    2. **The schema.** Run `sqlite3 <db> ".tables"` and `sqlite3 <db> ".schema"` (or `.schema <table>` per table). You need table names and foreign-key columns.
+    1. **The opened database file or PostgreSQL document path.** Ask the user if not obvious — the sidecar lives next to it (e.g. `app.sqlite` → `app.sqlite.studio.json`).
+    2. **The schema.** Use the read-only discovery workflow above. You need table names and foreign-key columns.
     3. **Task context and clustering lens.** What is the user *working on*, and what do they want the graph organized around? Default to domain areas if they do not say. A clustering tuned to "show me the tables around each department" looks different from "I'm refactoring the billing flow."
 
     If the database has fewer than ~6 tables, clustering rarely helps — recommend skipping the skill and just letting the FK-based default lay out.
@@ -234,13 +251,13 @@ public enum StudioSkills {
     Cluster count guidance:
     - 6–12 tables: 2–3 clusters
     - 13–30 tables: 3–6 clusters
-    - 30+: 5–9 clusters, but don't over-fragment — clusters of 1–2 tables waste a hint
+    - 30–150 tables: 5–9 clusters; larger catalogs can use more meaningful groups. Keep authored domain groups intact; the app handles their layout internally.
 
-    Tables that don't fit anywhere are fine to leave out of all clusters. The app falls back to connected-components for unhinted tables.
+    Tables that don't fit anywhere are fine to leave out of all clusters. The app computes deterministic groups for unassigned tables from schema, names, and relationships. These inferred groups are not written into the sidecar.
 
     ## Output format
 
-    Write to `<db-name>.sqlite.studio.json` next to the database file. Preserve any existing `tables: {...}` block — the schema-descriptions skill writes to the same file.
+    Write to `<document>.studio.json` beside the opened database file or PostgreSQL connection document. Preserve existing `tables` and `stories` blocks — the other skills write to the same file.
 
     ```json
     {
@@ -269,24 +286,24 @@ public enum StudioSkills {
 
     Field rules:
     - `id` — short, lowercase, no spaces. Used internally and in error messages.
-    - `label` — human-readable name shown in the table tooltip (e.g. "Authentication & Users").
-    - `tables` — exact case-sensitive table names. Names not in the schema are silently skipped.
-    - `color` — optional hex string, reserved for future visual cluster tinting.
+    - `label` — human-readable name shown on graph groups, in the table picker, and in table tooltips (e.g. "Authentication & Users").
+    - `tables` — exact case-sensitive table IDs; PostgreSQL uses schema-qualified IDs such as `public.orders`. Names not in the schema are skipped.
+    - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. The app provides a stable colour when omitted.
 
     ## Workflow
 
-    1. Read `<db>.sqlite.studio.json` if it already exists — preserve `tables`, replace `clusters`.
-    2. List the tables with `sqlite3` or by reading existing schema docs.
-    3. Propose 2–9 clusters in chat, briefly justifying each, and ask the user if any feel wrong before writing the file.
+    1. Read `<document>.studio.json` if it already exists — preserve `tables`, `stories`, and other unrelated fields; update only `clusters`.
+    2. List the tables using read-only schema discovery or existing schema docs.
+    3. Choose meaningful clusters for the requested lens and briefly explain them. When the user has requested this change, write the sidecar using that scope.
     4. Write the file with `Write`.
-    5. Tell the user to click **Features → Schema Notes** in the running app (the icon turns blue when the sidecar is loaded).
+    5. Tell the user to click **Relayout** in the running app to reload the sidecar and rebuild the layout with the new groups and colours.
 
     ## What not to do
 
     - Don't create a cluster per table — the physics engine already handles single nodes.
     - Don't put every table in a cluster — leaving some uncluttered lets the FK-based fallback handle them.
     - Don't write `strength`, `weight`, or other fields not in the format above — they're ignored and signal you're guessing.
-    - Don't run any SQL beyond `.tables` / `.schema` / a `LIMIT 5` peek — the user's data isn't your input.
+    - Don't run SQL beyond read-only schema discovery or a `LIMIT 5` sample — the user's data isn't the clustering input.
     - Don't commit the sidecar without asking. Some users want it gitignored.
     """#
 
@@ -298,16 +315,26 @@ public enum StudioSkills {
 
     # schema-descriptions
 
-    You write descriptions to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Features -> Schema Notes**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
+    You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
-    Descriptions are intentionally a sidecar so users can edit them directly without rebuilding SQLite tables.
+    Descriptions are intentionally a sidecar so users can edit them directly without changing the database schema.
+
+    ## Database documents and read-only discovery
+
+    Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
+
+    For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
+
+    For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
+
+    The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
 
     ## Inputs you need
 
     Before writing the file, gather:
 
-    1. **The database path.** Ask the user if not obvious. The sidecar lives next to it (for example, `app.sqlite` -> `app.sqlite.studio.json`).
-    2. **The schema.** Run `sqlite3 <db> ".tables"` and `sqlite3 <db> ".schema"` or inspect existing schema docs. You need exact table and column names.
+    1. **The opened database file or PostgreSQL document path.** Ask the user if not obvious. The sidecar lives next to it (for example, `app.sqlite` -> `app.sqlite.studio.json`).
+    2. **The schema.** Use the read-only discovery workflow above. You need exact table and column names.
     3. **Small samples only when useful.** Pull up to 5 rows for unclear tables or columns. Do not inspect more data than needed for documentation.
 
     ## Output format
@@ -339,24 +366,24 @@ public enum StudioSkills {
 
     Field rules:
 
-    - `tables` - object keyed by exact case-sensitive table or view name.
+    - `tables` - object keyed by exact case-sensitive table or view ID; use schema-qualified PostgreSQL IDs such as `public.orders`.
     - `description` - optional table-level description shown verbatim when hovering the table name.
     - `columns` - optional object keyed by exact case-sensitive column name.
     - Unknown table or column names are ignored by the app, so verify spelling before writing.
 
     ## Workflow
 
-    1. Read `<db>.sqlite.studio.json` if it already exists.
-    2. List the schema with `sqlite3` or by reading existing schema docs.
+    1. Read `<document>.studio.json` if it already exists.
+    2. List the schema using read-only schema discovery or existing schema docs.
     3. Draft concise table and column descriptions.
     4. Write the sidecar JSON, preserving unrelated fields such as `clusters`.
-    5. Tell the user to click **Features -> Schema Notes** in the running app to reload the sidecar.
+    5. Tell the user to click **Relayout** in the running app to reload the sidecar and rebuild the layout. Query headers match full table IDs such as `public.orders.total`; unqualified column notes appear only when the column can be resolved unambiguously.
 
     ## Writing good descriptions
 
     Tooltip space is small. Aim for:
 
-    - **Tables**: exactly `cluster_name.table_name -- short description`. State the table grain: what one row represents. Use an existing cluster id when present; use `unclustered` only when the table is not in any cluster.
+    - **Tables**: `cluster_name.table_id -- short description`, preserving the full table ID (for example `commerce.public.orders -- One row per checkout.`). State the table grain: what one row represents. Use an existing cluster id when present; use `unclustered` only when the table is not in any cluster.
       - Good: `authoring.comments -- Reader comments, with replies linked to parent comments.`
       - Bad: `This table contains users.`
     - **Columns**: 3-10 words. Include format, unit, source of truth, or a quirk.
@@ -367,7 +394,7 @@ public enum StudioSkills {
 
     ## What not to do
 
-    - Don't modify SQLite DDL or add SQL comments. Descriptions belong in the sidecar.
+    - Don't modify database DDL or add SQL comments. Descriptions belong in the sidecar.
     - Don't overwrite existing `clusters`.
     - Don't invent table or column names.
     - Don't read more than 5 sample rows per table.
@@ -382,19 +409,29 @@ public enum StudioSkills {
 
     # story-flows
 
-    You write user-story-inspired flow stories to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads the `stories` array when the database opens and when the user opens **Features -> Stories**.
+    You write user-story-inspired flow stories to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads the `stories` array when the document opens and when the user opens **Features -> Stories**.
 
     Use the user story pattern as inspiration: capture who benefits (`actor`), what they need (`goal`), and why it matters (`benefit`). Keep it lighter than a Jira ticket when that fits the question: short title and value statement, useful conversation notes, acceptance criteria that confirm the flow, and graph playback beats that explain how the data moves through the schema.
 
     The app plays each playback beat by moving the graph viewport, expanding the focused table, spotlighting the tables in the beat with a warm animated fill, highlighting relation edges for a referenced column, and typing the beat text on screen. Users can also enable read-aloud playback; when they do, the app reads the beat's hidden `spoken_text` with Kokoro-82M's Bella voice (`af_bella`). The app does not show `spoken_text`; if it is missing, the app reads `text`.
 
+    ## Database documents and read-only discovery
+
+    Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
+
+    For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
+
+    For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
+
+    The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
+
     ## Inputs you need
 
     Before writing the file, gather:
 
-    1. **The database path.** Ask if it is not obvious. The sidecar lives next to it, for example `app.sqlite` -> `app.sqlite.studio.json`.
+    1. **The opened database file or PostgreSQL document path.** Ask if it is not obvious. The sidecar lives next to it, for example `app.sqlite` -> `app.sqlite.studio.json`.
     2. **The user flow and persona.** Capture the exact flow question and who benefits, such as "what happens when a user signs up?"
-    3. **The schema.** Run `sqlite3 <db> ".tables"` and `sqlite3 <db> ".schema"` or inspect existing schema docs. You need exact table and column names.
+    3. **The schema.** Use the read-only discovery workflow above. You need exact table and column names.
     4. **Tiny samples only if necessary.** Use `LIMIT 5` only when a table's role is unclear. Do not inspect more data than needed.
 
     ## Output format
@@ -482,15 +519,15 @@ public enum StudioSkills {
     - `playback` - ordered graph playback beats. Aim for 3-7 beats. The app ignores the old `steps` key.
     - `text` - narration typed during the beat. Keep it concise and specific.
     - `spoken_text` - optional hidden human-language version read aloud with Kokoro-82M Bella. Write this for every beat when the story should sound natural over audio. Avoid raw table syntax unless it helps the listener; never put anything here that should be visibly shown.
-    - `tables` - exact case-sensitive table names spotlighted during playback.
-    - `focus` - optional exact table name the viewport should move toward.
-    - `expand` - optional exact table name whose columns should be opened.
+    - `tables` - exact case-sensitive table IDs spotlighted during playback; PostgreSQL requires schema-qualified IDs such as `public.orders`.
+    - `focus` - optional exact table ID the viewport should move toward.
+    - `expand` - optional exact table ID whose columns should be opened.
     - `relation` - optional `{ "table": "...", "column": "..." }` for a real PK/FK/REF column; the app highlights connected edges and pulls related tables into view.
     - `duration_ms` - optional step duration. Use only when a step needs unusual timing.
 
     ## Workflow
 
-    1. Read `<db>.sqlite.studio.json` if it exists.
+    1. Read `<document>.studio.json` if it exists.
     2. List the schema and identify the tables and foreign-key columns used by the requested flow.
     3. Draft the story card: `actor`, `goal`, and `benefit`. Keep it value-oriented, but do not force awkward wording.
     4. Assign `clusters` by matching the story's playback tables to existing top-level `clusters[].tables`. Prefer the smallest useful set of cluster IDs; leave it empty if the flow crosses the whole schema or no cluster exists.
@@ -504,7 +541,7 @@ public enum StudioSkills {
 
     ## What not to do
 
-    - Don't modify SQLite DDL or create tables in the database. Stories belong in the sidecar.
+    - Don't modify database DDL or create tables in the database. Stories belong in the sidecar. Narrate application writes without executing them.
     - Don't invent table or column names.
     - Don't invent cluster IDs; story clusters must reuse existing top-level sidecar cluster IDs.
     - Don't over-link stories. Prefer no `related_stories` over speculative links.

@@ -33,7 +33,7 @@ Three optional AI coding agent skills let you enrich the graph with a single pro
 - **schema-descriptions** — Annotates your tables and columns with hover descriptions shown in the graph, table grids, and query results. Run from your AI coding agent.
 - **story-flows** — Turns questions like "what happens when a user signs up?" into user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, graph playback, and hidden `spoken_text` for optional read-aloud playback.
 
-Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. Skills are installed next to your `.sqlite` file so any AI coding agent in that directory can use them.
+Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. Skills are installed next to your database or PostgreSQL connection document so any AI coding agent in that directory can use them.
 
 For Codex, create `.agents/skills` in your repo first; the app will install `graph-clusters`, `schema-descriptions`, and `story-flows` there. Use `/skills` or mention `$graph-clusters`, `$schema-descriptions`, or `$story-flows` in Codex to invoke them.
 
@@ -59,9 +59,22 @@ PostgreSQL sessions are permanently read-only:
 - Every PostgreSQL table descriptor and column is non-editable. Row edits, inserts, deletes, imports, table creation, schema changes, and write SQL are disabled in the UI and fail closed in the backend.
 - The query gate accepts SELECT, VALUES, SHOW, read-only WITH queries, and EXPLAIN. It rejects multiple statements, comments/literal bypasses, transaction control, DDL/DML, COPY, CALL, DO, SET/RESET, VACUUM, EXPLAIN ANALYZE, and known side-effecting functions before sending the statement.
 
-PostgreSQL metadata is read from pg_catalog in set-based queries. System and temporary schemas are excluded. Tables, partitioned tables, views, and materialized views include columns, format_type output, nullability, defaults, generated and identity metadata, primary keys, indexes, foreign keys, row estimates, and graph cardinality. Initial catalog loading does not count table rows. Query results are capped at 500 visible rows by default (up to 10,000 for the backend request) and report truncation; table browsing uses bound search/filter/paging values.
+PostgreSQL metadata is read from pg_catalog in set-based queries. System and temporary schemas are excluded. Tables, partitioned tables, views, and materialized views include columns, format_type output, nullability, defaults, generated and identity metadata, primary keys, indexes, foreign keys, named CHECK constraints, user triggers, row estimates, and graph cardinality. Initial catalog loading does not count table rows. Query results are capped at 500 visible rows by default (up to 10,000 for the backend request) and report truncation; table browsing uses bound search/filter/paging values.
 
-The PostgreSQL connection intentionally does not create a SQLite-style schema sidecar or install AI skills for the remote target. Query history, saved queries, and graph layout use a password-free, hashed target key. No connection profile data is written to app preferences.
+PostgreSQL uses the same local groups, colours, notes, stories and AI skills as SQLite. Put metadata next to the connection document: `fjordholm.postgres.studio.json` for `fjordholm.postgres`, or `workspace.pgstudio.studio.json` for `workspace.pgstudio`. Table references must use the exact schema-qualified catalog ID, for example `public.orders`. **Relayout** reloads the sidecar and rebuilds the graph. Story deletion changes only this local sidecar; it never writes to PostgreSQL. The connection document appears in **Open Recent**.
+
+Query history, saved queries and graph layout use a password-free, hashed connection identity. The selected document provides the local metadata/skills directory. Use **AI Skills → Reinstall** to explicitly replace an older installed skill with the current instructions.
+
+## Exploring large schemas
+
+Both database types use the same graph engine. For more than 128 tables, it divides layout work into neighbourhoods of at most 64 tables, applies the existing force solver inside them, and packs the resulting regions without overlapping cards. Authored groups retain their labels and colours, including groups larger than one neighbourhood. Unassigned tables get deterministic local groups based on schema, repeated name prefixes and relationships; these inferred groups are not saved into the sidecar.
+
+- Use the graph's **Find tables and groups** button to search the complete catalog, including tables outside the current view.
+- Choose a group to inspect up to 48 tables at a time. Larger groups and tables with many related neighbours have visible previous/next controls and total counts.
+- Zoomed-out overviews draw inexpensive table marks and group relationships. Zoom in or select a table for details. Detailed card views are capped at 160; remaining visible tables stay represented by marks, including when a large selection is active.
+- **Show All Table Cards** uses the same size-aware layout and refits large views. Return to all groups to recover the overview; ordinary panning and hovering do not rerun layout.
+
+Dragging and saved pins remain available. Relayout deliberately rebuilds positions; obsolete large-grid snapshots are regenerated while preserving saved pins. If saved pins themselves overlap, their explicit positions take precedence.
 
 ## Install
 

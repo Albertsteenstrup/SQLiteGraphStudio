@@ -10,7 +10,8 @@ public struct SchemaGraphView: View {
     @State private var viewportSize: CGSize = .zero
     @State private var viewportRestorePoint: GraphViewportTransform?
     @State private var viewportRestoreNodeID: String?
-    @State private var hasPerformedSettledInitialLayout = false
+    @State private var initialViewport = GraphInitialViewport()
+    @State private var initialViewportTask: Task<Void, Never>?
     @State private var nodeDragOrigin: CGPoint?
     @State private var nodeDragPointerOffset: CGSize?
     @State private var multiNodeDragOrigins: [String: CGPoint] = [:]
@@ -59,8 +60,8 @@ public struct SchemaGraphView: View {
     @State private var graphFocusTableRelation: GraphRelationHoverTarget?
     @State private var draggedStoryUsesStarModePull = false
     @State private var draggedNodeUsesFocusPull = false
-    @State private var preGraphFocusViewport: GraphViewportTransform?
-    @State private var preStoryOnlyViewport: GraphViewportTransform?
+    @State private var preGraphFocusViewport: GraphViewportBookmark?
+    @State private var preStoryOnlyViewport: GraphViewportBookmark?
     @State private var preStoryShowAllGraphTableCards: Bool?
     @State private var preStoryShowStoryCardsInGraph: Bool?
     @State private var preStoryShowOnlyStoryCardsInGraph: Bool?
@@ -68,6 +69,16 @@ public struct SchemaGraphView: View {
     @State private var storyGraphCardsCache = StoryGraphCardsCache()
     @State private var isViewportPanning = false
     @State private var viewportSyncTask: Task<Void, Never>?
+    @State private var isGraphNavigatorPresented = false
+    @State private var focusedGroupID: String?
+    @State private var focusedGroupPage = 0
+    @State private var relationPageIndex = 0
+    @State private var overviewViewport: GraphViewportBookmark?
+    @State private var relationPreviewCache = RelationPreviewCache()
+    @State private var isNavigatingFromStories = false
+
+    private var isLargeGraph: Bool { session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
+    private var usesOverviewMarks: Bool { isLargeGraph && zoom < GraphExploration.detailZoom }
 
     public init(session: AppSession) {
         self.session = session
@@ -75,6 +86,11 @@ public struct SchemaGraphView: View {
 
     private var presentationMode: GraphPresentationMode {
         session.showAllGraphTableCards ? .allCards : .compact
+    }
+
+    private var initialViewportDocumentKey: String? {
+        guard let target = session.databaseTarget else { return nil }
+        return "\(target.stableStorageKey)|\(session.databaseURL?.absoluteString ?? "")"
     }
 
     private var isStoryOnlyMode: Bool {
@@ -105,9 +121,21 @@ public struct SchemaGraphView: View {
     private var relatedPreviewByNode: [String: GraphNodeRelationPreview] {
         guard !session.showAllGraphTableCards else { return [:] }
 
+        let relationTarget = storyRelationTarget ?? tappedRelationTarget ?? hoveredRelationTarget
+        if relationPreviewCache.isValid,
+           relationPreviewCache.target == relationTarget,
+           relationPreviewCache.expandedNodeID == manuallyExpandedNodeID {
+            return relationPreviewCache.previews
+        }
         var previews: [String: GraphNodeRelationPreview] = [:]
+        defer {
+            relationPreviewCache.target = relationTarget
+            relationPreviewCache.expandedNodeID = manuallyExpandedNodeID
+            relationPreviewCache.previews = previews
+            relationPreviewCache.isValid = true
+        }
 
-        if let relationTarget = storyRelationTarget ?? tappedRelationTarget ?? hoveredRelationTarget {
+        if let relationTarget {
             for edge in session.graph.edges where edge.matches(relationTarget) {
                 previews[edge.sourceID, default: .empty].foreignKeyColumns.insert(edge.sourceColumn)
                 previews[edge.targetID, default: .empty].primaryKeyColumns.insert(edge.targetColumn)
@@ -148,33 +176,33 @@ public struct SchemaGraphView: View {
             .onAppear {
                 viewportSize = geometry.size
                 StudioLog.graph.debug("SchemaGraphView.onAppear settled=\(session.graphLayout.hasSettledLayout, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
-                // If layout is already settled (e.g. remount from fullscreen toggle),
-                // restore the saved viewport instead of re-fitting.
-                if session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout {
-                    Task { @MainActor in
-                        zoom = session.graphZoom
-                        baseZoom = session.graphZoom
-                        pan = session.graphPan
-                        panStart = session.graphPan
-                    }
-                    return
-                }
-                Task { @MainActor in
-                    performInitialLayout(in: geometry.size)
-                    guard !hasPerformedSettledInitialLayout else { return }
-                    hasPerformedSettledInitialLayout = true
-                    performInitialLayout(in: geometry.size)
+                let hasSessionCamera = initialViewportDocumentKey.map {
+                    session.initializedGraphViewportDocument == $0
+                } ?? false
+                switch initialViewport.appeared(
+                    hasGraph: !session.graph.nodes.isEmpty,
+                    layoutIsSettled: session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout,
+                    hasSessionCamera: hasSessionCamera
+                ) {
+                case .restoreCamera:
+                    setViewport(GraphViewportTransform(zoom: session.graphZoom, pan: session.graphPan), animated: false)
+                case .scheduleFit:
+                    scheduleInitialViewportFit()
+                case .waitForGraph:
+                    break
                 }
             }
-            .onChange(of: geometry.size) { oldSize, newSize in
+            .onChange(of: geometry.size) { _, newSize in
                 viewportSize = newSize
-                guard !session.graph.nodes.isEmpty, newSize != .zero else { return }
+                if initialViewport.viewportChanged() {
+                    scheduleInitialViewportFit()
+                    return
+                }
+                guard !session.graph.nodes.isEmpty, newSize.width > 0, newSize.height > 0 else { return }
                 if activeStory != nil {
                     activeStoryViewportSize = newSize
                     fitGraphFocusViewport(in: newSize)
                 } else if isStoryOnlyMode, shouldAutoFitStoryViewport {
-                    fitGraph(in: newSize)
-                } else if oldSize == .zero, shouldAutoFit {
                     fitGraph(in: newSize)
                 }
             }
@@ -195,8 +223,29 @@ public struct SchemaGraphView: View {
                 fitGraph(in: viewportSize)
             }
             .onChange(of: session.graph) { _, _ in
-                Task { @MainActor in
-                    performInitialLayout(in: geometry.size)
+                focusedGroupID = nil
+                focusedGroupPage = 0
+                overviewViewport = nil
+                relationPreviewCache.isValid = false
+                _ = initialViewport.graphChanged(hasGraph: !session.graph.nodes.isEmpty)
+                scheduleInitialViewportFit()
+            }
+            .onChange(of: initialViewportDocumentKey) { _, _ in
+                // Different documents can expose an equal catalog graph.
+                focusedGroupID = nil
+                focusedGroupPage = 0
+                overviewViewport = nil
+                relationPreviewCache.isValid = false
+                _ = initialViewport.graphChanged(hasGraph: !session.graph.nodes.isEmpty)
+                scheduleInitialViewportFit()
+            }
+            .onChange(of: session.graphGrouping) { _, _ in
+                invalidateClusterTitleCache()
+                if let focusedGroupID, session.graphGrouping.group(id: focusedGroupID) == nil {
+                    self.focusedGroupID = nil
+                    focusedGroupPage = 0
+                    overviewViewport = nil
+                    fitGraph(in: geometry.size)
                 }
             }
             .onChange(of: session.showAllGraphTableCards) { _, isPresented in
@@ -218,8 +267,10 @@ public struct SchemaGraphView: View {
                 handleStoryPlaybackCommand(command.kind)
             }
             .onDisappear {
-                viewportSyncTask?.cancel()
-                viewportSyncTask = nil
+                initialViewportTask?.cancel()
+                initialViewportTask = nil
+                initialViewport.cancel()
+                flushViewportSessionSync()
                 storyPlaybackTask?.cancel()
                 storyPlaybackTask = nil
                 storySpeechNarrator.stop()
@@ -256,7 +307,18 @@ public struct SchemaGraphView: View {
 
     @ViewBuilder
     private func graphScene(size: CGSize) -> some View {
-        let anchorMap = viewportAnchorMap(in: size)
+        let focusPlan = effectiveFocusPlan
+        let anchorMap = viewportAnchorMap(in: size, focusPlan: focusPlan)
+        let detailInteractions = session.expandedGraphNodeIDs
+            .union([draggedNodeID].compactMap { $0 })
+            .union(usesOverviewMarks ? [] : [hoveredNodeID].compactMap { $0 })
+        let renderPlan = GraphExploration.renderPlan(
+            frames: anchorMap.nodeCards.mapValues(\.frame),
+            viewport: CGRect(origin: .zero, size: size), zoom: zoom, isLarge: isLargeGraph,
+            emphasized: session.selectedGraphNodeIDs.union(detailInteractions)
+                .union(focusPlan?.visibleTableIDs() ?? []),
+            primary: detailInteractions
+        )
         let currentFocusNodeID = focusNodeID
         let currentHoverTarget = storyRelationTarget ?? tappedRelationTarget ?? hoveredRelationTarget
         let relationHighlight = GraphRelationHighlight(
@@ -265,12 +327,7 @@ public struct SchemaGraphView: View {
             hoverTarget: currentHoverTarget
         )
         let edgeLookup = GraphEdgeLookup(edges: session.graph.edges)
-        let focusPlan = effectiveFocusPlan
-        let renderedNodes = isStoryOnlyMode ? [] : renderedGraphNodes(
-            anchorMap: anchorMap,
-            viewportSize: size,
-            focusPlan: focusPlan
-        )
+        let renderedNodes = isStoryOnlyMode ? [] : session.graph.nodes.filter { renderPlan.detailIDs.contains($0.id) }
         let storyCards = cachedStoryGraphCards()
         let visibleStoryCards = focusPlan.map { plan in
             storyCards.filter { plan.tierForStory($0.id) != .hidden }
@@ -283,7 +340,13 @@ public struct SchemaGraphView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(backgroundPanGesture)
-                .onTapGesture {
+                .onTapGesture { point in
+                    if !isStoryOnlyMode,
+                       let card = graphCard(at: point, anchorMap: anchorMap),
+                       renderPlan.markerIDs.contains(card.tableID) {
+                        revealTable(card.tableID, in: size)
+                        return
+                    }
                     if storyPopupStoryID != nil {
                         withAnimation(.snappy(duration: 0.18)) {
                             storyPopupStoryID = nil
@@ -331,7 +394,12 @@ public struct SchemaGraphView: View {
 
             if !isStoryOnlyMode {
                 Canvas { context, _ in
-                    drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight, focusPlan: focusPlan)
+                    if usesOverviewMarks, focusPlan == nil {
+                        drawGroupConnections(in: &context, size: size)
+                    } else {
+                        drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight, focusPlan: focusPlan)
+                    }
+                    drawOverviewMarks(in: &context, anchorMap: anchorMap, nodeIDs: renderPlan.markerIDs)
                 }
                 .allowsHitTesting(false)
             }
@@ -522,6 +590,153 @@ public struct SchemaGraphView: View {
         .animation(.snappy(duration: 0.18), value: session.showAllGraphTableCards)
     }
 
+    @ViewBuilder
+    private func graphScopeControls(in size: CGSize) -> some View {
+        if let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
+            let page = GraphExploration.page(group.nodeIDs, index: focusedGroupPage)
+            HStack(spacing: 8) {
+                Button { showGraphOverview(in: size) } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .help("Return to all groups")
+                Text(group.label).lineLimit(1).help(group.label)
+                if page.count > 1 {
+                    Button { focusGroup(group.id, pageIndex: page.index - 1, in: size) } label: {
+                        Image(systemName: "chevron.left")
+                    }.disabled(page.index == 0).help("Previous tables in group")
+                    Text("\(page.start)–\(page.end) of \(page.total)").monospacedDigit()
+                    Button { focusGroup(group.id, pageIndex: page.index + 1, in: size) } label: {
+                        Image(systemName: "chevron.right")
+                    }.disabled(page.index + 1 == page.count).help("Next tables in group")
+                } else {
+                    Text("\(page.total) tables").foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+        } else {
+            Text("\(session.graph.nodes.count) tables · \(session.graphGrouping.groupCount) groups")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        if usesOverviewMarks {
+            Text("Select a table, find a group, or zoom in for detail")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func focusGroup(_ groupID: String, pageIndex: Int = 0, in size: CGSize) {
+        guard let group = session.graphGrouping.group(id: groupID) else { return }
+        prepareTableNavigation()
+        rememberOverviewViewport()
+        clearGraphFocusSession(restoreViewport: false)
+        session.collapseExpandedGraphNodes()
+        session.clearGraphSelection()
+        focusedGroupID = groupID
+        focusedGroupPage = GraphExploration.page(group.nodeIDs, index: pageIndex).index
+        hoveredNodeID = nil
+        clearRelationHoverState()
+        isGraphNavigatorPresented = false
+        invalidateClusterTitleCache()
+        fitGraphFocusViewport(in: size)
+    }
+
+    private func showGraphOverview(in size: CGSize) {
+        prepareTableNavigation()
+        clearGraphFocusSession(restoreViewport: false)
+        focusedGroupID = nil
+        focusedGroupPage = 0
+        session.collapseExpandedGraphNodes()
+        session.clearGraphSelection()
+        hoveredNodeID = nil
+        clearRelationHoverState()
+        isGraphNavigatorPresented = false
+        invalidateClusterTitleCache()
+        let previous = overviewViewport
+        overviewViewport = nil
+        if let restored = previous?.restored(for: presentationMode) {
+            setViewport(restored, animated: true)
+        } else {
+            fitGraph(in: size)
+        }
+    }
+
+    private func revealTable(_ nodeID: String, in size: CGSize) {
+        guard session.graph.contains(nodeID: nodeID) else { return }
+        prepareTableNavigation()
+        rememberOverviewViewport()
+        clearGraphFocusSession(restoreViewport: false)
+        focusedGroupID = session.graphGrouping.nodeToGroup[nodeID]
+        if let group = session.graphGrouping.group(for: nodeID) {
+            let ids = group.nodeIDs.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            focusedGroupPage = (ids.firstIndex(of: nodeID) ?? 0) / GraphExploration.pageSize
+        }
+        session.selectGraphNode(nodeID)
+        session.setExpandedGraphNode(nodeID)
+        hoveredNodeID = nil
+        clearRelationHoverState()
+        isGraphNavigatorPresented = false
+        invalidateClusterTitleCache()
+        fitTable(nodeID, in: size)
+    }
+
+    private func fitTable(_ nodeID: String, in size: CGSize) {
+        let point = graphNodePoint(for: nodeID)
+        let cardSize = nodeSize(for: nodeID)
+        let bounds = CGRect(x: point.x - cardSize.width / 2, y: point.y - cardSize.height / 2,
+                            width: cardSize.width, height: cardSize.height)
+        setViewport(GraphViewportTransform.fit(contentBounds: bounds, in: size, padding: 160,
+                                               minZoom: 0.45, maxZoom: 1.05), animated: true)
+    }
+
+    private func rememberOverviewViewport() {
+        guard overviewViewport == nil else { return }
+        overviewViewport = GraphViewportBookmark(transform: GraphViewportTransform(zoom: zoom, pan: pan), presentation: presentationMode)
+    }
+
+    private func prepareTableNavigation() {
+        if session.showOnlyStoryCardsInGraph {
+            if overviewViewport == nil {
+                overviewViewport = preStoryOnlyViewport
+            }
+            isNavigatingFromStories = true
+            preStoryOnlyViewport = nil
+            session.showOnlyStoryCardsInGraph = false
+        }
+        selectedStoryID = nil
+        storyPopupStoryID = nil
+    }
+
+    private func drawOverviewMarks(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, nodeIDs: Set<String>) {
+        for id in nodeIDs {
+            guard let frame = anchorMap.nodeCards[id]?.frame else { continue }
+            let color = clusterBorderColor(for: id) ?? StudioPalette.accent
+            let mark = GraphExploration.markerFrame(for: frame)
+            context.fill(Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2)), with: .color(color.opacity(0.62)))
+            if session.selectedGraphNodeIDs.contains(id) {
+                context.stroke(Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2)),
+                               with: .color(StudioPalette.primaryText), lineWidth: 1.5)
+            }
+        }
+    }
+
+    private func drawGroupConnections(in context: inout GraphicsContext, size: CGSize) {
+        var centers: [String: CGPoint] = [:]
+        for group in session.graphGrouping.groups {
+            let points = group.nodeIDs.map { session.graphLayout.position(for: $0) }
+            guard !points.isEmpty else { continue }
+            let center = CGPoint(x: points.reduce(0) { $0 + $1.x } / CGFloat(points.count),
+                                 y: points.reduce(0) { $0 + $1.y } / CGFloat(points.count))
+            centers[group.id] = GraphViewportTransform(zoom: zoom, pan: pan).point(for: center, in: size)
+        }
+        for link in GraphExploration.groupLinks(edges: session.graph.edges, membership: session.graphGrouping.nodeToGroup) {
+            guard let source = centers[link.sourceID], let target = centers[link.targetID] else { continue }
+            let path = edgePath(from: source, to: target)
+            guard path.boundingRect.insetBy(dx: -4, dy: -4).intersects(CGRect(origin: .zero, size: size)) else { continue }
+            context.stroke(path, with: .color(StudioPalette.edgeNeutral.opacity(0.18)),
+                           lineWidth: min(2.5, 0.6 + log2(CGFloat(link.count) + 1) * 0.25))
+        }
+    }
+
     private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
         let focusPlan = effectiveFocusPlan
         guard session.showClusterHalos || isStoryOnlyMode || focusPlan != nil else { return }
@@ -545,8 +760,15 @@ public struct SchemaGraphView: View {
 
         let viewportTransform = GraphViewportTransform(zoom: zoom, pan: pan)
         let inFocusLayout = focusPlan != nil
+        let isOverview = isLargeGraph && !inFocusLayout
+        let entries = isOverview ? clusterTitleCache.entries.sorted {
+            let a = $0.path.boundingRect, b = $1.path.boundingRect
+            let areaA = a.width * a.height, areaB = b.width * b.height
+            return areaA == areaB ? ($0.label ?? "") < ($1.label ?? "") : areaA > areaB
+        } : clusterTitleCache.entries
+        var occupiedLabels: [CGRect] = []
 
-        for entry in clusterTitleCache.entries {
+        for entry in entries {
             guard let label = entry.label, !label.isEmpty else { continue }
             let labelPoint: CGPoint
             if let anchor = entry.labelAnchor {
@@ -562,37 +784,50 @@ public struct SchemaGraphView: View {
                 let bounds = screenPath.boundingRect
                 labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
             }
+            let labelFontSize: CGFloat = isLargeGraph && !inFocusLayout ? 11 : titleStyle.fontSize
+            let characterBudget = max(10, Int(entry.path.boundingRect.width * zoom / (labelFontSize * 0.62)))
+            let displayLabel: String
+            if isLargeGraph && !inFocusLayout && label.count > characterBudget {
+                displayLabel = String(label.prefix(max(3, characterBudget - 7))) + "…" + String(label.suffix(6))
+            } else {
+                displayLabel = label
+            }
             let resolved = context.resolve(
-                Text(label.uppercased())
-                    .font(.system(size: titleStyle.fontSize, weight: .bold, design: .rounded))
+                Text(displayLabel.uppercased())
+                    .font(.system(size: labelFontSize, weight: .bold, design: .rounded))
                     .foregroundStyle(entry.color.opacity(inFocusLayout ? 0.96 : 0.85))
             )
+            if isOverview {
+                let measured = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+                let frame = CGRect(x: labelPoint.x - measured.width / 2, y: labelPoint.y - measured.height,
+                                   width: measured.width, height: measured.height).insetBy(dx: -4, dy: -3)
+                guard frame.intersects(CGRect(origin: .zero, size: canvasSize)),
+                      !occupiedLabels.contains(where: { $0.intersects(frame) }) else { continue }
+                occupiedLabels.append(frame)
+            }
             context.draw(resolved, at: labelPoint, anchor: .bottom)
         }
     }
 
     private func tableClusterTitleEntries(padding pad: CGFloat, focusPlan: GraphFocusPlan? = nil) -> [ClusterTitleCache.Entry] {
-        session.schemaSidecar.clusters.compactMap { cluster in
-            guard let color = Color(studioHex: cluster.color ?? "") else { return nil }
-            var merged: Path? = nil
-            for name in cluster.tables {
-                guard session.graph.contains(nodeID: name) else { continue }
-                if let focusPlan, focusPlan.tierForTable(name) == .hidden { continue }
+        let schemas = Set(session.tables.compactMap(\.schemaName))
+        return session.graphGrouping.groups.compactMap { group in
+            guard let color = Color(studioHex: group.colorHex) else { return nil }
+            let frames = group.nodeIDs.compactMap { name -> CGRect? in
+                if let focusPlan, focusPlan.tierForTable(name) == .hidden { return nil }
                 let point = graphNodePoint(for: name)
                 let size = nodeSize(for: name)
-                let halfWidth = size.width / 2 + pad
-                let halfHeight = size.height / 2 + pad
-                let rect = CGRect(
-                    x: point.x - halfWidth,
-                    y: point.y - halfHeight,
-                    width: halfWidth * 2,
-                    height: halfHeight * 2
-                )
-                let bubble = Path(roundedRect: rect, cornerRadius: halfHeight)
-                merged = merged.map { $0.union(bubble) } ?? bubble
+                return CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                              width: size.width, height: size.height)
             }
-            guard let path = merged else { return nil }
-            return ClusterTitleCache.Entry(color: color, path: path, label: cluster.label, labelAnchor: nil)
+            guard !frames.isEmpty else { return nil }
+            var label = group.label
+            if group.isInferred, schemas.count == 1, let schema = schemas.first,
+               label.hasPrefix(schema + " · ") {
+                label = String(label.dropFirst(schema.count + 3))
+            }
+            return makeFocusClusterTitleEntry(color: color, label: "\(label) · \(group.nodeIDs.count)",
+                                              frames: frames, padding: pad, labelGap: 30)
         }
     }
 
@@ -600,9 +835,9 @@ public struct SchemaGraphView: View {
         var entries: [ClusterTitleCache.Entry] = []
         let labelGap: CGFloat = 30
 
-        for cluster in session.schemaSidecar.clusters {
-            guard let color = Color(studioHex: cluster.color ?? "") else { continue }
-            let frames = cluster.tables.compactMap { name -> CGRect? in
+        for cluster in session.graphGrouping.groups {
+            guard let color = Color(studioHex: cluster.colorHex) else { continue }
+            let frames = cluster.nodeIDs.compactMap { name -> CGRect? in
                 guard session.graph.contains(nodeID: name) else { return nil }
                 guard focusPlan.tierForTable(name) != .hidden else { return nil }
                 let center = graphNodePoint(for: name)
@@ -950,6 +1185,7 @@ public struct SchemaGraphView: View {
 
             let isHighlighted = relationHighlight.highlightedEdgeIDs.contains(edge.id)
             let path = edgePath(from: anchors.source, to: anchors.target)
+            guard path.boundingRect.insetBy(dx: -8, dy: -8).intersects(CGRect(origin: .zero, size: viewportSize)) else { continue }
             let strokeColor = isHighlighted
                 ? StudioPalette.edgeHighlight
                 : StudioPalette.edgeNeutral.opacity(session.showAllGraphTableCards ? 0.48 : 0.34)
@@ -1098,6 +1334,23 @@ public struct SchemaGraphView: View {
             // Main controls (top right)
             VStack(alignment: .trailing, spacing: 12) {
                 HStack(alignment: .center, spacing: 10) {
+                    Button {
+                        isGraphNavigatorPresented.toggle()
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .help("Find any table or group")
+                    .accessibilityLabel("Find tables and groups")
+                    .popover(isPresented: $isGraphNavigatorPresented) {
+                        GraphNavigatorView(
+                            graph: session.graph, grouping: session.graphGrouping,
+                            onGroup: { focusGroup($0, in: size) },
+                            onTable: { revealTable($0, in: size) },
+                            onOverview: { showGraphOverview(in: size) }
+                        )
+                    }
                     // Features button with flyout menu
                     FeaturesMenuButton(
                         isOpen: $isFeaturesOpen,
@@ -1106,7 +1359,7 @@ public struct SchemaGraphView: View {
                             get: { session.showClusterHalos },
                             set: { session.showClusterHalos = $0 }
                         ),
-                        hasClusters: !session.schemaSidecar.clusters.isEmpty,
+                        hasClusters: !session.graphGrouping.groups.isEmpty,
                         storyCount: session.schemaSidecar.stories.count,
                         onOpenStories: {
                             session.reloadSchemaSidecarFromDisk()
@@ -1146,7 +1399,9 @@ public struct SchemaGraphView: View {
                 .toggleStyle(.switch)
                 .font(.subheadline)
                 .foregroundStyle(StudioPalette.primaryText)
-                .help("Show all table cards")
+                .help("Expand table cards; zoom in to read individual columns")
+
+                graphScopeControls(in: size)
             }
             .padding(14)
             .background(
@@ -1866,8 +2121,10 @@ public struct SchemaGraphView: View {
             storyRelationTarget = nil
             isStoryPaused = false
             activeStoryViewportSize = .zero
-            if let savedViewport = preGraphFocusViewport {
+            if let savedViewport = preGraphFocusViewport?.restored(for: presentationMode) {
                 setViewport(savedViewport, animated: true)
+            } else if preGraphFocusViewport != nil {
+                fitGraph(in: viewportSize)
             }
             preGraphFocusViewport = nil
             clearGraphFocusSession(animated: false, restoreViewport: false, clearSavedViewport: false)
@@ -2458,33 +2715,6 @@ public struct SchemaGraphView: View {
         )
     }
 
-    private func renderedGraphNodes(
-        anchorMap: GraphAnchorMap,
-        viewportSize: CGSize,
-        focusPlan: GraphFocusPlan? = nil
-    ) -> [GraphNode] {
-        let nodes: [GraphNode]
-        if session.showAllGraphTableCards {
-            nodes = session.graph.nodes
-        } else {
-            let renderViewport = CGRect(origin: .zero, size: viewportSize).insetBy(dx: -420, dy: -420)
-            nodes = session.graph.nodes.filter { node in
-                if node.id == draggedNodeID || node.id == hoveredNodeID || session.selectedGraphNodeIDs.contains(node.id) {
-                    return true
-                }
-
-                guard let frame = anchorMap.nodeCards[node.id]?.frame else {
-                    return true
-                }
-
-                return frame.intersects(renderViewport)
-            }
-        }
-
-        guard let focusPlan else { return nodes }
-        return nodes.filter { focusPlan.tierForTable($0.id) != .hidden }
-    }
-
     private func shadowRadius(for nodeID: String) -> CGFloat {
         if draggedNodeID == nodeID {
             return session.showAllGraphTableCards ? 14 : 26
@@ -2532,6 +2762,10 @@ public struct SchemaGraphView: View {
     }
     
     private func updateSelectionFromRect(in canvasSize: CGSize) {
+        guard !isStoryOnlyMode else {
+            session.setGraphSelection([])
+            return
+        }
         guard let start = selectionRectStart, let current = selectionRectCurrent else { return }
         
         let rect = CGRect(
@@ -2541,18 +2775,8 @@ public struct SchemaGraphView: View {
             height: abs(current.y - start.y)
         )
         
-        var selectedNodes: Set<String> = []
-        let transform = GraphViewportTransform(zoom: zoom, pan: pan)
-        
-        for node in session.graph.nodes {
-            let nodePos = session.graphLayout.position(for: node.id)
-            let screenPos = transform.point(for: nodePos, in: canvasSize)
-            
-            if rect.contains(screenPos) {
-                selectedNodes.insert(node.id)
-            }
-        }
-        
+        let anchorMap = viewportAnchorMap(in: canvasSize, focusPlan: effectiveFocusPlan)
+        let selectedNodes = GraphExploration.selection(in: rect, frames: anchorMap.nodeCards.mapValues(\.frame))
         session.setGraphSelection(selectedNodes)
     }
 
@@ -2743,7 +2967,7 @@ public struct SchemaGraphView: View {
     }
 
     private func nodeSize(for nodeID: String) -> CGSize {
-        guard let node = session.graph.nodes.first(where: { $0.id == nodeID }) else {
+        guard let node = session.graph.node(id: nodeID) else {
             return CGSize(width: 140, height: GraphCardLayout.collapsedHeight)
         }
         return GraphCardLayout.nodeSize(
@@ -2818,23 +3042,28 @@ public struct SchemaGraphView: View {
 
     private func handleStoryOnlyModeChange(in size: CGSize) {
         invalidateClusterTitleCache()
+        if isNavigatingFromStories, !isStoryOnlyMode {
+            isNavigatingFromStories = false
+            return
+        }
         clearGraphFocusSession(animated: false)
         layoutRevision &+= 1
 
         if isStoryOnlyMode {
             if preStoryOnlyViewport == nil {
-                preStoryOnlyViewport = GraphViewportTransform(zoom: zoom, pan: pan)
+                preStoryOnlyViewport = GraphViewportBookmark(transform: GraphViewportTransform(zoom: zoom, pan: pan), presentation: presentationMode)
             }
             guard size != .zero else { return }
             if shouldAutoFitStoryViewport {
                 fitGraph(in: size)
             }
         } else {
-            if let restored = preStoryOnlyViewport {
+            let saved = preStoryOnlyViewport
+            preStoryOnlyViewport = nil
+            if let restored = saved?.restored(for: presentationMode) {
                 setViewport(restored, animated: true)
-                preStoryOnlyViewport = nil
             } else if shouldAutoFit, size != .zero {
-                fitGraph(in: size)
+                refitCurrentScope(in: size)
             }
         }
     }
@@ -2904,7 +3133,11 @@ public struct SchemaGraphView: View {
         }
         session.persistStoryGraphLayout()
         if restoreViewport, let savedViewport {
-            setViewport(savedViewport, animated: animated)
+            if let restored = savedViewport.restored(for: presentationMode) {
+                setViewport(restored, animated: animated)
+            } else {
+                refitCurrentScope(in: viewportSize)
+            }
         }
     }
 
@@ -2940,7 +3173,13 @@ public struct SchemaGraphView: View {
         if let activeStory {
             return storyPlaybackFocusPlan(for: activeStory)
         }
-        return graphFocusPlan
+        if let graphFocusPlan { return graphFocusPlan }
+        if !isStoryOnlyMode, let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
+            return GraphFocusPlan(activeStoryIDs: [], relatedStoryIDs: [],
+                                  activeTableIDs: Set(GraphExploration.page(group.nodeIDs, index: focusedGroupPage).ids),
+                                  relatedTableIDs: [])
+        }
+        return nil
     }
 
     private func storyPlaybackFocusPlan(for story: SchemaSidecar.Story) -> GraphFocusPlan {
@@ -2977,7 +3216,7 @@ public struct SchemaGraphView: View {
     }
 
     private func tableRelationFocusPlan(target: GraphRelationHoverTarget) -> GraphFocusPlan {
-        let relatedTables = Set(relatedNodeIDs(for: target))
+        let relatedTables = Set(GraphExploration.page(relatedNodeIDs(for: target), index: relationPageIndex).ids)
 
         return GraphFocusPlan(
             activeStoryIDs: [],
@@ -3000,7 +3239,17 @@ public struct SchemaGraphView: View {
 
     private func enterGraphFocusSession() {
         if preGraphFocusViewport == nil {
-            preGraphFocusViewport = GraphViewportTransform(zoom: zoom, pan: pan)
+            preGraphFocusViewport = GraphViewportBookmark(transform: GraphViewportTransform(zoom: zoom, pan: pan), presentation: presentationMode)
+        }
+    }
+
+    private func refitCurrentScope(in size: CGSize) {
+        if focusedGroupID != nil, let nodeID = session.selectedGraphNodeID {
+            fitTable(nodeID, in: size)
+        } else if effectiveFocusPlan != nil {
+            fitGraphFocusViewport(in: size)
+        } else {
+            fitGraph(in: size)
         }
     }
 
@@ -3036,7 +3285,7 @@ public struct SchemaGraphView: View {
             contentBounds: bounds,
             in: size,
             padding: 72,
-            minZoom: 0.22,
+            minZoom: isLargeGraph ? 0.01 : 0.22,
             maxZoom: 1.05
         )
         setViewport(transform, animated: true)
@@ -3050,6 +3299,18 @@ public struct SchemaGraphView: View {
                     .font(.system(size: 11, weight: .semibold))
                 Text(graphFocusBannerTitle(focusPlan: focusPlan))
                     .font(.caption.weight(.semibold))
+                if let target = graphFocusTableRelation {
+                    let page = GraphExploration.page(relatedNodeIDs(for: target), index: relationPageIndex)
+                    if page.count > 1 {
+                        Button { pullConnectedNodesIntoView(for: target, pageIndex: page.index - 1) } label: {
+                            Image(systemName: "chevron.left")
+                        }.disabled(page.index == 0).help("Previous related tables")
+                        Text("\(page.start)–\(page.end) of \(page.total) related").font(.caption)
+                        Button { pullConnectedNodesIntoView(for: target, pageIndex: page.index + 1) } label: {
+                            Image(systemName: "chevron.right")
+                        }.disabled(page.index + 1 == page.count).help("Next related tables")
+                    }
+                }
                 Spacer(minLength: 0)
                 Button("Done") {
                     clearGraphFocusSession()
@@ -3191,42 +3452,24 @@ public struct SchemaGraphView: View {
     }
 
     private func clusterBorderColor(for nodeID: String) -> Color? {
-        guard session.showClusterHalos,
-              let clusterID = session.schemaSidecar.nodeToClusterGroup[nodeID],
-              let cluster = session.schemaSidecar.clusters.first(where: { $0.id == clusterID }),
-              let color = cluster.color.flatMap({ Color(studioHex: $0) })
-        else {
-            return nil
-        }
-        return color
+        guard session.showClusterHalos, let hex = session.clusterColorHex(for: nodeID) else { return nil }
+        return Color(studioHex: hex)
     }
 
-    private func viewportAnchorMap(in canvasSize: CGSize) -> GraphAnchorMap {
-        let nodeCards = Dictionary(uniqueKeysWithValues: session.graph.nodes.map { node in
+    private func viewportAnchorMap(in canvasSize: CGSize, focusPlan: GraphFocusPlan? = nil) -> GraphAnchorMap {
+        let nodes = session.graph.nodes.filter { focusPlan?.tierForTable($0.id) != .hidden }
+        let nodeCards = Dictionary(uniqueKeysWithValues: nodes.map { node in
             let descriptor = session.descriptor(named: node.id)
             let baseSize = nodeSize(for: node.id)
             let scaledSize = CGSize(width: baseSize.width * zoom, height: baseSize.height * zoom)
             let center = screenCenter(for: node.id, in: canvasSize)
-            let frame = CGRect(
-                x: center.x - scaledSize.width / 2,
-                y: center.y - scaledSize.height / 2,
-                width: scaledSize.width,
-                height: scaledSize.height
-            )
-
-            return (
-                node.id,
-                GraphCardGeometry(
-                    tableID: node.id,
-                    frame: frame,
-                    role: cardRole(for: node.id),
-                    descriptor: descriptor,
-                    displayedColumns: visibleColumnNames(for: node.id),
-                    scale: zoom
-                )
-            )
+            let frame = CGRect(x: center.x - scaledSize.width / 2, y: center.y - scaledSize.height / 2,
+                               width: scaledSize.width, height: scaledSize.height)
+            return (node.id, GraphCardGeometry(
+                tableID: node.id, frame: frame, role: cardRole(for: node.id),
+                descriptor: descriptor, displayedColumns: visibleColumnNames(for: node.id), scale: zoom
+            ))
         })
-
         return GraphAnchorMap(nodeCards: nodeCards)
     }
 
@@ -3257,9 +3500,10 @@ public struct SchemaGraphView: View {
     }
 
     private func fitGraph(in size: CGSize) {
+        if effectiveFocusPlan != nil { fitGraphFocusViewport(in: size); return }
         let bounds = graphContentBoundsForFit()
         let transform: GraphViewportTransform
-        let fitMinimumZoom: CGFloat = session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 0.08 : 0.45
+        let fitMinimumZoom: CGFloat = session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 0.005 : 0.45
         let fitPadding: CGFloat = session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 72 : 120
         if shouldAutoFitStoryViewport {
             transform = GraphViewportTransform.fit(
@@ -3317,6 +3561,39 @@ public struct SchemaGraphView: View {
     /// lower minimum zoom so their nodes remain reachable instead of opening off-canvas.
     private var shouldAutoFit: Bool {
         true
+    }
+
+    private func scheduleInitialViewportFit() {
+        initialViewportTask?.cancel()
+        initialViewportTask = nil
+        guard initialViewport.needsFit, !session.graph.nodes.isEmpty else { return }
+        session.initializedGraphViewportDocument = nil
+        let request = initialViewport.request
+        initialViewportTask = Task { @MainActor in
+            // Mounting and presentation changes can propose several pane sizes.
+            // Each size change renews the request before its current-size fit.
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled,
+                  initialViewport.canFit(request: request, hasGraph: !session.graph.nodes.isEmpty, size: viewportSize)
+            else { return }
+
+            let currentSize = viewportSize
+            if session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout {
+                if isLargeGraph, let target = graphFocusTableRelation {
+                    pullConnectedNodesIntoView(for: target, pageIndex: relationPageIndex)
+                } else if isLargeGraph {
+                    refitCurrentScope(in: currentSize)
+                } else {
+                    fitGraph(in: currentSize)
+                }
+            } else {
+                performInitialLayout(in: currentSize)
+            }
+            initialViewport.didFit(request: request)
+            session.initializedGraphViewportDocument = initialViewportDocumentKey
+            flushViewportSessionSync()
+            initialViewportTask = nil
+        }
     }
 
     private func performInitialLayout(in size: CGSize) {
@@ -3404,12 +3681,17 @@ public struct SchemaGraphView: View {
             )
             layoutRevision &+= 1
             // Restore the same zoom/pan instead of fitting
-            setViewport(GraphViewportTransform(zoom: savedZoom, pan: savedPan), animated: false)
         } else {
             // Restore the saved compact layout — don't stabilize, just refit
             session.restoreCompactGraphLayoutForCurrentDatabase()
             layoutRevision &+= 1
             // Restore the same zoom/pan instead of fitting
+        }
+        invalidateClusterTitleCache()
+        if isLargeGraph {
+            initialViewport.presentationChanged()
+            scheduleInitialViewportFit()
+        } else {
             setViewport(GraphViewportTransform(zoom: savedZoom, pan: savedPan), animated: false)
         }
     }
@@ -3571,7 +3853,9 @@ public struct SchemaGraphView: View {
         var bestHit: (index: Int, zIndex: Double, card: GraphCardGeometry)?
 
         for (index, node) in session.graph.nodes.enumerated() {
-            guard let card = anchorMap.nodeCards[node.id], card.frame.contains(point) else { continue }
+            guard let card = anchorMap.nodeCards[node.id] else { continue }
+            let hitFrame = usesOverviewMarks ? GraphExploration.markerFrame(for: card.frame) : card.frame
+            guard hitFrame.contains(point) else { continue }
             let candidate = (index: index, zIndex: zIndex(for: node.id), card: card)
             if let current = bestHit {
                 if candidate.zIndex > current.zIndex || (candidate.zIndex == current.zIndex && candidate.index > current.index) {
@@ -3679,13 +3963,13 @@ public struct SchemaGraphView: View {
     // MARK: - Graph focus layout
 
     /// Enters table-relation focus: hides unrelated cards, lays out FK/PK neighbors without overlap, and zooms to fit.
-    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget) {
+    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget, pageIndex: Int = 0) {
         guard draggedNodeID == nil else { return }
 
-        let connectedIDs = relatedNodeIDs(for: target).sorted {
-            $0.localizedStandardCompare($1) == .orderedAscending
-        }
+        let page = GraphExploration.page(relatedNodeIDs(for: target), index: pageIndex)
+        let connectedIDs = page.ids
         guard !connectedIDs.isEmpty else { return }
+        relationPageIndex = page.index
 
         enterGraphFocusSession()
         graphFocusTableRelation = target
@@ -3781,7 +4065,7 @@ public struct SchemaGraphView: View {
     }
 
     private func relatedNodeIDs(for target: GraphRelationHoverTarget) -> [String] {
-        session.graph.edges.compactMap { edge in
+        Array(Set(session.graph.edges.compactMap { edge in
             if edge.sourceID == target.tableID && edge.sourceColumn == target.columnName {
                 return edge.targetID == target.tableID ? nil : edge.targetID
             }
@@ -3789,7 +4073,7 @@ public struct SchemaGraphView: View {
                 return edge.sourceID == target.tableID ? nil : edge.sourceID
             }
             return nil
-        }
+        })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     private func toggleExpandedState(for nodeID: String, in size: CGSize) {
@@ -5336,4 +5620,11 @@ private final class ClusterTitleCache {
 
     var cacheKey: Int = -1
     var entries: [Entry] = []
+}
+
+private final class RelationPreviewCache {
+    var isValid = false
+    var target: GraphRelationHoverTarget?
+    var expandedNodeID: String?
+    var previews: [String: GraphNodeRelationPreview] = [:]
 }

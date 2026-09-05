@@ -5,19 +5,29 @@ description: Write user-story-inspired flow stories with acceptance notes and na
 
 # story-flows
 
-You write user-story-inspired flow stories to `<db>.sqlite.studio.json`, next to the database file. SQLite Graph Studio reads the `stories` array when the database opens and when the user opens **Features -> Stories**.
+You write user-story-inspired flow stories to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads the `stories` array when the document opens and when the user opens **Features -> Stories**.
 
 Use the user story pattern as inspiration: capture who benefits (`actor`), what they need (`goal`), and why it matters (`benefit`). Keep it lighter than a Jira ticket when that fits the question: short title and value statement, useful conversation notes, acceptance criteria that confirm the flow, and graph playback beats that explain how the data moves through the schema.
 
 The app plays each playback beat by moving the graph viewport, expanding the focused table, spotlighting the tables in the beat with a warm animated fill, highlighting relation edges for a referenced column, and typing the beat text on screen. Users can also enable read-aloud playback; when they do, the app reads the beat's hidden `spoken_text` with Kokoro-82M's Bella voice (`af_bella`). The app does not show `spoken_text`; if it is missing, the app reads `text`.
 
+## Database documents and read-only discovery
+
+Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
+
+For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
+
+For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
+
+The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
+
 ## Inputs you need
 
 Before writing the file, gather:
 
-1. **The database path.** Ask if it is not obvious. The sidecar lives next to it, for example `app.sqlite` -> `app.sqlite.studio.json`.
+1. **The opened database file or PostgreSQL document path.** Ask if it is not obvious. The sidecar lives next to it, for example `app.sqlite` -> `app.sqlite.studio.json`.
 2. **The user flow and persona.** Capture the exact flow question and who benefits, such as "what happens when a user signs up?"
-3. **The schema.** Run `sqlite3 <db> ".tables"` and `sqlite3 <db> ".schema"` or inspect existing schema docs. You need exact table and column names.
+3. **The schema.** Use the read-only discovery workflow above. You need exact table and column names.
 4. **Tiny samples only if necessary.** Use `LIMIT 5` only when a table's role is unclear. Do not inspect more data than needed.
 
 ## Output format
@@ -105,15 +115,15 @@ Field rules:
 - `playback` - ordered graph playback beats. Aim for 3-7 beats. The app ignores the old `steps` key.
 - `text` - narration typed during the beat. Keep it concise and specific.
 - `spoken_text` - optional hidden human-language version read aloud with Kokoro-82M Bella. Write this for every beat when the story should sound natural over audio. Avoid raw table syntax unless it helps the listener; never put anything here that should be visibly shown.
-- `tables` - exact case-sensitive table names spotlighted during playback.
-- `focus` - optional exact table name the viewport should move toward.
-- `expand` - optional exact table name whose columns should be opened.
+- `tables` - exact case-sensitive table IDs spotlighted during playback; PostgreSQL requires schema-qualified IDs such as `public.orders`.
+- `focus` - optional exact table ID the viewport should move toward.
+- `expand` - optional exact table ID whose columns should be opened.
 - `relation` - optional `{ "table": "...", "column": "..." }` for a real PK/FK/REF column; the app highlights connected edges and pulls related tables into view.
 - `duration_ms` - optional step duration. Use only when a step needs unusual timing.
 
 ## Workflow
 
-1. Read `<db>.sqlite.studio.json` if it exists.
+1. Read `<document>.studio.json` if it exists.
 2. List the schema and identify the tables and foreign-key columns used by the requested flow.
 3. Draft the story card: `actor`, `goal`, and `benefit`. Keep it value-oriented, but do not force awkward wording.
 4. Assign `clusters` by matching the story's playback tables to existing top-level `clusters[].tables`. Prefer the smallest useful set of cluster IDs; leave it empty if the flow crosses the whole schema or no cluster exists.
@@ -127,7 +137,7 @@ Field rules:
 
 ## What not to do
 
-- Don't modify SQLite DDL or create tables in the database. Stories belong in the sidecar.
+- Don't modify database DDL or create tables in the database. Stories belong in the sidecar. Narrate application writes without executing them.
 - Don't invent table or column names.
 - Don't invent cluster IDs; story clusters must reuse existing top-level sidecar cluster IDs.
 - Don't over-link stories. Prefer no `related_stories` over speculative links.
