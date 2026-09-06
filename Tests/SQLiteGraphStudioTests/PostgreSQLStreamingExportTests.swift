@@ -191,6 +191,41 @@ struct PostgreSQLStreamingExportTests {
         }
     }
 
+    @Test func inheritedTablesUseOwnRowsWhilePartitionRootsStayInclusive() async throws {
+        try await withOwnedFixture { schema in
+            """
+            CREATE TABLE \(schema).parent(id integer PRIMARY KEY, label text);
+            CREATE TABLE \(schema).child() INHERITS (\(schema).parent);
+            INSERT INTO \(schema).parent VALUES(1,'parent');
+            INSERT INTO \(schema).child VALUES(1,'duplicate child'),(2,'child only');
+            CREATE TABLE \(schema).partitioned(id integer PRIMARY KEY) PARTITION BY RANGE(id);
+            CREATE TABLE \(schema).part_a PARTITION OF \(schema).partitioned FOR VALUES FROM (0) TO (10);
+            INSERT INTO \(schema).partitioned VALUES(3),(4)
+            """
+        } body: { backend, schema, directory in
+            let parent = try await backend.fetchDescriptor(named: "\(schema).parent")
+            let raw = try await backend.executeReadOnlyQuery(sql: "SELECT * FROM \(schema).parent")
+            #expect(raw.rows.count == 3) // User-authored SQL retains PostgreSQL semantics.
+            let page = try await backend.fetchChunk(query: .init(limit: 1), descriptor: parent)
+            #expect(page.rows.count == 1)
+            #expect(!page.hasMore)
+            var countQuery = TableQueryState(limit: 0)
+            countQuery.requestExactCount = true
+            #expect(try await backend.fetchChunk(query: countQuery, descriptor: parent).countState == .exact(1))
+            #expect(parent.pagingDescription.contains("own rows"))
+            let destination = directory.appendingPathComponent("parent.json")
+            let count = try await backend.exportTableRows(query: .init(), descriptor: parent, to: destination, format: .json)
+            #expect(count == 1)
+            let exported = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: destination)) as? [[String: Any]])
+            #expect(exported.count == 1)
+            #expect(exported.first?["label"] as? String == "parent")
+            let partitioned = try await backend.fetchDescriptor(named: "\(schema).partitioned")
+            let partitions = try await backend.fetchChunk(query: .init(), descriptor: partitioned)
+            #expect(partitions.rows.map(\.values) == [[.integer(3)], [.integer(4)]])
+            #expect(try await backend.fetchChunk(query: countQuery, descriptor: partitioned).countState == .exact(2))
+        }
+    }
+
     private func withOwnedFixture(_ definition: (String) -> String,
                                   body: (PostgresDatabaseBackend, String, URL) async throws -> Void) async throws {
         let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)

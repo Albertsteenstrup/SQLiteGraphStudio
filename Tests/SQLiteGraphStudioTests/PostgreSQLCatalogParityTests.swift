@@ -190,6 +190,23 @@ struct PostgreSQLTopRowsParityTests {
         """#)
     }
 
+    @Test
+    func generatedTopRowsUsesTheSameInheritanceScopeAsBrowsing() throws {
+        let snapshot = PostgresCatalogMapper.makeSnapshot(
+            objects: [PostgresCatalogObject(schemaName: "public", objectName: "parent", relkind: "r", rowEstimate: nil, hasInheritanceChildren: true)],
+            columns: [], indexes: [], foreignKeys: []
+        )
+        let descriptor = try #require(snapshot.descriptors.first)
+        let (workspace, defaults, suiteName) = try makeWorkspace()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        workspace.createTopRowsQuery(for: descriptor)
+        #expect(workspace.activeQuery?.sqlText.contains("FROM ONLY \"public\".\"parent\"") == true)
+        let session = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
+        session.apply(snapshot: snapshot, target: .postgres(PostgresConnectionConfiguration(host: "localhost", database: "fixture", username: "reader")))
+        session.runTopRowsQuery(for: descriptor.name)
+        #expect(session.queryWorkspace.activeQuery?.sqlText.contains("FROM ONLY \"public\".\"parent\"") == true)
+    }
+
     private func makeWorkspace() throws -> (QueryWorkspaceModel, UserDefaults, String) {
         let suiteName = "SQLiteGraphStudioTests.top-rows-parity.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

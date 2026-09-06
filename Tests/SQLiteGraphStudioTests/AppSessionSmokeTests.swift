@@ -30,6 +30,15 @@ struct AppSessionSmokeTests {
     }
 
     @Test
+    func sessionUsesTheSameNormalizedFileIdentityAsItsBackend() async throws {
+        let url = try TestSupport.createFixture(named: "normalized-session")
+        let aliasedURL = url.deletingLastPathComponent().appendingPathComponent("../" + url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent)
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: aliasedURL)
+        #expect(session.databaseTarget == .sqlite(url.standardizedFileURL))
+    }
+
+    @Test
     func sessionRestoresPersistedGraphLayoutForDatabase() async throws {
         let url = try TestSupport.createFixture(named: "persisted-layout")
         let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"

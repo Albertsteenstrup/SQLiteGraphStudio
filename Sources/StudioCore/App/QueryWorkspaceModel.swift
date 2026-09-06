@@ -158,7 +158,7 @@ public final class QueryWorkspaceModel {
             title: "\(descriptor.name) Top 10",
             sqlText: """
             SELECT *
-            FROM \(descriptor.qualifiedSQLIdentifier)
+            FROM \(descriptor.tableDataSQLSource)
             LIMIT 10;
             """,
             activate: true,

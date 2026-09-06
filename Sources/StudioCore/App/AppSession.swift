@@ -337,7 +337,7 @@ public final class AppSession {
             guard openGeneration == generation else { return }
             let snapshot = try await databaseService.loadCatalogSnapshot()
             guard openGeneration == generation else { return }
-            apply(snapshot: snapshot, target: .sqlite(url))
+            apply(snapshot: snapshot, target: .sqlite(url.standardizedFileURL))
             if let changeBaseline {
                 refreshToast = Self.refreshSummary(
                     before: changeBaseline,
@@ -910,7 +910,7 @@ public final class AppSession {
             title: "\(tableName) Top 10",
             sqlText: """
             SELECT *
-            FROM \(descriptor.qualifiedSQLIdentifier)
+            FROM \(descriptor.tableDataSQLSource)
             LIMIT 10;
             """,
             runImmediately: true
