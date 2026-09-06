@@ -11,6 +11,28 @@ import Testing
         #expect(!filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.txt")))
         #expect(filter.panel(NSNull(), shouldEnable: FileManager.default.temporaryDirectory))
     }
+    @Test func staleImportTargetCannotWriteToDifferentDatabase() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first.sqlite")
+        let second = directory.appendingPathComponent("second.sqlite")
+        for url in [first, second] {
+            let fixture = try DatabaseQueue(path: url.path)
+            try await fixture.write { db in try db.execute(sql: "CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)") }
+        }
+        let service = DatabaseService()
+        try await service.open(url: first)
+        let descriptor = try await service.fetchDescriptor(named: "items")
+        try await service.open(url: second)
+        await #expect(throws: CancellationError.self) {
+            try await service.importRows(into: descriptor, text: "id\n99\n", format: .csv, expectedTarget: .sqlite(first))
+        }
+        let result = try await service.executeReadOnlyQuery(sql: "SELECT id FROM items ORDER BY id")
+        #expect(result.rows.map(\.values) == [[.integer(1)]])
+        await service.close()
+    }
+
     @Test func closeDuringCatalogLoadCannotReopenSession() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-open-\(UUID().uuidString).sqlite")
         let database = try DatabaseQueue(path: url.path)

@@ -211,8 +211,11 @@ public actor DatabaseService {
         return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, timeoutSeconds: timeoutSeconds, cancellation: cancellation, progress: progress)
     }
 
-    public func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat) async throws -> ImportRowsResult {
-        try await requireBackend().importRows(into: descriptor, text: text, format: format)
+    public func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat, expectedTarget: DatabaseTarget? = nil) async throws -> ImportRowsResult {
+        try Task.checkCancellation()
+        if let expectedTarget, currentTarget != expectedTarget { throw CancellationError() }
+        let source = try requireBackend()
+        return try await source.importRows(into: descriptor, text: text, format: format)
     }
 
     public nonisolated func makeCreateTableSQL(_ draft: TableCreateDraft) throws -> String {

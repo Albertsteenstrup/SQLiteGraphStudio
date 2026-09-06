@@ -96,7 +96,7 @@ See [building, preference migration, and distribution signing](docs/packaging.md
 
 ## Build from source
 
-Requires Xcode 15+ or the Swift toolchain. Built in Swift/SwiftUI — not because it's the obvious choice for a database tool, but because it was the fastest way to build something native on macOS that felt good to use.
+Requires a Swift 6.3 toolchain (including a compatible Xcode installation). Built in Swift/SwiftUI — not because it's the obvious choice for a database tool, but because it was the fastest way to build something native on macOS that felt good to use.
 
 ```bash
 git clone https://github.com/Albertsteenstrup/SQLiteGraphStudio.git

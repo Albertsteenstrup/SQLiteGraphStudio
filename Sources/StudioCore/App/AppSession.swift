@@ -299,13 +299,17 @@ public final class AppSession {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.data]
+        panel.allowedContentTypes = []
         let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: ["sqlite", "sqlite3", "db", "sqlite-db", "sqlitedb"])
         panel.delegate = documentFilter
         panel.prompt = "Open Database"
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await openDatabase(url: url) }
+        panel.begin { [self, documentFilter] response in
+            withExtendedLifetime(documentFilter) {
+                guard response == .OK, let url = panel.url else { return }
+                Task { await openDatabase(url: url) }
+            }
+        }
     }
 
     public func openDatabase(url: URL) async {
@@ -354,15 +358,19 @@ public final class AppSession {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         // These are app-owned JSON documents, not a system-provided UTI. Use
-        // a data filter plus the delegate's explicit extension check instead
+        // the delegate's explicit extension check instead
         // of relying on dynamic UTI inference for the custom suffixes.
-        panel.allowedContentTypes = [.data]
+        panel.allowedContentTypes = []
         let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: PostgresConnectionDocument.supportedFileExtensions)
         panel.delegate = documentFilter
         panel.prompt = "Open PostgreSQL Document"
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await openPostgreSQLDocument(url: url) }
+        panel.begin { [self, documentFilter] response in
+            withExtendedLifetime(documentFilter) {
+                guard response == .OK, let url = panel.url else { return }
+                Task { await openPostgreSQLDocument(url: url) }
+            }
+        }
     }
 
     public func openDocument(url: URL) async {
@@ -1012,15 +1020,16 @@ public final class AppSession {
         let loaded = scope == .loadedRows
         let label = loaded ? "Loaded rows: \(rows.count) · \(activeTab.title)" : "All matching rows · \(activeTab.title) · total determined during export"
         let suffix = loaded ? "loaded-\(rows.count)" : "all-matching"
-        guard let destination = presentExportPanel(defaultName: "\(activeTab.title)-\(suffix)", format: format,
-            message: "\(label). Uses the captured filters and ordering. Switching databases cancels the export.") else { return }
-        guard !isRefreshing, openGeneration == generation else { return }
-        let source = databaseService
-        beginExport(scope: label, totalRows: loaded ? rows.count : nil) { cancellation, progress in
-            if loaded {
-                return try await StreamingRowExport.write(names: descriptor.columns.map(\.name), rows: rows, to: destination, format: format, cancellation: cancellation, progress: progress)
+        presentExportPanel(defaultName: "\(activeTab.title)-\(suffix)", format: format,
+            message: "\(label). Uses the captured filters and ordering. Switching databases cancels the export.") { [self] destination in
+            guard let destination, !isRefreshing, openGeneration == generation, exportTask == nil else { return }
+            let source = databaseService
+            beginExport(scope: label, totalRows: loaded ? rows.count : nil) { cancellation, progress in
+                if loaded {
+                    return try await StreamingRowExport.write(names: descriptor.columns.map(\.name), rows: rows, to: destination, format: format, cancellation: cancellation, progress: progress)
+                }
+                return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, expectedTarget: target, cancellation: cancellation, progress: progress)
             }
-            return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, expectedTarget: target, cancellation: cancellation, progress: progress)
         }
     }
 
@@ -1030,11 +1039,12 @@ public final class AppSession {
         let result = activeQuery.result
         let label = Self.queryExportLabel(result)
         let suffix = result.isTruncated ? "truncated-\(result.rows.count)" : "result-\(result.rows.count)"
-        guard let destination = presentExportPanel(defaultName: "\(activeQuery.title)-\(suffix)", format: format,
-            message: "\(label). Exports the displayed executed result. Editing SQL does not change this snapshot.") else { return }
-        guard openGeneration == generation else { return }
-        beginExport(scope: label, totalRows: result.rows.count) { cancellation, progress in
-            try await StreamingRowExport.write(names: result.columns.map(\.name), rows: result.rows.map(\.values), to: destination, format: format, cancellation: cancellation, progress: progress)
+        presentExportPanel(defaultName: "\(activeQuery.title)-\(suffix)", format: format,
+            message: "\(label). Exports the displayed executed result. Editing SQL does not change this snapshot.") { [self] destination in
+            guard let destination, !isRefreshing, openGeneration == generation, exportTask == nil else { return }
+            beginExport(scope: label, totalRows: result.rows.count) { cancellation, progress in
+                try await StreamingRowExport.write(names: result.columns.map(\.name), rows: result.rows.map(\.values), to: destination, format: format, cancellation: cancellation, progress: progress)
+            }
         }
     }
 
@@ -1072,7 +1082,7 @@ public final class AppSession {
     }
 
     public func importRowsIntoActiveTable(format: DataTransferFormat) {
-        guard !isRefreshing, databaseCapabilities.canImportRows, let activeTab else { return }
+        guard !isRefreshing, databaseCapabilities.canImportRows, let target = databaseTarget, let activeTab else { return }
 
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -1080,16 +1090,21 @@ public final class AppSession {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [format == .csv ? .commaSeparatedText : .json]
         panel.prompt = "Import"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        Task {
-            do {
-                let text = try String(contentsOf: url, encoding: .utf8)
-                let result = try await databaseService.importRows(into: activeTab.descriptor, text: text, format: format)
-                activeTab.inlineErrorMessage = result.messages.first
-                await activeTab.reload()
-            } catch {
-                presentedError = SQLiteUserError.from(error)
+        let generation = openGeneration
+        panel.begin { [self] response in
+            guard response == .OK, let url = panel.url, openGeneration == generation, databaseCapabilities.canImportRows else { return }
+            Task {
+                guard openGeneration == generation else { return }
+                do {
+                    let text = try String(contentsOf: url, encoding: .utf8)
+                    let result = try await databaseService.importRows(into: activeTab.descriptor, text: text, format: format, expectedTarget: target)
+                    guard openGeneration == generation else { return }
+                    activeTab.inlineErrorMessage = result.messages.first
+                    await activeTab.reload()
+                } catch {
+                    guard openGeneration == generation else { return }
+                    presentedError = SQLiteUserError.from(error)
+                }
             }
         }
     }
@@ -1203,15 +1218,14 @@ public final class AppSession {
         userDefaults.set(recentDatabaseURLs.map(\.path), forKey: Self.recentDatabaseStorageKey)
     }
 
-    private func presentExportPanel(defaultName: String, format: DataTransferFormat, message: String) -> URL? {
+    private func presentExportPanel(defaultName: String, format: DataTransferFormat, message: String, completion: @escaping @MainActor (URL?) -> Void) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format == .csv ? .commaSeparatedText : .json]
         panel.nameFieldStringValue = "\(defaultName).\(format.fileExtension)"
         panel.message = message
         panel.canCreateDirectories = true
         panel.prompt = "Export"
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
+        panel.begin { response in completion(response == .OK ? panel.url : nil) }
     }
 
     private static func loadRecentDatabaseURLs(from userDefaults: UserDefaults) -> [URL] {
