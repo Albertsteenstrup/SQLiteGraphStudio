@@ -4,6 +4,27 @@ import Testing
 
 struct RecordTypeModifierTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["SGS_RECORD_POSTGRES_PORT"] != nil))
+    func outgoingIntegerForeignKeyDoesNotNarrowAnAbsentKey() async throws {
+        let port = try #require(ProcessInfo.processInfo.environment["SGS_RECORD_POSTGRES_PORT"].flatMap(Int.init))
+        let backend = PostgresDatabaseBackend(configuration: .init(host: "127.0.0.1", port: port, database: "record_fixture", username: "record_reader", tlsMode: .disabled), password: "")
+        try await backend.open()
+        do {
+            let catalog = try await backend.loadCatalogSnapshot()
+            let relation = try #require(RecordAccess.relationships(catalog: catalog).first { $0.sourceTable.objectName == "mixed_outgoing_child" })
+            let sources = try await backend.fetchRecords(descriptor: try #require(relation.sourceDescriptor), predicates: [])
+            #expect(sources.records.count == 2)
+            for source in sources.records {
+                let targets = try await backend.fetchRelated(record: source, relationship: relation, direction: .outgoing)
+                if source.value(for: "key") == .integer(70000) {
+                    #expect(targets.records.isEmpty)
+                    #expect(targets.status == .missingReference)
+                } else { #expect(targets.records.count == 1) }
+            }
+            await backend.close()
+        } catch { await backend.close(); throw error }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SGS_RECORD_POSTGRES_PORT"] != nil))
     func bitScalarAndArrayForeignKeysRetainTheirComparisonType() async throws {
         let port = try #require(ProcessInfo.processInfo.environment["SGS_RECORD_POSTGRES_PORT"].flatMap(Int.init))
         let backend = PostgresDatabaseBackend(configuration: .init(host: "127.0.0.1", port: port, database: "record_fixture", username: "record_reader", tlsMode: .disabled), password: "")

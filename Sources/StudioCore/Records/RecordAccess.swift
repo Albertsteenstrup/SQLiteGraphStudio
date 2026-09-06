@@ -220,6 +220,10 @@ public enum RecordAccess {
             index = type.index(after: index)
         }
         let base = comparisonType.lowercased()
+        // Integer FK columns may have different widths. Comparing through the
+        // widest integer type keeps an absent bigint reference out of a smallint
+        // parent from failing conversion before PostgreSQL can return no match.
+        if base == "smallint" || base == "integer" { return "bigint" }
         // SQL character without a length defaults to one; bpchar has no typmod.
         if base == "character" || base.hasPrefix("character[") {
             return "pg_catalog.bpchar" + comparisonType.dropFirst("character".count)

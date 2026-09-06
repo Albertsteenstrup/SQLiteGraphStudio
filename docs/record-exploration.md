@@ -16,6 +16,8 @@ For traditional PostgreSQL inheritance, the table grid, matching-row export and 
 
 **Show connections** creates a record graph rooted at the inspected record. It is independent of the schema graph and uses the shared layout engine. Expand individual incoming/outgoing relationships from the inspector. Click a node to inspect it; use its context menu to select a new root. Drag nodes or the canvas, pinch to zoom, and use **Fit** to frame the exploration. Branch controls collapse contributions and load another page. Shared nodes, parallel relationships, cycles and self-links retain their identities.
 
+Expanding or collapsing a branch currently recalculates and fits the record graph, replacing manually dragged positions. Schema-graph positions remain separate.
+
 The graph shows explored relationships, not an exhaustive database scan. Limits are 100 nodes, 250 edges, depth 4, 120 data-query reservations per root, and 2 concurrent requests. FK pages contain at most 25 records; mapped pages contain at most 5 edges and reserve 7 queries. Caps and additional pages remain visible. Collapse branches or select a new root to continue. Requests are cancellable; stale completions cannot replace a newer inspector. PostgreSQL record SELECTs also have a 5-second transaction-local statement timeout. Transaction setup and the constant PostgreSQL money-scale metadata probe are separate from data-query reservations. Offset pages are live reads, not a cross-request database snapshot; concurrent database changes can shift page membership.
 
 ## Explicit graph-data mappings

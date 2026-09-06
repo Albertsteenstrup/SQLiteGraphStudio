@@ -8,3 +8,9 @@ CREATE TABLE alpha.mixed_integer_child (key smallint PRIMARY KEY REFERENCES alph
 INSERT INTO alpha.mixed_integer_parent VALUES (7), (70000);
 INSERT INTO alpha.mixed_integer_child VALUES (7);
 GRANT SELECT ON alpha.mixed_numeric_parent, alpha.mixed_numeric_child, alpha.mixed_integer_parent, alpha.mixed_integer_child TO record_reader;
+CREATE TABLE alpha.mixed_outgoing_parent (key smallint PRIMARY KEY);
+INSERT INTO alpha.mixed_outgoing_parent VALUES (1);
+CREATE TABLE alpha.mixed_outgoing_child (key bigint PRIMARY KEY);
+INSERT INTO alpha.mixed_outgoing_child VALUES (1), (70000);
+ALTER TABLE alpha.mixed_outgoing_child ADD FOREIGN KEY (key) REFERENCES alpha.mixed_outgoing_parent(key) NOT VALID;
+GRANT SELECT ON alpha.mixed_outgoing_parent, alpha.mixed_outgoing_child TO record_reader;
