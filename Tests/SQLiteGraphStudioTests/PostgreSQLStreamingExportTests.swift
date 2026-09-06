@@ -191,7 +191,8 @@ struct PostgreSQLStreamingExportTests {
         }
     }
 
-    @Test func inheritedTablesUseOwnRowsWhilePartitionRootsStayInclusive() async throws {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SGS_POSTGRES_FIXTURE_OWNER"] != nil, "Requires explicit owned-fixture owner role"))
+    func inheritedTablesUseOwnRowsWhilePartitionRootsStayInclusive() async throws {
         try await withOwnedFixture { schema in
             """
             CREATE TABLE \(schema).parent(id integer PRIMARY KEY, label text);
