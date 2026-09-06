@@ -140,6 +140,17 @@ public enum PostgresTableQueryBuilder {
             if name == "_rowid_", case .integer(let id) = value { return bind(.integer(id)) }
             guard let column = columns[name] else { throw invalid("Unknown cursor column.") }
             if case .blob(let data) = value { return bind(.bytes(data)) }
+            if dialect == .sqlite {
+                // SQLite values have storage types independent of declared affinity.
+                // Re-parsing a cursor can reject valid rows or change comparison order.
+                switch value {
+                case .null: return bind(.null)
+                case .integer(let value): return bind(.integer(value))
+                case .double(let value): return bind(.double(value))
+                case .boolean(let value): return bind(.boolean(value))
+                default: return bind(.text(ResultSerialization.exactText(value)))
+                }
+            }
             return try operand(ResultSerialization.exactText(value), column: column)
         }
         let whereClause = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
@@ -187,6 +198,16 @@ public enum PostgresTableQueryBuilder {
 /// rejects suspicious words anywhere outside literals/comments: PostgreSQL's
 /// server-side read-only transaction remains the final authority.
 public enum ReadOnlySQLPolicy {
+    private static let forbiddenFunctions: Set<String> = [
+        "NEXTVAL", "SETVAL", "PG_ADVISORY_LOCK", "PG_ADVISORY_XACT_LOCK", "PG_CANCEL_BACKEND",
+        "PG_TERMINATE_BACKEND", "PG_ADVISORY_LOCK_SHARED", "PG_ADVISORY_XACT_LOCK_SHARED",
+        "PG_TRY_ADVISORY_LOCK", "PG_TRY_ADVISORY_XACT_LOCK", "PG_TRY_ADVISORY_LOCK_SHARED",
+        "PG_TRY_ADVISORY_XACT_LOCK_SHARED", "PG_ADVISORY_UNLOCK", "PG_ADVISORY_UNLOCK_ALL",
+        "PG_ADVISORY_UNLOCK_SHARED", "PG_NOTIFY", "SET_CONFIG", "LO_CREAT", "LO_UNLINK",
+        "LO_OPEN", "LO_TRUNCATE", "LO_TRUNCATE64", "LO_CREATE", "LO_IMPORT", "LO_EXPORT",
+        "LO_PUT", "LOWRITE"
+    ]
+
     static func statementRoot(_ sql: String) throws -> String? {
         var scanner = SQLScanner(sql)
         return try scanner.scan().first
@@ -223,14 +244,10 @@ public enum ReadOnlySQLPolicy {
             "COPY", "CALL", "DO", "SET", "RESET", "BEGIN", "START", "COMMIT", "ROLLBACK",
             "SAVEPOINT", "RELEASE", "GRANT", "REVOKE", "VACUUM", "REINDEX", "CLUSTER",
             "COMMENT", "LOCK", "LISTEN", "NOTIFY", "DISCARD", "PREPARE", "EXECUTE",
-            "DECLARE", "FETCH", "MOVE", "CLOSE", "CHECKPOINT", "REFRESH", "ANALYZE", "INTO",
-            "NEXTVAL", "SETVAL", "PG_ADVISORY_LOCK", "PG_ADVISORY_XACT_LOCK", "PG_CANCEL_BACKEND",
-            "PG_TERMINATE_BACKEND", "PG_ADVISORY_LOCK_SHARED", "PG_ADVISORY_XACT_LOCK_SHARED",
-            "PG_TRY_ADVISORY_LOCK", "PG_TRY_ADVISORY_XACT_LOCK", "PG_TRY_ADVISORY_LOCK_SHARED",
-            "PG_TRY_ADVISORY_XACT_LOCK_SHARED", "PG_ADVISORY_UNLOCK", "PG_ADVISORY_UNLOCK_ALL",
-            "PG_NOTIFY", "SET_CONFIG", "LO_CREAT", "LO_UNLINK", "LO_OPEN", "LO_TRUNCATE"
+            "DECLARE", "FETCH", "MOVE", "CLOSE", "CHECKPOINT", "REFRESH", "ANALYZE", "INTO"
         ]
-        if let word = words.first(where: { forbidden.contains($0) }) {
+        if let word = words.first(where: { forbidden.contains($0) || forbiddenFunctions.contains($0) })
+            ?? scanner.quotedFunctionNames.first(where: { forbiddenFunctions.contains($0) }) {
             throw rejection("The read-only query policy rejects \(word) statements or functions.")
         }
 
@@ -245,6 +262,7 @@ public enum ReadOnlySQLPolicy {
 private struct SQLScanner {
     private let characters: [Character]
     private var index: Int = 0
+    private(set) var quotedFunctionNames: [String] = []
 
     init(_ sql: String) {
         characters = Array(sql)
@@ -266,12 +284,24 @@ private struct SQLScanner {
                 try skipBlockComment()
                 continue
             }
+            if (character == "U" || character == "u"), peek(1) == "&", peek(2) == "\"" {
+                throw DatabaseUserError(kind: .readOnly, message: "Unicode-escaped SQL identifiers are not supported by the read-only query policy. Use ordinary quoted identifiers.")
+            }
+            if (character == "E" || character == "e"), peek(1) == "'" {
+                index += 1
+                try skipSingleQuotedLiteral(backslashEscapes: true)
+                continue
+            }
             if character == "'" {
                 try skipSingleQuotedLiteral()
                 continue
             }
             if character == "\"" {
-                try skipQuotedIdentifier()
+                let identifier = try readQuotedIdentifier()
+                try skipTrivia()
+                if index < characters.count, characters[index] == "(" {
+                    quotedFunctionNames.append(identifier.uppercased())
+                }
                 continue
             }
             if character == "$", let delimiter = dollarQuoteDelimiter() {
@@ -306,9 +336,13 @@ private struct SQLScanner {
 
     private mutating func skipLineComment() {
         index += 2
-        while index < characters.count, characters[index] != "\n" {
+        while index < characters.count, !Self.isSQLNewline(characters[index]) {
             index += 1
         }
+    }
+
+    private static func isSQLNewline(_ character: Character) -> Bool {
+        character == "\n" || character == "\r" || character == "\r\n"
     }
 
     private mutating func skipBlockComment() throws {
@@ -329,14 +363,26 @@ private struct SQLScanner {
         throw DatabaseUserError(kind: .syntax, message: "The query contains an unterminated comment.")
     }
 
-    private mutating func skipSingleQuotedLiteral() throws {
+    private mutating func skipSingleQuotedLiteral(backslashEscapes: Bool = false) throws {
         index += 1
         while index < characters.count {
-            if characters[index] == "'" {
+            if backslashEscapes, characters[index] == "\\" {
+                index += 2
+            } else if characters[index] == "'" {
                 if peek(1) == "'" {
                     index += 2
                 } else {
                     index += 1
+                    // PostgreSQL joins adjacent string segments separated by a
+                    // newline. E-prefix escape rules persist through every segment.
+                    let triviaStart = index
+                    try skipTrivia()
+                    if characters[triviaStart..<index].contains(where: Self.isSQLNewline),
+                       index < characters.count, characters[index] == "'" {
+                        index += 1
+                        continue
+                    }
+                    index = triviaStart
                     return
                 }
             } else {
@@ -346,21 +392,33 @@ private struct SQLScanner {
         throw DatabaseUserError(kind: .syntax, message: "The query contains an unterminated string literal.")
     }
 
-    private mutating func skipQuotedIdentifier() throws {
+    private mutating func readQuotedIdentifier() throws -> String {
+        var identifier = ""
         index += 1
         while index < characters.count {
             if characters[index] == "\"" {
                 if peek(1) == "\"" {
+                    identifier.append("\"")
                     index += 2
                 } else {
                     index += 1
-                    return
+                    return identifier
                 }
             } else {
+                identifier.append(characters[index])
                 index += 1
             }
         }
         throw DatabaseUserError(kind: .syntax, message: "The query contains an unterminated quoted identifier.")
+    }
+
+    private mutating func skipTrivia() throws {
+        while index < characters.count {
+            if characters[index].isWhitespace { index += 1 }
+            else if characters[index] == "-", peek(1) == "-" { skipLineComment() }
+            else if characters[index] == "/", peek(1) == "*" { try skipBlockComment() }
+            else { return }
+        }
     }
 
     private func dollarQuoteDelimiter() -> String? {

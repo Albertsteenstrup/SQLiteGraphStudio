@@ -83,6 +83,8 @@ Dragging and saved pins remain available. Relayout deliberately rebuilds positio
 
 See [query, browsing, export and metadata contracts](docs/query-data-contracts.md) for value formats and consistency guarantees.
 
+The [combined integration verification](docs/main-integration-verification.md) records the final shared tests, large-catalog check and remaining native interaction limits.
+
 ## Install
 
 1. Go to [Releases](../../releases/latest)

@@ -1157,9 +1157,9 @@ func quoteStringLiteral(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "''"))'"
 }
 
-func parseSQLiteValue(_ rawValue: String, for column: TableColumn) throws -> SQLiteValue {
+func parseSQLiteValue(_ rawValue: String, for column: TableColumn, recognizesNullLiteral: Bool = true) throws -> SQLiteValue {
     let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.uppercased() == "NULL" {
+    if recognizesNullLiteral && trimmed.uppercased() == "NULL" {
         if column.notNull {
             throw SQLiteUserError(kind: .invalidInput, message: "\(column.name) does not allow NULL values.")
         }

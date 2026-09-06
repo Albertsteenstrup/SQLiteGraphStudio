@@ -709,7 +709,9 @@ public actor SQLiteDatabaseBackend {
                         var arguments = StatementArguments()
                         for (column, value) in pairs {
                             if let value {
-                                arguments += [try parseSQLiteValue(value, for: column).databaseValue]
+                                // Import parsers already distinguish SQL NULL from
+                                // text, including quoted CSV and JSON string values.
+                                arguments += [try parseSQLiteValue(value, for: column, recognizesNullLiteral: false).databaseValue]
                             } else {
                                 arguments += [DatabaseValue.null]
                             }
@@ -1186,9 +1188,16 @@ private func parseImportRows(text: String, format: DataTransferFormat) throws ->
         return records.dropFirst().map { record in
             var row: [String: String?] = [:]
             for (index, columnName) in header.enumerated() {
-                let trimmedName = columnName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedName = columnName.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmedName.isEmpty else { continue }
-                row[trimmedName] = record.indices.contains(index) ? record[index] : nil
+                guard record.indices.contains(index) else {
+                    row.updateValue(nil, forKey: trimmedName)
+                    continue
+                }
+                let field = record[index]
+                let legacyNull = field.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "NULL"
+                let isNull = !field.isQuoted && (field.text == "\\N" || legacyNull)
+                row.updateValue(isNull ? nil : field.text, forKey: trimmedName)
             }
             return row
         }
@@ -1208,7 +1217,7 @@ private func parseImportRows(text: String, format: DataTransferFormat) throws ->
 
         return rows.map { row in
             row.reduce(into: [String: String?]()) { partial, pair in
-                partial[pair.key] = importText(from: pair.value)
+                partial.updateValue(importText(from: pair.value), forKey: pair.key)
             }
         }
     }
@@ -1230,11 +1239,17 @@ private func importText(from value: Any) -> String? {
     return String(describing: value)
 }
 
-private func parseCSVRecords(_ text: String) -> [[String]] {
-    var records: [[String]] = []
-    var record: [String] = []
+private struct CSVImportField {
+    let text: String
+    let isQuoted: Bool
+}
+
+private func parseCSVRecords(_ text: String) -> [[CSVImportField]] {
+    var records: [[CSVImportField]] = []
+    var record: [CSVImportField] = []
     var field = ""
     var isInQuotes = false
+    var fieldIsQuoted = false
     var index = text.startIndex
 
     while index < text.endIndex {
@@ -1242,6 +1257,7 @@ private func parseCSVRecords(_ text: String) -> [[String]] {
         let nextIndex = text.index(after: index)
 
         if character == "\"" {
+            fieldIsQuoted = true
             if isInQuotes, nextIndex < text.endIndex, text[nextIndex] == "\"" {
                 field.append("\"")
                 index = text.index(after: nextIndex)
@@ -1249,16 +1265,18 @@ private func parseCSVRecords(_ text: String) -> [[String]] {
             }
             isInQuotes.toggle()
         } else if character == ",", !isInQuotes {
-            record.append(field)
+            record.append(CSVImportField(text: field, isQuoted: fieldIsQuoted))
             field = ""
-        } else if (character == "\n" || character == "\r"), !isInQuotes {
+            fieldIsQuoted = false
+        } else if (character == "\n" || character == "\r" || character == "\r\n"), !isInQuotes {
             if character == "\r", nextIndex < text.endIndex, text[nextIndex] == "\n" {
                 index = nextIndex
             }
-            record.append(field)
+            record.append(CSVImportField(text: field, isQuoted: fieldIsQuoted))
             records.append(record)
             record = []
             field = ""
+            fieldIsQuoted = false
         } else {
             field.append(character)
         }
@@ -1266,13 +1284,13 @@ private func parseCSVRecords(_ text: String) -> [[String]] {
         index = text.index(after: index)
     }
 
-    if !field.isEmpty || !record.isEmpty {
-        record.append(field)
+    if !field.isEmpty || !record.isEmpty || fieldIsQuoted {
+        record.append(CSVImportField(text: field, isQuoted: fieldIsQuoted))
         records.append(record)
     }
 
     return records.filter { row in
-        row.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        row.contains { $0.isQuoted || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }
 

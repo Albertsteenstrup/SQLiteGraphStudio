@@ -160,7 +160,10 @@ public final class AppSession {
     public private(set) var schemaMetadataState = SchemaMetadataState()
     public var metadataDiagnostics: [String] { schemaMetadataState.diagnostics }
 
-    public var schemaSidecar: SchemaSidecar = .empty
+    public var schemaSidecar: SchemaSidecar = .empty {
+        didSet { schemaSidecarRevision &+= 1 }
+    }
+    private(set) var schemaSidecarRevision = 0
     public private(set) var graphGrouping: GraphGrouping = .empty {
         didSet { graphGroupingRevision &+= 1 }
     }

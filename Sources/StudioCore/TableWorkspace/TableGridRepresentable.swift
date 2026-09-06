@@ -146,6 +146,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
             scrollView: NSScrollView,
             inspectRow: @escaping (Int) -> Void
         ) {
+            let tabChanged = self.tab.id != tab.id
             self.tab = tab
             self.inspectRow = inspectRow
             self.columnDescription = columnDescription
@@ -156,19 +157,19 @@ public struct TableGridRepresentable: NSViewRepresentable {
             syncColumns(on: tableView)
             applyHeaderState(on: tableView)
 
-            if revision != self.revision {
+            if tabChanged || revision != self.revision {
+                isAdjustingViewport = true
                 self.revision = revision
                 tableView.noteNumberOfRowsChanged()
                 tableView.reloadData()
-                if viewportRequestID != tab.viewportRequestID {
+                if tabChanged || viewportRequestID != tab.viewportRequestID {
                     viewportRequestID = tab.viewportRequestID
-                    isAdjustingViewport = true
                     let row = min(tab.viewportRow, max(0, tableView.numberOfRows - 1))
                     let origin = NSPoint(x: scrollView.contentView.bounds.origin.x, y: tableView.rect(ofRow: row).minY)
                     scrollView.contentView.scroll(to: origin)
                     scrollView.reflectScrolledClipView(scrollView.contentView)
-                    isAdjustingViewport = false
                 }
+                isAdjustingViewport = false
             }
 
             visibleRectDidChange()

@@ -151,6 +151,41 @@ struct PostgreSQLSupportTests {
     }
 
     @Test
+    func postgresSQLPolicyRejectsQuotedSideEffectFunctions() throws {
+        let rejected = [
+            #"SELECT pg_catalog."pg_advisory_lock"(1)"#,
+            #"SELECT "pg_catalog"."pg_notify" ('channel', 'payload')"#,
+            #"SELECT "set_config" /* comment */ ('application_name', 'changed', false)"#,
+            #"WITH x AS (SELECT "pg_try_advisory_lock"(1)) SELECT * FROM x"#,
+            #"SELECT "pg_advisory_unlock_all"()"#,
+            #"SELECT E'\'' AS first, pg_catalog.pg_advisory_lock(123), E'\'' AS last"#,
+            #"SELECT "lo_export"(1, '/tmp/forbidden')"#,
+            "SELECT \"pg_advisory_lock\" -- comment\r\n(1937182461)",
+            "SELECT \"pg_advisory_lock\" -- comment\r(1937182461)",
+            #"SELECT E''"# + "\n" + #"'\'' AS first, pg_catalog.pg_advisory_lock(1937182461), E''"# + "\n" + #"'\'' AS last"#,
+            #"SELECT U&"pg_advisory_\006cock"(1)"#,
+            #"SELECT U&"pg_advisory_!006cock" UESCAPE '!' (1)"#
+        ]
+        for sql in rejected {
+            #expect(throws: DatabaseUserError.self) { try ReadOnlySQLPolicy.validate(sql) }
+        }
+
+        // A quoted column or alias with the same spelling remains a valid read.
+        for sql in [
+            #"SELECT "pg_advisory_lock" FROM examples"#,
+            #"SELECT "set_config" AS "DROP" FROM examples"#,
+            #"SELECT "pg_catalog"."pg_notify" FROM examples AS "pg_catalog""#,
+            #"SELECT "lower"('HELLO') AS "pg_advisory_lock""#,
+            #"WITH "DELETE"(value) AS (SELECT 1) SELECT * FROM "DELETE""#,
+            #"SELECT E'it\'s DELETE; pg_notify(1)' AS statement"#,
+            #"SELECT 'C:\' AS ordinary, 1 AS value"#,
+            #"SELECT E''"# + "\n" + #"'it\'s DELETE; pg_notify(1)' AS statement"#
+        ] {
+            #expect(try ReadOnlySQLPolicy.validate(sql) == nil)
+        }
+    }
+
+    @Test
     func postgresTableQueryUsesBoundValuesAndQualifiedIdentifiers() throws {
         let descriptor = TableDescriptor(
             name: "public.items",

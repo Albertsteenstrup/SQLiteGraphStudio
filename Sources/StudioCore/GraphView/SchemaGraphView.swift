@@ -244,6 +244,9 @@ public struct SchemaGraphView: View {
                 _ = initialViewport.graphChanged(hasGraph: !session.graph.nodes.isEmpty)
                 scheduleInitialViewportFit()
             }
+            .onChange(of: session.schemaSidecarRevision) { _, _ in
+                invalidateClusterTitleCache()
+            }
             .onChange(of: session.graphGrouping) { _, _ in
                 invalidateClusterTitleCache()
                 if let focusedGroupID, session.graphGrouping.group(id: focusedGroupID) == nil {
@@ -3016,10 +3019,10 @@ public struct SchemaGraphView: View {
         }
     }
 
-    private func storyGraphCardsCacheToken() -> Int {
+    func storyGraphCardsCacheToken() -> Int {
         StoryGraphCardsCacheToken.make(
             layoutRevision: layoutRevision,
-            sidecarRevision: clusterTitleCacheKey,
+            sidecarRevision: clusterTitleCacheKey &+ session.schemaSidecarRevision,
             showStoryCardsInGraph: session.showStoryCardsInGraph,
             showOnlyStoryCardsInGraph: session.showOnlyStoryCardsInGraph,
             showAllGraphTableCards: session.showAllGraphTableCards,
@@ -3686,7 +3689,7 @@ public struct SchemaGraphView: View {
     private func clusterTitleCacheToken(focusPlan: GraphFocusPlan?, playbackKey: Int) -> Int {
         ClusterTitleCacheToken.make(
             layoutRevision: layoutRevision,
-            sidecarRevision: clusterTitleCacheKey,
+            sidecarRevision: clusterTitleCacheKey &+ session.schemaSidecarRevision,
             playbackKey: playbackKey,
             isStoryOnlyMode: isStoryOnlyMode,
             hasFocusPlan: focusPlan != nil,

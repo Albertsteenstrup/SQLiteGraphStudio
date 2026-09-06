@@ -637,7 +637,8 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 : .require(.makeClientConfiguration())
         )
         clientConfiguration.options.additionalStartupParameters = [
-            ("default_transaction_read_only", "on")
+            ("default_transaction_read_only", "on"),
+            ("standard_conforming_strings", "on")
         ]
         clientConfiguration.options.connectTimeout = .seconds(10)
         clientConfiguration.options.tlsServerName = configuration.host
@@ -1062,6 +1063,9 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                             try await Self.drain(Self.command("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"), on: connection, logger: logger)
                             let milliseconds = max(1, Int(timeoutSeconds * 1_000))
                             try await Self.drain(Self.command("SET LOCAL statement_timeout = \(milliseconds)"), on: connection, logger: logger)
+                            // Keep literal parsing identical to the client policy,
+                            // including when a pooled session's defaults changed.
+                            try await Self.drain(Self.command("SET LOCAL standard_conforming_strings = on"), on: connection, logger: logger)
                             // Detect a cancelled client's closed socket during server work.
                             try await Self.drain(Self.command("SET LOCAL client_connection_check_interval = '100ms'"), on: connection, logger: logger)
                             // Decode money using this transaction's server-side precision.

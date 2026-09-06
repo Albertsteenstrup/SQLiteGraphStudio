@@ -129,4 +129,49 @@ struct TableBrowsingRegressionTests {
         await service.close()
     }
 
+    @Test func sqliteCursorsPreserveStoredTypesAcrossColumnAffinities() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-mixed-cursors-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("fixture.sqlite")
+        let fixture = try DatabaseQueue(path: url.path)
+        try await fixture.write { db in
+            try db.execute(sql: """
+                CREATE TABLE mixed(id INTEGER PRIMARY KEY, integer_value INTEGER, real_value REAL, numeric_value NUMERIC, boolean_value BOOLEAN, untyped);
+                INSERT INTO mixed VALUES
+                    (1,1,1,1,1,1),
+                    (2,1.5,1.5,1.5,1.5,1.5),
+                    (3,'unknown','unknown','unknown','unknown','1'),
+                    (4,2,2,2,2,2),
+                    (5,'later','later','later','later','abc'),
+                    (6,x'01',x'01',x'01',x'01',x'01');
+                """)
+        }
+        let service = DatabaseService()
+        try await service.open(url: url)
+        do {
+            let descriptor = try await service.fetchDescriptor(named: "mixed")
+            for column in ["integer_value", "real_value", "numeric_value", "boolean_value", "untyped"] {
+                for direction in [SortDirection.ascending, .descending] {
+                    var query = TableQueryState(sort: .init(columnName: column, direction: direction), limit: 1)
+                    var values: [[SQLiteValue]] = []
+                    for _ in 0..<10 {
+                        let page = try await service.fetchChunk(query: query, descriptor: descriptor)
+                        values += page.rows.map(\.values)
+                        guard page.hasMore, let last = page.rows.last else { break }
+                        query.offset = values.count
+                        query.after = .init(values: Dictionary(uniqueKeysWithValues: zip(descriptor.columns.map(\.name), last.values)))
+                    }
+                    let expected = try await service.executeReadOnlyQuery(sql: "SELECT * FROM mixed ORDER BY \(quoteIdentifier(column)) \(direction.sqlKeyword) NULLS LAST, id ASC")
+                    #expect(values == expected.rows.map(\.values), "Cursor changed values for \(column) \(direction)")
+                    #expect(values.count == 6)
+                }
+            }
+            await service.close()
+        } catch {
+            await service.close()
+            throw error
+        }
+    }
+
 }

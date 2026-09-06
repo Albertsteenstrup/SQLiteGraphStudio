@@ -46,14 +46,17 @@ public enum ResultSerialization {
     }
 
     static func csvText(_ value: String, forceQuote: Bool = false) -> String {
-        guard forceQuote || value.isEmpty || value.contains(where: { ",\"\n\r".contains($0) }) else { return value }
+        guard forceQuote || value.isEmpty || value.contains(where: { $0 == "," || $0 == "\"" || $0.isNewline }) else { return value }
         return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 
     static func csvValue(_ value: DatabaseResultValue) -> String {
         if value == .null { return "\\N" }
         let text = exactText(value)
-        return csvText(text, forceQuote: text == "\\N")
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Quoting distinguishes text from current and legacy import NULL markers,
+        // and keeps whitespace-only records from looking like blank CSV lines.
+        return csvText(text, forceQuote: text == "\\N" || trimmed.uppercased() == "NULL" || trimmed.isEmpty)
     }
 
     public static func exactText(_ value: DatabaseResultValue) -> String {

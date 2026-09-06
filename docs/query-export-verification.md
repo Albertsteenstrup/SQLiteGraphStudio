@@ -42,4 +42,4 @@ Fixture-specific browsing/export tests additionally require `SGS_POSTGRES_FIXTUR
 
 ## Verification status
 
-Final integrated test and interactive evidence will be recorded here before completion. Distribution signing requires a Developer ID private key and notarization credentials; no real signing/notarization or distribution is claimed by local packaging tests.
+The [combined main integration verification](main-integration-verification.md) records the completed shared release suite, PostgreSQL checks and final review repairs. Distribution signing requires a Developer ID private key and notarization credentials; no real signing/notarization or distribution is claimed by local packaging tests.

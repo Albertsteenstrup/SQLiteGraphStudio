@@ -52,4 +52,44 @@ struct NativeGridRegressionTests {
         #expect(scroll.contentView.bounds.origin.y >= 50 * 44)
         await service.close()
     }
+
+    @Test func switchingLoadedTabsWithEqualRevisionsRefreshesNativeRows() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-grid-tabs-\(UUID()).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let db = try DatabaseQueue(path: url.path)
+        try await db.write { db in
+            try db.execute(sql: """
+                CREATE TABLE first_items(id INTEGER PRIMARY KEY, name TEXT);
+                CREATE TABLE second_items(id INTEGER PRIMARY KEY, name TEXT);
+                INSERT INTO first_items VALUES (1, 'First table record');
+                INSERT INTO second_items VALUES (2, 'Second table record'), (3, 'Another second record');
+                """)
+        }
+        let service = DatabaseService()
+        try await service.open(url: url)
+        let firstDescriptor = try await service.fetchDescriptor(named: "first_items")
+        let secondDescriptor = try await service.fetchDescriptor(named: "second_items")
+        let first = TableTabModel(descriptor: firstDescriptor, databaseService: service)
+        let second = TableTabModel(descriptor: secondDescriptor, databaseService: service)
+        await first.reload()
+        await second.reload()
+        #expect(first.revision == second.revision)
+        let coordinator = TableGridRepresentable.Coordinator(tab: first, columnDescription: { _ in nil }, requestColumnDrop: { _ in }, inspectRow: { _ in })
+        let scroll = coordinator.makeScrollView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        let table = try #require(scroll.documentView as? NSTableView)
+        coordinator.update(tab: first, revision: first.revision, columnDescription: { _ in nil }, requestColumnDrop: { _ in }, scrollView: scroll, inspectRow: { _ in })
+        #expect(table.numberOfRows == 1)
+        func texts(_ view: NSView) -> [String] { (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(texts) }
+        let firstCell = try #require(table.view(atColumn: 1, row: 0, makeIfNecessary: true))
+        #expect(texts(firstCell).contains("First table record"))
+
+        coordinator.update(tab: second, revision: second.revision, columnDescription: { _ in nil }, requestColumnDrop: { _ in }, scrollView: scroll, inspectRow: { _ in })
+
+        // Inspect Record now reads `second`; the retained native grid must show it too.
+        #expect(table.numberOfRows == 2)
+        let secondCell = try #require(table.view(atColumn: 1, row: 0, makeIfNecessary: true))
+        #expect(texts(secondCell).contains("Second table record"))
+        await service.close()
+    }
 }
