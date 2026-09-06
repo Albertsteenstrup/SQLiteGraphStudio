@@ -4,6 +4,16 @@ import Testing
 @testable import StudioCore
 
 struct RecordPostgresValueTests {
+    @Test func bitValuesDecodeEveryBitIncludingArrayElements() throws {
+        for type in [PostgresDataType.bit, .varbit] {
+            var buffer = try #require(PostgresData(int32: 10).value)
+            buffer.writeInteger(UInt8(0b10101010)); buffer.writeInteger(UInt8(0b11000000))
+            let value = PostgresData(type: type, value: buffer)
+            #expect(PostgresValueMapper.map(value) == .text("1010101011"))
+            #expect(PostgresValueMapper.map(PostgresData(array: [value, nil], elementType: type)) == .array(#"{"1010101011",NULL}"#))
+            #expect(PostgresValueMapper.map(PostgresData(type: type, value: PostgresData(int32: 0).value)) == .text(""))
+        }
+    }
     @Test func arrayLiteralsRetainScalarTypesAndEscaping() {
         let uuid = UUID(uuidString: "12345678-1234-1234-1234-123456789abc")!
         let uuidArray = PostgresData(array: [PostgresData(uuid: uuid)], elementType: .uuid)

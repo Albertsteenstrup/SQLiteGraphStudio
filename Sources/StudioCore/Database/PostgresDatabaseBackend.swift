@@ -8,12 +8,14 @@ public struct PostgresCatalogObject: Sendable, Hashable {
     public let objectName: String
     public let relkind: String
     public let rowEstimate: Double?
+    public let hasInheritanceChildren: Bool
 
-    public init(schemaName: String, objectName: String, relkind: String, rowEstimate: Double?) {
+    public init(schemaName: String, objectName: String, relkind: String, rowEstimate: Double?, hasInheritanceChildren: Bool = false) {
         self.schemaName = schemaName
         self.objectName = objectName
         self.relkind = relkind
         self.rowEstimate = rowEstimate
+        self.hasInheritanceChildren = hasInheritanceChildren
     }
 }
 
@@ -284,7 +286,8 @@ public enum PostgresCatalogMapper {
                 constraints: constraints,
                 generatedColumns: generatedColumns,
                 schemaName: object.schemaName,
-                objectName: object.objectName
+                objectName: object.objectName,
+                hasInheritanceChildren: object.hasInheritanceChildren
             )
         }
 
@@ -406,6 +409,8 @@ public enum PostgresValueMapper {
             return .json(data.jsonb.flatMap { String(data: $0, encoding: .utf8) } ?? rawText(data))
         case .bytea:
             return .blob(Data(data.bytes ?? []))
+        case .bit, .varbit:
+            return bitText(data).map(PostgresValue.text) ?? .blob(Data(data.bytes ?? []))
         case .boolArray, .byteaArray, .charArray, .nameArray, .int2Array, .int4Array,
              .int8Array, .float4Array, .float8Array, .textArray, .uuidArray, .jsonArray,
              .jsonbArray:
@@ -430,6 +435,16 @@ public enum PostgresValueMapper {
             return String(decoding: value.readableBytesView, as: UTF8.self)
         }
         return "0x" + (data.bytes ?? []).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func bitText(_ data: PostgresData) -> String? {
+        guard data.formatCode == .binary else { return rawText(data) }
+        guard var buffer = data.value, let count = buffer.readInteger(as: Int32.self), count >= 0,
+              buffer.readableBytes == (Int(count) + 7) / 8 else { return nil }
+        let bytes = Array(buffer.readableBytesView)
+        return String(decoding: (0..<Int(count)).map { index in
+            UInt8(bytes[index / 8] & (1 << (7 - index % 8)) == 0 ? 48 : 49)
+        }, as: UTF8.self)
     }
 
     private static func numericText(_ data: PostgresData) -> String? {
@@ -673,7 +688,8 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     SELECT n.nspname AS schema_name,
                            c.relname AS object_name,
                            c.relkind::text AS relkind,
-                           c.reltuples::float8 AS row_estimate
+                           c.reltuples::float8 AS row_estimate,
+                           (c.relkind = 'r' AND EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhparent = c.oid)) AS has_inheritance_children
                     FROM pg_catalog.pg_class AS c
                     JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
                     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
@@ -1168,7 +1184,8 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 schemaName: schema,
                 objectName: object,
                 relkind: relkind,
-                rowEstimate: result.double("row_estimate", row: row)
+                rowEstimate: result.double("row_estimate", row: row),
+                hasInheritanceChildren: result.bool("has_inheritance_children", row: row)
             )
         }
     }

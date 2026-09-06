@@ -10,7 +10,7 @@ Outgoing foreign keys and incoming references show the complete column tuple, in
 
 Records with no proven locator remain inspectable. Values are never treated as an identity merely because a column is named `id`. Stable identity requires a complete non-null primary/unique tuple or a proven SQLite rowid. Expression/partial indexes do not prove uniqueness. Views and ambiguous query results remain snapshots. Query navigation accepts only a proven `SELECT * FROM` one exact catalog object (optionally with a numeric `LIMIT`), using the saved SQL that produced the displayed result. Editing the query afterward does not change that origin; joins, computed projections and other shapes remain inspectable snapshots. Relationship queries bind values and quote identifiers; they perform no writes.
 
-Query provenance is intentionally conservative: navigation is permitted only when the immutable SQL that produced the result is a direct `SELECT * FROM` one catalog table, optionally followed by a literal LIMIT, and the result columns match the full descriptor. Other results remain inspectable snapshots, including joins, computed projections and unproven origins.
+For traditional PostgreSQL inheritance, the table grid, matching-row export and record navigation address the named table's own rows (`ONLY`); open descendants separately. This keeps primary keys and foreign keys within the physical table where they apply. A query that includes inherited descendants remains an inspectable snapshot; explicit `SELECT * FROM ONLY` can prove its origin. Declarative partitioned tables keep their inclusive scope and tree-wide keys. See [PostgreSQL inheritance](https://www.postgresql.org/docs/current/ddl-inherit.html) for the underlying constraint boundary.
 
 ## Record graph
 

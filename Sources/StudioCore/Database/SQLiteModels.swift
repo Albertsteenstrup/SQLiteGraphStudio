@@ -279,6 +279,8 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
     public let generatedColumns: [GeneratedColumnInfo]
     public let schemaName: String?
     public let objectName: String
+    /// Traditional inheritance can repeat this table's keys in descendants.
+    public let hasInheritanceChildren: Bool
 
     public init(
         name: String,
@@ -294,7 +296,8 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         constraints: [SchemaConstraint] = [],
         generatedColumns: [GeneratedColumnInfo] = [],
         schemaName: String? = nil,
-        objectName: String? = nil
+        objectName: String? = nil,
+        hasInheritanceChildren: Bool = false
     ) {
         self.id = name
         self.name = name
@@ -311,6 +314,7 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         self.generatedColumns = generatedColumns
         self.schemaName = schemaName
         self.objectName = objectName ?? name
+        self.hasInheritanceChildren = hasInheritanceChildren
     }
 
     public init(
@@ -327,7 +331,8 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
         indexes: [SchemaIndex] = [],
         triggers: [SchemaTrigger] = [],
         constraints: [SchemaConstraint] = [],
-        generatedColumns: [GeneratedColumnInfo] = []
+        generatedColumns: [GeneratedColumnInfo] = [],
+        hasInheritanceChildren: Bool = false
     ) {
         self.init(
             name: name,
@@ -343,7 +348,8 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
             constraints: constraints,
             generatedColumns: generatedColumns,
             schemaName: schemaName,
-            objectName: objectName
+            objectName: objectName,
+            hasInheritanceChildren: hasInheritanceChildren
         )
     }
 
@@ -383,6 +389,12 @@ public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
             return qualifiedIdentifier(schema: schemaName, object: objectName)
         }
         return quoteIdentifier(name)
+    }
+
+    /// Key-based browsing and navigation address this physical table. Declarative
+    /// partition roots retain their inclusive scope and tree-wide constraints.
+    public var tableDataSQLSource: String {
+        (schemaName != nil && objectType == .table && hasInheritanceChildren ? "ONLY " : "") + qualifiedSQLIdentifier
     }
 }
 
@@ -934,9 +946,10 @@ extension TableDescriptor {
     }
 
     public var pagingDescription: String {
-        paginationKeyColumns.isEmpty
+        let scope = hasInheritanceChildren ? "This table's own rows; open descendant tables separately. " : ""
+        return scope + (paginationKeyColumns.isEmpty
             ? "Offset pages: no unique key. Concurrent changes can move or repeat rows; use a snapshot export for a consistent result."
-            : "Key-based next pages. Pages read live data; changes to sort or key values can move rows. Export all matching rows for one consistent snapshot."
+            : "Key-based next pages. Pages read live data; changes to sort or key values can move rows. Export all matching rows for one consistent snapshot.")
     }
 }
 

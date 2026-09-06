@@ -109,7 +109,7 @@ public enum PostgresTableQueryBuilder {
                 conditions.append("\(name) \(operators[filter.comparison]!) \(try operand(filter.value, column: column))")
             }
         }
-        let table = descriptor.qualifiedSQLIdentifier
+        let table = dialect == .postgres ? descriptor.tableDataSQLSource : descriptor.qualifiedSQLIdentifier
         let countWhere = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
         let countParameterCount = parameters.count
         let order = try order(query: query, descriptor: descriptor)

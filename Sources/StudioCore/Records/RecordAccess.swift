@@ -115,7 +115,7 @@ public enum RecordAccess {
         let values = sourceColumns.compactMap { record.value(for: $0) }
         if values.contains(.null) { return nil }
         guard let descriptor = direction == .outgoing ? relationship.targetDescriptor : relationship.sourceDescriptor else { throw RecordAccessError.unavailableTable }
-        if !postgres, direction == .incoming {
+        if direction == .incoming {
             guard let parent = relationship.targetDescriptor else { throw RecordAccessError.unavailableTable }
             let unknown = targetColumns.filter { name in !descriptor.columns.contains { $0.name == name } }
             guard unknown.isEmpty else { throw RecordAccessError.missingColumns(unknown) }
@@ -123,12 +123,19 @@ public enum RecordAccess {
             let parentAlias = "record_parent"
             func parentColumn(_ name: String) -> String { quoteIdentifier(parentAlias) + "." + quoteIdentifier(name) }
             func childColumn(_ name: String) -> String { quoteIdentifier(childAlias) + "." + quoteIdentifier(name) }
-            let anchor = sourceColumns.map { parentColumn($0) + " = ?" }
+            let anchor = try sourceColumns.enumerated().map { index, name in
+                guard postgres else { return parentColumn(name) + " = ?" }
+                guard let column = parent.columns.first(where: { $0.name == name }) else { throw RecordAccessError.missingColumns([name]) }
+                return parentColumn(name) + " = $\(index + 1)::text::" + (try postgresCast(column.declaredType))
+            }
             // Unary + removes the child's column affinity. FK comparisons always
             // use the parent key's affinity and collation, even for TEXT vs INTEGER.
-            let matching = zip(sourceColumns, targetColumns).map { parentColumn($0.0) + " = +" + childColumn($0.1) }
-            let exists = "EXISTS (SELECT 1 FROM \(RecordTableID(descriptor: parent).qualifiedSQLIdentifier) AS \(quoteIdentifier(parentAlias)) WHERE \((anchor + matching).joined(separator: " AND ")))"
-            return try selectionPlan(descriptor: descriptor, terms: [exists], parameters: values, offset: offset, limit: limit, postgres: false, alias: childAlias)
+            // PostgreSQL also allows different parent/child base types. Keep the
+            // parent column in the comparison instead of narrowing its bound key
+            // to the child's type (numeric 1.3 is not an integer lookup error).
+            let matching = zip(sourceColumns, targetColumns).map { parentColumn($0.0) + (postgres ? " = " : " = +") + childColumn($0.1) }
+            let exists = "EXISTS (SELECT 1 FROM \(parent.tableDataSQLSource) AS \(quoteIdentifier(parentAlias)) WHERE \((anchor + matching).joined(separator: " AND ")))"
+            return try selectionPlan(descriptor: descriptor, terms: [exists], parameters: values, offset: offset, limit: limit, postgres: postgres, alias: childAlias)
         }
         return try plan(descriptor: descriptor, predicates: zip(targetColumns, values).map { .init(columnName: $0.0, value: $0.1) }, offset: offset, limit: limit, postgres: postgres)
     }
@@ -156,7 +163,6 @@ public enum RecordAccess {
     private static func selectionPlan(descriptor: TableDescriptor, terms: [String], parameters: [SQLiteValue], offset: Int, limit: Int, postgres: Bool, alias: String? = nil) throws -> RecordQueryPlan {
         let boundedLimit = min(max(limit, 1), maximumPageSize)
         let boundedOffset = min(max(offset, 0), Int.max - maximumPageSize - 1)
-        let table = RecordTableID(descriptor: descriptor)
         let columns = descriptor.columns
         guard !columns.isEmpty else { throw RecordAccessError.unavailableTable }
         func columnReference(_ name: String) -> String {
@@ -172,7 +178,7 @@ public enum RecordAccess {
         let whereSQL = terms.isEmpty ? "" : " WHERE " + terms.joined(separator: " AND ")
         let orderSQL = order.isEmpty ? "" : " ORDER BY " + order.map(columnReference).joined(separator: ", ")
         let aliasSQL = alias.map { " AS " + quoteIdentifier($0) } ?? ""
-        let sql = "SELECT \(selected.joined(separator: ", ")) FROM \(table.qualifiedSQLIdentifier)\(aliasSQL)\(whereSQL)\(orderSQL) LIMIT \(boundedLimit + 1) OFFSET \(boundedOffset)"
+        let sql = "SELECT \(selected.joined(separator: ", ")) FROM \(descriptor.tableDataSQLSource)\(aliasSQL)\(whereSQL)\(orderSQL) LIMIT \(boundedLimit + 1) OFFSET \(boundedOffset)"
         return RecordQueryPlan(sql: sql, parameters: parameters, descriptor: descriptor, offset: boundedOffset, limit: boundedLimit, rowIDColumn: rowIDColumn)
     }
 
@@ -219,7 +225,9 @@ public enum RecordAccess {
             return "pg_catalog.bpchar" + comparisonType.dropFirst("character".count)
         }
         if base == "bit" || base.hasPrefix("bit[") {
-            return "pg_catalog.varbit" + comparisonType.dropFirst("bit".count)
+            // Qualified catalog BIT has no default SQL length and retains the
+            // bit[] element type needed by PostgreSQL's array equality operator.
+            return "pg_catalog.bit" + comparisonType.dropFirst("bit".count)
         }
         // Money input uses lc_monetary separators; our exact amounts use the
         // locale-independent numeric syntax, including each array element.
