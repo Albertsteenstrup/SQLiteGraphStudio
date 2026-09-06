@@ -605,12 +605,14 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
     public nonisolated let capabilities: DatabaseCapabilities = .postgresReadOnly
 
     private let credentialOverride: String?
+    private let unixSocketPath: String?
     private var client: PostgresClient?
     private var clientRunTask: Task<Void, Never>?
 
-    public init(configuration: PostgresConnectionConfiguration, password: String? = nil) {
+    public init(configuration: PostgresConnectionConfiguration, password: String? = nil, unixSocketPath: String? = nil) {
         self.configuration = configuration
         self.credentialOverride = password
+        self.unixSocketPath = unixSocketPath
     }
 
     public func open() async throws {
@@ -625,17 +627,23 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
             )
         }
 
-        let password = credentialOverride ?? PostgresExternalCredential.password(for: configuration)
-        var clientConfiguration = PostgresClient.Configuration(
-            host: configuration.host,
-            port: configuration.port,
-            username: configuration.username,
-            password: password,
-            database: configuration.database,
-            tls: configuration.tlsMode == .disabled
-                ? .disable
-                : .require(.makeClientConfiguration())
-        )
+        let password = unixSocketPath == nil ? (credentialOverride ?? PostgresExternalCredential.password(for: configuration)) : nil
+        var clientConfiguration: PostgresClient.Configuration
+        if let unixSocketPath {
+            clientConfiguration = PostgresClient.Configuration(unixSocketPath: unixSocketPath,
+                username: configuration.username, password: nil, database: configuration.database)
+        } else {
+            clientConfiguration = PostgresClient.Configuration(
+                host: configuration.host,
+                port: configuration.port,
+                username: configuration.username,
+                password: password,
+                database: configuration.database,
+                tls: configuration.tlsMode == .disabled
+                    ? .disable
+                    : .require(.makeClientConfiguration())
+            )
+        }
         clientConfiguration.options.additionalStartupParameters = [
             ("default_transaction_read_only", "on"),
             ("standard_conforming_strings", "on")

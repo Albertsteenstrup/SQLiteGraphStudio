@@ -4,6 +4,7 @@ import SwiftUI
 
 final class StudioAppDelegate: NSObject, NSApplicationDelegate {
     var onOpenURLs: (([URL]) -> Void)?
+    var onTerminate: (() async -> Void)?
     private var pendingOpenURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -28,9 +29,28 @@ final class StudioAppDelegate: NSObject, NSApplicationDelegate {
         pendingOpenURLs.removeAll()
         onOpenURLs(urls)
     }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let onTerminate else { return .terminateNow }
+        Task { await onTerminate(); sender.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
 }
 
 @main
+struct StudioLauncher {
+    @MainActor static func main() {
+        // AppKit must own the ordinary synchronous main entrypoint. Nesting its
+        // event loop inside an async main-actor job starves later UI tasks.
+        guard PostgresRuntimeSupervisor.isRequested else {
+            SQLiteGraphStudioApp.main()
+            return
+        }
+        Task.detached { exit(await PostgresRuntimeSupervisor.runIfRequested() ?? 2) }
+        dispatchMain()
+    }
+}
+
 struct SQLiteGraphStudioApp: App {
     @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var appDelegate
     @State private var session: AppSession = {
@@ -55,6 +75,7 @@ struct SQLiteGraphStudioApp: App {
     private func configureLaunchHandling() {
         guard !didConfigureLaunchHandling else { return }
         didConfigureLaunchHandling = true
+        appDelegate.onTerminate = { await session.closeAndWait() }
 
         appDelegate.onOpenURLs = { urls in
             guard let documentURL = urls.first else { return }
@@ -73,13 +94,7 @@ struct SQLiteGraphStudioApp: App {
 }
 
 private enum LaunchRequestResolver {
-    private static let allowedExtensions: Set<String> = Set([
-        "sqlite",
-        "sqlite3",
-        "db",
-        "sqlite-db",
-        "sqlitedb",
-    ]).union(PostgresConnectionDocument.supportedFileExtensions)
+    private static let allowedExtensions = DatabaseDocument.supportedExtensions
 
     static func databaseURLs(fromArguments arguments: [String]) -> [URL] {
         databaseURLs(

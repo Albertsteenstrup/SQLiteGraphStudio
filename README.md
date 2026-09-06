@@ -40,7 +40,17 @@ For Codex, create `.agents/skills` in your repo first; the app will install `gra
 
 ## PostgreSQL connections
 
-Choose Open PostgreSQL Document… from the toolbar, the Database menu, or the empty state. A PostgreSQL document is a user-managed .postgres or .pgstudio JSON file containing only endpoint properties:
+Choose **Other Database…** from the toolbar or Database menu, or **Choose Other Database** on the welcome screen. The picker shows the supported formats: PostgreSQL custom-format backups (`.dump`, `.backup`) and connection documents (`.postgres`, `.pgstudio`). These files also work through Finder, launch arguments and Open Recent. SQL scripts, directory archives and other database engines are not supported by this picker.
+
+A backup opens without connection details or a login. Graph Studio copies it into a private temporary workspace, restores it using local PostgreSQL, and opens the schema, rows, record explorer and SQL editor in read-only mode. Progress and Cancel are shown during preparation. The source backup is never modified. Closing the workspace or quitting stops its server and removes the temporary copy; reopening restores a fresh copy. A private Unix socket is used, with no TCP listener. Restore tools and the server run under a filesystem/network sandbox. Restoration is the only write phase and only affects the private copy; browsing uses a separate reader with existing read-only query restrictions.
+
+Archive SQL runs as a non-superuser without role/database creation or native-language privileges. The server also blocks shell/program execution and executable mappings from the writable workspace. Trusted extensions such as `pgcrypto` can restore normally; `vector` is prepared with a fixed command from the trusted installed runtime before archive SQL runs. Other features requiring superuser privileges (including untrusted procedural languages) are rejected rather than restored with elevated permissions. Cleanup uses kernel-checked process identities; if shutdown cannot be confirmed, the private workspace is retained rather than removed underneath a surviving process.
+
+The private snapshot reader can see all rows present in the archive, including tables with row-security policies. It has no table-write or administrative privileges. Stable/immutable SQL and PL/pgSQL functions that run with the reader's permissions remain available to views. Views requiring volatile or security-definer application functions report a permission error. These snapshot permissions do not change any live database or the source archive.
+
+Backup opening requires a compatible local runtime: a packaged `Contents/Resources/PostgreSQL` runtime is preferred, with installed PostgreSQL 17/18 (Homebrew or Postgres.app) supported as a fallback. A development override can use `SGS_POSTGRES_RUNTIME=/path/to/runtime`. The runtime must include any extensions required by the archive (for example `pgcrypto` and `vector`). Missing tools, unsupported archive versions, extensions or restore failures produce an error and discard the incomplete workspace. See [packaging](docs/packaging.md). This does not affect live connection documents.
+
+A connection document is a user-managed `.postgres` or `.pgstudio` JSON file containing only endpoint properties:
 
     {
       "name": "Read-only database",
@@ -62,7 +72,7 @@ PostgreSQL sessions are permanently read-only:
 
 PostgreSQL metadata is read from pg_catalog in set-based queries. System and temporary schemas are excluded. Tables, partitioned tables, views, and materialized views include columns, format_type output, nullability, defaults, generated and identity metadata, primary keys, indexes, foreign keys, named CHECK constraints, user triggers, row estimates, and graph cardinality. Initial catalog loading does not count table rows. Query results are capped at 500 visible rows by default (up to 10,000 for the backend request) and report truncation; table browsing uses bound search/filter/paging values.
 
-PostgreSQL uses the same local groups, colours, notes, stories and AI skills as SQLite. Put metadata next to the connection document: `fjordholm.postgres.studio.json` for `fjordholm.postgres`, or `workspace.pgstudio.studio.json` for `workspace.pgstudio`. Table references must use the exact schema-qualified catalog ID, for example `public.orders`. **Relayout** reloads the sidecar and rebuilds the graph. Story deletion changes only this local sidecar; it never writes to PostgreSQL. The connection document appears in **Open Recent**.
+PostgreSQL uses the same local groups, colours, notes, stories and AI skills as SQLite. Put metadata next to the selected document: `fjordholm.dump.studio.json` for `fjordholm.dump`, `fjordholm.postgres.studio.json` for `fjordholm.postgres`, or `workspace.pgstudio.studio.json` for `workspace.pgstudio`. Table references must use the exact schema-qualified catalog ID, for example `public.orders`. **Relayout** reloads the sidecar and rebuilds the graph. Story deletion changes only this local sidecar; it never writes to PostgreSQL. The selected document appears in **Open Recent**, and its path owns saved queries and layout even when a fresh local copy is restored.
 
 Query history, saved queries and graph layout use a password-free, hashed connection identity. The selected document provides the local metadata/skills directory. Use **AI Skills → Reinstall** to explicitly replace an older installed skill with the current instructions.
 

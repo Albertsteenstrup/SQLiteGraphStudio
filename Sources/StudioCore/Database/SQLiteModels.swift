@@ -458,6 +458,7 @@ public struct PostgresConnectionConfiguration: Sendable, Hashable, Codable {
 public enum DatabaseTarget: Sendable, Hashable, Codable {
     case sqlite(URL)
     case postgres(PostgresConnectionConfiguration)
+    case postgresDump(URL)
 
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -468,6 +469,7 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
     private enum Kind: String, Codable {
         case sqlite
         case postgres
+        case postgresDump
     }
 
     public init(from decoder: Decoder) throws {
@@ -477,6 +479,8 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
             self = .sqlite(try container.decode(URL.self, forKey: .url).standardizedFileURL)
         case .postgres:
             self = .postgres(try container.decode(PostgresConnectionConfiguration.self, forKey: .configuration))
+        case .postgresDump:
+            self = .postgresDump(try container.decode(URL.self, forKey: .url).standardizedFileURL)
         }
     }
 
@@ -489,6 +493,9 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
         case .postgres(let configuration):
             try container.encode(Kind.postgres, forKey: .kind)
             try container.encode(configuration, forKey: .configuration)
+        case .postgresDump(let url):
+            try container.encode(Kind.postgresDump, forKey: .kind)
+            try container.encode(url.standardizedFileURL, forKey: .url)
         }
     }
 
@@ -498,12 +505,14 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
             return "sqlite:" + url.standardizedFileURL.path
         case .postgres(let configuration):
             return "postgres:" + configuration.canonicalIdentity
+        case .postgresDump(let url):
+            return "postgres-dump:" + url.standardizedFileURL.path
         }
     }
 
     public var stableStorageKey: String {
         switch self {
-        case .sqlite:
+        case .sqlite, .postgresDump:
             return identity
         case .postgres(let configuration):
             return "postgres-" + configuration.stableStorageKey
@@ -511,10 +520,11 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
     }
 
     public var fileURL: URL? {
-        if case .sqlite(let url) = self {
+        switch self {
+        case .sqlite(let url), .postgresDump(let url):
             return url.standardizedFileURL
+        case .postgres: return nil
         }
-        return nil
     }
 
     public var displayName: String {
@@ -523,12 +533,16 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
             return url.lastPathComponent
         case .postgres(let configuration):
             return "PostgreSQL · " + configuration.database
+        case .postgresDump(let url):
+            return url.lastPathComponent
         }
     }
 
     public var isPostgres: Bool {
-        if case .postgres = self { return true }
-        return false
+        switch self {
+        case .postgres, .postgresDump: return true
+        case .sqlite: return false
+        }
     }
 }
 

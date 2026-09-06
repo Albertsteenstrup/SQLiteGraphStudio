@@ -210,6 +210,9 @@ public final class AppSession {
     public var queryWorkspace: QueryWorkspaceModel
 
     private var openGeneration = UUID()
+    private var dumpOpenTask: Task<Void, Error>?
+    private var retiringDumpOpens: [UUID: Task<Void, Never>] = [:]
+    public private(set) var documentOpenProgress: String?
     private var pendingDatabaseClose: Task<Void, Never>?
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
@@ -217,13 +220,7 @@ public final class AppSession {
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
     private static let graphLayoutStorageVersion = 2
-    private static let allowedDatabaseExtensions: Set<String> = Set([
-        "sqlite",
-        "sqlite3",
-        "db",
-        "sqlite-db",
-        "sqlitedb",
-    ]).union(PostgresConnectionDocument.supportedFileExtensions)
+    private static let allowedDatabaseExtensions = DatabaseDocument.supportedExtensions
     private static let maxRecentDatabaseCount = 6
 
     public init(
@@ -303,7 +300,7 @@ public final class AppSession {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = []
-        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: ["sqlite", "sqlite3", "db", "sqlite-db", "sqlitedb"])
+        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.sqliteExtensions)
         panel.delegate = documentFilter
         panel.prompt = "Open Database"
 
@@ -320,6 +317,8 @@ public final class AppSession {
     }
 
     private func openDatabase(url: URL, changeBaseline: SchemaRefreshSnapshot?) async {
+        retireDumpOpen()
+        documentOpenProgress = nil
         records.reset()
         let generation = UUID()
         openGeneration = generation
@@ -355,36 +354,105 @@ public final class AppSession {
         }
     }
 
-    public func presentOpenPostgreSQLDocumentPanel() {
+    public func presentOpenOtherDatabasePanel() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        // These are app-owned JSON documents, not a system-provided UTI. Use
-        // the delegate's explicit extension check instead
-        // of relying on dynamic UTI inference for the custom suffixes.
+        // Custom archive/document suffixes do not reliably map to system UTIs.
         panel.allowedContentTypes = []
-        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: PostgresConnectionDocument.supportedFileExtensions)
+        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.otherExtensions)
         panel.delegate = documentFilter
-        panel.prompt = "Open PostgreSQL Document"
+        panel.title = "Open Other Database"
+        panel.message = DatabaseDocument.otherFormatsDescription
+        panel.prompt = "Open"
 
         panel.begin { [self, documentFilter] response in
             withExtendedLifetime(documentFilter) {
                 guard response == .OK, let url = panel.url else { return }
-                Task { await openPostgreSQLDocument(url: url) }
+                Task { await openDocument(url: url) }
             }
         }
     }
 
     public func openDocument(url: URL) async {
-        if PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
+        if DatabaseDocument.isArchive(url) {
+            await openPostgreSQLDump(url: url)
+        } else if PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
             await openPostgreSQLDocument(url: url)
-        } else {
+        } else if DatabaseDocument.sqliteExtensions.contains(url.pathExtension.lowercased()) {
             await openDatabase(url: url)
+        } else {
+            presentedError = DatabaseUserError(kind: .invalidInput, message: "This database file type is not supported.")
+        }
+    }
+
+    private func openPostgreSQLDump(url: URL) async {
+        retireDumpOpen()
+        let generation = UUID()
+        openGeneration = generation
+        queryWorkspace.stopAll()
+        cancelExport()
+        isRefreshing = true
+        presentedError = nil
+        documentOpenProgress = "Opening PostgreSQL backup…"
+        let opening = Task {
+            await pendingDatabaseClose?.value
+            try Task.checkCancellation()
+            try await databaseService.open(dump: url) { [weak self] message in
+                await self?.updateDocumentOpenProgress(message, generation: generation)
+            }
+        }
+        dumpOpenTask = opening
+        defer {
+            if openGeneration == generation {
+                isRefreshing = false
+                documentOpenProgress = nil
+                dumpOpenTask = nil
+            }
+        }
+        do {
+            try await opening.value
+            guard openGeneration == generation else { return }
+            documentOpenProgress = "Loading schema graph…"
+            let snapshot = try await databaseService.loadCatalogSnapshot()
+            guard openGeneration == generation else { return }
+            apply(snapshot: snapshot, target: .postgresDump(url.standardizedFileURL))
+        } catch {
+            guard openGeneration == generation else { return }
+            await databaseService.close()
+            guard openGeneration == generation else { return }
+            closeDatabase()
+            if !(error is CancellationError) { presentedError = SQLiteUserError.from(error) }
+        }
+    }
+
+    private func updateDocumentOpenProgress(_ message: String, generation: UUID) {
+        if openGeneration == generation { documentOpenProgress = message }
+    }
+
+    public func cancelDocumentOpen() { closeDatabase() }
+
+    public func closeAndWait() async {
+        closeDatabase()
+        for cleanup in retiringDumpOpens.values { await cleanup.value }
+        await pendingDatabaseClose?.value
+    }
+
+    private func retireDumpOpen() {
+        guard let opening = dumpOpenTask else { return }
+        dumpOpenTask = nil
+        opening.cancel()
+        let id = UUID()
+        retiringDumpOpens[id] = Task { [weak self] in
+            _ = try? await opening.value
+            self?.retiringDumpOpens.removeValue(forKey: id)
         }
     }
 
     public func openPostgreSQLDocument(url: URL) async {
+        retireDumpOpen()
+        documentOpenProgress = nil
         records.reset()
         let generation = UUID()
         openGeneration = generation
@@ -421,6 +489,8 @@ public final class AppSession {
     }
 
     public func closeDatabase() {
+        retireDumpOpen()
+        documentOpenProgress = nil
         records.reset()
         openGeneration = UUID()
         isRefreshing = false
@@ -585,7 +655,7 @@ public final class AppSession {
         switch target {
         case .sqlite(let databaseURL):
             Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
-        case .postgres:
+        case .postgres, .postgresDump:
             let generation = openGeneration
             let documentURL = databaseURL
             Task {

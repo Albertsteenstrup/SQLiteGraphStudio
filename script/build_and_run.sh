@@ -21,6 +21,10 @@ case "$MODE" in
   *) echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only]" >&2; exit 2 ;;
 esac
 
+if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
+  SGS_POSTGRES_RUNTIME="$(python3 "$ROOT_DIR/script/package_postgres_runtime.py" check-source "$SGS_POSTGRES_RUNTIME" "$APP_BUNDLE")"
+fi
+
 if [[ "$MODE" != "--build-only" && "$MODE" != "build-only" ]]; then
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 fi
@@ -45,6 +49,13 @@ for bundle in "$(dirname "$BUILD_BINARY")/"*.bundle; do
     cp -R "$bundle" "$APP_RESOURCES/"
   fi
 done
+
+if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
+  RUNTIME_ARCHS_TEXT="$(lipo -archs "$BUILD_BINARY")"
+  read -r -a RUNTIME_ARCHS <<< "$RUNTIME_ARCHS_TEXT"
+  python3 "$ROOT_DIR/script/package_postgres_runtime.py" package "$SGS_POSTGRES_RUNTIME" \
+    "$APP_RESOURCES/PostgreSQL" "${RUNTIME_ARCHS[@]}"
+fi
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

@@ -47,9 +47,11 @@
             <array>
                 <string>postgres</string>
                 <string>pgstudio</string>
+                <string>dump</string>
+                <string>backup</string>
             </array>
             <key>CFBundleTypeName</key>
-            <string>PostgreSQL Connection Document</string>
+            <string>PostgreSQL Backup or Connection Document</string>
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
             <key>LSHandlerRank</key>

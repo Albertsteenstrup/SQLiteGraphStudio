@@ -47,6 +47,8 @@ public actor DatabaseService {
     }
 
     private var backend: Backend?
+    private(set) var dumpSession: PostgresDumpSession?
+    private var pendingCleanup: Task<Void, Never>?
     private var openGeneration = UUID()
     public private(set) var currentTarget: DatabaseTarget?
 
@@ -86,26 +88,58 @@ public actor DatabaseService {
             try await open(url: url)
         case .postgres(let configuration):
             try await open(postgres: configuration)
+        case .postgresDump(let url):
+            try await open(dump: url)
+        }
+    }
+
+    public func open(dump url: URL, progress: @escaping @Sendable (String) async -> Void = { _ in }) async throws {
+        let generation = try await beginOpen()
+        let dump = try await PostgresDumpSession.prepare(url: url, progress: progress)
+        let postgres = PostgresDatabaseBackend(configuration: dump.configuration, unixSocketPath: dump.socketPath)
+        do {
+            guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+            try await postgres.open()
+            guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+            dumpSession = dump
+            backend = .postgres(postgres)
+            currentTarget = .postgresDump(url.standardizedFileURL)
+        } catch {
+            await postgres.close()
+            await dump.close()
+            throw error
         }
     }
 
     private func beginOpen() async throws -> UUID {
         let generation = UUID()
         openGeneration = generation
-        let previous = backend
-        backend = nil
-        currentTarget = nil
-        await previous?.value.close()
+        await retireCurrentBackend().value
         guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
         return generation
     }
 
+    private func retireCurrentBackend() -> Task<Void, Never> {
+        let previousCleanup = pendingCleanup
+        let previous = backend
+        let previousDump = dumpSession
+        backend = nil
+        dumpSession = nil
+        currentTarget = nil
+        // Keep teardown owned while actor reentrancy allows another open or
+        // Quit to enter. Every later transition joins the same cleanup chain.
+        let cleanup = Task {
+            await previousCleanup?.value
+            await previous?.value.close()
+            await previousDump?.close()
+        }
+        pendingCleanup = cleanup
+        return cleanup
+    }
+
     public func close() async {
         openGeneration = UUID()
-        let previous = backend
-        backend = nil
-        currentTarget = nil
-        await previous?.value.close()
+        await retireCurrentBackend().value
     }
 
     public func listTables() async throws -> [TableSummary] {

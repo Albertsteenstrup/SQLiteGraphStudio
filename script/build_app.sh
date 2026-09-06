@@ -23,6 +23,10 @@ MIN_MACOS_VERSION="$(sgs_metadata LSMinimumSystemVersion)"
 ARCHS=("arm64" "x86_64")
 UNIVERSAL_BINARY="$DIST_DIR/$APP_NAME.universal"
 
+if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
+    SGS_POSTGRES_RUNTIME="$(python3 "$SCRIPT_DIR/package_postgres_runtime.py" check-source "$SGS_POSTGRES_RUNTIME" "$APP_BUNDLE")"
+fi
+
 echo "==> Building universal release binary (${ARCHS[*]})..."
 cd "$PROJECT_DIR"
 
@@ -91,6 +95,12 @@ for bundle in "$RESOURCE_BUILD_DIR/"*.bundle; do
     fi
 done
 
+# Optional native runtime; ordinary builds retain installed-runtime discovery.
+if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
+    python3 "$SCRIPT_DIR/package_postgres_runtime.py" package "$SGS_POSTGRES_RUNTIME" \
+        "$APP_BUNDLE/Contents/Resources/PostgreSQL" "${ARCHS[@]}"
+fi
+
 # Strip macOS metadata that breaks codesigning (ignore permission errors from iCloud)
 chmod -R u+rw "$APP_BUNDLE" 2>/dev/null || true
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
@@ -99,7 +109,10 @@ find "$APP_BUNDLE" -name ".DS_Store" -delete 2>/dev/null || true
 sgs_write_metadata "$APP_BUNDLE/Contents/Info.plist"
 
 if [[ -n "$SIGNING_IDENTITY" ]]; then
-    # The current app has one Mach-O executable and resource-only bundles.
+    if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
+        python3 "$SCRIPT_DIR/package_postgres_runtime.py" sign \
+            "$APP_BUNDLE/Contents/Resources/PostgreSQL" "$SIGNING_IDENTITY"
+    fi
     codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
     codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 else

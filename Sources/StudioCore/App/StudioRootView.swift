@@ -59,6 +59,17 @@ public struct StudioRootView: View {
             }
         }
         .disabled(session.isRefreshing)
+        .overlay {
+            if let message = session.documentOpenProgress {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text(message)
+                    Button("Cancel") { session.cancelDocumentOpen() }
+                }
+                .padding(28)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
                 if let export = session.exportProgress {
@@ -123,7 +134,7 @@ public struct StudioRootView: View {
         }
         .overlay(alignment: .top) {
             if session.isPostgreSQL {
-                Label("PostgreSQL connection · strictly read-only", systemImage: "lock.fill")
+                Label("PostgreSQL · strictly read-only", systemImage: "lock.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(StudioPalette.primaryText)
                     .padding(.horizontal, 12)
@@ -207,11 +218,11 @@ public struct StudioRootView: View {
 
             ToolbarItem {
                 Button {
-                    session.presentOpenPostgreSQLDocumentPanel()
+                    session.presentOpenOtherDatabasePanel()
                 } label: {
-                    Label("Open PostgreSQL Document", systemImage: "server.rack")
+                    Label("Other Database…", systemImage: "server.rack")
                 }
-                .help("Open PostgreSQL Document")
+                .help(DatabaseDocument.otherFormatsDescription)
             }
 
             ToolbarItem {
@@ -277,6 +288,9 @@ public struct StudioRootView: View {
             },
             message: {
                 Text(session.presentedError?.message ?? "Unknown error")
+                if let suggestion = session.presentedError?.recoverySuggestion, !suggestion.isEmpty {
+                    Text(suggestion)
+                }
             }
         )
     }
@@ -1714,7 +1728,7 @@ private struct EmptyDatabaseView: View {
                     Text("Open a database")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(StudioPalette.primaryText)
-                    Text("Open a SQLite file to explore and edit it, or choose a PostgreSQL document for strictly read-only browsing and SQL.")
+                    Text("Open a SQLite file to explore and edit it, or a PostgreSQL backup or connection document for read-only browsing and SQL.")
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
@@ -1731,13 +1745,17 @@ private struct EmptyDatabaseView: View {
                     .controlSize(.large)
 
                     Button {
-                        session.presentOpenPostgreSQLDocumentPanel()
+                        session.presentOpenOtherDatabasePanel()
                     } label: {
-                        Label("Choose PostgreSQL Document", systemImage: "server.rack")
+                        Label("Choose Other Database", systemImage: "server.rack")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                 }
+                Text(DatabaseDocument.otherFormatsDescription)
+                    .font(.caption)
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
 

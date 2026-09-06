@@ -455,7 +455,7 @@ public final class QueryWorkspaceModel {
         switch target {
         case .sqlite(let url):
             return storageKey(for: url)
-        case .postgres:
+        case .postgres, .postgresDump:
             return "SQLiteGraphStudio.saved-queries.\(target.stableStorageKey)"
         }
     }
@@ -468,7 +468,7 @@ public final class QueryWorkspaceModel {
         switch target {
         case .sqlite(let url):
             return historyStorageKey(for: url)
-        case .postgres:
+        case .postgres, .postgresDump:
             return "SQLiteGraphStudio.query-history.\(target.stableStorageKey)"
         }
     }
