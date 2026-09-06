@@ -15,7 +15,7 @@
 - [x] RecordInspectorView/RecordGraphView: native full-value presentation, raw copy, async JSON formatting, relationship pages, shared graph layout/viewport and root/branch controls.
 - [x] Add row inspection callbacks to table/query grids and Records presentation to AppSession/StudioRootView. Retain originating views and invalidate immediately on open/close.
 - [x] Integrate committed parity and fix checkpoints; resolve only integration conflicts within approved scope.
-- [ ] Verify focused tests and full suite, owned PostgreSQL fixture, SQLite editing and PostgreSQL mutation boundaries. Build exact worktree app and inspect actual UI.
+- [x] Verify focused tests and full suite, owned PostgreSQL fixture, SQLite editing and PostgreSQL mutation boundaries. Build exact worktree app and inspect actual UI.
 - [x] Independent spec review then quality review; correct findings, update README and validation notes, commit feature branch. Do not push or merge main.
 
 Validation evidence, integrated checkpoints, fixture ownership and UI limits are recorded in [record-exploration-verification.md](../../record-exploration-verification.md). The initial baseline failure was diagnosed and its fixture-isolation repair was integrated before feature validation.
