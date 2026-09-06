@@ -21,8 +21,11 @@
 - [x] UI/gating: hide PostgreSQL write controls; keep backend guards and SQLite actions. Replace silent integration guard with explicit skip plus throwing configuration parsing for opted-in runs. Test missing/invalid fields including TLS, and document invocation.
 - [x] Packaging: reproduce bundle/version mismatch. Centralize metadata, preserve existing preferences, configure signing and notarization; validate scripts/plists locally. No install/publish/distribution.
 - [x] Integrate committed parity checkpoint; adapt shared consumers and record interface checkpoint for record-explorer task.
-- [ ] Final review for spec coverage, then code quality; resolve findings, run full suite and owned PostgreSQL integration, verify app flows. Commit branch without push or merge. Record base/head and each finding's evidence or precise blocker.
+- [x] Final full verification: 294 tests in 49 suites passed with all live PostgreSQL fixture gates enabled and zero skips; packaging tests and preference migration passed.
+- [x] Final review for spec coverage and code quality; resolve findings and commit shared code on the isolated branch. Committed checkpoints and exact evidence are recorded in the verification document.
+- [ ] Complete the remaining native Save, table filter/count/paging, SQLite edit and PostgreSQL Stop interactions. The Mac explicitly reports it is locked; no end-to-end completion is claimed for these flows.
+- [x] Document the distribution limitation: Developer ID signing and notarization credentials are unavailable; local packaging checks are complete. Installation, publishing and distribution are outside this task’s authorized scope.
 
 Each implementation follows: add focused regression, observe the expected failure, implement, run green, inspect consumers, review and commit checkpoint. Logs and fixture databases stay in /tmp, not Git.
 
-Committed parity checkpoint `8a8fdc4` was integrated as `e23c8ac`; record-specific features were excluded. Final status and evidence: [verification](../../query-export-verification.md).
+Committed parity checkpoint `8a8fdc4` was integrated as `e23c8ac`; record-specific features were excluded. Canvas checkpoint `eb1e4b2` and shared final repairs from `d84f27c` were subsequently integrated; code checkpoint is `a0fcd6c`. Final status and evidence: [verification](../../query-export-verification.md).
