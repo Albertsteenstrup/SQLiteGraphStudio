@@ -1,6 +1,6 @@
 # Combined main integration verification
 
-The PostgreSQL parity, large canvas, query/export and record exploration work was integrated against fetched `origin/main` at `f0b2266`. The combined record checkpoint is `a5535ce`, with its verification documentation at `d486afb`. The integration commit containing this document adds the final reviewed repairs below. Verification completed on 2026-09-06.
+The PostgreSQL parity, large canvas, query/export and record exploration work was integrated against fetched `origin/main` at `f0b2266`. The combined record checkpoint is `a5535ce`, with its verification documentation at `d486afb`. `d84f27c` contains the initial final review repairs below; the later hygiene integration is recorded at the end. Verification completed on 2026-09-06.
 
 ## Included behavior
 
@@ -44,6 +44,28 @@ Native grid regressions exercise AppKit views. Earlier isolated app checks cover
 
 Record graph expansion/collapse currently recalculates positions and fits its view, replacing manually dragged record positions. This documented limitation does not affect saved schema graph pins. No release installation, Developer ID signing, notarization or artifact distribution is part of this source integration.
 
-Wiki impact: no update needed — this repository has no Wiki; README and the linked canonical documents describe the changed workflows and boundaries.
+
+## Follow-up hygiene integration
+
+The user subsequently authorized fetching, integrating the completed hygiene follow-up, and pushing main. The fetched base was `d84f27c11f6add1a0266950d28549cb6e3c24975`. Source checkpoints `10359d1` and `a0fcd6c`, plus documentation `88f5573`, were integrated without removing the existing record or parity implementation. The final tested code is `725ef9d`.
+
+The remaining runtime delta is limited to both generated Top 10 query sources using `tableDataSQLSource`, standardizing the SQLite session's selected URL to match backend target checks, and leaving omitted CSV fields absent so column defaults apply. Explicit NULL remains distinct from omission and empty text.
+
+Independent pre-push review found that the new inheritance export fixture test lacked the explicit owner-role enablement used by its peers. With reader/fixture gates enabled but no owner, the test reproduced setup and cleanup failures. The repaired test explicitly skips that unavailable owner coverage; its owner-enabled run passes. The reviewer rechecked the guard and reported no remaining findings, with a passing gate.
+
+Fresh combined verification on the final code:
+
+| Check | Result |
+| --- | --- |
+| Complete Swift Testing suite | 338 tests, 59 suites, 131.723 seconds; all PostgreSQL and owned-fixture gates enabled, no exclusions or skips |
+| XCTest record/workflow suite | 13 tests, zero failures, 0.050 seconds |
+| Application product build | Passed, 4.46 seconds |
+| Packaging regression harness | 9 tests passed, 5.390 seconds; compiled preference-migration harness passed |
+| Missing-owner configuration control | Previously failed twice; now explicitly skips the owner-dependent case and exits successfully |
+| Independent code review and whitespace check | Passed |
+
+The complete suite used the retained task-owned `sgs-record-b96d` PostgreSQL 17 fixture and the Swift Testing helper with one execution slot. An earlier run was stopped to rebuild the owner-gating repair and is not counted as completed evidence. The native-interaction and distribution limits above still apply.
+
+Wiki impact: no update needed — this repository has no Wiki; the updated canonical query contracts and verification documents cover the follow-up.
 
 Gate: PASS
