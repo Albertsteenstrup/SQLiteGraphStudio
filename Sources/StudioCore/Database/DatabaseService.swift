@@ -1190,10 +1190,8 @@ private func parseImportRows(text: String, format: DataTransferFormat) throws ->
             for (index, columnName) in header.enumerated() {
                 let trimmedName = columnName.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmedName.isEmpty else { continue }
-                guard record.indices.contains(index) else {
-                    row.updateValue(nil, forKey: trimmedName)
-                    continue
-                }
+                // Missing fields remain absent so SQLite can apply column defaults.
+                guard record.indices.contains(index) else { continue }
                 let field = record[index]
                 let legacyNull = field.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "NULL"
                 let isNull = !field.isQuoted && (field.text == "\\N" || legacyNull)

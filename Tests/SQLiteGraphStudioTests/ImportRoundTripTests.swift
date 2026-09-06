@@ -37,6 +37,35 @@ struct ImportRoundTripTests {
         }
     }
 
+    @Test(arguments: [DataTransferFormat.csv, .json])
+    func omittedFieldsRetainDefaultsWhileExplicitNullRemainsNull(format: DataTransferFormat) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-import-defaults-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("fixture.sqlite")
+        let fixture = try DatabaseQueue(path: url.path)
+        try await fixture.write { db in
+            try db.execute(sql: "CREATE TABLE destination(id INTEGER, label TEXT DEFAULT 'fallback', required TEXT NOT NULL DEFAULT 'retained')")
+        }
+        let service = DatabaseService()
+        try await service.open(url: url)
+        do {
+            let descriptor = try await service.fetchDescriptor(named: "destination")
+            let text = format == .csv
+                ? "id,label,required\n1\n2,\\N\n3,value,\\N"
+                : #"[{"id":1},{"id":2,"label":null},{"id":3,"label":"value","required":null}]"#
+            let imported = try await service.importRows(into: descriptor, text: text, format: format)
+            #expect(imported.insertedRowCount == 2)
+            #expect(imported.skippedRowCount == 1)
+            let result = try await service.executeReadOnlyQuery(sql: "SELECT id,label,required FROM destination ORDER BY id")
+            #expect(result.rows.map(\.values) == [[.integer(1), .text("fallback"), .text("retained")], [.integer(2), .null, .text("retained")]])
+            await service.close()
+        } catch {
+            await service.close()
+            throw error
+        }
+    }
+
     @Test func csvImportPreservesQuotedFieldsAndAcceptsLegacyNull() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-csv-fields-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
