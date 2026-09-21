@@ -5,6 +5,7 @@ public struct TableWorkspaceView: View {
     @Bindable private var session: AppSession
     @State private var pendingColumnDrop: TableColumn?
     @State private var showsFilters = false
+    @FocusState private var isSearchFocused: Bool
 
     public init(session: AppSession) {
         self.session = session
@@ -29,6 +30,8 @@ public struct TableWorkspaceView: View {
             }
         }
         .padding(18)
+        .defaultFocus($isSearchFocused, false)
+        .onChange(of: session.activeTabID) { _, _ in isSearchFocused = false }
     }
 
     private var emptyState: some View {
@@ -37,7 +40,7 @@ public struct TableWorkspaceView: View {
                 .font(.system(size: 36))
                 .foregroundStyle(StudioPalette.secondaryText)
 
-            Text("Open a table from the toolbar, the schema graph, or the context menu.")
+            Text("Choose a table below or double-click it in the schema graph.")
                 .foregroundStyle(StudioPalette.secondaryText)
 
             if session.hasOpenDatabase {
@@ -109,7 +112,8 @@ public struct TableWorkspaceView: View {
     private func tableContent(for activeTab: TableTabModel) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             header(for: activeTab)
-            HStack {
+            ViewThatFits(in: .horizontal) {
+              HStack {
                 Button("Previous Page") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
                 Button("Next Page") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
                 Text(activeTab.chunk.rows.isEmpty ? "No loaded rows" : "Loaded rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
@@ -117,8 +121,20 @@ public struct TableWorkspaceView: View {
                 Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
                 Button("Filters…") { showsFilters = true }
                     .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
+              }.fixedSize(horizontal: true, vertical: false)
+              VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button("Previous") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
+                    Button("Next") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
+                    Text(activeTab.chunk.rows.isEmpty ? "No rows" : "Rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
+                }
+                HStack {
+                    Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
+                    Button("Filters…") { showsFilters = true }
+                        .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
+                }
+              }
             }
-            Text(activeTab.descriptor.pagingDescription).font(.caption2).foregroundStyle(.secondary)
             schemaMetadataStrip(for: activeTab.descriptor)
 
             if let error = activeTab.inlineErrorMessage {
@@ -203,7 +219,7 @@ public struct TableWorkspaceView: View {
     }
 
     private func header(for activeTab: TableTabModel) -> some View {
-        HStack(alignment: .top, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 let tableDescription = session.tableDescription(for: activeTab.descriptor.name)
                 if let tableDescription {
@@ -216,6 +232,9 @@ public struct TableWorkspaceView: View {
                     Text(activeTab.title)
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(StudioPalette.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(activeTab.descriptor.name)
                 }
                 HStack(spacing: 8) {
                     Text(activeTab.descriptor.isEditable ? "Editable table" : "Read-only table")
@@ -224,8 +243,6 @@ public struct TableWorkspaceView: View {
                 .font(.caption)
                 .foregroundStyle(StudioPalette.secondaryText)
             }
-
-            Spacer()
 
             HStack(spacing: 8) {
                 TextField(
@@ -236,8 +253,22 @@ public struct TableWorkspaceView: View {
                     )
                 )
                 .textFieldStyle(.roundedBorder)
+                .focused($isSearchFocused)
+                .background(SearchFieldFocusDismissal(isFocused: isSearchFocused) { isSearchFocused = false })
+                .onExitCommand { isSearchFocused = false }
                 .onSubmit {
                     activeTab.updateSearch(activeTab.queryState.searchText)
+                    isSearchFocused = false
+                }
+
+                if !activeTab.queryState.searchText.isEmpty {
+                    Button {
+                        activeTab.updateSearch("")
+                        isSearchFocused = false
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain)
+                    .help("Clear row search")
+                    .accessibilityLabel("Clear row search")
                 }
 
                 if activeTab.isLoading {
@@ -248,6 +279,7 @@ public struct TableWorkspaceView: View {
 
                 Button {
                     activeTab.updateSearch(activeTab.queryState.searchText)
+                    isSearchFocused = false
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }

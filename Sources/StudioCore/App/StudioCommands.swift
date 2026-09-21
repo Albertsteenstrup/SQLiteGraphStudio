@@ -14,7 +14,7 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("o")
 
-            Button("Other Database…") {
+            Button("Open PostgreSQL File…") {
                 session.presentOpenOtherDatabasePanel()
             }
 

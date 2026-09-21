@@ -233,6 +233,7 @@ public struct GeneratedColumnInfo: Identifiable, Sendable, Hashable, Codable {
 }
 
 public struct TableSummary: Identifiable, Sendable, Hashable {
+    public var displayName: String { schemaName == "public" ? objectName : name }
     public let id: String
     public let name: String
     public let objectType: SQLiteObjectType
@@ -264,6 +265,7 @@ public struct TableSummary: Identifiable, Sendable, Hashable {
 }
 
 public struct EditableTableDescriptor: Identifiable, Sendable, Hashable {
+    public var displayName: String { schemaName == "public" ? objectName : name }
     public let id: String
     public let name: String
     public let objectType: SQLiteObjectType

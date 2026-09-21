@@ -214,10 +214,59 @@ public final class AppSession {
     private var retiringDumpOpens: [UUID: Task<Void, Never>] = [:]
     public private(set) var documentOpenProgress: String?
     private var pendingDatabaseClose: Task<Void, Never>?
+    public private(set) var graphTableFilter = GraphTableFilter()
+    public private(set) var graphRowCounts: [String: Int] = [:]
+    public private(set) var graphFilterProgress: Int?
+    private var graphFilterGeneration = UUID()
+
+    public var graphVisibleTableIDs: Set<String> {
+        Set(tables.filter { graphTableFilter.matches(fields: $0.columnCount, rows: graphRowCounts[$0.id] ?? $0.rowCount) }.map(\.id))
+    }
+
+    public func cancelGraphFilter() {
+        graphFilterGeneration = UUID()
+        graphFilterProgress = nil
+    }
+
+    public func clearGraphFilter() {
+        cancelGraphFilter()
+        graphTableFilter = GraphTableFilter()
+    }
+
+    /// Row bounds use fresh counts, not PostgreSQL's missing or stale estimates.
+    public func applyGraphFilter(_ filter: GraphTableFilter) async -> Bool {
+        guard filter.isValid, hasOpenDatabase else { return false }
+        let generation = UUID()
+        graphFilterGeneration = generation
+        let databaseGeneration = openGeneration
+        var counts: [String: Int] = [:]
+        if filter.hasRowBounds {
+            graphFilterProgress = 0
+            defer { if graphFilterGeneration == generation { graphFilterProgress = nil } }
+            do {
+                for table in tables where filter.matchesFields(table.columnCount) {
+                    guard graphFilterGeneration == generation, openGeneration == databaseGeneration, !Task.isCancelled else { return false }
+                    guard let descriptor = tableDescriptors[table.id] else { continue }
+                    counts[table.id] = try await databaseService.countRows(query: TableQueryState(), descriptor: descriptor)
+                    guard graphFilterGeneration == generation, openGeneration == databaseGeneration, !Task.isCancelled else { return false }
+                    graphFilterProgress = counts.count
+                }
+            } catch {
+                guard graphFilterGeneration == generation, openGeneration == databaseGeneration else { return false }
+                presentedError = SQLiteUserError.from(error)
+                return false
+            }
+        }
+        graphRowCounts.merge(counts, uniquingKeysWith: { _, new in new })
+        graphTableFilter = filter
+        setGraphSelection(selectedGraphNodeIDs.intersection(graphVisibleTableIDs))
+        return true
+    }
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
+    private static let postgresBookmarksKey = "SQLiteGraphStudio.postgres-file-bookmarks"
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
     private static let graphLayoutStorageVersion = 2
     private static let allowedDatabaseExtensions = DatabaseDocument.supportedExtensions
@@ -317,6 +366,8 @@ public final class AppSession {
     }
 
     private func openDatabase(url: URL, changeBaseline: SchemaRefreshSnapshot?) async {
+        clearGraphFilter()
+        graphRowCounts = [:]
         retireDumpOpen()
         documentOpenProgress = nil
         records.reset()
@@ -363,12 +414,14 @@ public final class AppSession {
         panel.allowedContentTypes = []
         let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.otherExtensions)
         panel.delegate = documentFilter
-        panel.title = "Open Other Database"
+        panel.title = "Open PostgreSQL File"
         panel.message = DatabaseDocument.otherFormatsDescription
-        panel.prompt = "Open"
+        panel.prompt = "Open PostgreSQL File"
 
-        panel.begin { [self, documentFilter] response in
+        let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
+        panel.begin { [self, documentFilter, weak presentingWindow] response in
             withExtendedLifetime(documentFilter) {
+                presentingWindow?.makeKeyAndOrderFront(nil)
                 guard response == .OK, let url = panel.url else { return }
                 Task { await openDocument(url: url) }
             }
@@ -388,6 +441,10 @@ public final class AppSession {
     }
 
     private func openPostgreSQLDump(url: URL) async {
+        let scopedAccess = url.startAccessingSecurityScopedResource()
+        defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
+        clearGraphFilter()
+        graphRowCounts = [:]
         retireDumpOpen()
         let generation = UUID()
         openGeneration = generation
@@ -418,6 +475,7 @@ public final class AppSession {
             let snapshot = try await databaseService.loadCatalogSnapshot()
             guard openGeneration == generation else { return }
             apply(snapshot: snapshot, target: .postgresDump(url.standardizedFileURL))
+            rememberPostgreSQLFileAccess(url)
         } catch {
             guard openGeneration == generation else { return }
             await databaseService.close()
@@ -451,6 +509,10 @@ public final class AppSession {
     }
 
     public func openPostgreSQLDocument(url: URL) async {
+        let scopedAccess = url.startAccessingSecurityScopedResource()
+        defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
+        clearGraphFilter()
+        graphRowCounts = [:]
         retireDumpOpen()
         documentOpenProgress = nil
         records.reset()
@@ -473,6 +535,7 @@ public final class AppSession {
             let snapshot = try await databaseService.loadCatalogSnapshot()
             guard openGeneration == generation else { return }
             apply(snapshot: snapshot, target: .postgres(document.configuration), documentURL: url)
+            rememberPostgreSQLFileAccess(url)
             databaseCapabilities = .postgresReadOnly
             StudioLog.ui.info(
                 "Loaded PostgreSQL document \(url.lastPathComponent, privacy: .public) for \(document.configuration.host, privacy: .public):\(document.configuration.port, privacy: .public)/\(document.configuration.database, privacy: .public)"
@@ -483,12 +546,29 @@ public final class AppSession {
         }
     }
 
+    private func rememberPostgreSQLFileAccess(_ url: URL) {
+        guard let bookmark = try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                                                  includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
+        var bookmarks = userDefaults.dictionary(forKey: Self.postgresBookmarksKey) ?? [:]
+        bookmarks[url.standardizedFileURL.path] = bookmark
+        let recentPaths = Set(recentDatabaseURLs.map(\.path))
+        userDefaults.set(bookmarks.filter { recentPaths.contains($0.key) }, forKey: Self.postgresBookmarksKey)
+    }
+
     public func openRecentDatabase(_ url: URL) {
         guard recentDatabaseURLs.contains(url.standardizedFileURL) else { return }
-        Task { await openDocument(url: url) }
+        var resolvedURL = url
+        if let data = userDefaults.dictionary(forKey: Self.postgresBookmarksKey)?[url.standardizedFileURL.path] as? Data {
+            var stale = false
+            resolvedURL = (try? URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI],
+                                   relativeTo: nil, bookmarkDataIsStale: &stale)) ?? url
+        }
+        Task { await openDocument(url: resolvedURL) }
     }
 
     public func closeDatabase() {
+        clearGraphFilter()
+        graphRowCounts = [:]
         retireDumpOpen()
         documentOpenProgress = nil
         records.reset()

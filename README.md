@@ -24,7 +24,7 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 - User-selected PostgreSQL connection documents with schema-qualified catalog browsing, paging, search, filtering, sorting, exports, query history, and non-executing EXPLAIN
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
-- AI-authored flow stories — agents can append user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, and narrated graph playback to the sidecar; **Features → Stories** plays them back and can show them as minimal graph-native cards connected to the schema tables they cover (via the [story-flows](Skills/story-flows/SKILL.md) skill)
+- AI-authored flow stories — agents can append user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, and narrated graph playback to the sidecar; **Graph options (…) → Stories** plays them back and can show them as minimal graph-native cards connected to the schema tables they cover (via the [story-flows](Skills/story-flows/SKILL.md) skill)
 
 ## AI Skills
 
@@ -40,7 +40,7 @@ For Codex, create `.agents/skills` in your repo first; the app will install `gra
 
 ## PostgreSQL connections
 
-Choose **Other Database…** from the toolbar or Database menu, or **Choose Other Database** on the welcome screen. The picker shows the supported formats: PostgreSQL custom-format backups (`.dump`, `.backup`) and connection documents (`.postgres`, `.pgstudio`). These files also work through Finder, launch arguments and Open Recent. SQL scripts, directory archives and other database engines are not supported by this picker.
+Choose **Open PostgreSQL File…** from the File menu, or **Choose PostgreSQL File** on the welcome screen. The picker shows the supported formats: PostgreSQL custom-format backups (`.dump`, `.backup`) and connection documents (`.postgres`, `.pgstudio`). These files also work through Finder, launch arguments and Open Recent. SQL scripts, directory archives and other database engines are not supported by this picker.
 
 A backup opens without connection details or a login. Graph Studio copies it into a private temporary workspace, restores it using local PostgreSQL, and opens the schema, rows, record explorer and SQL editor in read-only mode. Progress and Cancel are shown during preparation. The source backup is never modified. Closing the workspace or quitting stops its server and removes the temporary copy; reopening restores a fresh copy. A private Unix socket is used, with no TCP listener. Restore tools and the server run under a filesystem/network sandbox. Restoration is the only write phase and only affects the private copy; browsing uses a separate reader with existing read-only query restrictions.
 
@@ -81,13 +81,16 @@ Query history, saved queries and graph layout use a password-free, hashed connec
 Both database types use the same graph engine. For more than 128 tables, it divides layout work into neighbourhoods of at most 64 tables, applies the existing force solver inside them, and packs the resulting regions without overlapping cards. Authored groups retain their labels and colours, including groups larger than one neighbourhood. Unassigned tables get deterministic local groups based on schema, repeated name prefixes and relationships; these inferred groups are not saved into the sidecar.
 
 - Use the graph's **Find tables and groups** button to search the complete catalog, including tables outside the current view.
-- Choose a group to inspect up to 48 tables at a time. Larger groups and tables with many related neighbours have visible previous/next controls and total counts.
+- Choose a group to move the camera to it while keeping other groups and cross-group connections visible. Expand a table to focus it and arrange its direct neighbours without overlap; the back button returns to the previous view. Groups with more than 48 tables and tables with more than 48 neighbours have previous/next controls.
+- The compact graph toolbar keeps search and **Filter** visible. The **Graph options (…)** menu contains display toggles, stories, relayout, and table counts; active filters never add another toolbar row.
+- **Filter** limits the graph by inclusive minimum/maximum field and row counts. Empty bounds are unlimited. Row filters count matching tables and views afresh, including empty tables; Reset restores the complete graph. Unknown row counts are shown as **— rows** until counted.
+- PostgreSQL labels omit the default `public.` schema prefix. Other schema names remain visible, and all queries, relationship IDs and sidecar references retain the exact qualified names.
 - Zoomed-out overviews draw inexpensive table marks and group relationships. Zoom in or select a table for details. Detailed card views are capped at 160; remaining visible tables stay represented by marks, including when a large selection is active.
-- **Show All Table Cards** uses the same size-aware layout and refits large views. Return to all groups to recover the overview; ordinary panning and hovering do not rerun layout.
+- **Graph options (…) → Expand all tables** uses the same size-aware layout and refits large views. Return to all groups to recover the overview; ordinary panning and hovering do not rerun layout.
 
 Canvas interaction reuses relationship indexes, group connections and table sizes while the camera moves. Only visible detailed cards prepare column rows; overview marks use a spatial hit index. Camera updates keep the minimap moving during continuous gestures, and the active drag stays mounted at the viewport edge. The minimap batches its table and relationship drawing. These limits apply equally to PostgreSQL and SQLite.
 
-See [verification evidence](docs/postgres-parity-scale-verification.md) for measured layout and canvas preparation work, test coverage and the limits of the native interaction checks.
+See [dump and native UI verification](docs/dump-ui-verification.md) for archive, crash, scrolling and filter checks. See [verification evidence](docs/postgres-parity-scale-verification.md) for measured layout and canvas preparation work, test coverage and the limits of the native interaction checks.
 
 Dragging and saved pins remain available. Relayout deliberately rebuilds positions; obsolete large-grid snapshots are regenerated while preserving saved pins. If saved pins themselves overlap, their explicit positions take precedence.
 
@@ -117,6 +120,8 @@ swift run SQLiteGraphStudio /path/to/database.sqlite
 ```
 
 ### PostgreSQL verification
+
+To run the UI/archive regression checks with a selected local backup, build the app and set `SGS_POSTGRES_ARCHIVE_TEST_FILE=/path/to/backup.dump` and `SGS_POSTGRES_SUPERVISOR=/path/to/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`. These checks exercise read-only opening, reopening, every table grid, graph filters, and source-file preservation.
 
 The normal unit suite does not require a running PostgreSQL server. To run the opt-in integration tests, provide an explicitly chosen test database through environment variables and set SGS_POSTGRES_TESTS=1:
 

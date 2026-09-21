@@ -8,8 +8,6 @@ public struct SchemaGraphView: View {
     @State private var pan: CGSize = .zero
     @State private var panStart: CGSize = .zero
     @State private var viewportSize: CGSize = .zero
-    @State private var viewportRestorePoint: GraphViewportTransform?
-    @State private var viewportRestoreNodeID: String?
     @State private var initialViewport = GraphInitialViewport()
     @State private var initialViewportTask: Task<Void, Never>?
     @State private var nodeDragOrigin: CGPoint?
@@ -32,7 +30,6 @@ public struct SchemaGraphView: View {
     @State private var selectionRectCurrent: CGPoint?
     @State private var isShiftPressed = false
     @State private var showCardinals = true
-    @State private var isFeaturesOpen = false
     @State private var clusterTitleCache = ClusterTitleCache()
     @State private var descriptionHover: DescriptionHover? = nil
     @State private var cardScrollOffsets: [String: CGFloat] = [:]
@@ -58,6 +55,9 @@ public struct SchemaGraphView: View {
     @State private var pulledStoryGraphPositions: [String: CGPoint] = [:]
     @State private var storyStarModeSourceID: String?
     @State private var graphFocusTableRelation: GraphRelationHoverTarget?
+    @State private var tableFocusNodeID: String?
+    @State private var graphControlsHeight: CGFloat = 48
+    @State private var isGraphFilterPresented = false
     @State private var draggedStoryUsesStarModePull = false
     @State private var draggedNodeUsesFocusPull = false
     @State private var preGraphFocusViewport: GraphViewportBookmark?
@@ -124,7 +124,7 @@ public struct SchemaGraphView: View {
     private var relatedPreviewByNode: [String: GraphNodeRelationPreview] {
         guard !session.showAllGraphTableCards else { return [:] }
 
-        let relationTarget = storyRelationTarget ?? tappedRelationTarget ?? hoveredRelationTarget
+        let relationTarget = storyRelationTarget ?? tappedRelationTarget
         if relationPreviewCache.isValid,
            relationPreviewCache.graphRevision == session.graphRevision,
            relationPreviewCache.target == relationTarget,
@@ -171,6 +171,14 @@ public struct SchemaGraphView: View {
                     emptyState
                 } else {
                     graphScene(size: geometry.size)
+                    if session.graphTableFilter.isActive && session.graphVisibleTableIDs.isEmpty {
+                        VStack(spacing: 12) {
+                            Text("No tables match these filters")
+                            Button("Clear filters") { session.clearGraphFilter() }
+                        }
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    }
                     if activeStory == nil {
                         graphOverlayControls(size: geometry.size)
                     } else {
@@ -196,6 +204,10 @@ public struct SchemaGraphView: View {
                 case .waitForGraph:
                     break
                 }
+                if let expanded = manuallyExpandedNodeID, !session.showAllGraphTableCards,
+                   graphFocusPlan == nil, activeStory == nil {
+                    focusTableConnections(expanded)
+                }
             }
             .onChange(of: geometry.size) { _, newSize in
                 viewportSize = newSize
@@ -207,9 +219,18 @@ public struct SchemaGraphView: View {
                 if activeStory != nil {
                     activeStoryViewportSize = newSize
                     fitGraphFocusViewport(in: newSize)
+                } else if graphFocusPlan != nil {
+                    fitGraphFocusViewport(in: newSize)
                 } else if isStoryOnlyMode, shouldAutoFitStoryViewport {
                     fitGraph(in: newSize)
                 }
+            }
+            .onChange(of: session.graphTableFilter) { _, _ in
+                clearGraphFocusSession(animated: false, restoreViewport: false)
+                focusedGroupID = nil
+                session.collapseExpandedGraphNodes()
+                layoutRevision &+= 1
+                fitGraph(in: geometry.size)
             }
             .onChange(of: session.showOnlyStoryCardsInGraph) { _, _ in
                 handleStoryOnlyModeChange(in: geometry.size)
@@ -257,8 +278,7 @@ public struct SchemaGraphView: View {
                 }
             }
             .onChange(of: session.showAllGraphTableCards) { _, isPresented in
-                viewportRestorePoint = nil
-                viewportRestoreNodeID = nil
+                clearGraphFocusSession(animated: false, restoreViewport: false)
                 pendingExpansionNodeID = nil
                 hoveredNodeID = nil
                 clearRelationHoverState()
@@ -360,9 +380,6 @@ public struct SchemaGraphView: View {
                     selectedStoryID = nil
                     hoveredStoryID = nil
                     session.clearGraphSelection()
-                    withAnimation(.snappy(duration: 0.18)) {
-                        isFeaturesOpen = false
-                    }
                 }
 
             GraphTrackpadInputSurface(
@@ -431,6 +448,7 @@ public struct SchemaGraphView: View {
                 GraphNodeCardView(
                     node: node,
                     descriptor: descriptor,
+                    rowCount: session.graphRowCounts[node.id] ?? descriptor?.rowCount,
                     tableDescription: session.tableDescription(for: node.id),
                     clusterLabel: session.clusterLabel(for: node.id),
                     clusterColor: clusterBorderColor(for: node.id),
@@ -442,6 +460,7 @@ public struct SchemaGraphView: View {
                     isMultiSelected: isMultiSelected,
                     viewportZoom: zoom,
                     displayStyle: displayStyle,
+                    isFocusRoot: tableFocusNodeID == node.id || graphFocusTableRelation?.tableID == node.id,
                     scrollOffset: scrollOffset,
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
@@ -572,11 +591,6 @@ public struct SchemaGraphView: View {
 
             // Cardinality labels are drawn directly in the Canvas (see drawEdges)
 
-            if activeStory == nil, let focusPlan = graphFocusPlan, focusPlan.isActive {
-                graphFocusBanner(focusPlan: focusPlan)
-                    .zIndex(1100)
-            }
-
             if let popupStoryID = storyPopupStoryID,
                let popupStory = session.stories.first(where: { $0.id == popupStoryID }) {
                 storyCardPopup(for: popupStory, in: size)
@@ -590,36 +604,58 @@ public struct SchemaGraphView: View {
     }
 
     @ViewBuilder
-    private func graphScopeControls(in size: CGSize) -> some View {
-        if let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
-            let page = GraphExploration.pageOrdered(group.nodeIDs, index: focusedGroupPage)
-            HStack(spacing: 8) {
-                Button { showGraphOverview(in: size) } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .help("Return to all groups")
-                Text(group.label).lineLimit(1).help(group.label)
+    private func graphNavigationControls(in size: CGSize) -> some View {
+        if let focusPlan = graphFocusPlan, focusPlan.isActive {
+            Button { clearGraphFocusSession() } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .help("Leave focus: \(graphFocusSummary(focusPlan: focusPlan))")
+            .accessibilityLabel("Return to overview")
+
+            if let target = graphFocusTableRelation {
+                let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: relationPageIndex)
                 if page.count > 1 {
-                    Button { focusGroup(group.id, pageIndex: page.index - 1, in: size) } label: {
-                        Image(systemName: "chevron.left")
-                    }.disabled(page.index == 0).help("Previous tables in group")
-                    Text("\(page.start)–\(page.end) of \(page.total)").monospacedDigit()
-                    Button { focusGroup(group.id, pageIndex: page.index + 1, in: size) } label: {
-                        Image(systemName: "chevron.right")
-                    }.disabled(page.index + 1 == page.count).help("Next tables in group")
-                } else {
-                    Text("\(page.total) tables").foregroundStyle(.secondary)
+                    graphPageControls(index: page.index, count: page.count) {
+                        pullConnectedNodesIntoView(for: target, pageIndex: page.index - 1)
+                    } next: {
+                        pullConnectedNodesIntoView(for: target, pageIndex: page.index + 1)
+                    }
+                }
+            } else if let nodeID = tableFocusNodeID {
+                let page = tableConnectionPage(nodeID)
+                if page.count > 1 {
+                    graphPageControls(index: page.index, count: page.count) {
+                        focusTableConnections(nodeID, pageIndex: page.index - 1)
+                    } next: {
+                        focusTableConnections(nodeID, pageIndex: page.index + 1)
+                    }
                 }
             }
-            .font(.caption)
-            .buttonStyle(.plain)
-        } else {
-            Text("\(session.graph.nodes.count) tables · \(session.graphGrouping.groupCount) groups")
-                .font(.caption).foregroundStyle(.secondary)
+        } else if let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
+            Button { showGraphOverview(in: size) } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .help("Return from \(group.label) to all groups")
+            .accessibilityLabel("Return to all groups")
+
+            let page = GraphExploration.pageOrdered(group.nodeIDs, index: focusedGroupPage)
+            if page.count > 1 {
+                graphPageControls(index: page.index, count: page.count) {
+                    focusGroup(group.id, pageIndex: page.index - 1, in: size)
+                } next: {
+                    focusGroup(group.id, pageIndex: page.index + 1, in: size)
+                }
+            }
         }
-        if usesOverviewMarks {
-            Text("Select a table, find a group, or zoom in for detail")
-                .font(.caption2).foregroundStyle(.secondary)
+    }
+
+    private func graphPageControls(index: Int, count: Int, previous: @escaping () -> Void, next: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Button(action: previous) { Image(systemName: "chevron.left") }
+                .disabled(index == 0).help("Previous tables")
+            Text("\(index + 1)/\(count)").font(.caption).monospacedDigit()
+            Button(action: next) { Image(systemName: "chevron.right") }
+                .disabled(index + 1 == count).help("Next tables")
         }
     }
 
@@ -636,7 +672,9 @@ public struct SchemaGraphView: View {
         clearRelationHoverState()
         isGraphNavigatorPresented = false
         invalidateClusterTitleCache()
-        fitGraphFocusViewport(in: size)
+        let ids = GraphExploration.pageOrdered(group.nodeIDs, index: focusedGroupPage).ids
+        let bounds = ids.compactMap { graphFrame(for: $0) }.reduce(CGRect.null) { $0.union($1) }
+        setViewport(GraphViewportTransform.fit(contentBounds: bounds, in: size, padding: 120, minZoom: 0.05, maxZoom: 1.05), animated: true)
     }
 
     private func showGraphOverview(in size: CGSize) {
@@ -664,18 +702,13 @@ public struct SchemaGraphView: View {
         prepareTableNavigation()
         rememberOverviewViewport()
         clearGraphFocusSession(restoreViewport: false)
-        focusedGroupID = session.graphGrouping.nodeToGroup[nodeID]
-        if let group = session.graphGrouping.group(for: nodeID) {
-            let ids = group.nodeIDs
-            focusedGroupPage = (ids.firstIndex(of: nodeID) ?? 0) / GraphExploration.pageSize
-        }
+        focusedGroupID = nil
         session.selectGraphNode(nodeID)
-        session.setExpandedGraphNode(nodeID)
         hoveredNodeID = nil
         clearRelationHoverState()
         isGraphNavigatorPresented = false
         invalidateClusterTitleCache()
-        fitTable(nodeID, in: size)
+        openExpandedNode(nodeID, in: size)
     }
 
     private func fitTable(_ nodeID: String, in size: CGSize) {
@@ -1341,91 +1374,46 @@ public struct SchemaGraphView: View {
 
     private func graphOverlayControls(size: CGSize) -> some View {
         ZStack {
-            // Main controls (top right)
-            VStack(alignment: .trailing, spacing: 12) {
-                HStack(alignment: .center, spacing: 10) {
-                    Button {
-                        isGraphNavigatorPresented.toggle()
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
-                    .help("Find any table or group")
-                    .accessibilityLabel("Find tables and groups")
-                    .popover(isPresented: $isGraphNavigatorPresented) {
-                        GraphNavigatorView(
-                            graph: session.graph, grouping: session.graphGrouping,
-                            onGroup: { focusGroup($0, in: size) },
-                            onTable: { revealTable($0, in: size) },
-                            onOverview: { showGraphOverview(in: size) }
-                        )
-                    }
-                    // Features button with flyout menu
-                    FeaturesMenuButton(
-                        isOpen: $isFeaturesOpen,
-                        showCardinals: $showCardinals,
-                        showClusterHalos: Binding(
-                            get: { session.showClusterHalos },
-                            set: { session.showClusterHalos = $0 }
-                        ),
-                        hasClusters: !session.graphGrouping.groups.isEmpty,
-                        storyCount: session.schemaSidecar.stories.count,
-                        onOpenStories: {
-                            session.reloadSchemaSidecarFromDisk()
-                            withAnimation(.snappy(duration: 0.2)) {
-                                isStoriesPresented.toggle()
-                                isFeaturesOpen = false
-                            }
-                        }
-                    )
+            HStack(spacing: 6) {
+                graphNavigationControls(in: size)
 
-                    Button {
-                        // Pick up any edits to the sidecar and wipe the cached layout so
-                        // stale positions from earlier app builds can't get restored on
-                        // top of fresh cluster geometry.
-                        session.reloadSchemaSidecarFromDisk()
-                        session.clearPersistedGraphLayout()
-                        session.clearPersistedStoryGraphLayout()
-                        pulledStoryGraphPositions.removeAll()
-                        invalidateClusterTitleCache()
-                        rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
-                    } label: {
-                        Label("Relayout", systemImage: "sparkles.rectangle.stack")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .tint(StudioPalette.accent)
-                    .help("Reload sidecar notes and cluster hints, then rebuild the layout")
+                Button { isGraphNavigatorPresented.toggle() } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Find any table or group")
+                .accessibilityLabel("Find tables and groups")
+                .popover(isPresented: $isGraphNavigatorPresented) {
+                    GraphNavigatorView(
+                        graph: session.graph, grouping: session.graphGrouping,
+                        onGroup: { focusGroup($0, in: size) },
+                        onTable: { revealTable($0, in: size) },
+                        onOverview: { showGraphOverview(in: size) }
+                    )
                 }
 
-                Toggle(
-                    "Show All Table Cards",
-                    isOn: Binding(
-                        get: { session.showAllGraphTableCards },
-                        set: { session.setShowAllGraphTableCards($0) }
-                    )
-                )
-                .toggleStyle(.switch)
-                .font(.subheadline)
-                .foregroundStyle(StudioPalette.primaryText)
-                .help("Expand table cards; zoom in to read individual columns")
+                Button { isGraphFilterPresented = true } label: {
+                    Label("Filter", systemImage: session.graphTableFilter.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                }
+                .tint(session.graphTableFilter.isActive ? StudioPalette.accent : nil)
+                .help(session.graphTableFilter.isActive ? "Edit active filters" : "Filter by fields and rows")
+                .popover(isPresented: $isGraphFilterPresented) { GraphFilterEditor(session: session) }
 
-                graphScopeControls(in: size)
+                graphOptionsMenu(in: size)
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .fixedSize()
+            .padding(8)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                graphControlsHeight = height
+                if graphFocusPlan != nil { fitGraphFocusViewport(in: size) }
+            }
+            .background(StudioPalette.chromeFill, in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).stroke(StudioPalette.border, lineWidth: 1) }
+            .shadow(color: StudioPalette.shadow.opacity(0.45), radius: 10, y: 5)
             .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(StudioPalette.chromeFill)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(StudioPalette.border, lineWidth: 1)
-            }
-            .shadow(color: StudioPalette.shadow.opacity(0.75), radius: 18, y: 12)
-            .padding(18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            
+
             // Back to Content button (center, shown when no nodes visible)
             if shouldShowBackToContent(in: size) {
                 Button {
@@ -1457,6 +1445,45 @@ public struct SchemaGraphView: View {
             }
 
         }
+    }
+
+    private func graphOptionsMenu(in size: CGSize) -> some View {
+        Menu {
+            Text(session.graphTableFilter.isActive
+                 ? "\(session.graphVisibleTableIDs.count) of \(session.tables.count) tables"
+                 : "\(session.graph.nodes.count) tables · \(session.graphGrouping.groupCount) groups")
+            if session.graphTableFilter.isActive {
+                Button("Clear filter") { session.clearGraphFilter() }
+            }
+            Divider()
+            Toggle("Expand all tables", isOn: Binding(
+                get: { session.showAllGraphTableCards },
+                set: { session.setShowAllGraphTableCards($0) }
+            ))
+            Toggle("Relationship labels", isOn: $showCardinals)
+            if !session.graphGrouping.groups.isEmpty {
+                Toggle("Group colors", isOn: $session.showClusterHalos)
+            }
+            Divider()
+            Button("Stories…") {
+                session.reloadSchemaSidecarFromDisk()
+                withAnimation(.snappy(duration: 0.2)) { isStoriesPresented.toggle() }
+            }
+            Button("Relayout") {
+                session.reloadSchemaSidecarFromDisk()
+                session.clearPersistedGraphLayout()
+                session.clearPersistedStoryGraphLayout()
+                pulledStoryGraphPositions.removeAll()
+                invalidateClusterTitleCache()
+                rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuIndicator(.hidden)
+        .help("Graph options")
+        .accessibilityLabel("Graph options")
+        .fixedSize()
     }
 
     private func playbackStoryMenuControl(size: CGSize) -> some View {
@@ -3115,6 +3142,7 @@ public struct SchemaGraphView: View {
     ) {
         guard storyStarModeSourceID != nil
             || graphFocusTableRelation != nil
+            || tableFocusNodeID != nil
             || !pulledGraphPositions.isEmpty
             || !pulledStoryGraphPositions.isEmpty
         else {
@@ -3127,7 +3155,9 @@ public struct SchemaGraphView: View {
             pulledGraphPositions.removeAll()
             pulledStoryGraphPositions.removeAll()
             storyStarModeSourceID = nil
+            if tableFocusNodeID != nil || graphFocusTableRelation != nil { session.setExpandedGraphNode(nil) }
             graphFocusTableRelation = nil
+            tableFocusNodeID = nil
             tappedRelationTarget = nil
             if clearSavedViewport {
                 preGraphFocusViewport = nil
@@ -3154,7 +3184,7 @@ public struct SchemaGraphView: View {
         for storyCards: [StoryGraphCard],
         focusPlan: GraphFocusPlan? = nil
     ) -> Set<String> {
-        if let focusPlan {
+        if let focusPlan, !focusPlan.visibleStoryIDs().isEmpty {
             return focusPlan.visibleTableIDs()
         }
 
@@ -3175,20 +3205,22 @@ public struct SchemaGraphView: View {
         if let target = graphFocusTableRelation {
             return tableRelationFocusPlan(target: target)
         }
+        if let nodeID = tableFocusNodeID {
+            return GraphFocusPlan(activeStoryIDs: [], relatedStoryIDs: [], activeTableIDs: [nodeID],
+                                  relatedTableIDs: Set(tableConnectionPage(nodeID).ids))
+        }
         return nil
     }
 
     private var effectiveFocusPlan: GraphFocusPlan? {
-        if let activeStory {
-            return storyPlaybackFocusPlan(for: activeStory)
-        }
-        if let graphFocusPlan { return graphFocusPlan }
-        if !isStoryOnlyMode, let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
-            return GraphFocusPlan(activeStoryIDs: [], relatedStoryIDs: [],
-                                  activeTableIDs: Set(GraphExploration.pageOrdered(group.nodeIDs, index: focusedGroupPage).ids),
-                                  relatedTableIDs: [])
-        }
-        return nil
+        let plan = activeStory.map { storyPlaybackFocusPlan(for: $0) } ?? graphFocusPlan
+        // Group navigation moves the camera; it never hides other groups or their
+        // connections. Only explicit table/story focus and filters restrict visibility.
+        guard session.graphTableFilter.isActive else { return plan }
+        let allowed = session.graphVisibleTableIDs
+        return GraphFocusPlan(activeStoryIDs: plan?.activeStoryIDs ?? [], relatedStoryIDs: plan?.relatedStoryIDs ?? [],
+                              activeTableIDs: (plan?.activeTableIDs ?? allowed).intersection(allowed),
+                              relatedTableIDs: (plan?.relatedTableIDs ?? []).intersection(allowed))
     }
 
     private func storyPlaybackFocusPlan(for story: SchemaSidecar.Story) -> GraphFocusPlan {
@@ -3290,58 +3322,20 @@ public struct SchemaGraphView: View {
         }
 
         guard !bounds.isNull else { return }
-        let transform = GraphViewportTransform.fit(
+        let topInset = activeStory == nil ? min(graphControlsHeight + 30, size.height * 0.4) : 0
+        let bottomInset: CGFloat = activeStory == nil ? 70 : 0
+        var transform = GraphViewportTransform.fit(
             contentBounds: bounds,
-            in: size,
+            in: CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset)),
             padding: 72,
             minZoom: isLargeGraph ? 0.01 : 0.22,
             maxZoom: 1.05
         )
+        transform.pan.height += (topInset - bottomInset) / 2
         setViewport(transform, animated: true)
     }
 
-    @ViewBuilder
-    private func graphFocusBanner(focusPlan: GraphFocusPlan) -> some View {
-        VStack {
-            HStack(spacing: 10) {
-                Image(systemName: "scope")
-                    .font(.system(size: 11, weight: .semibold))
-                Text(graphFocusBannerTitle(focusPlan: focusPlan))
-                    .font(.caption.weight(.semibold))
-                if let target = graphFocusTableRelation {
-                    let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: relationPageIndex)
-                    if page.count > 1 {
-                        Button { pullConnectedNodesIntoView(for: target, pageIndex: page.index - 1) } label: {
-                            Image(systemName: "chevron.left")
-                        }.disabled(page.index == 0).help("Previous related tables")
-                        Text("\(page.start)–\(page.end) of \(page.total) related").font(.caption)
-                        Button { pullConnectedNodesIntoView(for: target, pageIndex: page.index + 1) } label: {
-                            Image(systemName: "chevron.right")
-                        }.disabled(page.index + 1 == page.count).help("Next related tables")
-                    }
-                }
-                Spacer(minLength: 0)
-                Button("Done") {
-                    clearGraphFocusSession()
-                }
-                .buttonStyle(.plain)
-                .font(.caption.weight(.bold))
-            }
-            .foregroundStyle(StudioPalette.primaryText)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(StudioPalette.chromeFillStrong, in: Capsule())
-            .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
-            .padding(.top, 12)
-            .padding(.horizontal, 16)
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .allowsHitTesting(true)
-    }
-
-    private func graphFocusBannerTitle(focusPlan: GraphFocusPlan) -> String {
+    private func graphFocusSummary(focusPlan: GraphFocusPlan) -> String {
         let storyCount = focusPlan.visibleStoryIDs().count
         let tableCount = focusPlan.visibleTableIDs().count
         var parts: [String] = ["Focus"]
@@ -4013,6 +4007,7 @@ public struct SchemaGraphView: View {
 
         enterGraphFocusSession()
         graphFocusTableRelation = target
+        tableFocusNodeID = nil
         storyStarModeSourceID = nil
         pulledStoryGraphPositions.removeAll()
         tappedRelationTarget = GraphRelationHoverTarget(
@@ -4026,7 +4021,7 @@ public struct SchemaGraphView: View {
         let items = connectedIDs.map { connectedID in
             GraphFocusRingLayout.Item(id: connectedID, size: nodeSize(for: connectedID))
         }
-        let layout = GraphFocusRingLayout.graphPositions(
+        var layout = GraphFocusRingLayout.graphPositions(
             hubCenter: hubCenter,
             hubSize: hubSize,
             items: items,
@@ -4034,6 +4029,7 @@ public struct SchemaGraphView: View {
             interItemGap: 36
         )
 
+        layout[target.tableID] = hubCenter
         withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
             pulledGraphPositions = layout
         }
@@ -4127,63 +4123,46 @@ public struct SchemaGraphView: View {
     }
 
     private func toggleExpandedState(for nodeID: String, in size: CGSize) {
-        withAnimation(.snappy(duration: 0.18)) {
-            session.selectGraphNode(nodeID)
-        }
-
-        pendingExpansionNodeID = nil
-
-        if manuallyExpandedNodeID == nodeID {
+        if tableFocusNodeID == nodeID || graphFocusTableRelation?.tableID == nodeID {
             collapseExpandedNode(nodeID, in: size)
-            return
+        } else {
+            openExpandedNode(nodeID, in: size)
         }
-
-        if let manuallyExpandedNodeID {
-            pendingExpansionNodeID = nodeID
-            collapseExpandedNode(manuallyExpandedNodeID, in: size)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-                guard pendingExpansionNodeID == nodeID else { return }
-                pendingExpansionNodeID = nil
-                openExpandedNode(nodeID, in: size)
-            }
-            return
-        }
-
-        openExpandedNode(nodeID, in: size)
     }
 
     private func openExpandedNode(_ nodeID: String, in size: CGSize) {
-        viewportRestorePoint = GraphViewportTransform(zoom: zoom, pan: pan)
-        viewportRestoreNodeID = nodeID
+        session.selectGraphNode(nodeID)
         session.setExpandedGraphNode(nodeID)
-        // Don't stabilize - just update layout revision to reflect size changes
+        focusTableConnections(nodeID)
+    }
+
+    private func tableConnectionPage(_ nodeID: String) -> GraphExploration.Page {
+        let neighbors = session.graph.neighbors(of: nodeID).subtracting([nodeID])
+        let allowed = session.graphTableFilter.isActive ? neighbors.intersection(session.graphVisibleTableIDs) : neighbors
+        return GraphExploration.page(Array(allowed), index: relationPageIndex)
+    }
+
+    private func focusTableConnections(_ nodeID: String, pageIndex: Int = 0) {
+        enterGraphFocusSession()
+        relationPageIndex = pageIndex
+        tableFocusNodeID = nodeID
+        graphFocusTableRelation = nil
+        storyStarModeSourceID = nil
+        tappedRelationTarget = nil
+        hoveredNodeID = nil
+        clearRelationHoverState()
+        let hubCenter = session.graphLayout.position(for: nodeID)
+        let items = tableConnectionPage(nodeID).ids.map { GraphFocusRingLayout.Item(id: $0, size: nodeSize(for: $0)) }
+        pulledGraphPositions = GraphFocusRingLayout.graphPositions(hubCenter: hubCenter, hubSize: nodeSize(for: nodeID), items: items)
         layoutRevision &+= 1
-        focusExpandedNode(nodeID, in: size)
+        fitGraphFocusViewport(in: viewportSize)
     }
 
     private func collapseExpandedNode(_ nodeID: String, in size: CGSize) {
+        clearGraphFocusSession()
         session.setExpandedGraphNode(nil)
         cardScrollOffsets.removeValue(forKey: nodeID)
-        // Don't stabilize - just update layout revision to reflect size changes
         layoutRevision &+= 1
-        restoreViewport(from: nodeID)
-    }
-
-    private func focusExpandedNode(_ nodeID: String, in size: CGSize) {
-        guard let graphFrame = graphFrame(for: nodeID) else { return }
-        let transform = GraphViewportTransform.focus(
-            contentBounds: graphFrame.insetBy(dx: -28, dy: -28),
-            in: size,
-            currentZoom: zoom
-        )
-        setViewport(transform, animated: true)
-    }
-
-    private func restoreViewport(from nodeID: String) {
-        guard viewportRestoreNodeID == nodeID, let viewportRestorePoint else { return }
-        setViewport(viewportRestorePoint, animated: true)
-        self.viewportRestorePoint = nil
-        viewportRestoreNodeID = nil
     }
 
     private func graphFrame(for nodeID: String) -> CGRect? {
@@ -4416,124 +4395,10 @@ private struct StorySchemaCardView: View {
     }
 }
 
-private struct FeaturesMenuButton: View {
-    @Binding var isOpen: Bool
-    @Binding var showCardinals: Bool
-    @Binding var showClusterHalos: Bool
-    let hasClusters: Bool
-    let storyCount: Int
-    let onOpenStories: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            featuresCard
-                .frame(width: isOpen ? nil : 0)
-                .clipped()
-                .opacity(isOpen ? 1 : 0)
-                .allowsHitTesting(isOpen)
-                .animation(.snappy(duration: 0.18), value: isOpen)
-
-            buttonLabel
-        }
-    }
-
-    private var buttonLabel: some View {
-        Button {
-            withAnimation(.snappy(duration: 0.18)) {
-                isOpen.toggle()
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 8, weight: .semibold))
-                    .rotationEffect(.degrees(isOpen ? 180 : 0))
-                    .animation(.snappy(duration: 0.22), value: isOpen)
-                Text("Features")
-                    .font(.subheadline.weight(.medium))
-            }
-            .foregroundStyle(StudioPalette.primaryText)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Capsule().fill(isOpen ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill))
-            .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var featuresCard: some View {
-        HStack(spacing: 6) {
-            Button {
-                onOpenStories()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "book.pages")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(storyCount > 0 ? StudioPalette.accent : StudioPalette.secondaryText)
-                    Text(storyCount > 0 ? "Stories \(storyCount)" : "Stories")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(StudioPalette.primaryText)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .fixedSize()
-            }
-            .buttonStyle(.plain)
-            .onHover { isHovered in
-                if isHovered {
-                    NSCursor.pointingHand.set()
-                } else {
-                    NSCursor.arrow.set()
-                }
-            }
-            .help("Open story flows")
-
-            Button {
-                showCardinals.toggle()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: showCardinals ? "checkmark.square.fill" : "square")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(showCardinals ? StudioPalette.accent : StudioPalette.secondaryText)
-                    Text("Cardinals")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(StudioPalette.primaryText)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .fixedSize()
-            }
-            .buttonStyle(.plain)
-
-            if hasClusters {
-                Button {
-                    showClusterHalos.toggle()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: showClusterHalos ? "checkmark.square.fill" : "square")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(
-                                showClusterHalos ? StudioPalette.accent : StudioPalette.secondaryText
-                            )
-                        Text("Cluster Vis")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(StudioPalette.primaryText)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .fixedSize()
-                }
-                .buttonStyle(.plain)
-                .help("Show or hide colored borders on clustered nodes.")
-            }
-        }
-        .background(.clear)
-    }
-}
-
-
 private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let node: GraphNode
     let descriptor: EditableTableDescriptor?
+    let rowCount: Int?
     let tableDescription: String?
     let clusterLabel: String?
     let clusterColor: Color?
@@ -4545,6 +4410,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let isMultiSelected: Bool
     let viewportZoom: CGFloat
     let displayStyle: GraphNodeCardStyle
+    let isFocusRoot: Bool
     let scrollOffset: CGFloat
     let isHovered: Bool
     let isDragging: Bool
@@ -4604,7 +4470,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             hoverChanged(isHovered)
         }
         .contextMenu {
-            Button(isExpanded ? "Collapse Card" : "Expand Card", action: toggleExpanded)
+            Button(isFocusRoot ? "Return to Overview" : (isExpanded ? "Focus Table" : "Expand Card"), action: toggleExpanded)
             Button("Open Table", action: openTable)
             Button("Show Top 10", action: showTopRows)
         }
@@ -4631,13 +4497,15 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                 .foregroundStyle(StudioPalette.primaryText)
                 .underline(hasDescription, color: StudioPalette.primaryText.opacity(0.4))
                 .lineLimit(1)
-                .layoutPriority(1)
+                .truncationMode(.middle)
+                .help(node.id)
                 .opacity(nameZoomOpacity)
 
             Spacer(minLength: 0)
 
             Text(fieldCountLabel)
                 .font(.caption2.weight(.bold))
+                .lineLimit(1).fixedSize()
                 .foregroundStyle(StudioPalette.secondaryText)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
@@ -4647,6 +4515,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             if let rowCountLabel {
                 Text(rowCountLabel)
                     .font(.caption2.weight(.bold))
+                    .lineLimit(1).fixedSize()
                     .foregroundStyle(StudioPalette.secondaryText)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
@@ -4654,11 +4523,11 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                     .opacity(metadataZoomOpacity)
             }
 
-            if isHovered || showsDetailRows {
+            if descriptor != nil {
                 Button {
                     toggleExpanded()
                 } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: isFocusRoot ? "chevron.up" : (isExpanded ? "scope" : "chevron.down"))
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(StudioPalette.secondaryText)
                         .frame(width: 20, height: 20)
@@ -4668,7 +4537,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help(isExpanded ? "Collapse card" : "Expand card")
+                .help(isFocusRoot ? "Return to overview" : (isExpanded ? "Focus this table" : "Expand card"))
             }
         }
         .padding(.horizontal, GraphCardLayout.horizontalInset)
@@ -4761,7 +4630,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var rowCountLabel: String? {
-        guard let rowCount = descriptor?.rowCount else { return nil }
+        guard let rowCount else { return "— rows" }
         return rowCount == 1 ? "1 row" : "\(compactRowCount(rowCount)) rows"
     }
 
@@ -4835,7 +4704,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
 
     private var metadataZoomOpacity: Double {
         if keepsTextReadableWhenZoomed { return 0.96 }
-        return zoomOpacity(start: 0.88, end: 0.42, minimum: isSelected || isHovered ? 0.56 : 0.08)
+        return zoomOpacity(start: 0.88, end: 0.42, minimum: 0.8)
     }
 
     private var columnZoomOpacity: Double {
@@ -5487,6 +5356,8 @@ struct GraphMinimapView: View {
     let pan: CGSize
     let onViewportTap: (CGPoint) -> Void
 
+    private var visibleIDs: Set<String> { session.graphVisibleTableIDs }
+
     private var isStoryOnlyMode: Bool {
         session.showStoryCardsInGraph && session.showOnlyStoryCardsInGraph
     }
@@ -5547,8 +5418,9 @@ struct GraphMinimapView: View {
         size: CGSize,
         minimapTransform: GraphViewportTransform
     ) {
+        let visibleIDs = self.visibleIDs
         var edgePath = Path()
-        for edge in session.graph.edges {
+        for edge in session.graph.edges where visibleIDs.contains(edge.sourceID) && visibleIDs.contains(edge.targetID) {
             let sourcePos = session.graphLayout.position(for: edge.sourceID)
             let targetPos = session.graphLayout.position(for: edge.targetID)
             let minimapSource = minimapTransform.point(for: sourcePos, in: size)
@@ -5564,7 +5436,7 @@ struct GraphMinimapView: View {
         )
 
         var nodePath = Path()
-        for node in session.graph.nodes {
+        for node in session.graph.nodes where visibleIDs.contains(node.id) {
             let nodePos = session.graphLayout.position(for: node.id)
             let minimapPos = minimapTransform.point(for: nodePos, in: size)
             let nodeRect = CGRect(
@@ -5626,14 +5498,15 @@ struct GraphMinimapView: View {
             return storyBounds.insetBy(dx: -padding, dy: -padding)
         }
 
-        guard !session.graph.nodes.isEmpty else { return .zero }
+        let visibleIDs = self.visibleIDs
+        guard !visibleIDs.isEmpty else { return .zero }
 
         var minX = Double.infinity
         var minY = Double.infinity
         var maxX = -Double.infinity
         var maxY = -Double.infinity
 
-        for node in session.graph.nodes {
+        for node in session.graph.nodes where visibleIDs.contains(node.id) {
             let pos = session.graphLayout.position(for: node.id)
             minX = min(minX, pos.x)
             minY = min(minY, pos.y)

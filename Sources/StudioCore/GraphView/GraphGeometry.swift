@@ -123,12 +123,12 @@ enum GraphCardLayout {
     static let previewRowHeight: CGFloat = 24
     static let previewVerticalPadding: CGFloat = 12
     static let previewBodyTopPadding: CGFloat = 10
-    static let previewWidth: CGFloat = 308
+    static let previewWidth: CGFloat = 440
     static let expandedHeaderHeight: CGFloat = 46
     static let expandedRowHeight: CGFloat = 24
     static let expandedVerticalPadding: CGFloat = 12
     static let expandedBodyTopPadding: CGFloat = 10
-    static let expandedWidth: CGFloat = 308
+    static let expandedWidth: CGFloat = 440
     static let maxExpandedVisibleRows = 7
     static let floatingHeaderHeight: CGFloat = 52
     static let floatingSummaryHeight: CGFloat = 28
@@ -168,10 +168,11 @@ enum GraphCardLayout {
     }
 
     static func collapsedWidth(title: String, hovered: Bool) -> CGFloat {
-        let characterWidth: CGFloat = hovered ? 10.8 : 9.8
-        let chromeWidth: CGFloat = hovered ? 208 : 182
-        let minWidth: CGFloat = hovered ? 282 : 226
-        let maxWidth: CGFloat = hovered ? 480 : 380
+        // Hover must not enlarge a card into its neighbors.
+        let characterWidth: CGFloat = 9.8
+        let chromeWidth: CGFloat = 182
+        let minWidth: CGFloat = 226
+        let maxWidth: CGFloat = 380
         return min(max(minWidth, CGFloat(title.count) * characterWidth + chromeWidth), maxWidth)
     }
 

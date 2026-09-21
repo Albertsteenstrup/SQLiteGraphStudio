@@ -11,6 +11,10 @@ struct NativeGridRegressionTests {
         let scroll = coordinator.makeScrollView()
         let table = try #require(scroll.documentView as? NSTableView)
         coordinator.update(result: result, columnDescription: { _ in nil }, scrollView: scroll, inspectRow: { _ in })
+        scroll.frame = NSRect(x: 0, y: 0, width: 520, height: 340)
+        scroll.layoutSubtreeIfNeeded()
+        let header = try #require(table.headerView)
+        #expect(!scroll.contentView.frame.intersects(header.convert(header.bounds, to: scroll)))
         #expect(table.tableColumns.map(\.identifier.rawValue) == ["0", "1", "2"])
         #expect(table.tableColumns.map(\.title) == ["id", "id", "id_2"])
         func texts(_ view: NSView) -> [String] { (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(texts) }
@@ -39,6 +43,10 @@ struct NativeGridRegressionTests {
         let scroll = coordinator.makeScrollView()
         scroll.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         coordinator.update(tab: tab, revision: tab.revision, columnDescription: { _ in nil }, requestColumnDrop: { _ in }, scrollView: scroll, inspectRow: { _ in })
+        scroll.layoutSubtreeIfNeeded()
+        if let grid = scroll.documentView as? NSTableView, let header = grid.headerView {
+            #expect(!scroll.contentView.frame.intersects(header.convert(header.bounds, to: scroll)))
+        }
         tab.nextPage()
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
         while tab.chunk.offset != 50 {

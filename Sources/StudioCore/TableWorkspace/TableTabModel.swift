@@ -34,7 +34,7 @@ public final class TableTabModel: Identifiable {
     }
 
     public var title: String {
-        descriptor.name
+        descriptor.displayName
     }
 
     public var rowCountLabel: String {

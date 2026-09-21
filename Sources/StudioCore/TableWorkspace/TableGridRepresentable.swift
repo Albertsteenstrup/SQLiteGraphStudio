@@ -82,13 +82,16 @@ public struct TableGridRepresentable: NSViewRepresentable {
         }
 
         func makeScrollView() -> NSScrollView {
-            let scrollView = NSScrollView()
+            let scrollView = TableGridScrollView()
+            scrollView.automaticallyAdjustsContentInsets = false
+            scrollView.contentInsets = NSEdgeInsetsZero
             scrollView.borderType = .noBorder
             scrollView.drawsBackground = false
             scrollView.hasVerticalScroller = true
             scrollView.hasHorizontalScroller = true
             scrollView.autohidesScrollers = true
             scrollView.scrollerStyle = .overlay
+            scrollView.contentView.clipsToBounds = true
 
             let tableView = CopyPasteTableView()
             tableView.keyHandler = { [weak self] event in
@@ -103,6 +106,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
             let headerView = InteractiveTableHeaderView()
             headerView.coordinator = self
             headerView.frame.size.height = 58
+            headerView.clipsToBounds = true
 
             tableView.headerView = headerView
             tableView.usesAlternatingRowBackgroundColors = false
@@ -649,7 +653,7 @@ final class InteractiveTableHeaderView: NSTableHeaderView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(calibratedWhite: 0.975, alpha: 0.98).setFill()
+        NSColor.controlBackgroundColor.setFill()
         dirtyRect.fill()
 
         let separator = NSBezierPath()
@@ -788,6 +792,21 @@ final class MetadataHeaderCell: NSTableHeaderCell {
     required init(coder: NSCoder) {
         self.subtitle = ""
         super.init(coder: coder)
+    }
+
+    // NSCell's inherited copy uses an Objective-C ivar copy. It does not retain
+    // Swift stored values; a copied long subtitle was freed twice during drawing.
+    override func copy(with zone: NSZone? = nil) -> Any {
+        let cell = MetadataHeaderCell(title: stringValue, subtitle: subtitle)
+        cell.isSortActive = isSortActive
+        cell.hasFilter = hasFilter
+        cell.isHovered = isHovered
+        cell.showsChevron = showsChevron
+        cell.hasDescription = hasDescription
+        cell.alignment = alignment
+        cell.lineBreakMode = lineBreakMode
+        cell.font = font
+        return cell
     }
 
     func chevronRect(for cellFrame: NSRect) -> NSRect {

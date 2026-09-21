@@ -60,14 +60,14 @@ public struct StudioRootView: View {
         }
         .disabled(session.isRefreshing)
         .overlay {
-            if let message = session.documentOpenProgress {
+            if let progress = session.documentOpenProgress {
                 VStack(spacing: 14) {
                     ProgressView()
-                    Text(message)
+                    Text(progress)
                     Button("Cancel") { session.cancelDocumentOpen() }
                 }
                 .padding(28)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
         .overlay(alignment: .bottom) {
@@ -134,7 +134,7 @@ public struct StudioRootView: View {
         }
         .overlay(alignment: .top) {
             if session.isPostgreSQL {
-                Label("PostgreSQL · strictly read-only", systemImage: "lock.fill")
+                Label("PostgreSQL · read-only", systemImage: "lock.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(StudioPalette.primaryText)
                     .padding(.horizontal, 12)
@@ -209,40 +209,12 @@ public struct StudioRootView: View {
             }
             ToolbarItem {
                 Button {
-                    session.presentOpenDatabasePanel()
-                } label: {
-                    Label("Open SQLite File", systemImage: "folder")
-                }
-                .help("Open SQLite File")
-            }
-
-            ToolbarItem {
-                Button {
-                    session.presentOpenOtherDatabasePanel()
-                } label: {
-                    Label("Other Database…", systemImage: "server.rack")
-                }
-                .help(DatabaseDocument.otherFormatsDescription)
-            }
-
-            ToolbarItem {
-                Button {
                     session.refreshSchema()
                 } label: {
                     Label("Refresh Schema", systemImage: "arrow.clockwise")
                 }
                 .disabled(!session.hasOpenDatabase)
                 .help("Refresh Schema")
-            }
-
-            ToolbarItem {
-                Button {
-                    session.showTablePicker()
-                } label: {
-                    Label("Open Table", systemImage: "tablecells")
-                }
-                .disabled(session.tables.isEmpty)
-                .help("Open Table")
             }
 
             ToolbarItem {
@@ -288,8 +260,8 @@ public struct StudioRootView: View {
             },
             message: {
                 Text(session.presentedError?.message ?? "Unknown error")
-                if let suggestion = session.presentedError?.recoverySuggestion, !suggestion.isEmpty {
-                    Text(suggestion)
+                if let recovery = session.presentedError?.recoverySuggestion {
+                    Text(recovery)
                 }
             }
         )
@@ -327,6 +299,7 @@ public struct StudioRootView: View {
 /// recreates them when the surrounding layout changes between split and fullscreen.
 private struct WorkspaceLayoutView: View {
     @Bindable var session: AppSession
+    @State private var databaseNameSide: WorkspacePaneSide = .left
 
     private var storyPlaybackState: StoryPlaybackOverlayState? {
         session.storyPlaybackOverlay
@@ -375,24 +348,45 @@ private struct WorkspaceLayoutView: View {
                 PaneShell(
                     session: session,
                     side: .left,
-                    isCanvasMode: isStoryCanvasMode(for: .left)
+                    isCanvasMode: isStoryCanvasMode(for: .left),
+                    showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left
                 )
                 .id("workspace-pane-left")
                 .frame(minWidth: minimumPaneWidth(for: .left))
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.left: geometry.size.width])
+                    }
+                }
                 .opacity(paneOpacity(for: .left))
                 .allowsHitTesting(paneIsInteractive(.left))
 
                 PaneShell(
                     session: session,
                     side: .right,
-                    isCanvasMode: isStoryCanvasMode(for: .right)
+                    isCanvasMode: isStoryCanvasMode(for: .right),
+                    showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right
                 )
                 .id("workspace-pane-right")
                 .frame(minWidth: minimumPaneWidth(for: .right))
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.right: geometry.size.width])
+                    }
+                }
                 .opacity(paneOpacity(for: .right))
                 .allowsHitTesting(paneIsInteractive(.right))
             }
             .background(SplitViewPositioner(mode: splitMode))
+            .onPreferenceChange(WorkspacePaneWidthsKey.self) { widths in
+                guard fullscreenSide == nil,
+                      let left = widths[.left], let right = widths[.right],
+                      left > 0, right > 0,
+                      abs(left - right) > 1
+                else { return }
+                // Keep the current owner at an even split so the title cannot flicker.
+                databaseNameSide = left > right ? .left : .right
+            }
 
             if !isFullscreen {
                 WorkspaceDockView(session: session)
@@ -425,6 +419,14 @@ private struct WorkspaceLayoutView: View {
     private func minimumPaneWidth(for side: WorkspacePaneSide) -> CGFloat {
         guard let fullscreenSide else { return 320 }
         return fullscreenSide == side ? 320 : 0
+    }
+}
+
+private struct WorkspacePaneWidthsKey: PreferenceKey {
+    static let defaultValue: [WorkspacePaneSide: CGFloat] = [:]
+
+    static func reduce(value: inout [WorkspacePaneSide: CGFloat], nextValue: () -> [WorkspacePaneSide: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, width in width })
     }
 }
 
@@ -595,8 +597,10 @@ private extension NSView {
 /// A pane with its chrome (header, border, background). Keeps content views alive.
 private struct PaneShell: View {
     @Bindable var session: AppSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let side: WorkspacePaneSide
     let isCanvasMode: Bool
+    let showsDatabaseName: Bool
     @State private var isDropTargeted = false
 
     private var paneState: WorkspacePaneState { session.paneState(for: side) }
@@ -668,10 +672,17 @@ private struct PaneShell: View {
                     session.toggleMaximizePane(side)
                 }
             }
-            Text(session.databaseDisplayName)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(StudioPalette.secondaryText)
+            if showsDatabaseName {
+                Text(session.databaseDisplayName)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(session.databaseDisplayName)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: showsDatabaseName)
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -1647,7 +1658,7 @@ private struct OpenTablePickerView: View {
                     Image(systemName: table.objectType == .view ? "eye" : "tablecells")
                         .font(.system(size: 11))
                         .foregroundStyle(isSelected ? StudioPalette.accent : StudioPalette.secondaryText)
-                    Text(table.name)
+                    Text(table.displayName)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(StudioPalette.primaryText)
                     Spacer(minLength: 8)
@@ -1728,7 +1739,7 @@ private struct EmptyDatabaseView: View {
                     Text("Open a database")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(StudioPalette.primaryText)
-                    Text("Open a SQLite file to explore and edit it, or a PostgreSQL backup or connection document for read-only browsing and SQL.")
+                    Text("Open a SQLite file to explore and edit it, or choose a PostgreSQL backup or connection document for read-only browsing and SQL.")
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
@@ -1747,15 +1758,11 @@ private struct EmptyDatabaseView: View {
                     Button {
                         session.presentOpenOtherDatabasePanel()
                     } label: {
-                        Label("Choose Other Database", systemImage: "server.rack")
+                        Label("Choose PostgreSQL File", systemImage: "server.rack")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                 }
-                Text(DatabaseDocument.otherFormatsDescription)
-                    .font(.caption)
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
 

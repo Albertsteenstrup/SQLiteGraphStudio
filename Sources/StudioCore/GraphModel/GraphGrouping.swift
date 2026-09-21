@@ -125,16 +125,17 @@ public struct GraphGrouping: Sendable, Hashable {
             }
             let kind: String
             let baseLabel: String
+            let displayNamespace = namespace == "public" ? "" : namespace
             if isNamespace {
                 kind = "schema"
-                baseLabel = namespace
+                baseLabel = displayNamespace.isEmpty ? "Tables" : displayNamespace
             } else if let prefix {
                 kind = "prefix"
-                baseLabel = namespace.isEmpty ? "\(prefix)*" : "\(namespace) · \(prefix)*"
+                baseLabel = displayNamespace.isEmpty ? "\(prefix)*" : "\(displayNamespace) · \(prefix)*"
             } else {
                 kind = "neighborhood"
                 let label = hasRelations ? "Neighborhood" : "Tables"
-                baseLabel = namespace.isEmpty ? label : "\(namespace) · \(label)"
+                baseLabel = displayNamespace.isEmpty ? label : "\(displayNamespace) · \(label)"
             }
 
             for (index, partition) in partitions.enumerated() {

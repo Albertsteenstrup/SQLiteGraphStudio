@@ -329,7 +329,7 @@ public enum PostgresCatalogMapper {
         }
 
         let graphNodes = descriptors.map {
-            GraphNode(id: $0.name, title: $0.name, isEditable: false)
+            GraphNode(id: $0.name, title: $0.displayName, isEditable: false)
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
 
         return CatalogSnapshot(

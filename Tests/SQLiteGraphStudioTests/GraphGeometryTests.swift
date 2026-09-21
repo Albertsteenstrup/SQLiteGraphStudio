@@ -129,7 +129,7 @@ struct GraphGeometryTests {
             hovered: true
         )
 
-        #expect(hovered.width > collapsed.width)
+        #expect(hovered.width == collapsed.width)
         #expect(hovered.height == collapsed.height)
     }
 

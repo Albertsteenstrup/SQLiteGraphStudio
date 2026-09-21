@@ -49,7 +49,7 @@ struct GraphNavigatorView: View {
                         Text("\(matches.count) matching tables").font(.caption).foregroundStyle(.secondary)
                         ForEach(page.ids, id: \.self) { id in
                             Button { onTable(id) } label: {
-                                Label(id, systemImage: "tablecells")
+                                Label(graph.node(id: id)?.title ?? id, systemImage: "tablecells")
                                     .font(.system(.body, design: .monospaced))
                                     .lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)

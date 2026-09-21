@@ -477,9 +477,12 @@ struct QueryResultsGridRepresentable: NSViewRepresentable {
         }
 
         func makeScrollView() -> NSScrollView {
-            let scrollView = NSScrollView()
+            let scrollView = TableGridScrollView()
+            scrollView.automaticallyAdjustsContentInsets = false
+            scrollView.contentInsets = NSEdgeInsetsZero
             scrollView.borderType = .noBorder
             scrollView.drawsBackground = true
+            scrollView.contentView.clipsToBounds = true
             scrollView.backgroundColor = NSColor(calibratedWhite: 0.985, alpha: 1)
             scrollView.hasVerticalScroller = true
             scrollView.hasHorizontalScroller = true
@@ -495,6 +498,7 @@ struct QueryResultsGridRepresentable: NSViewRepresentable {
             }
             let headerView = QueryResultsHeaderView()
             headerView.frame.size.height = 58
+            headerView.clipsToBounds = true
             headerView.descriptionForColumn = columnDescription
 
             tableView.headerView = headerView
@@ -772,7 +776,7 @@ private final class QueryResultsHeaderView: NSTableHeaderView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(calibratedWhite: 0.975, alpha: 0.98).setFill()
+        NSColor.controlBackgroundColor.setFill()
         dirtyRect.fill()
 
         let separator = NSBezierPath()
