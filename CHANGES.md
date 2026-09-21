@@ -20,6 +20,33 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - **Reason**: Moving fingers right should pan viewport right (like moving the canvas)
 - **Status**: ✅ ACTIVE - DO NOT REVERT
 
+### Graph Visuals Settings (View ▸ Graph Visuals)
+- **Files**: `Sources/StudioCore/App/GraphVisualSettings.swift`, `Sources/StudioCore/App/GraphVisualToggles.swift`, `Sources/StudioCore/App/StudioCommands.swift`
+- **Change**: Every default-on graph decoration is switchable from the menu bar and persists across launches — relation pulses, zoomed-out relations, relationship labels, group colors, group titles, zoomed-out group links, card shadows, hover previews, minimap. Plus "Turn All Off" and "Restore Defaults"
+- **Placement**: `CommandGroup(after: .sidebar)` puts it in the View menu. AppKit's "Show Tab Bar"/"Show All Tabs" still appear there — they are only present while the app is frontmost, which makes them look displaced if you inspect the menu of a background instance
+- **Storage**: one key, `SQLiteGraphStudio.graph-visuals-disabled`, holding the names of the visuals turned OFF. A visual added in a later version therefore arrives on with no migration, and a name that no longer exists is ignored rather than discarding the rest
+- **Replaces**: the unpersisted `session.showClusterHalos` and the view-local `showCardinals` state. `GraphVisualToggles` is the single definition of the list, rendered by both the menu bar and the graph's own options menu
+- **Group Colors and Group Titles are independent**: titles used to be gated on the halo flag. Now each switch does only what it says — with colours off, group names still draw, in plain ink
+- **Status**: ✅ ACTIVE
+
+### Zoomed-Out Relations
+- **Files**: `Sources/StudioCore/GraphView/GraphEdgeLayerPlan.swift`, `Sources/StudioCore/GraphView/GraphEdgeSampling.swift`, `Sources/StudioCore/GraphView/SchemaGraphView.swift`
+- **Change**: The overview draws real relation lines, not only group-to-group links, so relation pulses stay readable while zoomed out. Previously edges appeared only under the pointer
+- **Bounds**: `GraphEdgeLayerPlan.overviewRelationLimit` (1200) relations per frame, sampled at an even stride — nothing is off screen at overview zoom, so viewport culling cannot bound the work. Below that many, all are drawn. Sampling happens on the edge list BEFORE anchors and paths are resolved; that ordering is what keeps it affordable
+- **Ink**: `overviewInkScale` (0.62) on opacity and width, so a dense catalog reads as texture rather than a grey mat while still carrying pulses
+- **Structure**: `GraphEdgeLayerPlan` is the single decision about what the relation layer paints; both the static lines and the pulses are built from one plan, so a signal can never appear on a relation whose line is hidden
+- **Schema reviews are never sampled**: a review always takes the detail path at any zoom. Its whole subject is which relations changed, and a bounded sample could drop one. Pulses also stay out of a review, which spends colour and symbols directing the eye to what changed
+- **Status**: ✅ ACTIVE
+
+### Relation Pulse Animation
+- **Files**: `Sources/StudioCore/GraphView/GraphEdgePulse.swift`, `Sources/StudioCore/GraphView/SchemaGraphView.swift`
+- **Change**: Faint signals drift along relation edges from the referencing table toward the referenced table, so foreign-key direction reads at a glance without hovering
+- **Look**: Deliberately low contrast (`StudioPalette.edgePulse`) — a small head with a fading wake, faded in at the source and out at the target. It is ambient context, NOT a foreground element; do not raise the opacity or shorten the rest gap
+- **Pacing**: Per-edge rhythm seeded from the edge identity (stable FNV-1a, never `hashValue`), so an edge keeps its phase across frames, pans and launches. Rest is longer than travel, holding ~1/3 of visible relations in motion at once
+- **Bounds**: At most `GraphEdgePulseField.trackLimit` (110) animated edges per frame, sampled at an even stride; edges under 34pt on screen are skipped. Tracks follow exactly the edges `drawEdges` paints, so overview mode animates nothing until a table is hovered
+- **Stops for**: Reduce Motion, and inactive windows (`controlActiveState`)
+- **Status**: ✅ ACTIVE
+
 ### Node Hover Edge Highlighting
 - **File**: `Sources/StudioCore/GraphView/SchemaGraphView.swift`
 - **Change**: Edges become bold when hovering over connected nodes

@@ -36,6 +36,16 @@ public struct StudioCommands: Commands {
             .keyboardShortcut("w")
         }
 
+        // `.sidebar` places this in the View menu, which is where macOS readers look for
+        // switches that change how a document is drawn rather than what it contains. It
+        // sits above AppKit's own window-tabbing items rather than replacing them.
+        CommandGroup(after: .sidebar) {
+            Menu("Graph Visuals") {
+                GraphVisualToggles(session: session)
+            }
+            Divider()
+        }
+
         CommandMenu("Database") {
             Button("Refresh Schema") {
                 session.refreshSchema()

@@ -35,6 +35,7 @@ public struct StudioRootView: View {
             && !session.graph.nodes.isEmpty
             && !session.isWorkspaceCompact
             && schemaIsVisible
+            && session.graphVisuals.isEnabled(.minimap)
     }
 
     public var body: some View {

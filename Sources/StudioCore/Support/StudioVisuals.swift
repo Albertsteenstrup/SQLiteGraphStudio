@@ -36,6 +36,13 @@ public enum StudioPalette {
     public static let edgeNeutral = Color.black.opacity(0.22)
     public static let edgeHighlight = Color.black.opacity(0.56)
 
+    /// Hue of the signals travelling along relations. Only barely chromatic: a trace of
+    /// cool tint separates motion from the static edge ink without pulling the eye away
+    /// from the cards. Alpha lives at the draw site, which fades each signal by its own
+    /// envelope.
+    public static let edgePulse = Color(red: 0.26, green: 0.36, blue: 0.5)
+    public static let edgePulseHighlight = Color(red: 0.16, green: 0.26, blue: 0.4)
+
     public static let primaryKeyTint = Color(red: 0.95, green: 0.56, blue: 0.22)
     public static let foreignKeyTint = Color(red: 0.18, green: 0.56, blue: 0.96)
     public static let referenceTint = Color(red: 0.42, green: 0.46, blue: 0.54)

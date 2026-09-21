@@ -195,7 +195,14 @@ public final class AppSession {
     }
     private(set) var graphNodeSizeProfile: GraphNodeSizeProfile = .uniform
     public var showAllGraphTableCards = false
-    public var showClusterHalos = true
+    /// Which graph decorations are switched on. Persisted, and edited from
+    /// View ▸ Graph Visuals in the menu bar.
+    public var graphVisuals: GraphVisualSettings = .default {
+        didSet {
+            guard graphVisuals != oldValue else { return }
+            graphVisuals.save(to: userDefaults)
+        }
+    }
     public var showStoryCardsInGraph = false
     public var showOnlyStoryCardsInGraph = false
     public var openTabs: [TableTabModel] = []
@@ -318,6 +325,7 @@ public final class AppSession {
         self.databaseService = databaseService
         self.userDefaults = userDefaults
         self.graphNodeSizeMetric = GraphNodeSizeMetric(rawValue: userDefaults.string(forKey: Self.graphNodeSizeMetricKey) ?? "") ?? .uniform
+        self.graphVisuals = GraphVisualSettings.load(from: userDefaults)
         self.queryWorkspace = QueryWorkspaceModel(
             databaseService: databaseService,
             userDefaults: userDefaults
