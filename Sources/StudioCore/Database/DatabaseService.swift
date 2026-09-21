@@ -5,11 +5,17 @@ public struct CatalogSnapshot: Sendable {
     public let descriptors: [EditableTableDescriptor]
     public let graph: SchemaGraph
     public let recordRelationshipMetadata: [RecordRelationship]?
+    /// Descriptions the source itself carries, such as `COMMENT ON` in migration
+    /// files. A hand-written sidecar always wins over these.
+    public let sourceDescriptions: [String: SchemaSidecar.TableDescription]
 
-    public init(descriptors: [EditableTableDescriptor], graph: SchemaGraph, recordRelationshipMetadata: [RecordRelationship]? = nil) {
+    public init(descriptors: [EditableTableDescriptor], graph: SchemaGraph,
+                recordRelationshipMetadata: [RecordRelationship]? = nil,
+                sourceDescriptions: [String: SchemaSidecar.TableDescription] = [:]) {
         self.descriptors = descriptors
         self.graph = graph
         self.recordRelationshipMetadata = recordRelationshipMetadata
+        self.sourceDescriptions = sourceDescriptions
     }
 }
 

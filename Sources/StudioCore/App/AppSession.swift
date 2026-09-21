@@ -167,7 +167,9 @@ public final class AppSession {
     }
     private(set) var graphRevision = 0
     public private(set) var schemaMetadataState = SchemaMetadataState()
-    public var metadataDiagnostics: [String] { schemaMetadataState.diagnostics }
+    public var metadataDiagnostics: [String] {
+        migrationDiagnostics.map(\.displayText) + schemaMetadataState.diagnostics
+    }
 
     public var schemaSidecar: SchemaSidecar = .empty {
         didSet { schemaSidecarRevision &+= 1 }
@@ -233,9 +235,29 @@ public final class AppSession {
     public let graphLayout = GraphLayoutModel()
     public var queryWorkspace: QueryWorkspaceModel
 
+    /// Live progress while a chosen project folder is being searched.
+    public private(set) var projectScan: ProjectScanState?
+    /// Presented when a finished scan found more than one thing to open.
+    public var projectCandidates: ProjectCandidateChoice?
+    private var projectScanTask: Task<Void, Never>?
+    /// The detached walk itself. `Task.detached` inherits neither cancellation
+    /// nor priority, and awaiting its value is not interrupted by the waiter's
+    /// own cancellation, so Cancel has to reach this handle directly.
+    private var projectScanWork: Task<Result<ProjectScanResult, any Error>, Never>?
+
+    /// The migration set behind an open migration model, and the version it was
+    /// replayed through. Both are nil for every other kind of document.
+    public private(set) var migrationSet: MigrationSet?
+    public private(set) var selectedMigrationVersion: String?
+    public private(set) var migrationReplaySummary: String?
+    public private(set) var migrationDiagnostics: [MigrationDiagnostic] = []
+
     private var openGeneration = UUID()
-    private var dumpOpenTask: Task<Void, Error>?
-    private var retiringDumpOpens: [UUID: Task<Void, Never>] = [:]
+    private var documentOpenTask: Task<Void, Error>?
+    /// The in-flight migration replay, cancelled by the same paths that retire a
+    /// dump open so the Cancel button stops the work rather than only the panel.
+    private var migrationOpenTask: Task<MigrationSet, Error>?
+    private var retiringDocumentOpens: [UUID: Task<Void, Never>] = [:]
     public private(set) var documentOpenProgress: String?
     private var pendingDatabaseClose: Task<Void, Never>?
     public private(set) var graphTableFilter = GraphTableFilter()
@@ -379,6 +401,14 @@ public final class AppSession {
         databaseTarget != nil || schemaReview != nil
     }
 
+    /// Whether the workspace should offer the SQL pane at all. A schema review
+    /// has no database target and keeps the pane set it has always had; a
+    /// document that is open but cannot run queries — a migration model — hides
+    /// it rather than offering a pane that can only fail.
+    public var canShowQueryPane: Bool {
+        databaseTarget == nil || databaseCapabilities.canRunQueries
+    }
+
     public var databaseDisplayName: String {
         schemaReview?.title ?? databaseTarget?.displayName ?? "No Database"
     }
@@ -418,7 +448,7 @@ public final class AppSession {
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
-        retireDumpOpen()
+        retireDocumentOpen()
         documentOpenProgress = nil
         records.reset()
         let generation = UUID()
@@ -456,13 +486,28 @@ public final class AppSession {
     }
 
     public func openDocument(url: URL) async {
-        if ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) {
+        let fileExtension = url.pathExtension.lowercased()
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        // A folder of versioned SQL files is a migration model; any other
+        // folder is a project to search, which is what dropping one on the app
+        // or passing it as an argument is asking for.
+        if exists, isDirectory.boolValue {
+            let resolved = try? await BackgroundWork.run { try ProjectScanner.migrationSet(at: url) }
+            if let resolved {
+                await openMigrations(at: url, version: nil, changeBaseline: nil, resolved: resolved)
+            } else {
+                scanProject(at: url)
+            }
+        } else if fileExtension == "sql" {
+            await openMigrations(at: url, version: nil, changeBaseline: nil)
+        } else if ["sgreview", "sgpreview"].contains(fileExtension) {
             await openSchemaReview(url: url)
         } else if DatabaseDocument.isArchive(url) {
             await openPostgreSQLDump(url: url)
-        } else if PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
+        } else if PostgresConnectionDocument.supportedFileExtensions.contains(fileExtension) {
             await openPostgreSQLDocument(url: url)
-        } else if DatabaseDocument.sqliteExtensions.contains(url.pathExtension.lowercased()) {
+        } else if DatabaseDocument.sqliteExtensions.contains(fileExtension) {
             await openDatabase(url: url)
         } else {
             presentedError = DatabaseUserError(kind: .invalidInput, message: "This database file type is not supported.")
@@ -475,7 +520,7 @@ public final class AppSession {
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
-        retireDumpOpen()
+        retireDocumentOpen()
         let generation = UUID()
         openGeneration = generation
         queryWorkspace.stopAll()
@@ -490,12 +535,12 @@ public final class AppSession {
                 await self?.updateDocumentOpenProgress(message, generation: generation)
             }
         }
-        dumpOpenTask = opening
+        documentOpenTask = opening
         defer {
             if openGeneration == generation {
                 isRefreshing = false
                 documentOpenProgress = nil
-                dumpOpenTask = nil
+                documentOpenTask = nil
             }
         }
         do {
@@ -523,18 +568,22 @@ public final class AppSession {
 
     public func closeAndWait() async {
         closeDatabase()
-        for cleanup in retiringDumpOpens.values { await cleanup.value }
+        for cleanup in retiringDocumentOpens.values { await cleanup.value }
         await pendingDatabaseClose?.value
     }
 
-    private func retireDumpOpen() {
-        guard let opening = dumpOpenTask else { return }
-        dumpOpenTask = nil
+    private func retireDocumentOpen() {
+        if let replay = migrationOpenTask {
+            migrationOpenTask = nil
+            replay.cancel()
+        }
+        guard let opening = documentOpenTask else { return }
+        documentOpenTask = nil
         opening.cancel()
         let id = UUID()
-        retiringDumpOpens[id] = Task { [weak self] in
+        retiringDocumentOpens[id] = Task { [weak self] in
             _ = try? await opening.value
-            self?.retiringDumpOpens.removeValue(forKey: id)
+            self?.retiringDocumentOpens.removeValue(forKey: id)
         }
     }
 
@@ -544,7 +593,7 @@ public final class AppSession {
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
-        retireDumpOpen()
+        retireDocumentOpen()
         documentOpenProgress = nil
         records.reset()
         let generation = UUID()
@@ -597,6 +646,244 @@ public final class AppSession {
         Task { await openDocument(url: resolvedURL) }
     }
 
+    // MARK: - Project folders
+
+    public func presentOpenProjectFolderPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Choose Project Folder"
+        panel.message = "Graph Studio searches this folder and its subfolders for databases, PostgreSQL backups, connection documents and migration folders.\nDependency and build folders, and anything the project's .gitignore excludes, are skipped."
+        panel.prompt = "Search"
+
+        let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
+        panel.begin { [self, weak presentingWindow] response in
+            presentingWindow?.makeKeyAndOrderFront(nil)
+            guard response == .OK, let url = panel.url else { return }
+            scanProject(at: url)
+        }
+    }
+
+    public func scanProject(at url: URL) {
+        cancelProjectScan()
+        projectCandidates = nil
+        presentedError = nil
+        let root = url.standardizedFileURL
+        projectScan = ProjectScanState(root: root)
+
+        let reporter = ProjectScanReporter { [weak self] progress in
+            Task { @MainActor in self?.updateProjectScan(progress, root: root) }
+        }
+        let work = Task.detached(priority: .userInitiated) { () -> Result<ProjectScanResult, any Error> in
+            do {
+                return .success(try ProjectScanner.scan(root: root) { reporter.report($0) })
+            } catch {
+                return .failure(error)
+            }
+        }
+        projectScanWork = work
+        projectScanTask = Task { [weak self] in
+            let outcome = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            guard let self, !Task.isCancelled else { return }
+            self.finishProjectScan(outcome, root: root)
+        }
+    }
+
+    public func cancelProjectScan() {
+        projectScanWork?.cancel()
+        projectScanWork = nil
+        projectScanTask?.cancel()
+        projectScanTask = nil
+        projectScan = nil
+    }
+
+    public func dismissProjectCandidates() {
+        projectCandidates = nil
+    }
+
+    public func openCandidate(_ candidate: ProjectCandidate, migrationVersion: String? = nil) {
+        projectCandidates = nil
+        switch candidate.kind {
+        case .migrationSet, .schemaScript:
+            // The search already resolved this set; opening it again would only
+            // re-read the same directory.
+            Task {
+                await openMigrations(at: candidate.url, version: migrationVersion,
+                                     changeBaseline: nil, resolved: candidate.migrationSet)
+            }
+        case .sqliteDatabase, .postgresBackup, .postgresConnection:
+            Task { await openDocument(url: candidate.url) }
+        }
+    }
+
+    private func updateProjectScan(_ progress: ProjectScanProgress, root: URL) {
+        guard var state = projectScan, state.root == root else { return }
+        state.progress = progress
+        projectScan = state
+    }
+
+    private func finishProjectScan(_ outcome: Result<ProjectScanResult, any Error>, root: URL) {
+        guard projectScan?.root == root else { return }
+        projectScan = nil
+        projectScanTask = nil
+        projectScanWork = nil
+
+        switch outcome {
+        case .failure(let error):
+            guard !(error is CancellationError) else { return }
+            presentedError = SQLiteUserError.from(error)
+        case .success(let result):
+            guard let first = result.candidates.first else {
+                presentedError = DatabaseUserError(
+                    kind: .notFound,
+                    message: "Nothing Graph Studio can open was found in ‘\(root.lastPathComponent)’.",
+                    recoverySuggestion: "Searched \(result.directoriesVisited) folders and \(result.filesInspected) files. It looks for SQLite databases, PostgreSQL backups and connection documents, and folders of versioned .sql migrations."
+                )
+                return
+            }
+            guard result.candidates.count > 1 else {
+                openCandidate(first)
+                return
+            }
+            projectCandidates = ProjectCandidateChoice(
+                root: root,
+                candidates: result.candidates,
+                summary: Self.scanSummary(result)
+            )
+        }
+    }
+
+    private static func scanSummary(_ result: ProjectScanResult) -> String {
+        var parts = [
+            "\(result.candidates.count) matches",
+            "\(result.directoriesVisited) folders searched",
+        ]
+        if result.skippedDirectoryCount > 0 { parts.append("\(result.skippedDirectoryCount) skipped") }
+        if result.reachedLimit { parts.append("search limit reached") }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: - Migration models
+
+    /// Replays `url` — a folder of versioned SQL files, or a single schema
+    /// script — and opens the schema it describes.
+    public func openMigrations(at url: URL, version: String?) async {
+        await openMigrations(at: url, version: version, changeBaseline: nil)
+    }
+
+    /// Re-replays the open migration set through another version. Graph layout,
+    /// saved queries and notes stay with the set, so versions can be compared.
+    public func selectMigrationVersion(_ version: String?) {
+        guard case .migrations(let url)? = databaseTarget, version != selectedMigrationVersion else { return }
+        let baseline = SchemaRefreshSnapshot(descriptors: tableDescriptors, graph: graph, sidecar: schemaSidecar)
+        persistCurrentGraphLayout()
+        persistStoryGraphLayout()
+        Task { await openMigrations(at: url, version: version, changeBaseline: baseline) }
+    }
+
+    private func openMigrations(at url: URL, version: String?, changeBaseline: SchemaRefreshSnapshot?,
+                                resolved: MigrationSet? = nil) async {
+        let scopedAccess = url.startAccessingSecurityScopedResource()
+        defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
+        clearGraphFilter()
+        graphRowCounts = [:]
+        graphRelationCounts = [:]
+        retireDocumentOpen()
+        records.reset()
+        let generation = UUID()
+        openGeneration = generation
+        queryWorkspace.stopAll()
+        cancelExport()
+
+        isRefreshing = true
+        presentedError = nil
+        documentOpenProgress = "Reading migrations…"
+        defer {
+            if openGeneration == generation {
+                isRefreshing = false
+                documentOpenProgress = nil
+                migrationOpenTask = nil
+            }
+        }
+
+        let service = databaseService
+        let opening = Task { [weak self] () -> MigrationSet in
+            await self?.pendingDatabaseClose?.value
+            try Task.checkCancellation()
+            // Resolving the folder reads it from disk; keep that off the main
+            // actor along with the replay it feeds.
+            let set: MigrationSet
+            if let resolved {
+                set = resolved
+            } else {
+                set = try await BackgroundWork.run { try ProjectScanner.migrationSet(at: url) }
+            }
+            let through = version.flatMap { set.index(ofVersion: $0) == nil ? nil : $0 } ?? set.latest?.version
+            try await service.open(migrations: set, through: through, sourceURL: url) { [weak self] message in
+                await self?.updateDocumentOpenProgress(message, generation: generation)
+            }
+            return set
+        }
+        migrationOpenTask = opening
+
+        do {
+            let set = try await opening.value
+            let resolved = version.flatMap { set.index(ofVersion: $0) == nil ? nil : $0 } ?? set.latest?.version
+            guard openGeneration == generation else { return }
+            documentOpenProgress = "Building the schema graph…"
+            let snapshot = try await databaseService.loadCatalogSnapshot()
+            let model = await databaseService.migrationModel
+            guard openGeneration == generation else { return }
+
+            migrationSet = set
+            selectedMigrationVersion = resolved
+            migrationDiagnostics = model?.diagnostics ?? []
+            migrationReplaySummary = Self.replaySummary(set: set, version: resolved, model: model,
+                                                        descriptors: snapshot.descriptors)
+            apply(snapshot: snapshot, target: .migrations(url.standardizedFileURL))
+            if let changeBaseline {
+                refreshToast = Self.refreshSummary(
+                    before: changeBaseline,
+                    after: SchemaRefreshSnapshot(descriptors: tableDescriptors, graph: graph, sidecar: schemaSidecar)
+                ).map { RefreshToast(message: $0) }
+            }
+            StudioLog.ui.info("Replayed \(set.files.count, privacy: .public) migration files from \(url.lastPathComponent, privacy: .public)")
+        } catch {
+            guard openGeneration == generation else { return }
+            await databaseService.close()
+            guard openGeneration == generation else { return }
+            migrationSet = nil
+            selectedMigrationVersion = nil
+            migrationReplaySummary = nil
+            migrationDiagnostics = []
+            if !(error is CancellationError) { presentedError = SQLiteUserError.from(error) }
+        }
+    }
+
+    private static func replaySummary(set: MigrationSet, version: String?,
+                                      model: MigrationSchemaModel?, descriptors: [TableDescriptor]) -> String {
+        let applied = set.files(through: version).count
+        let views = descriptors.count { $0.objectType == .view || $0.objectType == .materializedView }
+        let tables = descriptors.count - views
+        var parts = ["\(applied) of \(set.files.count) migrations", "\(tables) table\(tables == 1 ? "" : "s")"]
+        if views > 0 { parts.append("\(views) view\(views == 1 ? "" : "s")") }
+        if let model { parts.append("\(model.statementCount) statements") }
+        parts.append(set.dialect.displayName)
+        return parts.joined(separator: " · ")
+    }
+
+    static func capabilities(for target: DatabaseTarget) -> DatabaseCapabilities {
+        switch target {
+        case .sqlite:
+            return .sqlite
+        case .postgres, .postgresDump:
+            return .postgresReadOnly
+        case .migrations:
+            return .migrationsSchemaOnly
+        }
+    }
+
     public func closeDatabase() {
         schemaComparisonTask?.cancel()
         schemaComparisonTask = nil
@@ -609,7 +896,7 @@ public final class AppSession {
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
-        retireDumpOpen()
+        retireDocumentOpen()
         documentOpenProgress = nil
         records.reset()
         openGeneration = UUID()
@@ -649,6 +936,10 @@ public final class AppSession {
         showStoryCardsInGraph = false
         showOnlyStoryCardsInGraph = false
         openTabs = []
+        migrationSet = nil
+        selectedMigrationVersion = nil
+        migrationReplaySummary = nil
+        migrationDiagnostics = []
 
         activeTabID = nil
         tableDescriptors = [:]
@@ -778,6 +1069,8 @@ public final class AppSession {
         switch target {
         case .sqlite(let databaseURL):
             Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
+        case .migrations(let url):
+            Task { await openMigrations(at: url, version: selectedMigrationVersion, changeBaseline: baseline) }
         case .postgres, .postgresDump:
             let generation = openGeneration
             let documentURL = databaseURL
@@ -1491,17 +1784,41 @@ public final class AppSession {
         if !isSameDocument { initializedGraphViewportDocument = nil }
         databaseTarget = target
         databaseURL = localURL
-        databaseCapabilities = target.isPostgres ? .postgresReadOnly : .sqlite
+        databaseCapabilities = Self.capabilities(for: target)
+        // A schema-only model has nothing for the SQL pane to run against. Each
+        // pane takes whichever of the remaining kinds the other one does not
+        // hold, so replacing the query pane cannot leave both showing the same
+        // thing — which would also strand `preferSchemaPaneWhenCompact`.
+        if !databaseCapabilities.canRunQueries {
+            if leftPane.kind == .query {
+                leftPane = WorkspacePaneState(kind: rightPane.kind == .schema ? .tables : .schema)
+            }
+            if rightPane.kind == .query {
+                rightPane = WorkspacePaneState(kind: leftPane.kind == .schema ? .tables : .schema)
+            }
+        }
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
         tables = snapshot.descriptors.map(\.summary)
         graph = snapshot.graph
-        let sidecar: SchemaSidecar
+        var sidecar: SchemaSidecar
         if let url = databaseURL {
             schemaMetadataState.reload(for: url, descriptors: snapshot.descriptors)
             sidecar = schemaMetadataState.sidecar
         } else {
             schemaMetadataState = SchemaMetadataState()
             sidecar = .empty
+        }
+        // Descriptions carried by the source itself (COMMENT ON in migrations)
+        // fill gaps only; an authored sidecar always wins.
+        for (tableName, source) in snapshot.sourceDescriptions {
+            var existing = sidecar.tables[tableName] ?? SchemaSidecar.TableDescription()
+            if existing.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                existing.description = source.description
+            }
+            for (columnName, text) in source.columns where existing.columns[columnName] == nil {
+                existing.columns[columnName] = text
+            }
+            sidecar.tables[tableName] = existing
         }
         schemaSidecar = sidecar
         configureRecordMappings(schemaSidecar)

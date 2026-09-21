@@ -14,6 +14,11 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("o")
 
+            Button("Open Project Folder…") {
+                session.presentOpenProjectFolderPanel()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+
             Button("Compare Database Schemas…") { session.presentSchemaComparison() }
 
             Menu("Open Recent") {
@@ -58,6 +63,13 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("t")
             .disabled(session.tables.isEmpty)
+
+            if let set = session.migrationSet, set.files.count > 1 {
+                Menu("Replay Migrations Through") {
+                    MigrationVersionMenuContent(set: set) { session.selectMigrationVersion($0) }
+                }
+                .disabled(session.isRefreshing)
+            }
 
             if session.databaseCapabilities.canCreateTable {
                 Button("Create Table…") { session.showCreateTable() }

@@ -11,6 +11,9 @@ public struct DatabaseCapabilities: Sendable, Hashable {
     public let canDropColumns: Bool
     public let canWriteSQL: Bool
     public let supportsAIWorkspace: Bool
+    /// A migration model describes structure only; there are no rows to page through.
+    public let canBrowseRows: Bool
+    public let canRunQueries: Bool
 
     public init(
         isReadOnly: Bool,
@@ -22,7 +25,9 @@ public struct DatabaseCapabilities: Sendable, Hashable {
         canAlterSchema: Bool,
         canDropColumns: Bool,
         canWriteSQL: Bool,
-        supportsAIWorkspace: Bool
+        supportsAIWorkspace: Bool,
+        canBrowseRows: Bool = true,
+        canRunQueries: Bool = true
     ) {
         self.isReadOnly = isReadOnly
         self.canEditRows = canEditRows
@@ -34,6 +39,8 @@ public struct DatabaseCapabilities: Sendable, Hashable {
         self.canDropColumns = canDropColumns
         self.canWriteSQL = canWriteSQL
         self.supportsAIWorkspace = supportsAIWorkspace
+        self.canBrowseRows = canBrowseRows
+        self.canRunQueries = canRunQueries
     }
 
     public static let sqlite = DatabaseCapabilities(
@@ -62,6 +69,22 @@ public struct DatabaseCapabilities: Sendable, Hashable {
         supportsAIWorkspace: true
     )
 
+    /// A schema reconstructed from migration files: structure without data.
+    public static let migrationsSchemaOnly = DatabaseCapabilities(
+        isReadOnly: true,
+        canEditRows: false,
+        canInsertRows: false,
+        canDeleteRows: false,
+        canImportRows: false,
+        canCreateTable: false,
+        canAlterSchema: false,
+        canDropColumns: false,
+        canWriteSQL: false,
+        supportsAIWorkspace: true,
+        canBrowseRows: false,
+        canRunQueries: false
+    )
+
     public static let none = DatabaseCapabilities(
         isReadOnly: true,
         canEditRows: false,
@@ -72,6 +95,8 @@ public struct DatabaseCapabilities: Sendable, Hashable {
         canAlterSchema: false,
         canDropColumns: false,
         canWriteSQL: false,
-        supportsAIWorkspace: false
+        supportsAIWorkspace: false,
+        canBrowseRows: false,
+        canRunQueries: false
     )
 }

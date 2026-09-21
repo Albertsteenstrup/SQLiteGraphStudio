@@ -73,7 +73,9 @@ public struct StudioRootView: View {
         }
         .disabled(session.isRefreshing)
         .overlay {
-            if let progress = session.documentOpenProgress {
+            if let scan = session.projectScan {
+                ProjectScanOverlayView(state: scan) { session.cancelProjectScan() }
+            } else if let progress = session.documentOpenProgress {
                 VStack(spacing: 14) {
                     ProgressView()
                     Text(progress)
@@ -146,16 +148,11 @@ public struct StudioRootView: View {
             .padding(.bottom, session.storyPlaybackOverlay == nil ? 20 : 132)
         }
         .overlay(alignment: .top) {
-            if session.isPostgreSQL {
-                Label("PostgreSQL · read-only", systemImage: "lock.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(.thinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(StudioPalette.border, lineWidth: 1))
-                    .padding(.top, 8)
-                    .allowsHitTesting(false)
+            if session.databaseTarget?.isMigrationModel == true {
+                documentBadge(session.migrationReplaySummary ?? "Migrations · schema only",
+                              systemImage: "square.stack.3d.up")
+            } else if session.isPostgreSQL {
+                documentBadge("PostgreSQL · read-only", systemImage: "lock.fill")
             }
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
@@ -250,6 +247,9 @@ public struct StudioRootView: View {
         .sheet(isPresented: $session.isSkillsPresented) {
             SkillsPickerView(session: session)
         }
+        .sheet(item: $session.projectCandidates) { choice in
+            ProjectCandidatePickerView(session: session, choice: choice)
+        }
         .sheet(isPresented: $session.isCreateTablePresented) {
             CreateTableSheetView(session: session)
         }
@@ -278,6 +278,19 @@ public struct StudioRootView: View {
                 }
             }
         )
+    }
+
+    /// The capsule above the workspace naming what kind of document is open.
+    private func documentBadge(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(StudioPalette.primaryText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.thinMaterial, in: Capsule())
+            .overlay(Capsule().stroke(StudioPalette.border, lineWidth: 1))
+            .padding(.top, 8)
+            .allowsHitTesting(false)
     }
 
     private var rootBackground: some View {
@@ -724,6 +737,10 @@ private struct PaneShell: View {
                     session.toggleMaximizePane(side)
                 }
             }
+            if showsDatabaseName, session.migrationSet != nil {
+                MigrationVersionControl(session: session)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
             if showsDatabaseName {
                 Text(session.databaseDisplayName)
                     .font(.caption.weight(.medium))
@@ -897,7 +914,7 @@ private struct WorkspaceDockView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(PaneContentKind.allCases) { kind in
+            ForEach(PaneContentKind.allCases.filter { $0 != .query || session.canShowQueryPane }) { kind in
                 WorkspaceDockPill(
                     kind: kind,
                     isVisible: visibleKinds.contains(kind)
@@ -1794,23 +1811,34 @@ private struct EmptyDatabaseView: View {
                     Text("Open a database")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(StudioPalette.primaryText)
-                    Text("Browse and edit SQLite databases, or explore PostgreSQL in read-only mode.")
+                    Text("Browse and edit SQLite databases, explore PostgreSQL in read-only mode, or read a data model straight from a project's migration files.")
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                 }
 
                 VStack(spacing: 10) {
-                    Button {
-                        session.presentOpenDatabasePanel()
-                    } label: {
-                        Label("Choose Database File", systemImage: "folder")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StudioPalette.accent)
-                    .controlSize(.large)
+                    HStack(spacing: 10) {
+                        Button {
+                            session.presentOpenDatabasePanel()
+                        } label: {
+                            Label("Choose Database File", systemImage: "folder")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(StudioPalette.accent)
+                        .controlSize(.large)
 
-                    Text(DatabaseDocument.supportedFormatsDescription)
+                        Button {
+                            session.presentOpenProjectFolderPanel()
+                        } label: {
+                            Label("Search Project Folder", systemImage: "magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
+
+                    Text(DatabaseDocument.supportedFormatsDescription
+                         + "\nMigrations: a folder of versioned .sql files")
                         .font(.caption)
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)

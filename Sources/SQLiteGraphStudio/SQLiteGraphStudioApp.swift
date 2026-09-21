@@ -119,13 +119,14 @@ private enum LaunchRequestResolver {
     static func databaseURLs(from urls: [URL]) -> [URL] {
         urls.compactMap { url in
             let resolvedURL = url.standardizedFileURL
-            guard allowedExtensions.contains(resolvedURL.pathExtension.lowercased()) else { return nil }
-
             var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-                return nil
-            }
+            guard FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory) else { return nil }
 
+            // A folder of versioned .sql files, or a single schema script, opens
+            // as a migration model.
+            if isDirectory.boolValue { return resolvedURL }
+            let fileExtension = resolvedURL.pathExtension.lowercased()
+            guard allowedExtensions.contains(fileExtension) || fileExtension == "sql" else { return nil }
             return resolvedURL
         }
     }

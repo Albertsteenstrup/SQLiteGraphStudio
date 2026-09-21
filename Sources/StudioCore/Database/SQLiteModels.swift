@@ -461,6 +461,9 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
     case sqlite(URL)
     case postgres(PostgresConnectionConfiguration)
     case postgresDump(URL)
+    /// A schema replayed from migration files: a directory of ordered SQL files,
+    /// or a single schema script.
+    case migrations(URL)
 
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -472,6 +475,7 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
         case sqlite
         case postgres
         case postgresDump
+        case migrations
     }
 
     public init(from decoder: Decoder) throws {
@@ -483,6 +487,8 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
             self = .postgres(try container.decode(PostgresConnectionConfiguration.self, forKey: .configuration))
         case .postgresDump:
             self = .postgresDump(try container.decode(URL.self, forKey: .url).standardizedFileURL)
+        case .migrations:
+            self = .migrations(try container.decode(URL.self, forKey: .url).standardizedFileURL)
         }
     }
 
@@ -498,6 +504,9 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
         case .postgresDump(let url):
             try container.encode(Kind.postgresDump, forKey: .kind)
             try container.encode(url.standardizedFileURL, forKey: .url)
+        case .migrations(let url):
+            try container.encode(Kind.migrations, forKey: .kind)
+            try container.encode(url.standardizedFileURL, forKey: .url)
         }
     }
 
@@ -509,12 +518,17 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
             return "postgres:" + configuration.canonicalIdentity
         case .postgresDump(let url):
             return "postgres-dump:" + url.standardizedFileURL.path
+        case .migrations(let url):
+            // Deliberately free of the selected migration version: layout, saved
+            // queries and notes belong to the migration set, not to one revision
+            // of it, so stepping through versions keeps them.
+            return "migrations:" + url.standardizedFileURL.path
         }
     }
 
     public var stableStorageKey: String {
         switch self {
-        case .sqlite, .postgresDump:
+        case .sqlite, .postgresDump, .migrations:
             return identity
         case .postgres(let configuration):
             return "postgres-" + configuration.stableStorageKey
@@ -523,7 +537,7 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
 
     public var fileURL: URL? {
         switch self {
-        case .sqlite(let url), .postgresDump(let url):
+        case .sqlite(let url), .postgresDump(let url), .migrations(let url):
             return url.standardizedFileURL
         case .postgres: return nil
         }
@@ -537,14 +551,22 @@ public enum DatabaseTarget: Sendable, Hashable, Codable {
             return "PostgreSQL · " + configuration.database
         case .postgresDump(let url):
             return url.lastPathComponent
+        case .migrations(let url):
+            return url.lastPathComponent
         }
     }
 
     public var isPostgres: Bool {
         switch self {
         case .postgres, .postgresDump: return true
-        case .sqlite: return false
+        case .sqlite, .migrations: return false
         }
+    }
+
+    /// A schema reconstructed from migration files rather than read from a database.
+    public var isMigrationModel: Bool {
+        if case .migrations = self { return true }
+        return false
     }
 }
 

@@ -112,28 +112,23 @@ public struct TableWorkspaceView: View {
     private func tableContent(for activeTab: TableTabModel) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             header(for: activeTab)
-            ViewThatFits(in: .horizontal) {
-              HStack {
-                Button("Previous Page") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
-                Button("Next Page") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
-                Text(activeTab.chunk.rows.isEmpty ? "No loaded rows" : "Loaded rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
-                Spacer()
-                Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
-                Button("Filters…") { showsFilters = true }
-                    .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
-              }.fixedSize(horizontal: true, vertical: false)
-              VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Button("Previous") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
-                    Button("Next") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
-                    Text(activeTab.chunk.rows.isEmpty ? "No rows" : "Rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
-                }
-                HStack {
-                    Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
-                    Button("Filters…") { showsFilters = true }
-                        .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
-                }
-              }
+            if session.databaseCapabilities.canBrowseRows {
+                pagingControls(for: activeTab)
+            } else {
+                // A model replayed from migration files has structure but no data.
+                Label(
+                    session.databaseTarget?.isMigrationModel == true
+                        ? "Schema only — this model comes from migration files, so there are no rows to browse."
+                        : "Schema only — this document has structure but no rows to browse.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(StudioPalette.secondaryText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioPalette.headerSurface))
+                .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(StudioPalette.borderSoft) }
             }
             schemaMetadataStrip(for: activeTab.descriptor)
 
@@ -218,6 +213,33 @@ public struct TableWorkspaceView: View {
         )
     }
 
+    @ViewBuilder
+    private func pagingControls(for activeTab: TableTabModel) -> some View {
+        ViewThatFits(in: .horizontal) {
+          HStack {
+            Button("Previous Page") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
+            Button("Next Page") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
+            Text(activeTab.chunk.rows.isEmpty ? "No loaded rows" : "Loaded rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
+            Spacer()
+            Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
+            Button("Filters…") { showsFilters = true }
+                .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
+          }.fixedSize(horizontal: true, vertical: false)
+          VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button("Previous") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
+                Button("Next") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
+                Text(activeTab.chunk.rows.isEmpty ? "No rows" : "Rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
+            }
+            HStack {
+                Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
+                Button("Filters…") { showsFilters = true }
+                    .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
+            }
+          }
+        }
+    }
+
     private func header(for activeTab: TableTabModel) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
@@ -238,7 +260,13 @@ public struct TableWorkspaceView: View {
                 }
                 HStack(spacing: 8) {
                     Text(activeTab.descriptor.isEditable ? "Editable table" : "Read-only table")
-                    Text(activeTab.rowCountLabel)
+                    // A schema-only model has no row count to report, and zero
+                    // would read as a claim that the table is empty.
+                    if session.databaseCapabilities.canBrowseRows {
+                        Text(activeTab.rowCountLabel)
+                    } else {
+                        Text("schema only")
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(StudioPalette.secondaryText)
