@@ -216,22 +216,31 @@ struct WorkspaceStateTests {
     func compactThresholdHasHysteresisAndIgnoresUnusableWidths() {
         var layout = WorkspaceCompactLayout()
 
-        #expect(!layout.update(width: 0))
-        #expect(!layout.update(width: .nan))
+        // `update` mutates, so each call happens before its expectation rather than
+        // inside it: #expect captures its operands immutably, and a mutating call
+        // nested in the macro fails to compile.
+        var changed = layout.update(width: 0)
+        #expect(!changed)
+        changed = layout.update(width: .nan)
+        #expect(!changed)
         #expect(!layout.isCompact)
 
-        #expect(!layout.update(width: WorkspaceCompactLayout.collapseWidth))
+        changed = layout.update(width: WorkspaceCompactLayout.collapseWidth)
+        #expect(!changed)
         #expect(!layout.isCompact)
 
-        #expect(layout.update(width: WorkspaceCompactLayout.collapseWidth - 1))
+        changed = layout.update(width: WorkspaceCompactLayout.collapseWidth - 1)
+        #expect(changed)
         #expect(layout.isCompact)
 
         // Between the two thresholds the layout stays put, so a resize drag that
         // hovers on the boundary cannot flap the panes.
-        #expect(!layout.update(width: WorkspaceCompactLayout.collapseWidth + 10))
+        changed = layout.update(width: WorkspaceCompactLayout.collapseWidth + 10)
+        #expect(!changed)
         #expect(layout.isCompact)
 
-        #expect(layout.update(width: WorkspaceCompactLayout.restoreWidth))
+        changed = layout.update(width: WorkspaceCompactLayout.restoreWidth)
+        #expect(changed)
         #expect(!layout.isCompact)
     }
 
@@ -249,7 +258,8 @@ struct WorkspaceStateTests {
         #expect(WorkspaceCompactLayout.collapseWidth < WorkspaceCompactLayout.restoreWidth)
 
         var layout = WorkspaceCompactLayout()
-        #expect(layout.update(width: narrowest))
+        let changed = layout.update(width: narrowest)
+        #expect(changed)
         #expect(layout.isCompact)
     }
 
