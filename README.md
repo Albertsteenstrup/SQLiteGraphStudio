@@ -20,6 +20,7 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 - Inline row editing with right-click row actions (add, clone, delete)
 - Typed equality, comparison, range and NULL filters, explicit text search, key-based next pages, and on-demand exact counts
 - SQL query runner with Stop, timeouts, bounded fetching, duplicate-column-safe results and explain plan
+- Narrow-window layout — the workspace fits a Split View or Stage Manager tile, and once there is no longer room for two panes it shows one and keeps the schema graph on screen; the dock stays available to switch which pane that is
 - Explicit loaded-row and all-matching exports, with snapshot consistency, progress, cancellation and atomic file publication
 - User-selected PostgreSQL connection documents with schema-qualified catalog browsing, paging, search, filtering, sorting, exports, query history, and non-executing EXPLAIN
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)

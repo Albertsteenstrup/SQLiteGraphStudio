@@ -181,6 +181,7 @@ public final class AppSession {
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
     public var maximizedPaneSide: WorkspacePaneSide?
+    public private(set) var workspaceCompactLayout = WorkspaceCompactLayout()
     public var selectedGraphNodeID: String?
     public var selectedGraphNodeIDs: Set<String> = []
     public var expandedGraphNodeIDs: Set<String> = []
@@ -629,6 +630,7 @@ public final class AppSession {
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
         activePaneSide = .right
+        preferSchemaPaneWhenCompact()
         maximizedPaneSide = nil
         selectedGraphNodeID = nil
         selectedGraphNodeIDs = []
@@ -1398,6 +1400,37 @@ public final class AppSession {
         maximizedPaneSide = nil
     }
 
+    public var isWorkspaceCompact: Bool {
+        workspaceCompactLayout.isCompact
+    }
+
+    /// The one pane a narrow workspace has room for, or `nil` while both fit.
+    /// The user keeps steering it: the active side follows table and query
+    /// openings, and dock taps swap content into whichever side is on screen.
+    public var compactVisibleSide: WorkspacePaneSide? {
+        workspaceCompactLayout.isCompact ? activePaneSide : nil
+    }
+
+    /// Reports the workspace width as the window is resized, tiled into Split
+    /// View, or moved between Stage Manager slots. When the layout first runs
+    /// out of room for two panes, the graph is the one that stays.
+    public func updateWorkspaceWidth(_ width: CGFloat) {
+        guard workspaceCompactLayout.update(width: width) else { return }
+        preferSchemaPaneWhenCompact()
+    }
+
+    /// Focuses the pane holding the schema graph whenever only one pane fits.
+    ///
+    /// A compact workspace shows the active side and nothing else, so anything
+    /// that returns pane focus to its default has to be told that the default is
+    /// different when the window is narrow — otherwise opening or refreshing a
+    /// database would quietly push the graph off screen.
+    private func preferSchemaPaneWhenCompact() {
+        guard workspaceCompactLayout.isCompact else { return }
+        guard let schemaSide = side(containing: .schema) else { return }
+        activePaneSide = schemaSide
+    }
+
     private func rememberRecentDatabase(_ url: URL) {
         let normalizedURL = url.standardizedFileURL
         var urls = recentDatabaseURLs.filter { $0 != normalizedURL }
@@ -1469,7 +1502,6 @@ public final class AppSession {
         pinnedStoryGraphPositionsByMode = [:]
         restorePersistedGraphLayoutIfAvailable(for: target, graph: snapshot.graph)
         restorePersistedStoryGraphLayoutIfAvailable(for: target)
-        activePaneSide = .right
         selectedGraphNodeID = nil
         expandedGraphNodeIDs = []
         floatingDetailsCardTableID = nil
@@ -1479,6 +1511,12 @@ public final class AppSession {
         showOnlyStoryCardsInGraph = false
         queryWorkspace.loadSavedQueries(for: target)
         if !isSameDocument {
+            // Only a genuinely new document returns pane focus to its default.
+            // Refreshing the open one leaves the user where they were — which
+            // matters most while compact, where focus decides the only pane
+            // on screen.
+            activePaneSide = .right
+            preferSchemaPaneWhenCompact()
             selectedGraphNodeIDs = []
             openTabs = []
             isSkillsPresented = false

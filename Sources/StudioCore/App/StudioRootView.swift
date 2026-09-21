@@ -23,6 +23,20 @@ public struct StudioRootView: View {
         return session.side(containing: .schema) != nil
     }
 
+    /// The minimap stands down once the workspace is narrow enough to show a
+    /// single pane: at that point it covers roughly a third of the canvas it
+    /// exists to navigate, so the graph keeps the room instead.
+    private var showsMinimap: Bool {
+        session.hasOpenDatabase
+            // A schema review draws its own workspace in place of the panes, so
+            // the minimap has no canvas here to navigate.
+            && session.schemaReview == nil
+            && session.storyPlaybackOverlay == nil
+            && !session.graph.nodes.isEmpty
+            && !session.isWorkspaceCompact
+            && schemaIsVisible
+    }
+
     public var body: some View {
         ZStack {
             rootBackground
@@ -31,19 +45,15 @@ public struct StudioRootView: View {
                 SchemaReviewWorkspaceView(session: session, review: review)
             } else if session.hasOpenDatabase {
                 WorkspaceLayoutView(session: session)
-                    .padding(session.storyPlaybackOverlay == nil ? 16 : 0)
+                    .padding(session.storyPlaybackOverlay == nil ? WorkspaceCompactLayout.workspaceInset : 0)
             } else {
                 EmptyDatabaseView(session: session)
                     .padding(24)
             }
 
-            // Minimap — shown whenever the schema graph is visible and has nodes.
-            // Rendered at the root ZStack level so it's never clipped by pane containers
-            // and always appears above the dock nav.
-            if session.hasOpenDatabase
-                && session.storyPlaybackOverlay == nil
-                && !session.graph.nodes.isEmpty
-                && schemaIsVisible {
+            // Rendered at the root ZStack level so it's never clipped by pane
+            // containers and always appears above the dock nav.
+            if showsMinimap {
                 GeometryReader { geo in
                     GraphMinimapView(
                         session: session,
@@ -301,6 +311,7 @@ public struct StudioRootView: View {
 /// recreates them when the surrounding layout changes between split and fullscreen.
 private struct WorkspaceLayoutView: View {
     @Bindable var session: AppSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var databaseNameSide: WorkspacePaneSide = .left
 
     private var storyPlaybackState: StoryPlaybackOverlayState? {
@@ -318,11 +329,29 @@ private struct WorkspaceLayoutView: View {
         if isStoryPlaybackActive || session.showAllGraphTableCards {
             return session.side(containing: .schema) ?? .left
         }
-        return nil
+        return session.compactVisibleSide
     }
 
     private var isFullscreen: Bool {
         fullscreenSide != nil
+    }
+
+    /// True when the single-pane layout is the narrow window's doing rather than
+    /// something the user asked for by maximizing a pane or starting a story.
+    /// The dock stays up in that case: it is the only way left to reach the
+    /// panes that no longer fit.
+    private var isCompactSinglePane: Bool {
+        session.isWorkspaceCompact
+            && session.maximizedPaneSide == nil
+            && !isStoryPlaybackActive
+            && !session.showAllGraphTableCards
+    }
+
+    private var visiblePaneKinds: Set<PaneContentKind> {
+        guard let fullscreenSide else {
+            return [session.leftPane.kind, session.rightPane.kind]
+        }
+        return [session.paneState(for: fullscreenSide).kind]
     }
 
     var body: some View {
@@ -340,8 +369,13 @@ private struct WorkspaceLayoutView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.snappy(duration: 0.32), value: isStoryPlaybackActive)
-        .animation(.snappy(duration: 0.32), value: fullscreenSide)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.32), value: isStoryPlaybackActive)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.32), value: fullscreenSide)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            session.updateWorkspaceWidth(width)
+        }
     }
 
     private var splitLayout: some View {
@@ -351,6 +385,7 @@ private struct WorkspaceLayoutView: View {
                     session: session,
                     side: .left,
                     isCanvasMode: isStoryCanvasMode(for: .left),
+                    isCompact: isCompactSinglePane,
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left
                 )
                 .id("workspace-pane-left")
@@ -362,11 +397,13 @@ private struct WorkspaceLayoutView: View {
                 }
                 .opacity(paneOpacity(for: .left))
                 .allowsHitTesting(paneIsInteractive(.left))
+                .accessibilityHidden(!paneIsInteractive(.left))
 
                 PaneShell(
                     session: session,
                     side: .right,
                     isCanvasMode: isStoryCanvasMode(for: .right),
+                    isCompact: isCompactSinglePane,
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right
                 )
                 .id("workspace-pane-right")
@@ -378,6 +415,7 @@ private struct WorkspaceLayoutView: View {
                 }
                 .opacity(paneOpacity(for: .right))
                 .allowsHitTesting(paneIsInteractive(.right))
+                .accessibilityHidden(!paneIsInteractive(.right))
             }
             .background(SplitViewPositioner(mode: splitMode))
             .onPreferenceChange(WorkspacePaneWidthsKey.self) { widths in
@@ -390,8 +428,8 @@ private struct WorkspaceLayoutView: View {
                 databaseNameSide = left > right ? .left : .right
             }
 
-            if !isFullscreen {
-                WorkspaceDockView(session: session)
+            if !isFullscreen || isCompactSinglePane {
+                WorkspaceDockView(session: session, visibleKinds: visiblePaneKinds)
                     .padding(.bottom, 18)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -419,8 +457,8 @@ private struct WorkspaceLayoutView: View {
     }
 
     private func minimumPaneWidth(for side: WorkspacePaneSide) -> CGFloat {
-        guard let fullscreenSide else { return 320 }
-        return fullscreenSide == side ? 320 : 0
+        guard let fullscreenSide else { return WorkspaceCompactLayout.splitPaneMinimumWidth }
+        return fullscreenSide == side ? WorkspaceCompactLayout.singlePaneMinimumWidth : 0
     }
 }
 
@@ -540,7 +578,10 @@ private struct SplitViewPositioner: NSViewRepresentable {
 
         @MainActor
         private func setDividerPosition(_ position: CGFloat, in splitView: NSSplitView, animated: Bool) {
-            guard animated else {
+            // This slide is what a collapse actually looks like, and a resize can
+            // now trigger it, so it answers to reduce-motion like the SwiftUI
+            // transitions around it.
+            guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
                 splitView.setPosition(position, ofDividerAt: 0)
                 return
             }
@@ -602,6 +643,9 @@ private struct PaneShell: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let side: WorkspacePaneSide
     let isCanvasMode: Bool
+    /// The narrow layout is already giving this pane the whole workspace, so
+    /// there is nothing left for a maximize control to do.
+    let isCompact: Bool
     let showsDatabaseName: Bool
     @State private var isDropTargeted = false
 
@@ -642,7 +686,7 @@ private struct PaneShell: View {
 
     private var paneHeader: some View {
         HStack(spacing: 12) {
-            if isMaximized {
+            if isMaximized || isCompact {
                 Label(paneState.kind.title, systemImage: paneState.kind.systemImage)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(StudioPalette.primaryText)
@@ -669,7 +713,7 @@ private struct PaneShell: View {
                     .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
                 }
                 .buttonStyle(.plain)
-            } else {
+            } else if !isCompact {
                 PaneHeaderIconButton(systemImage: "arrow.up.left.and.arrow.down.right", title: "Maximize pane") {
                     session.toggleMaximizePane(side)
                 }
@@ -841,13 +885,16 @@ private struct PaneHeaderIconButton: View {
 
 private struct WorkspaceDockView: View {
     @Bindable var session: AppSession
+    /// What is actually on screen. In the narrow single-pane layout both panes
+    /// still hold content, but only one of them is showing.
+    let visibleKinds: Set<PaneContentKind>
 
     var body: some View {
         HStack(spacing: 10) {
             ForEach(PaneContentKind.allCases) { kind in
                 WorkspaceDockPill(
                     kind: kind,
-                    isVisible: session.side(containing: kind) != nil
+                    isVisible: visibleKinds.contains(kind)
                 )
                 .onTapGesture {
                     session.setPaneContent(kind, for: session.activePaneSide)
@@ -1968,20 +2015,29 @@ private struct CreateTableSheetView: View {
                     .tint(StudioPalette.accent)
                 }
 
-                ForEach($draft.columns) { $column in
-                    HStack(spacing: 8) {
-                        TextField("Name", text: $column.name)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("Type", text: $column.type)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 110)
-                        Toggle("PK", isOn: $column.isPrimaryKey)
-                        Toggle("NN", isOn: $column.isNotNull)
-                        TextField("Default SQL", text: $column.defaultValueSQL)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 130)
+                // Columns are unbounded, so they scroll rather than pushing the
+                // SQL preview and the action buttons past the bottom of a short
+                // window.
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach($draft.columns) { $column in
+                            HStack(spacing: 8) {
+                                TextField("Name", text: $column.name)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Type", text: $column.type)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 110)
+                                Toggle("PK", isOn: $column.isPrimaryKey)
+                                Toggle("NN", isOn: $column.isNotNull)
+                                TextField("Default SQL", text: $column.defaultValueSQL)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 130)
+                            }
+                        }
                     }
+                    .padding(.trailing, 2)
                 }
+                .frame(minHeight: 96, maxHeight: 200)
             }
 
             TextEditor(text: .constant(session.createTableSQLPreview(for: draft)))

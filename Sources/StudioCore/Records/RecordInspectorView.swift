@@ -30,8 +30,8 @@ public struct RecordExplorationView: View {
             if let record = session.records.current {
                 if session.records.showsGraph {
                     HSplitView {
-                        RecordGraphView(workspace: session.records).frame(minWidth: 420)
-                        RecordInspectorView(session: session, record: record).frame(minWidth: 360, idealWidth: 440, maxWidth: 560)
+                        RecordGraphView(workspace: session.records).frame(minWidth: 300)
+                        RecordInspectorView(session: session, record: record).frame(minWidth: 300, idealWidth: 440, maxWidth: 560)
                     }
                 } else {
                     RecordInspectorView(session: session, record: record)
@@ -40,7 +40,15 @@ public struct RecordExplorationView: View {
                 ContentUnavailableView("No record selected", systemImage: "tablecells", description: Text("Right-click a loaded table or query row and choose Inspect Record."))
             }
         }
-        .frame(minWidth: 960, idealWidth: 1160, minHeight: 660, idealHeight: 800)
+        // The ideal size is what this sheet normally opens at. The minimum has to
+        // stay inside the smallest window the app allows, because a sheet cannot
+        // rely on being given more room than the window hosting it.
+        .frame(
+            minWidth: WorkspaceCompactLayout.windowMinimumWidth - 60,
+            idealWidth: 1160,
+            minHeight: WorkspaceCompactLayout.windowMinimumHeight - 80,
+            idealHeight: 800
+        )
     }
 }
 

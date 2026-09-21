@@ -66,11 +66,19 @@ struct SQLiteGraphStudioApp: App {
     var body: some Scene {
         WindowGroup("SQLite Graph Studio") {
             StudioRootView(session: session)
-                .frame(minWidth: 1200, minHeight: 760)
+                // Low enough to accept a Split View or Stage Manager tile — at
+                // which point the workspace folds down to a single pane and keeps
+                // the graph on screen. The floor and the thresholds that depend on
+                // it live together, so neither can drift out from under the other.
+                .frame(
+                    minWidth: WorkspaceCompactLayout.windowMinimumWidth,
+                    minHeight: WorkspaceCompactLayout.windowMinimumHeight
+                )
                 .task {
                     configureLaunchHandling()
                 }
         }
+        .defaultSize(width: 1280, height: 820)
         .commands {
             StudioCommands(session: session)
         }
