@@ -63,19 +63,19 @@ public actor DatabaseService {
         return false
     }
 
-    public func open(url: URL) async throws {
+    public func open(url: URL, readOnly: Bool = false, includeRowCounts: Bool = true) async throws {
         let generation = try await beginOpen()
         let normalizedURL = url.standardizedFileURL
         let sqlite = SQLiteDatabaseBackend()
-        try await sqlite.open(url: normalizedURL)
+        try await sqlite.open(url: normalizedURL, readOnly: readOnly, includeRowCounts: includeRowCounts)
         guard openGeneration == generation, !Task.isCancelled else { await sqlite.close(); throw CancellationError() }
         backend = .sqlite(sqlite)
         currentTarget = .sqlite(normalizedURL)
     }
 
-    public func open(postgres configuration: PostgresConnectionConfiguration) async throws {
+    public func open(postgres configuration: PostgresConnectionConfiguration, unixSocketPath: String? = nil) async throws {
         let generation = try await beginOpen()
-        let postgres = PostgresDatabaseBackend(configuration: configuration)
+        let postgres = PostgresDatabaseBackend(configuration: configuration, unixSocketPath: unixSocketPath)
         try await postgres.open()
         guard openGeneration == generation, !Task.isCancelled else { await postgres.close(); throw CancellationError() }
         backend = .postgres(postgres)

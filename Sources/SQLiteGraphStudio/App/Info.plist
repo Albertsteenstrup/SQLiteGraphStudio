@@ -31,6 +31,18 @@
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
+            <key>CFBundleTypeExtensions</key><array><string>sgpreview</string></array>
+            <key>CFBundleTypeName</key><string>Proposed Database Schema</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key><array><string>sgreview</string></array>
+            <key>CFBundleTypeName</key><string>Database Schema Comparison</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+        </dict>
+        <dict>
             <key>CFBundleTypeExtensions</key>
             <array>
                 <string>sqlite</string>

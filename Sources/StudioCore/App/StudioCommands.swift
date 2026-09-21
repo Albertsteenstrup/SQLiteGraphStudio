@@ -14,6 +14,8 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("o")
 
+            Button("Compare Database Schemas…") { session.presentSchemaComparison() }
+
             Menu("Open Recent") {
                 if session.recentDatabaseURLs.isEmpty {
                     Text("No Recent Databases")

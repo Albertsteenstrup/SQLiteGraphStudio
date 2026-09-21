@@ -16,6 +16,7 @@ public struct CatalogSnapshot: Sendable {
 public actor SQLiteDatabaseBackend {
     var pool: DatabasePool?
     private var currentURL: URL?
+    private var includeRowCounts = true
 
     public init() {}
 
@@ -23,8 +24,10 @@ public actor SQLiteDatabaseBackend {
         .sqlite
     }
 
-    public func open(url: URL) throws {
+    public func open(url: URL, readOnly: Bool = false, includeRowCounts: Bool = true) throws {
         var configuration = Configuration()
+        configuration.readonly = readOnly
+        self.includeRowCounts = includeRowCounts
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
             try db.execute(sql: "PRAGMA busy_timeout = 3000")
@@ -86,7 +89,7 @@ public actor SQLiteDatabaseBackend {
                         .filter { $0.primaryKeyOrdinal > 0 }
                         .sorted { $0.primaryKeyOrdinal < $1.primaryKeyOrdinal }
                         .map(\.name)
-                    let rowCount = try loadRowCount(for: name, objectType: objectType, database: db)
+                    let rowCount = includeRowCounts ? try loadRowCount(for: name, objectType: objectType, database: db) : nil
                     let indexes = try loadIndexes(for: name, database: db)
                     let triggers = try loadTriggers(for: name, database: db)
                     let generatedColumns = columns

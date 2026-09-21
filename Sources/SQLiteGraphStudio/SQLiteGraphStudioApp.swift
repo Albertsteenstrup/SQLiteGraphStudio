@@ -40,6 +40,10 @@ final class StudioAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct StudioLauncher {
     @MainActor static func main() {
+        if SchemaReviewCommand.isRequested {
+            Task.detached { exit(await SchemaReviewCommand.run()) }
+            dispatchMain()
+        }
         // AppKit must own the ordinary synchronous main entrypoint. Nesting its
         // event loop inside an async main-actor job starves later UI tasks.
         guard PostgresRuntimeSupervisor.isRequested else {

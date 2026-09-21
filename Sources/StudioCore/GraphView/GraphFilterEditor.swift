@@ -28,6 +28,8 @@ struct GraphFilterEditor: View {
             Text("Leave a bound empty for no limit.").font(.caption).foregroundStyle(.secondary)
             range("Fields", minimum: $minimumFields, maximum: $maximumFields)
             range("Rows", minimum: $minimumRows, maximum: $maximumRows)
+                .disabled(session.schemaReview != nil)
+                .help(session.schemaReview != nil ? "Schema comparisons contain no row data." : "Filter by row count")
             range("Relations", minimum: $minimumRelations, maximum: $maximumRelations)
                 .help("Incoming and outgoing foreign keys in the full schema. Composite and self-referencing keys count once.")
             if let progress = session.graphFilterProgress {

@@ -27,7 +27,7 @@ public struct StudioSkillDirectoryTarget: Identifiable, Sendable, Hashable {
 
 public enum StudioSkills {
 
-    public static let all: [StudioSkill] = [graphClusters, schemaDescriptions, storyFlows]
+    public static let all: [StudioSkill] = [graphClusters, schemaDescriptions, storyFlows, databaseDiff, databasePreview]
 
     // MARK: Skills
 
@@ -51,6 +51,231 @@ public enum StudioSkills {
         shortDescription: "Adds user-story-inspired flow stories with acceptance notes, graph playback, and hidden read-aloud narration to the .studio.json sidecar.",
         fullContent: storyFlowsContent
     )
+
+    public static let databaseDiff = StudioSkill(
+        id: "database-diff", title: "database-diff",
+        shortDescription: "Compares SQLite and PostgreSQL schema versions for PRs and local integrations, highlighting table, field, and relation changes.",
+        fullContent: databaseDiffContent
+    )
+
+    public static let databasePreview = StudioSkill(
+        id: "database-preview", title: "database-preview",
+        shortDescription: "Previews proposed schema changes from a small plan and cached metadata, without running migrations.",
+        fullContent: databasePreviewContent
+    )
+
+    static let databasePreviewContent = #"""
+    ---
+    name: database-preview
+    description: Show proposed SQLite or PostgreSQL table, field and relation changes in SQLite Graph Studio before implementing them. Use a compact change plan and cached schema metadata for quick design iterations without executing migrations.
+    ---
+
+    # Database preview
+
+    Show intended schema changes before writing migrations or changing a database.
+    Create a `.sgpreview` from one captured baseline and a small JSON plan. The app
+    uses the same blue/red borders, field counts, New/Removed badges and relation
+    diffs as schema review, with a persistent **Proposed · not applied** label.
+
+    ## Keep iterations cheap
+
+    Find the executable inside a built `SQLiteGraphStudio.app`, normally
+    `/Applications/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio` or the
+    SQLiteGraphStudio project's `dist/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`.
+    Set `studio` to that executable and `bundle` to its containing `.app`.
+
+    Reuse a captured snapshot JSON or an actual `.sgreview` file. With `.sgreview`,
+    choose `--side after` for its resulting schema or `--side before` for its original
+    schema. Check the reported `baseRef` against the intended starting point. A
+    proposal cannot itself become a captured baseline.
+
+    If no suitable capture exists, run `--schema-review snapshot DATABASE BASE.json`
+    once against the chosen SQLite file, PostgreSQL connection document, or backup.
+    Store the baseline and plan in a temporary or Git-local directory, for example
+    the path returned by `git rev-parse --git-path schema-preview`. Associate a cache
+    with the exact source revision or database snapshot; refresh it when that source
+    changes. A preview does not check whether a live database has changed since capture.
+
+    ```bash
+    # Cheap index: don't load the entire snapshot into the agent's context.
+    "$studio" --schema-review inspect "$baseline" --find order
+    # Read only the fields and incident relations needed for the design.
+    "$studio" --schema-review inspect "$baseline" --table public.orders --column status
+    # Write plan.json, then project it without SQL, a server, or migration replay.
+    "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview
+    open -n -a "$bundle" changes.sgpreview
+    ```
+
+    `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
+    to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than
+    one detailed table. Optional `--column NAME` narrows fields and relations to
+    that field; repeat it for multiple fields. Omit it when full table context is
+    needed. Raw snapshot metadata need not pass through the agent.
+
+    For each iteration, edit the small plan and rerun only `preview` to the **same
+    output file**. The open preview reloads automatically, keeping selection and
+    the overview camera. Don't reopen windows, recapture, restore backups, replay
+    migrations, or rewrite complete before/after schemas on each iteration. The CLI
+    prints a short summary; inspect the visual result when a change affects the design.
+
+    ## Plan format
+
+    ```json
+    {
+      "baseFingerprint": "COPY_FROM_INSPECT",
+      "title": "Proposed order approval",
+      "changes": [
+        {"op":"addColumn","table":"public.orders","column":{"name":"approved_at","type":"timestamp with time zone"}},
+        {"op":"alterColumn","table":"public.orders","column":"status","set":{"notNull":true,"defaultSQL":"'pending'"}},
+        {"op":"addTable","table":"public.order_approval","columns":[
+          {"name":"id","type":"bigint","primaryKeyOrdinal":1,"notNull":true},
+          {"name":"order_id","type":"bigint","notNull":true}
+        ]},
+        {"op":"addRelation","id":"approval_order","source":"public.order_approval","target":"public.orders","sourceColumns":["order_id"],"targetColumns":["id"]}
+      ]
+    }
+    ```
+
+    Use actual table/field IDs from `inspect`, adapting the example to the engine.
+    SQLite IDs are unqualified; PostgreSQL IDs include the schema. Table names with
+    dots can supply explicit `schema` and `name` whose concatenation equals the ID.
+
+    Supported operations, processed in order:
+
+    | `op` | Required properties | Optional properties |
+    | --- | --- | --- |
+    | `addTable` | `table`, `columns` | `schema`, `name`, `kind` (table/view/materializedView) |
+    | `removeTable` | `table` | `cascade` |
+    | `renameTable` | `table`, `to` | `schema`, `name` |
+    | `addColumn` | `table`, `column` object | — |
+    | `alterColumn` | `table`, `column` name, `set` object | — |
+    | `removeColumn` | `table`, `column` name | `cascade` |
+    | `renameColumn` | `table`, `column` name, `to` | — |
+    | `addRelation` | `id`, `source`, `target`, `sourceColumns`, `targetColumns` | `definition` |
+    | `alterRelation` | `id`, `set` object | — |
+    | `removeRelation` | `id` | — |
+
+    New fields require `name` and `type`. Optional field properties: `notNull`
+    (default false), `defaultSQL` (default null), `primaryKeyOrdinal` (default 0),
+    `generated` (default 0), `identity` (default empty string). `alterColumn.set`
+    accepts these properties except `name`; omitted properties are preserved.
+    Set `defaultSQL:null` to remove a default. Type/default text is displayed, never
+    executed or validated as SQL. Describe unstated design assumptions in `notes`.
+
+    `alterRelation.set` accepts `source`, `target`, `sourceColumns`, `targetColumns`,
+    and `definition`. Use the ID returned by `inspect` for an existing relation;
+    assign a readable unique ID to a new one. An omitted relation definition shows
+    that actions are unspecified. Include the intended definition to preview action
+    changes such as ON DELETE CASCADE. Renaming a table/field updates its relation
+    endpoints; a rename appears visually as removal plus addition.
+
+    Removing an object with relations requires removing those relations first or
+    explicit `cascade:true`; cascaded removals are shown. Unknown IDs/properties,
+    duplicate objects, broken relations and mismatched fingerprints fail without
+    replacing the last valid preview. Fix the plan instead of silently skipping errors.
+
+    ## Meaning of the result
+
+    This is a design projection of tables, fields and declared relations. It does
+    not project or validate indexes, triggers, other constraints, data changes,
+    permissions, routines, extension behavior or whether a migration will succeed.
+    Captured definition metadata is not presented as newly generated DDL.
+
+    No code-review marker or hook receipt is written. Creating a preview does not
+    apply or approve the proposed changes. After implementation, use the sibling
+    `database-diff` workflow to compare real schemas through the existing review gate.
+    Report the proposed outcome and baseline, and link the preview file. Keep the
+    baseline stable while exploring alternatives; revise it explicitly if the
+    underlying schema changes.
+    """#
+
+    static let databaseDiffContent = #"""
+    ---
+    name: database-diff
+    description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite Graph Studio for a PR, a local integration, or two database versions. Use after the existing code review finishes when database definitions or migrations changed.
+    ---
+
+    # Database diff
+
+    Create a `.sgreview` file containing before/after schema snapshots and open it in
+    SQLite Graph Studio. The app shows added/removed tables, field changes, and
+    foreign-key changes in both the graph and a table comparison. This is schema
+    evidence, not proof that data migrations or deployment are safe.
+
+    ## Choose the comparison
+
+    Keep exact immutable before/after revisions and explain their meaning:
+
+    - PR: merge-base to the exact PR head for branch changes; use target-to-merged-tree
+      when reviewing the resulting integration instead.
+    - Push: actual remote main SHA to the exact outgoing SHA.
+    - Local fetch/integrate: current local SHA to the fetched incoming SHA before a
+      fast-forward, or the final resolved tree for a merge. Git's pre-merge-commit hook
+      does not cover fast-forward merges; run this skill explicitly after code review.
+    - Two files: label the selected before and after versions by filename.
+
+    Run the repository's existing code-review rounds first. Do not emit a schema
+    review pass or launch the visual follow-up until the first review has completed.
+    Use the repository's database-review hook/adapter when installed; preserve its
+    exact-tree receipt and artifact hash checks. A new head, base, merge resolution,
+    or artifact invalidates that receipt. Never mark an unseen artifact as presented.
+
+    ## Capture real schemas
+
+    Find the built app executable at
+    `/Applications/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`, or the
+    project's `dist/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`.
+    Use the same executable for capture, comparison, and display.
+
+    ```bash
+    "$studio" --schema-review snapshot before.sqlite before.json
+    "$studio" --schema-review snapshot after.sqlite after.json
+    "$studio" --schema-review compare before.json after.json change.sgreview \
+      --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
+      --note "Exact source revisions; schema only, no row data."
+    open -a /path/to/SQLiteGraphStudio.app change.sgreview
+    ```
+
+    Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
+    custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection
+    documents. PostgreSQL capture is read-only; `--socket PATH` selects an explicitly
+    owned local Unix socket. SQLite capture is read-only and does not count or export
+    rows. Connection credentials and row values never belong in snapshots.
+
+    For code revisions, materialize each schema in a separate disposable database
+    using the repository's trusted migration adapter. Never apply migrations to the
+    user's active database to obtain a diff. Do not import application code from an
+    unreviewed revision. The existing code review does not authorize arbitrary remote
+    scripts, production access, or weakening database isolation.
+
+    If a snapshot cannot be produced completely, stop the database-review step with
+    the concrete error. Do not infer a complete schema from regex parsing a SQL patch,
+    or turn unsupported syntax, missing privileges, or failed migrations into an empty
+    schema. For data-only migrations, still show the changed migration paths and state
+    that the schema is unchanged; data effects remain part of the original review.
+
+    ## Review and handoff
+
+    Open the `.sgreview` file and inspect changed tables and their relationships.
+    Blue solid inner borders and `+`/`~` labels indicate additions/changes. Red dashed
+    inner borders and `−` labels indicate removals. The existing outer group colour is
+    preserved. Removed tables remain faded with a Removed badge. Modified relations
+    show both their removed and added definitions. Table details show field types,
+    nullability, defaults, key membership, and available definition changes.
+
+    Report the exact base/head, affected tables, artifact path, and unsupported scope.
+    No automatic rename inference is made: a rename appears as removal plus addition.
+    Snapshots cover tables/views, fields, declared foreign keys, and available
+    index/trigger/constraint definitions; row data, grants, RLS, stored routines,
+    extensions, and deployment behavior are not a complete part of this review.
+    Keep the normal code review authoritative for those changes. Never claim a schema
+    diff approves a merge or push. Preserve the user's existing publication authority.
+
+    The comparison is self-contained: opening it never connects to a database or
+    executes SQL. Existing `.studio.json` notes and cluster colours are separate; do
+    not overwrite them. Save review artifacts outside source control unless the user
+    or repository workflow asks for them to be committed.
+    """#
 
     // MARK: Installation targets
 

@@ -31,7 +31,7 @@ struct GraphHoverPresentationTests {
         #expect(hover.markerFrames["other"] == original.markerFrames["other"])
         #expect(hover.anchorMap.nodeCards["root"]?.frame == root)
         #expect(hover.anchorMap.nodeCards["root"]?.rowFrames.isEmpty == true)
-        let addedArea = CGPoint(x: root.minX + 0.1, y: root.midY)
+        let addedArea = CGPoint(x: (root.minX + frames["root"]!.minX) / 2, y: root.midY)
         #expect(hover.hitCandidates(at: addedArea) == ["root"])
         #expect(original.hitCandidates(at: addedArea).isEmpty)
         #expect(snapshot(hovered: "root").revision == hover.revision)
@@ -54,52 +54,57 @@ struct GraphHoverPresentationTests {
         #expect(snapshot.hitCandidates(at: CGPoint(x: card.frame.minX + 1, y: card.frame.midY)) == ["table"])
     }
 
-    @Test(arguments: [CGSize(width: 320, height: 420), CGSize(width: 800, height: 600), CGSize(width: 1400, height: 900)])
-    func crowdedPreviewAvoidsPointerAndOtherLabels(viewportSize: CGSize) throws {
-        let viewport = CGRect(origin: .zero, size: viewportSize)
-        var frames: [String: CGRect] = [:]
-        for i in 0..<90 {
-            frames["n\(i)"] = CGRect(x: viewport.midX + CGFloat(i % 3) * 10,
-                                     y: viewport.midY + CGFloat(i / 3) * 3, width: 4, height: 3)
+    @Test(arguments: [CGFloat(0.005), 0.1, 0.4, 0.42, 1, 2])
+    func hoverRemainsSubtleAtEveryZoom(zoom: CGFloat) throws {
+        let frames = ["root": CGRect(x: 50, y: 50, width: 380 * zoom, height: 46 * zoom),
+                      "related": CGRect(x: 900, y: 50, width: 380 * zoom, height: 46 * zoom),
+                      "unrelated": CGRect(x: 900, y: 500, width: 380 * zoom, height: 46 * zoom)]
+        let cache = GraphInteractionGeometryCache()
+        func snapshot(_ hovered: String?) -> GraphInteractionGeometry {
+            cache.snapshot(frames: frames, viewport: CGRect(x: 0, y: 0, width: 2000, height: 1000),
+                           zoom: zoom, isLarge: true, emphasized: [], contentRevision: 0,
+                           hoveredID: hovered, connectedIDs: hovered == nil ? [] : ["related"],
+                           roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil })
         }
-        let neighbors = Set(frames.keys)
-        let preview = GraphHoverPresentation.preview(hoveredID: "n0", neighborIDs: neighbors, frames: frames, viewport: viewport)
-        #expect(preview.labels.first?.id == "n0")
-        #expect(preview.additionalTableCount + preview.labels.count == frames.count)
-        for (index, label) in preview.labels.enumerated() {
-            #expect(viewport.contains(label.frame))
-            #expect(!label.frame.intersects(frames["n0"]!))
-            for other in preview.labels.dropFirst(index + 1) {
-                #expect(!label.frame.intersects(other.frame))
-            }
+        let original = snapshot(nil)
+        let hovered = snapshot("root")
+        for id in ["root", "related"] {
+            let before = try #require(original.anchorMap.nodeCards[id]?.frame)
+            let after = try #require(hovered.anchorMap.nodeCards[id]?.frame)
+            #expect(after.width > before.width && after.width <= before.width * 1.026)
+            #expect(after.height > before.height && after.height <= before.height * 1.026)
+            #expect(abs(after.midX - before.midX) < 0.000001 && abs(after.midY - before.midY) < 0.000001)
         }
-        #expect(preview.labels == GraphHoverPresentation.preview(hoveredID: "n0", neighborIDs: neighbors, frames: frames, viewport: viewport).labels)
+        #expect(original.anchorMap.nodeCards["unrelated"]?.frame == hovered.anchorMap.nodeCards["unrelated"]?.frame)
+        #expect(snapshot(nil).anchorMap.nodeCards["root"]?.frame == original.anchorMap.nodeCards["root"]?.frame)
+        #expect(hovered.frames == original.frames)
     }
 
-    @Test func annotationsAvoidGraphControlsAndMinimap() {
-        let viewport = CGRect(x: 0, y: 0, width: 900, height: 650)
-        let controls = CGRect(x: 0, y: 0, width: 900, height: 80)
-        let minimap = CGRect(x: 0, y: 470, width: 180, height: 180)
-        let frames = ["root": CGRect(x: 180, y: 80, width: 40, height: 4),
-                      "related": CGRect(x: 100, y: 520, width: 40, height: 4)]
-        let preview = GraphHoverPresentation.preview(hoveredID: "root", neighborIDs: ["related"], frames: frames,
-                                                     viewport: viewport, excluding: [controls, minimap])
-        #expect(preview.labels.count == 2)
-        for label in preview.labels {
-            #expect(!controls.intersects(label.frame))
-            #expect(!minimap.intersects(label.frame))
-        }
-    }
-
-    @Test func previewContainsOnlyImmediateScopedNeighborsAndReportsOffscreenTables() {
+    @Test func summariesUseOnlyVisibleImmediateNeighborsWithoutChangingTheirTargets() {
         let frames = ["root": CGRect(x: 400, y: 300, width: 8, height: 3),
                       "neighbor": CGRect(x: 100, y: 100, width: 8, height: 3),
                       "offscreen": CGRect(x: 9000, y: 100, width: 8, height: 3),
                       "unrelated": CGRect(x: 600, y: 200, width: 8, height: 3)]
-        let preview = GraphHoverPresentation.preview(hoveredID: "root", neighborIDs: ["root", "neighbor", "offscreen", "filtered"],
-                                                     frames: frames, viewport: CGRect(x: 0, y: 0, width: 800, height: 600))
-        #expect(Set(preview.labels.map(\.id)) == ["root", "neighbor"])
-        #expect(preview.additionalTableCount == 1)
-        #expect(GraphHoverPresentation.preview(hoveredID: nil, neighborIDs: [], frames: frames, viewport: .zero).labels.isEmpty)
+        let viewport = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let neighbors: Set<String> = ["neighbor", "offscreen", "filtered"]
+        let ids = GraphHoverPresentation.summaryIDs(hoveredID: "root", connectedIDs: neighbors,
+                                                     markerFrames: frames, viewport: viewport)
+        #expect(ids == ["root", "neighbor"])
+        #expect(GraphHoverPresentation.summaryIDs(hoveredID: nil, connectedIDs: neighbors,
+                                                  markerFrames: frames, viewport: viewport).isEmpty)
+        // An already detailed hovered card can still reveal its neighboring markers.
+        #expect(GraphHoverPresentation.summaryIDs(hoveredID: "detail", connectedIDs: neighbors,
+                                                  markerFrames: frames, viewport: viewport) == ["neighbor"])
+    }
+
+    @Test(arguments: [CGSize(width: 3, height: 3), CGSize(width: 18, height: 3),
+                      CGSize(width: 160, height: 19), CGSize(width: 176, height: 94)])
+    func summariesStayInsideOriginalNodesWithoutPopupSpace(size: CGSize) {
+        let frame = CGRect(origin: CGPoint(x: 250, y: 400), size: size)
+        let reference = CGSize(width: 380, height: 46)
+        let summary = GraphHoverPresentation.summaryFrame(in: frame, referenceSize: reference)
+        #expect(frame.insetBy(dx: -0.000001, dy: -0.000001).contains(summary))
+        #expect(summary.midX == frame.midX && summary.midY == frame.midY)
+        #expect(abs(summary.width / summary.height - reference.width / reference.height) < 0.000001)
     }
 }

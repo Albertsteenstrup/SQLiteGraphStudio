@@ -151,6 +151,13 @@ public final class AppSession {
     /// The opened SQLite file or PostgreSQL connection document. Connection identity
     /// and database operations use `databaseTarget`, independently of this local URL.
     public var databaseURL: URL?
+    public private(set) var schemaReview: SchemaReviewDocument?
+    public private(set) var schemaReviewChanges: [String: SchemaTableChange] = [:]
+    public private(set) var schemaReviewEdgeChanges: [String: SchemaChangeKind] = [:]
+    private var schemaComparisonTask: Task<Void, Never>?
+    private var schemaComparisonID: UUID?
+    public private(set) var schemaPreviewReloadError: String?
+    private var schemaPreviewFileStamp: PreviewFileStamp?
     public private(set) var databaseCapabilities: DatabaseCapabilities = .none
     public var tables: [TableSummary] = [] {
         didSet { rebuildGraphNodeSizeProfile() }
@@ -259,6 +266,7 @@ public final class AppSession {
     /// Row bounds use fresh counts, not PostgreSQL's missing or stale estimates.
     public func applyGraphFilter(_ filter: GraphTableFilter) async -> Bool {
         guard filter.isValid, hasOpenDatabase else { return false }
+        guard schemaReview == nil || !filter.hasRowBounds else { return false }
         let generation = UUID()
         graphFilterGeneration = generation
         let databaseGeneration = openGeneration
@@ -359,11 +367,11 @@ public final class AppSession {
     }
 
     public var hasOpenDatabase: Bool {
-        databaseTarget != nil
+        databaseTarget != nil || schemaReview != nil
     }
 
     public var databaseDisplayName: String {
-        databaseTarget?.displayName ?? "No Database"
+        schemaReview?.title ?? databaseTarget?.displayName ?? "No Database"
     }
 
     public var isPostgreSQL: Bool {
@@ -439,7 +447,9 @@ public final class AppSession {
     }
 
     public func openDocument(url: URL) async {
-        if DatabaseDocument.isArchive(url) {
+        if ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) {
+            await openSchemaReview(url: url)
+        } else if DatabaseDocument.isArchive(url) {
             await openPostgreSQLDump(url: url)
         } else if PostgresConnectionDocument.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
             await openPostgreSQLDocument(url: url)
@@ -579,6 +589,14 @@ public final class AppSession {
     }
 
     public func closeDatabase() {
+        schemaComparisonTask?.cancel()
+        schemaComparisonTask = nil
+        schemaComparisonID = nil
+        schemaPreviewReloadError = nil
+        schemaPreviewFileStamp = nil
+        schemaReview = nil
+        schemaReviewChanges = [:]
+        schemaReviewEdgeChanges = [:]
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
@@ -737,6 +755,8 @@ public final class AppSession {
     }
 
     public func refreshSchema() {
+        if schemaReview?.proposal != nil { refreshSchemaPreviewIfChanged(force: true); return }
+        if schemaReview != nil, let databaseURL { Task { await openSchemaReview(url: databaseURL) }; return }
         guard let target = databaseTarget else { return }
         let baseline = SchemaRefreshSnapshot(
             descriptors: tableDescriptors,
@@ -843,6 +863,7 @@ public final class AppSession {
 
     @discardableResult
     public func openTable(named tableName: String, autoLoad: Bool = true) -> TableTabModel? {
+        if schemaReview != nil { selectGraphNode(tableName); return nil }
         guard let descriptor = tableDescriptors[tableName] else {
             presentedError = SQLiteUserError(kind: .notFound, message: "Table \(tableName) was not found.")
             return nil
@@ -1064,6 +1085,7 @@ public final class AppSession {
     }
 
     public func runTopRowsQuery(for tableName: String) {
+        guard schemaReview == nil else { return }
         guard let descriptor = tableDescriptors[tableName] else {
             presentedError = SQLiteUserError(kind: .notFound, message: "Table \(tableName) was not found.")
             return
@@ -1410,6 +1432,9 @@ public final class AppSession {
     }
 
     func apply(snapshot: CatalogSnapshot, target: DatabaseTarget, documentURL: URL? = nil) {
+        schemaReview = nil
+        schemaReviewChanges = [:]
+        schemaReviewEdgeChanges = [:]
         records.reset()
         records.catalog = snapshot
         records.relationships = RecordAccess.relationships(catalog: snapshot)
@@ -1477,6 +1502,136 @@ public final class AppSession {
     private func updateGraphGrouping() {
         graphGrouping = GraphGrouping.resolve(graph: graph, descriptors: tableDescriptors, sidecar: schemaSidecar)
         graphLayout.setClusterHints(graphGrouping.nodeToGroup)
+    }
+
+    public func openSchemaReview(url: URL) async {
+        do {
+            let review = try SchemaReviewDocument.load(url)
+            closeDatabase()
+            let generation = openGeneration
+            await pendingDatabaseClose?.value
+            guard generation == openGeneration else { return }
+            databaseURL = url
+            applySchemaReview(review, preservingContext: false)
+            if review.proposal != nil { schemaPreviewFileStamp = try? PreviewFileStamp(url) }
+            rememberRecentDatabase(url)
+        } catch { presentedError = SQLiteUserError.from(error) }
+    }
+
+    private func applySchemaReview(_ review: SchemaReviewDocument, preservingContext: Bool) {
+        let previousLayout = preservingContext ? graphLayout.snapshot(for: graph) : nil
+        let changes = review.changes, relations = review.relationChanges
+        schemaReview = review
+        schemaReviewChanges = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0) })
+        schemaReviewEdgeChanges = Dictionary(uniqueKeysWithValues: relations.flatMap { change in
+            change.relation.sourceColumns.indices.map { (change.graphID + ":\($0)", change.kind) }
+        })
+        tableDescriptors = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0.unionTable.descriptor) })
+        tables = changes.map { $0.unionTable.descriptor.summary }
+        let newGraph = review.graph
+        if graph != newGraph { graph = newGraph }
+        graphRelationCounts = [:]
+        for versions in Dictionary(grouping: relations, by: { $0.relation.id }).values {
+            for id in Set(versions.flatMap { [$0.relation.source, $0.relation.target] }) { graphRelationCounts[id, default: 0] += 1 }
+        }
+        updateGraphGrouping()
+        if let previousLayout {
+            graphLayout.restore(previousLayout, for: graph, presentation: showAllGraphTableCards ? .allCards : .compact,
+                                descriptorLookup: { self.tableDescriptors[$0] })
+        } else { graphLayout.reset(for: graph) }
+        let ids = Set(changes.map(\.id))
+        expandedGraphNodeIDs.formIntersection(ids)
+        selectedGraphNodeIDs.formIntersection(ids)
+        if !preservingContext || (selectedGraphNodeID.map({ !ids.contains($0) }) ?? true) {
+            selectedGraphNodeID = changes.first(where: { $0.kind != .unchanged })?.id
+            selectedGraphNodeIDs = Set([selectedGraphNodeID].compactMap { $0 })
+        }
+        // Row bounds are unavailable; recompute existing field/relation filters.
+        if graphTableFilter.isActive { Task { await applyGraphFilter(graphTableFilter) } }
+    }
+
+    /// The view polls file metadata, decoding only when an atomic preview write changes it.
+    public func refreshSchemaPreviewIfChanged(force: Bool = false) {
+        guard schemaReview?.proposal != nil, let databaseURL else { return }
+        do {
+            let stamp = try PreviewFileStamp(databaseURL)
+            guard force || stamp != schemaPreviewFileStamp else { return }
+            schemaPreviewFileStamp = stamp
+            let next = try SchemaReviewDocument.load(databaseURL)
+            guard next.proposal != nil else { throw SchemaReviewError.invalid("The preview file was replaced by an actual comparison. Open that comparison separately.") }
+            applySchemaReview(next, preservingContext: true)
+            schemaPreviewReloadError = nil
+        } catch {
+            let message = error.localizedDescription
+            if schemaPreviewReloadError != message { schemaPreviewReloadError = message }
+        }
+    }
+
+    private struct PreviewFileStamp: Equatable {
+        let modified: Date
+        let size: UInt64
+        let inode: UInt64
+        init(_ url: URL) throws {
+            let values = try FileManager.default.attributesOfItem(atPath: url.path)
+            modified = values[.modificationDate] as? Date ?? .distantPast
+            size = (values[.size] as? NSNumber)?.uint64Value ?? 0
+            inode = (values[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+        }
+    }
+
+    public func presentSchemaComparison() {
+        guard schemaComparisonTask == nil else { return }
+        let comparisonID = UUID()
+        schemaComparisonID = comparisonID
+        let generation = openGeneration
+        schemaComparisonTask = Task { @MainActor in
+            defer {
+                if schemaComparisonID == comparisonID {
+                    schemaComparisonTask = nil
+                    schemaComparisonID = nil
+                }
+            }
+            guard let beforeURL = await chooseComparisonFile(title: "Choose the before database"),
+                  !Task.isCancelled, generation == openGeneration,
+                  let afterURL = await chooseComparisonFile(title: "Choose the after database"),
+                  !Task.isCancelled, generation == openGeneration else { return }
+            do {
+                documentOpenProgress = "Reading before schema…"
+                let before = try await SchemaReviewCapture.snapshot(document: beforeURL)
+                guard generation == openGeneration else { return }
+                documentOpenProgress = "Reading after schema…"
+                let after = try await SchemaReviewCapture.snapshot(document: afterURL)
+                guard generation == openGeneration else { return }
+                documentOpenProgress = nil
+                let review = SchemaReviewDocument(title: "\(beforeURL.lastPathComponent) → \(afterURL.lastPathComponent)",
+                    baseRef: beforeURL.lastPathComponent, headRef: afterURL.lastPathComponent, before: before, after: after)
+                try review.validate()
+                let panel = NSSavePanel()
+                panel.title = "Save Schema Comparison"
+                panel.nameFieldStringValue = "Database changes.sgreview"
+                panel.allowedContentTypes = [UTType(filenameExtension: "sgreview") ?? .json]
+                panel.allowsOtherFileTypes = false
+                guard await panel.begin() == .OK, let url = panel.url, generation == openGeneration else { return }
+                try Task.checkCancellation()
+                try review.write(to: url)
+                schemaComparisonTask = nil
+                schemaComparisonID = nil
+                await openSchemaReview(url: url)
+            } catch {
+                guard generation == openGeneration, !Task.isCancelled else { return }
+                documentOpenProgress = nil
+                presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    private func chooseComparisonFile(title: String) async -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title; panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        let filter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.sqliteExtensions.union(DatabaseDocument.otherExtensions))
+        panel.delegate = filter
+        let response = await panel.begin()
+        return withExtendedLifetime(filter) { response == .OK ? panel.url : nil }
     }
 
     private func graphLayoutStorageKey(for url: URL) -> String {

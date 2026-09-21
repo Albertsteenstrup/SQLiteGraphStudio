@@ -27,7 +27,9 @@ public struct StudioRootView: View {
         ZStack {
             rootBackground
 
-            if session.hasOpenDatabase {
+            if let review = session.schemaReview {
+                SchemaReviewWorkspaceView(session: session, review: review)
+            } else if session.hasOpenDatabase {
                 WorkspaceLayoutView(session: session)
                     .padding(session.storyPlaybackOverlay == nil ? 16 : 0)
             } else {

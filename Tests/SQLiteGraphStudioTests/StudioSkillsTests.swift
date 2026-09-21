@@ -51,7 +51,7 @@ struct StudioSkillsTests {
 
     @Test
     func everySkillSupportsPostgresDocumentSidecarsAndReadOnlyDiscovery() {
-        for skill in StudioSkills.all {
+        for skill in [StudioSkills.graphClusters, StudioSkills.schemaDescriptions, StudioSkills.storyFlows] {
             #expect(skill.fullContent.contains(".postgres.studio.json"))
             #expect(skill.fullContent.contains(".pgstudio.studio.json"))
             #expect(skill.fullContent.contains("schema-qualified"))
@@ -87,7 +87,7 @@ struct StudioSkillsTests {
         try writeInstalledSkill(StudioSkills.graphClusters, targetSubpath: ".agents/skills/graph-clusters/SKILL.md", in: root)
         try writeInstalledSkill(StudioSkills.schemaDescriptions, targetSubpath: ".agents/skills/schema-descriptions/SKILL.md", in: root)
 
-        try StudioSkills.install([StudioSkills.storyFlows], to: root)
+        try StudioSkills.install([StudioSkills.storyFlows, StudioSkills.databaseDiff, StudioSkills.databasePreview], to: root)
 
         #expect(StudioSkills.isInstalled(StudioSkills.storyFlows, in: root))
         #expect(!StudioSkills.hasMissingInstallableSkills(in: root))

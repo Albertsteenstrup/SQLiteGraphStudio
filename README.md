@@ -28,15 +28,55 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 
 ## AI Skills
 
-Three optional AI coding agent skills let you enrich the graph with a single prompt:
+Five optional AI coding agent skills support schema exploration and review:
 
 - **graph-clusters** — Groups your tables into meaningful clusters. It defaults to domain areas, and you can ask for another lens such as people, artifacts, departments, workflows, or ownership. Run from your AI coding agent.
 - **schema-descriptions** — Annotates your tables and columns with hover descriptions shown in the graph, table grids, and query results. Run from your AI coding agent.
 - **story-flows** — Turns questions like "what happens when a user signs up?" into user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, graph playback, and hidden `spoken_text` for optional read-aloud playback.
+- **database-diff** — Compares database versions after code review, showing table, field, and foreign-key changes for a PR or local integration. See [the skill](Skills/database-diff/SKILL.md).
+- **database-preview** — Shows intended schema changes before implementation using a compact plan and cached metadata. Iteration runs without migrations or a database server. See [the skill](Skills/database-preview/SKILL.md).
 
 Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. Skills are installed next to your database or PostgreSQL connection document so any AI coding agent in that directory can use them.
 
-For Codex, create `.agents/skills` in your repo first; the app will install `graph-clusters`, `schema-descriptions`, and `story-flows` there. Use `/skills` or mention `$graph-clusters`, `$schema-descriptions`, or `$story-flows` in Codex to invoke them.
+For Codex, create `.agents/skills` in your repo first; the app installs all five skills there. Use `/skills` or mention a skill such as `$database-diff` or `$database-preview` in Codex to invoke it.
+
+## Database schema comparisons
+
+Choose **File → Compare Database Schemas…**, select the before and after databases,
+and save the `.sgreview` comparison. SQLite files, PostgreSQL connection documents,
+and custom-format backups are supported; both versions must use the same engine.
+Capture reads schema metadata only. Opening a saved comparison is fully offline.
+
+The graph preserves group colours on the outer border. A separate inner border
+uses solid blue for additions/changes and dashed red for removals, with explicit
+`+`, `−`, and `~` field counts. New tables have a **New** badge; removed tables stay
+visible and faded with **Removed**. Edited foreign keys show both old and new
+links. The table list carries the same badges, and table details compare field
+definitions, relations, and available constraints/indexes/triggers. Row data,
+permissions, RLS, routines, and deployment effects still need normal code review.
+
+The [database-diff skill](Skills/database-diff/SKILL.md) documents command-line
+snapshot and comparison creation for hooks. Bind generated reviews to immutable
+base/head revisions and run them after the existing code-review rounds. Git does
+not run pre-merge-commit on fast-forward merges, so that workflow needs an explicit
+final schema-review step as well.
+
+## Proposed changes before implementation
+
+Use the sibling [database-preview skill](Skills/database-preview/SKILL.md) to
+explore a design before writing migrations. Capture metadata once, or reuse the
+chosen side of a real `.sgreview`. The agent writes only intended table, field
+and relation operations in a small JSON plan; the CLI builds a `.sgpreview`
+without executing SQL. `inspect --find`, `--table` and `--column` keep the agent's
+context focused instead of loading the entire schema.
+
+Open the preview once. Rebuilding the same file automatically updates the view,
+preserving selection and the overview camera. Invalid updates retain the last
+valid view and show an error. **Proposed · not applied** and **Captured / Proposed**
+labels distinguish this design from a completed-change review. The plan is
+bound to its baseline fingerprint; refresh that baseline explicitly when the
+source schema changes. A preview neither proves migration validity nor satisfies
+the real schema-review hook.
 
 ## PostgreSQL connections
 
@@ -83,7 +123,7 @@ Both database types use the same graph engine. For more than 128 tables, it divi
 - Use the graph's **Find tables and groups** button to search the complete catalog, including tables outside the current view.
 - Choose a group to move the camera to it while keeping other groups and cross-group connections visible. Expand a table to focus it and arrange its direct neighbours without overlap; the back button returns to the previous view. Groups with more than 48 tables and tables with more than 48 neighbours have previous/next controls.
 - **Graph options (…) → Node size** offers **Uniform**, **Fields**, **Rows**, and **Relations**. Count differences become stronger as you zoom out; detailed cards keep their usual size. A compressed scale uses the full catalog, so filtering does not renormalize the remaining tables. Row sizing uses available counts (catalog estimates until counted); unknown counts have neutral-sized, dashed markers. The choice is remembered across restarts.
-- Hovering a table gently enlarges it. In the zoomed-out overview, hover shows its name, fields, rows, and relation count, with readable annotations and highlighted links for its directly connected tables across groups. Labels keep clear of one another and the graph controls; dense or offscreen connections are included in a remaining-table count. The saved layout and selection stay unchanged.
+- Hovering a table gently enlarges it and its directly connected tables at every zoom level. In the zoomed-out overview, their names, field counts, and row counts appear inside the existing nodes, using the same header style as detailed cards. Their links are highlighted across groups. Hover never adds floating callouts or moves the layout; text scales with the nodes.
 - The compact graph toolbar keeps search and **Filter** visible. The **Graph options (…)** menu contains display toggles, stories, relayout, and table counts; active filters never add another toolbar row.
 - **Filter** limits the graph by inclusive minimum/maximum field, row, and relation counts. Empty bounds are unlimited. Relations count incoming and outgoing foreign-key constraints in the full schema; composite and self-referencing keys each count once, and zero finds unconnected tables. Row filters count matching tables and views afresh, including empty tables; Reset restores the complete graph. Unknown row counts are shown as **— rows** until counted.
 - PostgreSQL labels omit the default `public.` schema prefix. Other schema names remain visible, and all queries, relationship IDs and sidecar references retain the exact qualified names.
