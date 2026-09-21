@@ -1739,29 +1739,28 @@ private struct EmptyDatabaseView: View {
                     Text("Open a database")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(StudioPalette.primaryText)
-                    Text("Open a SQLite file to explore and edit it, or choose a PostgreSQL backup or connection document for read-only browsing and SQL.")
+                    Text("Browse and edit SQLite databases, or explore PostgreSQL in read-only mode.")
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                 }
 
-                HStack(spacing: 10) {
+                VStack(spacing: 10) {
                     Button {
                         session.presentOpenDatabasePanel()
                     } label: {
-                        Label("Choose SQLite File", systemImage: "folder")
+                        Label("Choose Database File", systemImage: "folder")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(StudioPalette.accent)
                     .controlSize(.large)
 
-                    Button {
-                        session.presentOpenOtherDatabasePanel()
-                    } label: {
-                        Label("Choose PostgreSQL File", systemImage: "server.rack")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
+                    Text(DatabaseDocument.supportedFormatsDescription)
+                        .font(.caption)
+                        .foregroundStyle(StudioPalette.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 520)
                 }
             }
             .frame(maxWidth: .infinity)

@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 public struct SchemaGraphView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable private var session: AppSession
     @State private var zoom: CGFloat = 1.0
     @State private var baseZoom: CGFloat = 1.0
@@ -81,7 +82,7 @@ public struct SchemaGraphView: View {
     @State private var isNavigatingFromStories = false
 
     private var isLargeGraph: Bool { session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
-    private var usesOverviewMarks: Bool { isLargeGraph && zoom < GraphExploration.detailZoom }
+    private var usesOverviewMarks: Bool { (isLargeGraph || session.graphNodeSizeMetric != .uniform) && zoom < GraphExploration.detailZoom }
 
     public init(session: AppSession) {
         self.session = session
@@ -228,6 +229,8 @@ public struct SchemaGraphView: View {
             .onChange(of: session.graphTableFilter) { _, _ in
                 clearGraphFocusSession(animated: false, restoreViewport: false)
                 focusedGroupID = nil
+                hoveredNodeID = nil
+                clearRelationHoverState()
                 session.collapseExpandedGraphNodes()
                 layoutRevision &+= 1
                 fitGraph(in: geometry.size)
@@ -338,6 +341,16 @@ public struct SchemaGraphView: View {
         let focusPlan = effectiveFocusPlan
         let geometry = interactionGeometry(in: size, focusPlan: focusPlan)
         let anchorMap = geometry.anchorMap
+        let hoverNeighbors = hoveredNodeID.map { session.graph.neighbors(of: $0) } ?? []
+        let hoverPreview = zoom < GraphExploration.detailZoom && !isStoryOnlyMode
+            ? GraphHoverPresentation.preview(hoveredID: hoveredNodeID, neighborIDs: hoverNeighbors,
+                                             frames: geometry.frames.merging(geometry.markerFrames, uniquingKeysWith: { _, marker in marker }), viewport: CGRect(origin: .zero, size: size),
+                                             excluding: [
+                                                CGRect(x: 0, y: 0, width: size.width, height: min(graphControlsHeight + 28, size.height * 0.25)),
+                                                CGRect(x: 0, y: size.height - 70, width: size.width, height: 70),
+                                                CGRect(x: 0, y: size.height - 180, width: 180, height: 180)
+                                             ])
+            : GraphHoverPresentation.Preview()
         let renderPlan = geometry.renderPlan
         let edgeLookup = topologyCache.index(for: session.graph, graphRevision: session.graphRevision)
         let currentFocusNodeID = focusNodeID
@@ -412,10 +425,14 @@ public struct SchemaGraphView: View {
                 Canvas { context, _ in
                     if usesOverviewMarks, focusPlan == nil {
                         drawGroupConnections(in: &context, size: size)
+                        if let hoveredNodeID {
+                            let hoverHighlight = GraphRelationHighlight(graph: session.graph, focusNodeID: hoveredNodeID, edgeLookup: edgeLookup)
+                            drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: hoverHighlight, onlyHighlighted: true)
+                        }
                     } else {
                         drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight, focusPlan: focusPlan)
                     }
-                    drawOverviewMarks(in: &context, anchorMap: anchorMap, nodeIDs: renderPlan.markerIDs)
+                    drawOverviewMarks(in: &context, frames: geometry.markerFrames)
                 }
                 .allowsHitTesting(false)
             }
@@ -502,7 +519,8 @@ public struct SchemaGraphView: View {
                     headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
                 )
                 .frame(width: cardSize.width, height: cardSize.height, alignment: .topLeading)
-                .scaleEffect(zoom)
+                .scaleEffect(zoom * GraphHoverPresentation.cardScale(hovered: hoveredNodeID == node.id && draggedNodeID == nil, connected: zoom < GraphExploration.detailZoom && hoverNeighbors.contains(node.id)))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredNodeID == node.id)
                 .position(screenCenter(for: node.id, in: size))
                 .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
                 .shadow(
@@ -563,6 +581,13 @@ public struct SchemaGraphView: View {
             }
             .compositingGroup()
             
+            if !hoverPreview.labels.isEmpty {
+                overviewHoverLabels(hoverPreview)
+                    .zIndex(8000)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+
             // Floating description tooltip
             if let hover = descriptionHover {
                 descriptionTooltip(hover, in: size)
@@ -738,15 +763,47 @@ public struct SchemaGraphView: View {
         storyPopupStoryID = nil
     }
 
-    private func drawOverviewMarks(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, nodeIDs: Set<String>) {
-        for id in nodeIDs {
-            guard let frame = anchorMap.nodeCards[id]?.frame else { continue }
+    private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect]) {
+        for (id, mark) in frames {
             let color = clusterBorderColor(for: id) ?? StudioPalette.accent
-            let mark = GraphExploration.markerFrame(for: frame)
-            context.fill(Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2)), with: .color(color.opacity(0.62)))
-            if session.selectedGraphNodeIDs.contains(id) {
-                context.stroke(Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2)),
-                               with: .color(StudioPalette.primaryText), lineWidth: 1.5)
+            let isHovered = hoveredNodeID == id
+            let connected = hoveredNodeID.map { session.graph.neighbors(of: $0).contains(id) } ?? false
+            let opacity = isHovered || connected ? 0.95 : (hoveredNodeID == nil ? 0.62 : 0.35)
+            let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
+            let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
+            context.fill(path, with: .color(color.opacity(isUnknown ? opacity * 0.45 : opacity)))
+            if isUnknown {
+                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+            }
+            if session.selectedGraphNodeIDs.contains(id) || isHovered {
+                context.stroke(path, with: .color(StudioPalette.primaryText), lineWidth: 1.5)
+            }
+        }
+    }
+
+    private func overviewHoverLabels(_ preview: GraphHoverPresentation.Preview) -> some View {
+        ZStack {
+            Canvas { context, _ in
+                for label in preview.labels {
+                    let destination = edgePoint(on: label.frame, toward: label.anchor)
+                    var path = Path()
+                    path.move(to: label.anchor)
+                    path.addLine(to: destination)
+                    context.stroke(path, with: .color(StudioPalette.secondaryText.opacity(0.5)), lineWidth: 1)
+                }
+            }
+            ForEach(preview.labels) { label in
+                let descriptor = session.descriptor(named: label.id)
+                GraphHoverLabel(
+                    title: session.graph.node(id: label.id)?.title ?? label.id,
+                    fieldCount: descriptor?.columns.count ?? 0,
+                    rowCount: session.graphRowCounts[label.id] ?? descriptor?.rowCount,
+                    relationCount: session.graphRelationCounts[label.id, default: 0],
+                    isPrimary: label.isPrimary, additionalTableCount: preview.additionalTableCount,
+                    color: clusterBorderColor(for: label.id) ?? StudioPalette.accent
+                )
+                .frame(width: label.frame.width, height: label.frame.height)
+                .position(x: label.frame.midX, y: label.frame.midY)
             }
         }
     }
@@ -1216,9 +1273,11 @@ public struct SchemaGraphView: View {
         in context: inout GraphicsContext,
         anchorMap: GraphAnchorMap,
         relationHighlight: GraphRelationHighlight,
-        focusPlan: GraphFocusPlan? = nil
+        focusPlan: GraphFocusPlan? = nil,
+        onlyHighlighted: Bool = false
     ) {
         for edge in session.graph.edges {
+            if onlyHighlighted && !relationHighlight.highlightedEdgeIDs.contains(edge.id) { continue }
             if let focusPlan {
                 let sourceVisible = focusPlan.tierForTable(edge.sourceID) != .hidden
                 let targetVisible = focusPlan.tierForTable(edge.targetID) != .hidden
@@ -1395,7 +1454,7 @@ public struct SchemaGraphView: View {
                     Label("Filter", systemImage: session.graphTableFilter.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 }
                 .tint(session.graphTableFilter.isActive ? StudioPalette.accent : nil)
-                .help(session.graphTableFilter.isActive ? "Edit active filters" : "Filter by fields and rows")
+                .help(session.graphTableFilter.isActive ? "Edit active filters" : "Filter by fields, rows, and relations")
                 .popover(isPresented: $isGraphFilterPresented) { GraphFilterEditor(session: session) }
 
                 graphOptionsMenu(in: size)
@@ -1456,6 +1515,14 @@ public struct SchemaGraphView: View {
                 Button("Clear filter") { session.clearGraphFilter() }
             }
             Divider()
+            Menu("Node size") {
+                Picker("Node size", selection: $session.graphNodeSizeMetric) {
+                    ForEach(GraphNodeSizeMetric.allCases) { metric in
+                        Text(metric.title).tag(metric)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
             Toggle("Expand all tables", isOn: Binding(
                 get: { session.showAllGraphTableCards },
                 set: { session.setShowAllGraphTableCards($0) }
@@ -3497,9 +3564,12 @@ public struct SchemaGraphView: View {
         let primary = session.expandedGraphNodeIDs.union(retained)
             .union(usesOverviewMarks ? [] : [hoveredNodeID].compactMap { $0 })
         return interactionGeometryCache.snapshot(
-            frames: frames, viewport: CGRect(origin: .zero, size: size), zoom: zoom, isLarge: isLargeGraph,
+            frames: frames, viewport: CGRect(origin: .zero, size: size), zoom: zoom, isLarge: isLargeGraph || usesOverviewMarks,
             emphasized: session.selectedGraphNodeIDs.union(focusPlan?.visibleTableIDs() ?? []),
             primary: primary, retained: retained, contentRevision: scenePreparation.contentRevision,
+            hoveredID: draggedNodeID == nil ? hoveredNodeID : nil,
+            connectedIDs: zoom < GraphExploration.detailZoom ? (hoveredNodeID.map { session.graph.neighbors(of: $0) } ?? []) : [],
+            nodeSizing: session.graphNodeSizeProfile,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
     }
@@ -4457,7 +4527,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             }
         }
         .clipShape(backgroundShape)
-        .scaleEffect(isDragging ? 1.012 : (isHovered ? 1.004 : 1))
+        .scaleEffect(isDragging ? 1.012 : 1)
         .contentShape(backgroundShape)
         .onTapGesture {
             selectNode()

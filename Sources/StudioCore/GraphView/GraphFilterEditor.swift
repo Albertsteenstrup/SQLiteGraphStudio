@@ -7,6 +7,8 @@ struct GraphFilterEditor: View {
     @State private var maximumFields: String
     @State private var minimumRows: String
     @State private var maximumRows: String
+    @State private var minimumRelations: String
+    @State private var maximumRelations: String
     @State private var error: String?
 
     init(session: AppSession) {
@@ -16,6 +18,8 @@ struct GraphFilterEditor: View {
         _maximumFields = State(initialValue: filter.maximumFields.map(String.init) ?? "")
         _minimumRows = State(initialValue: filter.minimumRows.map(String.init) ?? "")
         _maximumRows = State(initialValue: filter.maximumRows.map(String.init) ?? "")
+        _minimumRelations = State(initialValue: filter.minimumRelations.map(String.init) ?? "")
+        _maximumRelations = State(initialValue: filter.maximumRelations.map(String.init) ?? "")
     }
 
     var body: some View {
@@ -24,6 +28,8 @@ struct GraphFilterEditor: View {
             Text("Leave a bound empty for no limit.").font(.caption).foregroundStyle(.secondary)
             range("Fields", minimum: $minimumFields, maximum: $maximumFields)
             range("Rows", minimum: $minimumRows, maximum: $maximumRows)
+            range("Relations", minimum: $minimumRelations, maximum: $maximumRelations)
+                .help("Incoming and outgoing foreign keys in the full schema. Composite and self-referencing keys count once.")
             if let progress = session.graphFilterProgress {
                 ProgressView("Counting rows… \(progress) tables checked")
             }
@@ -39,7 +45,8 @@ struct GraphFilterEditor: View {
                     do {
                         let filter = GraphTableFilter(
                             minimumFields: try bound(minimumFields), maximumFields: try bound(maximumFields),
-                            minimumRows: try bound(minimumRows), maximumRows: try bound(maximumRows)
+                            minimumRows: try bound(minimumRows), maximumRows: try bound(maximumRows),
+                            minimumRelations: try bound(minimumRelations), maximumRelations: try bound(maximumRelations)
                         )
                         guard filter.isValid else { error = "The minimum cannot exceed the maximum."; return }
                         error = nil
@@ -56,7 +63,7 @@ struct GraphFilterEditor: View {
 
     private func range(_ title: String, minimum: Binding<String>, maximum: Binding<String>) -> some View {
         HStack {
-            Text(title).frame(width: 50, alignment: .leading)
+            Text(title).frame(width: 64, alignment: .leading)
             TextField("Minimum", text: minimum).accessibilityLabel("Minimum \(title.lowercased())")
             Text("to").foregroundStyle(.secondary)
             TextField("Maximum", text: maximum).accessibilityLabel("Maximum \(title.lowercased())")

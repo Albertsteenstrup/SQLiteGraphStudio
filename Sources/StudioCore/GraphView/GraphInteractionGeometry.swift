@@ -76,6 +76,7 @@ final class GraphTopologyCache {
 /// retain cheap rectangles for crossing-edge anchors; only detailed cards have rows.
 struct GraphInteractionGeometry {
     let frames: [String: CGRect]
+    let markerFrames: [String: CGRect]
     let renderPlan: GraphExploration.RenderPlan
     let anchorMap: GraphAnchorMap
     let revision: Int
@@ -141,6 +142,9 @@ final class GraphInteractionGeometryCache {
         let primary: Set<String>
         let retained: Set<String>
         let contentRevision: Int
+        let hoveredID: String?
+        let connectedIDs: Set<String>
+        let nodeSizing: GraphNodeSizeProfile
     }
 
     private var key: Key?
@@ -159,13 +163,17 @@ final class GraphInteractionGeometryCache {
         primary: Set<String> = [],
         retained: Set<String> = [],
         contentRevision: Int,
+        hoveredID: String? = nil,
+        connectedIDs: Set<String> = [],
+        nodeSizing: GraphNodeSizeProfile = .uniform,
         roleForNode: (String) -> GraphCardRole,
         descriptorForNode: (String) -> EditableTableDescriptor?,
         displayedColumnsForNode: (String) -> [String]? = { _ in nil }
     ) -> GraphInteractionGeometry {
         let newKey = Key(
             frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
-            emphasized: emphasized, primary: primary, retained: retained, contentRevision: contentRevision
+            emphasized: emphasized, primary: primary, retained: retained, contentRevision: contentRevision,
+            hoveredID: hoveredID, connectedIDs: connectedIDs, nodeSizing: nodeSizing
         )
         if key == newKey, let geometry { return geometry }
 
@@ -173,29 +181,34 @@ final class GraphInteractionGeometryCache {
             frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
             emphasized: emphasized, primary: primary, retained: retained
         )
+        let markerFrames = Dictionary(uniqueKeysWithValues: renderPlan.markerIDs.compactMap { id in
+            frames[id].map { frame in
+                let sized = nodeSizing.markerFrame(for: id, frame: frame, zoom: zoom)
+                return (id, GraphHoverPresentation.markerFrame(sized, hovered: id == hoveredID, connected: connectedIDs.contains(id)))
+            }
+        })
         var nodeCards: [String: GraphCardGeometry] = [:]
         nodeCards.reserveCapacity(frames.count)
         for (id, frame) in frames {
-            nodeCards[id] = GraphCardGeometry(tableID: id, frame: frame, role: .collapsedNode, descriptor: nil)
+            let displayFrame = markerFrames[id] ?? GraphHoverPresentation.enlarged(frame, scale: GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id)))
+            nodeCards[id] = GraphCardGeometry(tableID: id, frame: displayFrame, role: .collapsedNode, descriptor: nil)
         }
         for id in renderPlan.detailIDs {
-            guard let frame = frames[id] else { continue }
+            guard let frame = nodeCards[id]?.frame else { continue }
             let role = roleForNode(id)
             guard role != .collapsedNode else { continue }
             nodeCards[id] = GraphCardGeometry(
                 tableID: id, frame: frame, role: role,
-                descriptor: descriptorForNode(id), displayedColumns: displayedColumnsForNode(id), scale: zoom
+                descriptor: descriptorForNode(id), displayedColumns: displayedColumnsForNode(id), scale: zoom * GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id))
             )
         }
 
         let interactiveFrames = Dictionary(uniqueKeysWithValues: renderPlan.interactiveIDs.compactMap { id in
-            frames[id].map { frame in
-                (id, renderPlan.markerIDs.contains(id) ? GraphExploration.markerFrame(for: frame) : frame)
-            }
+            nodeCards[id].map { (id, $0.frame) }
         })
         revision &+= 1
         let snapshot = GraphInteractionGeometry(
-            frames: frames, renderPlan: renderPlan, anchorMap: GraphAnchorMap(nodeCards: nodeCards),
+            frames: frames, markerFrames: markerFrames, renderPlan: renderPlan, anchorMap: GraphAnchorMap(nodeCards: nodeCards),
             revision: revision, hitIndex: GraphInteractionHitIndex(frames: interactiveFrames)
         )
         key = newKey

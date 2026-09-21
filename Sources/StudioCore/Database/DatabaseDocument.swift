@@ -7,7 +7,11 @@ public enum DatabaseDocument {
     public static let archiveExtensions: Set<String> = ["dump", "backup"]
     public static let otherExtensions = archiveExtensions.union(PostgresConnectionDocument.supportedFileExtensions)
     public static let supportedExtensions = sqliteExtensions.union(otherExtensions)
-    public static let otherFormatsDescription = "PostgreSQL backups (.dump, .backup) and connection documents (.postgres, .pgstudio)"
+    public static let supportedFormatsDescription = [
+        "SQLite: " + sqliteExtensions.sorted().map { "." + $0 }.joined(separator: ", "),
+        "PostgreSQL backups: " + archiveExtensions.sorted().map { "." + $0 }.joined(separator: ", "),
+        "PostgreSQL connections: " + PostgresConnectionDocument.supportedFileExtensions.sorted().map { "." + $0 }.joined(separator: ", ")
+    ].joined(separator: "\n")
 
     public static func isArchive(_ url: URL) -> Bool {
         archiveExtensions.contains(url.pathExtension.lowercased())

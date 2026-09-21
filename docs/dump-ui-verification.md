@@ -99,3 +99,85 @@ lifecycle/sandbox regressions and the full 216-object UI matrix (130 populated,
 86 empty, 2,953 headers). All 30 packaging tests and the preference migration check
 passed. The integrated app's native picker reopened the Downloads dump, showing
 216 tables and 20 groups with the compact controls and one filename header.
+
+## Relation range filtering
+
+The Filter popover now includes minimum/maximum Relations bounds. Counts use
+foreign-key constraints from the complete catalog, including incoming and outgoing
+relationships; composite and self-referencing keys each count once. They remain
+stable when other tables are hidden and combine with field and row bounds. Row
+count queries run only for tables passing the field and relation bounds.
+
+The five focused UX regression tests passed, including a SQLite fixture with
+multiple composite keys, a self-reference, incoming references, and an isolated
+table. The actual-dump test cross-checked the research identity table's relation
+count against PostgreSQL's constraint catalog and repeated the 216-object grid
+matrix. In the native UI, zero relations matched 20 of 216 tables, reopening kept
+the entered bounds, reversed bounds showed validation, and Reset restored the full
+graph. The toolbar remained one line. The packaged build and `git diff --check`
+passed.
+
+## Overview hover previews
+
+Hover now enlarges every table card or overview marker slightly. Below the detail
+zoom threshold, the hovered table gets a readable name, field/row counts, and
+relation count; its immediate neighbours get name/count annotations and enlarged
+markers. Direct links are drawn even when the overview normally shows group
+connections. Annotations do not take pointer events, move the saved layout, or
+change selection. Their placement avoids one another, the hovered node, controls,
+and minimap; crowded/offscreen neighbours are reflected in a remaining-table
+count. Unknown row counts are distinct from zero and hovering does not run count
+queries.
+
+The packaged build passed. The 53 selected hover, interaction-geometry,
+exploration, and geometry tests passed, including scaled row/header alignment,
+marker hit targets, unchanged layout positions, dense/narrow viewport placement,
+filter scope, and reserved UI areas. SwiftUI image rendering of the actual label
+view was inspected with long names, zero/one rows, and unknown counts. The rebuilt
+app reopened the supplied dump through its picker. Full live pointer-hover QA
+remains unverified: native coordinate actions returned `noWindowsAvailable`,
+although accessibility actions and screenshots worked. No claim of a completed
+live hover walkthrough is made by these checks.
+
+## Node size by fields, rows, or relations
+
+The Graph options menu now has a Node size submenu with Uniform, Fields, Rows,
+and Relations. The choice is saved in preferences. Full-catalog size profiles are
+rebuilt when counts or the selected metric change, with logarithmic compression
+and a smooth increase in emphasis below the detailed-card zoom threshold. Marker
+sizes remain within their existing layout allocation (apart from the existing
+minimum visible size and hover enlargement). Detailed cards keep their usual
+geometry. Drawing, hit targets, hover labels, and edge anchors share the sized
+marker frames. Nonuniform sizing also enables overview markers on small schemas
+when zoomed out.
+
+Row sizing does not issue count queries: it uses exact counts already obtained by
+filters, otherwise the catalog's available counts/estimates. Unknown row counts
+have a neutral size and dashed outline; zero stays a known minimum. Filtering
+never enters scale normalization. New count data can legitimately update the
+scale, and closing a database discards its profile data.
+
+The packaged build and 59 focused graph tests passed. Tests cover each metric,
+zero/unknown/negative counts, extreme outliers, zoom emphasis, unchanged positions,
+scaled hit targets, detailed-card geometry, cached updates, preference restore,
+composite/self-reference relation counts, stable scales across filtering, and
+cleanup on close. Native UI checks with the 216-object dump selected Fields,
+Rows, and Relations from the submenu and visually confirmed different marker
+sizes and dashed unknown-row markers. The final app is open with Relations
+selected. Continuous pointer zoom/hover remains covered by geometry tests rather
+than a completed native pointer walkthrough due the automation limitation above.
+
+## Unified database file picker
+
+The welcome screen now has one Choose Database File button, with all supported
+SQLite, PostgreSQL backup, and PostgreSQL connection-document extensions below
+it. File → Open Database File (⌘O) uses the same picker and automatic document
+routing. The separate PostgreSQL picker and menu action were removed.
+
+The packaged build and seven focused archive/open-lifecycle tests passed,
+including every supported extension, uppercase extensions, directory navigation,
+unsupported-file rejection, SQLite routing, and restoring/reopening the supplied
+216-object dump. Native checks confirmed the welcome layout, single File menu
+action, opening the supplied dump as PostgreSQL read-only from the welcome
+button, and opening Samples/small_sample.sqlite from the same File menu picker.
+The rebuilt app was left on the welcome screen.

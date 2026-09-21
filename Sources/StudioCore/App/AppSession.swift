@@ -152,7 +152,9 @@ public final class AppSession {
     /// and database operations use `databaseTarget`, independently of this local URL.
     public var databaseURL: URL?
     public private(set) var databaseCapabilities: DatabaseCapabilities = .none
-    public var tables: [TableSummary] = []
+    public var tables: [TableSummary] = [] {
+        didSet { rebuildGraphNodeSizeProfile() }
+    }
     public var graph: SchemaGraph = .empty {
         didSet { graphRevision &+= 1 }
     }
@@ -177,6 +179,13 @@ public final class AppSession {
     public var expandedGraphNodeIDs: Set<String> = []
     public var floatingDetailsCardTableID: String?
     public var floatingDetailsCardPosition: CGPoint?
+    public var graphNodeSizeMetric: GraphNodeSizeMetric = .uniform {
+        didSet {
+            userDefaults.set(graphNodeSizeMetric.rawValue, forKey: Self.graphNodeSizeMetricKey)
+            rebuildGraphNodeSizeProfile()
+        }
+    }
+    private(set) var graphNodeSizeProfile: GraphNodeSizeProfile = .uniform
     public var showAllGraphTableCards = false
     public var showClusterHalos = true
     public var showStoryCardsInGraph = false
@@ -215,12 +224,26 @@ public final class AppSession {
     public private(set) var documentOpenProgress: String?
     private var pendingDatabaseClose: Task<Void, Never>?
     public private(set) var graphTableFilter = GraphTableFilter()
-    public private(set) var graphRowCounts: [String: Int] = [:]
+    public private(set) var graphRowCounts: [String: Int] = [:] {
+        didSet { rebuildGraphNodeSizeProfile() }
+    }
+    public private(set) var graphRelationCounts: [String: Int] = [:] {
+        didSet { rebuildGraphNodeSizeProfile() }
+    }
     public private(set) var graphFilterProgress: Int?
     private var graphFilterGeneration = UUID()
 
     public var graphVisibleTableIDs: Set<String> {
-        Set(tables.filter { graphTableFilter.matches(fields: $0.columnCount, rows: graphRowCounts[$0.id] ?? $0.rowCount) }.map(\.id))
+        Set(tables.filter {
+            graphTableFilter.matches(fields: $0.columnCount, rows: graphRowCounts[$0.id] ?? $0.rowCount,
+                                     relations: graphRelationCounts[$0.id, default: 0])
+        }.map(\.id))
+    }
+
+    private func rebuildGraphNodeSizeProfile() {
+        let profile = GraphNodeSizeProfile(metric: graphNodeSizeMetric, tables: tables,
+                                          rowCounts: graphRowCounts, relationCounts: graphRelationCounts)
+        if profile != graphNodeSizeProfile { graphNodeSizeProfile = profile }
     }
 
     public func cancelGraphFilter() {
@@ -244,7 +267,8 @@ public final class AppSession {
             graphFilterProgress = 0
             defer { if graphFilterGeneration == generation { graphFilterProgress = nil } }
             do {
-                for table in tables where filter.matchesFields(table.columnCount) {
+                for table in tables where filter.matchesFields(table.columnCount)
+                    && filter.matchesRelations(graphRelationCounts[table.id, default: 0]) {
                     guard graphFilterGeneration == generation, openGeneration == databaseGeneration, !Task.isCancelled else { return false }
                     guard let descriptor = tableDescriptors[table.id] else { continue }
                     counts[table.id] = try await databaseService.countRows(query: TableQueryState(), descriptor: descriptor)
@@ -266,6 +290,7 @@ public final class AppSession {
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
     private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
+    private static let graphNodeSizeMetricKey = "SQLiteGraphStudio.graph-node-size-metric"
     private static let postgresBookmarksKey = "SQLiteGraphStudio.postgres-file-bookmarks"
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
     private static let graphLayoutStorageVersion = 2
@@ -283,11 +308,13 @@ public final class AppSession {
         }
         self.databaseService = databaseService
         self.userDefaults = userDefaults
+        self.graphNodeSizeMetric = GraphNodeSizeMetric(rawValue: userDefaults.string(forKey: Self.graphNodeSizeMetricKey) ?? "") ?? .uniform
         self.queryWorkspace = QueryWorkspaceModel(
             databaseService: databaseService,
             userDefaults: userDefaults
         )
         self.recentDatabaseURLs = Self.loadRecentDatabaseURLs(from: userDefaults)
+        rebuildGraphNodeSizeProfile()
     }
 
     func configureRecordMappings(_ sidecar: SchemaSidecar) {
@@ -348,15 +375,20 @@ public final class AppSession {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
+        // Custom archive/document suffixes do not reliably map to system UTIs.
         panel.allowedContentTypes = []
-        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.sqliteExtensions)
+        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.supportedExtensions)
         panel.delegate = documentFilter
-        panel.prompt = "Open Database"
+        panel.title = "Open Database File"
+        panel.message = DatabaseDocument.supportedFormatsDescription
+        panel.prompt = "Open"
 
-        panel.begin { [self, documentFilter] response in
+        let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
+        panel.begin { [self, documentFilter, weak presentingWindow] response in
             withExtendedLifetime(documentFilter) {
+                presentingWindow?.makeKeyAndOrderFront(nil)
                 guard response == .OK, let url = panel.url else { return }
-                Task { await openDatabase(url: url) }
+                Task { await openDocument(url: url) }
             }
         }
     }
@@ -368,6 +400,7 @@ public final class AppSession {
     private func openDatabase(url: URL, changeBaseline: SchemaRefreshSnapshot?) async {
         clearGraphFilter()
         graphRowCounts = [:]
+        graphRelationCounts = [:]
         retireDumpOpen()
         documentOpenProgress = nil
         records.reset()
@@ -405,29 +438,6 @@ public final class AppSession {
         }
     }
 
-    public func presentOpenOtherDatabasePanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        // Custom archive/document suffixes do not reliably map to system UTIs.
-        panel.allowedContentTypes = []
-        let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.otherExtensions)
-        panel.delegate = documentFilter
-        panel.title = "Open PostgreSQL File"
-        panel.message = DatabaseDocument.otherFormatsDescription
-        panel.prompt = "Open PostgreSQL File"
-
-        let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
-        panel.begin { [self, documentFilter, weak presentingWindow] response in
-            withExtendedLifetime(documentFilter) {
-                presentingWindow?.makeKeyAndOrderFront(nil)
-                guard response == .OK, let url = panel.url else { return }
-                Task { await openDocument(url: url) }
-            }
-        }
-    }
-
     public func openDocument(url: URL) async {
         if DatabaseDocument.isArchive(url) {
             await openPostgreSQLDump(url: url)
@@ -445,6 +455,7 @@ public final class AppSession {
         defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
         clearGraphFilter()
         graphRowCounts = [:]
+        graphRelationCounts = [:]
         retireDumpOpen()
         let generation = UUID()
         openGeneration = generation
@@ -513,6 +524,7 @@ public final class AppSession {
         defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
         clearGraphFilter()
         graphRowCounts = [:]
+        graphRelationCounts = [:]
         retireDumpOpen()
         documentOpenProgress = nil
         records.reset()
@@ -569,6 +581,7 @@ public final class AppSession {
     public func closeDatabase() {
         clearGraphFilter()
         graphRowCounts = [:]
+        graphRelationCounts = [:]
         retireDumpOpen()
         documentOpenProgress = nil
         records.reset()
@@ -1400,6 +1413,13 @@ public final class AppSession {
         records.reset()
         records.catalog = snapshot
         records.relationships = RecordAccess.relationships(catalog: snapshot)
+        // Count constraints in the complete catalog, not column-pair edges or
+        // currently visible neighbours. Composite and self-referencing keys count once.
+        graphRelationCounts = records.relationships.reduce(into: [:]) { counts, relation in
+            let source = relation.sourceDescriptor?.id ?? relation.sourceTable.displayName
+            let target = relation.targetDescriptor?.id ?? relation.targetTable.displayName
+            for tableID in Set([source, target]) { counts[tableID, default: 0] += 1 }
+        }
         let localURL = (documentURL ?? target.fileURL)?.standardizedFileURL
         let isSameDocument = databaseTarget == target && databaseURL == localURL
         if !isSameDocument { initializedGraphViewportDocument = nil }

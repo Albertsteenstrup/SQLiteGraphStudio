@@ -5,9 +5,11 @@ import Testing
 
 @MainActor struct SessionOpenLifecycleTests {
     @Test func documentPanelUsesExtensionsAndAllowsDirectoryNavigation() throws {
-        let filter = DatabaseDocumentOpenPanelDelegate(extensions: ["sqlite", "db"])
-        #expect(filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.sqlite")))
-        #expect(filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.DB")))
+        let filter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.supportedExtensions)
+        for name in ["test.sqlite", "test.sqlite3", "test.DB", "test.sqlite-db", "test.sqlitedb",
+                     "backup.dump", "backup.BACKUP", "connection.postgres", "connection.pgstudio"] {
+            #expect(filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/" + name)))
+        }
         #expect(!filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.txt")))
         #expect(filter.panel(NSNull(), shouldEnable: FileManager.default.temporaryDirectory))
     }
@@ -51,11 +53,17 @@ import Testing
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-reopen-\(UUID().uuidString).sqlite")
         let database = try DatabaseQueue(path: url.path)
         try await database.write { db in try db.execute(sql: "CREATE TABLE item(id INTEGER PRIMARY KEY)") }
-        let session = AppSession(databaseService: DatabaseService())
+        let suite = "SessionOpenLifecycleTests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: url) }
+        let session = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
         session.closeDatabase()
-        await session.openDatabase(url: url)
+        await session.openDocument(url: url)
+        #expect(session.databaseTarget == .sqlite(url))
         #expect(session.databaseURL == url)
         #expect(session.presentedError == nil)
+        await session.closeAndWait()
+        try database.close()
     }
 
     @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to verify PostgreSQL refresh metadata"))

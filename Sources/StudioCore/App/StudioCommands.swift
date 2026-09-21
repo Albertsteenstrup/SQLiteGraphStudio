@@ -9,14 +9,10 @@ public struct StudioCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("Open SQLite File…") {
+            Button("Open Database File…") {
                 session.presentOpenDatabasePanel()
             }
             .keyboardShortcut("o")
-
-            Button("Open PostgreSQL File…") {
-                session.presentOpenOtherDatabasePanel()
-            }
 
             Menu("Open Recent") {
                 if session.recentDatabaseURLs.isEmpty {

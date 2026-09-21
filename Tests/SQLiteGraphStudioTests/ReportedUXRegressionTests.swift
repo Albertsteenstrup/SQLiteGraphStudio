@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import GRDB
 import Testing
 @testable import StudioCore
 
@@ -30,15 +31,74 @@ struct ReportedUXRegressionTests {
 
     @Test func graphBoundsAreInclusiveAndUnknownRowsDoNotBecomeZero() {
         let filter = GraphTableFilter(minimumFields: 4, maximumFields: 8, minimumRows: 0, maximumRows: 10)
-        #expect(filter.matches(fields: 4, rows: 0))
-        #expect(filter.matches(fields: 8, rows: 10))
-        #expect(!filter.matches(fields: 3, rows: 0))
-        #expect(!filter.matches(fields: 9, rows: 1))
-        #expect(!filter.matches(fields: 5, rows: 11))
-        #expect(!filter.matches(fields: 5, rows: nil))
-        #expect(GraphTableFilter(minimumFields: 4).matches(fields: 5, rows: nil))
+        #expect(filter.matches(fields: 4, rows: 0, relations: 0))
+        #expect(filter.matches(fields: 8, rows: 10, relations: 0))
+        #expect(!filter.matches(fields: 3, rows: 0, relations: 0))
+        #expect(!filter.matches(fields: 9, rows: 1, relations: 0))
+        #expect(!filter.matches(fields: 5, rows: 11, relations: 0))
+        #expect(!filter.matches(fields: 5, rows: nil, relations: 0))
+        #expect(GraphTableFilter(minimumFields: 4).matches(fields: 5, rows: nil, relations: 0))
         #expect(!GraphTableFilter(minimumRows: 10, maximumRows: 2).isValid)
         #expect(!GraphTableFilter(minimumFields: -1).isValid)
+        let relations = GraphTableFilter(minimumRelations: 1, maximumRelations: 3)
+        #expect(relations.isActive)
+        #expect(relations.matches(fields: 2, rows: nil, relations: 1))
+        #expect(relations.matches(fields: 2, rows: nil, relations: 3))
+        #expect(!relations.matches(fields: 2, rows: nil, relations: 0))
+        #expect(!relations.matches(fields: 2, rows: nil, relations: 4))
+        #expect(!GraphTableFilter(minimumRelations: -1).isValid)
+        #expect(!GraphTableFilter(minimumRelations: 3, maximumRelations: 1).isValid)
+    }
+
+    @Test func relationFiltersCountConstraintsAcrossTheFullSchema() async throws {
+        let url = TestSupport.temporaryDatabaseURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let database = try DatabaseQueue(path: url.path)
+        try await database.write { db in
+            try db.execute(sql: """
+                CREATE TABLE parent(a INTEGER, b INTEGER, PRIMARY KEY(a, b));
+                CREATE TABLE child(id INTEGER PRIMARY KEY, first_a INTEGER, first_b INTEGER,
+                    second_a INTEGER, second_b INTEGER, parent_child_id INTEGER REFERENCES child(id),
+                    FOREIGN KEY(first_a, first_b) REFERENCES parent(a, b),
+                    FOREIGN KEY(second_a, second_b) REFERENCES parent(a, b));
+                CREATE TABLE leaf(id INTEGER PRIMARY KEY, child_id INTEGER REFERENCES child(id));
+                CREATE TABLE isolated(id INTEGER PRIMARY KEY);
+                INSERT INTO parent VALUES(1, 1), (2, 2);
+                INSERT INTO child VALUES(1, 1, 1, 2, 2, NULL);
+                INSERT INTO leaf VALUES(1, 1), (2, 1);
+                """)
+        }
+        try database.close()
+        let suite = "sgs-relations-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let session = AppSession(userDefaults: defaults)
+        await session.openDatabase(url: url)
+        #expect(session.presentedError == nil)
+        // The two composite FKs count separately; their column pairs do not.
+        // The child's self-reference counts once, plus one incoming leaf FK.
+        #expect(session.graphRelationCounts["parent"] == 2)
+        #expect(session.graphRelationCounts["child"] == 4)
+        #expect(session.graphRelationCounts["leaf"] == 1)
+        #expect(await session.applyGraphFilter(.init(minimumRelations: 0, maximumRelations: 0)))
+        #expect(session.graphVisibleTableIDs == ["isolated"])
+        #expect(session.graphRowCounts.isEmpty)
+        #expect(await session.applyGraphFilter(.init(minimumRelations: 1, maximumRelations: 2)))
+        #expect(session.graphVisibleTableIDs == ["parent", "leaf"])
+        let combined = GraphTableFilter(minimumFields: 6, maximumFields: 6, minimumRows: 1, maximumRows: 1,
+                                        minimumRelations: 4, maximumRelations: 4)
+        #expect(await session.applyGraphFilter(combined))
+        #expect(session.graphVisibleTableIDs == ["child"])
+        #expect(session.graphRowCounts == ["child": 1])
+        #expect(!(await session.applyGraphFilter(.init(minimumRelations: 5, maximumRelations: 4))))
+        #expect(session.graphTableFilter == combined)
+        #expect(await session.applyGraphFilter(.init(minimumRelations: 5)))
+        #expect(session.graphVisibleTableIDs.isEmpty)
+        session.clearGraphFilter()
+        #expect(session.graphVisibleTableIDs.count == 4)
+        await session.closeAndWait()
+        #expect(session.graphRelationCounts.isEmpty)
     }
 
     @Test func publicPrefixIsOnlyHiddenInPostgresLabels() {
@@ -63,6 +123,19 @@ struct ReportedUXRegressionTests {
         #expect(session.presentedError == nil)
         let names = session.tables.map(\.name)
         #expect(!names.isEmpty)
+        let identityName = "public.field_research_public_query_identity"
+        if names.contains(identityName) {
+            let result = try await service.executeReadOnlyQuery(sql: """
+                SELECT count(*) FROM pg_catalog.pg_constraint
+                WHERE contype = 'f' AND (conrelid = 'public.field_research_public_query_identity'::regclass
+                    OR confrelid = 'public.field_research_public_query_identity'::regclass)
+                """)
+            let expectedRelations = Int(try #require(result.rows.first?.values.first?.displayText))
+            #expect(session.graphRelationCounts[identityName] == expectedRelations)
+            #expect(await session.applyGraphFilter(.init(minimumRelations: expectedRelations, maximumRelations: expectedRelations)))
+            #expect(session.graphVisibleTableIDs.contains(identityName))
+            session.clearGraphFilter()
+        }
         var emptyTables = 0
         var populatedTables = 0
         var cells = 0
