@@ -44,6 +44,21 @@ public struct WorkspaceCompactLayout: Equatable, Sendable {
         windowMinimumWidth - 2 * workspaceInset
     }
 
+    /// Width bounds for one pane of the workspace split.
+    ///
+    /// While both panes share the workspace they each keep a hand-drag floor.
+    /// While one pane owns it the other is held shut rather than merely hidden:
+    /// the divider stays draggable in that layout, and a pane that can still be
+    /// given width gets peeled open into a blank strip, since it is transparent
+    /// and takes no clicks.
+    public static func paneWidthBounds(
+        for side: WorkspacePaneSide,
+        fullscreenSide: WorkspacePaneSide?
+    ) -> (minimum: CGFloat, maximum: CGFloat) {
+        guard let fullscreenSide else { return (splitPaneMinimumWidth, .infinity) }
+        return fullscreenSide == side ? (singlePaneMinimumWidth, .infinity) : (0, 0)
+    }
+
     public private(set) var isCompact: Bool
 
     public init(isCompact: Bool = false) {

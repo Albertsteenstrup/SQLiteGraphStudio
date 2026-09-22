@@ -5,16 +5,11 @@ import Testing
 
 @MainActor
 struct WorkspaceStateTests {
-    /// A defaults domain of this suite's own, so sessions that persist recents
-    /// and preferences cannot reach the developer's real ones. The domain is
-    /// cleared on the way in rather than left to accumulate across runs.
-    private static let defaultsSuiteName = "com.sqlitegraphstudio.tests.workspace-state"
-
-    private func isolatedDefaults() -> UserDefaults {
-        UserDefaults.standard.removePersistentDomain(forName: Self.defaultsSuiteName)
-        guard let defaults = UserDefaults(suiteName: Self.defaultsSuiteName) else { return .standard }
-        defaults.removePersistentDomain(forName: Self.defaultsSuiteName)
-        return defaults
+    /// A defaults domain of this test's own, so a session that persists recents
+    /// cannot reach the developer's real ones. Callers clear it with `defer`.
+    private func makeIsolatedDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "SQLiteGraphStudioTests.workspace-state.\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: suiteName)), suiteName)
     }
 
     @Test
@@ -150,17 +145,16 @@ struct WorkspaceStateTests {
     }
 
     @Test
-    func openingADatabaseWhileCompactKeepsTheGraphOnScreen() {
+    func openingADatabaseWhileCompactKeepsTheGraphOnScreen() throws {
         // Opening a document returns pane focus to its default side, which is
         // the tables pane. While compact that side is the only one on screen,
         // so the default has to bend to the graph or opening would push it out
         // of view.
         // `apply` remembers the document, so the session gets its own defaults
         // rather than writing a bogus path into the developer's Open Recent.
-        let session = AppSession(
-            databaseService: DatabaseService(),
-            userDefaults: isolatedDefaults()
-        )
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let session = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
         session.updateWorkspaceWidth(700)
         #expect(session.compactVisibleSide == .left)
 
@@ -177,13 +171,12 @@ struct WorkspaceStateTests {
     }
 
     @Test
-    func refreshingTheOpenDatabaseWhileCompactLeavesThePaneChoiceAlone() {
+    func refreshingTheOpenDatabaseWhileCompactLeavesThePaneChoiceAlone() throws {
         // A refresh is not a new document. Whichever pane the user put on screen
         // stays there, graph or not.
-        let session = AppSession(
-            databaseService: DatabaseService(),
-            userDefaults: isolatedDefaults()
-        )
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let session = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
         let target = DatabaseTarget.sqlite(URL(fileURLWithPath: "/tmp/compact-refresh-fixture.sqlite"))
         let snapshot = CatalogSnapshot(descriptors: [], graph: SchemaGraph(nodes: [], edges: []))
 
@@ -242,6 +235,28 @@ struct WorkspaceStateTests {
         changed = layout.update(width: WorkspaceCompactLayout.restoreWidth)
         #expect(changed)
         #expect(!layout.isCompact)
+    }
+
+    @Test
+    func theSinglePaneLayoutHoldsTheOffScreenPaneShut() {
+        // The divider stays draggable when one pane owns the workspace, and the
+        // off-screen pane is transparent and takes no clicks — so if it can be
+        // given any width at all, dragging peels it open as a blank strip. Its
+        // maximum has to be zero, not just its minimum.
+        let hidden = WorkspaceCompactLayout.paneWidthBounds(for: .right, fullscreenSide: .left)
+        #expect(hidden.minimum == 0)
+        #expect(hidden.maximum == 0)
+
+        let shown = WorkspaceCompactLayout.paneWidthBounds(for: .left, fullscreenSide: .left)
+        #expect(shown.minimum == WorkspaceCompactLayout.singlePaneMinimumWidth)
+        #expect(shown.maximum == .infinity)
+
+        // Both panes on screen keep the hand-drag floor and stay resizable.
+        for side in WorkspacePaneSide.allCases {
+            let split = WorkspaceCompactLayout.paneWidthBounds(for: side, fullscreenSide: nil)
+            #expect(split.minimum == WorkspaceCompactLayout.splitPaneMinimumWidth)
+            #expect(split.maximum == .infinity)
+        }
     }
 
     @Test

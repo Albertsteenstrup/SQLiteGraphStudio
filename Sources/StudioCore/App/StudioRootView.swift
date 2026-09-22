@@ -390,7 +390,10 @@ private struct WorkspaceLayoutView: View {
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left
                 )
                 .id("workspace-pane-left")
-                .frame(minWidth: minimumPaneWidth(for: .left))
+                .frame(
+                    minWidth: paneWidthBounds(for: .left).minimum,
+                    maxWidth: paneWidthBounds(for: .left).maximum
+                )
                 .background {
                     GeometryReader { geometry in
                         Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.left: geometry.size.width])
@@ -408,7 +411,10 @@ private struct WorkspaceLayoutView: View {
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right
                 )
                 .id("workspace-pane-right")
-                .frame(minWidth: minimumPaneWidth(for: .right))
+                .frame(
+                    minWidth: paneWidthBounds(for: .right).minimum,
+                    maxWidth: paneWidthBounds(for: .right).maximum
+                )
                 .background {
                     GeometryReader { geometry in
                         Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.right: geometry.size.width])
@@ -457,9 +463,8 @@ private struct WorkspaceLayoutView: View {
         fullscreenSide == nil || fullscreenSide == side
     }
 
-    private func minimumPaneWidth(for side: WorkspacePaneSide) -> CGFloat {
-        guard let fullscreenSide else { return WorkspaceCompactLayout.splitPaneMinimumWidth }
-        return fullscreenSide == side ? WorkspaceCompactLayout.singlePaneMinimumWidth : 0
+    private func paneWidthBounds(for side: WorkspacePaneSide) -> (minimum: CGFloat, maximum: CGFloat) {
+        WorkspaceCompactLayout.paneWidthBounds(for: side, fullscreenSide: fullscreenSide)
     }
 }
 
