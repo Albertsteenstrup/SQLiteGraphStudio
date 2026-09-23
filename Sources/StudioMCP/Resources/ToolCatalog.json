@@ -43,8 +43,12 @@
         }
       },
       "dependentRequired": {
-        "resume_context_id": ["resume_token"],
-        "resume_token": ["resume_context_id"]
+        "resume_context_id": [
+          "resume_token"
+        ],
+        "resume_token": [
+          "resume_context_id"
+        ]
       },
       "additionalProperties": true
     },
@@ -104,7 +108,9 @@
         }
       },
       "additionalProperties": true,
-      "required": ["project_path"]
+      "required": [
+        "project_path"
+      ]
     },
     "annotations": {
       "title": "Scan Project Folder",
@@ -117,7 +123,7 @@
   {
     "name": "studio_open_source",
     "title": "Open Source",
-    "description": "Open one exact local database, supported schema artifact, migration-set folder, or SQL schema script at source_path in a new Graph Studio workspace. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows, queries, and editing do not. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
+    "description": "Open one exact local SQLite database, PostgreSQL connection or custom backup, supported schema artifact, migration-set folder, or SQL schema script at source_path in a new Graph Studio workspace. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows and queries do not. A PostgreSQL backup opens for schema exploration, but this bridge cannot read its restored rows. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -221,7 +227,7 @@
   {
     "name": "studio_update_workspace",
     "title": "Update Workspace",
-    "description": "Activate the specified workspace when requested. In this app build, the only supported change is activate=true or activation_intent=foreground; rename and reorder changes are not available.",
+    "description": "Activate the specified workspace when requested. The task must already be bound to this workspace; to switch between workspaces, resume the same context with studio_connect_context, its rotating resume_token, and the intended workspace_id first. This build supports only activate=true or activation_intent=foreground; rename and reorder are unavailable. Unsupported or no-op changes fail explicitly.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -230,19 +236,33 @@
         },
         "changes": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "properties": {
             "activate": {
-              "type": "boolean"
+              "type": "boolean",
+              "enum": [
+                true
+              ]
             },
             "activation_intent": {
               "type": "string",
               "enum": [
-                "background",
                 "foreground"
               ]
             }
-          }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "activate"
+              ]
+            },
+            {
+              "required": [
+                "activation_intent"
+              ]
+            }
+          ]
         },
         "expected_view_revision": {
           "type": "string"
@@ -323,7 +343,7 @@
   {
     "name": "studio_set_layout",
     "title": "Set Layout",
-    "description": "Choose the schema, table or query pane on either side, adjust the split, or maximize a pane in the workspace. Values apply only to the selected workspace.",
+    "description": "Choose the schema, table or query pane on either side, adjust the split, or maximize a pane in the selected workspace. Give at least one supported change; invalid pane names and maximize values fail explicitly. The split fraction is bounded to the app's usable range.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -371,6 +391,40 @@
       "required": [
         "workspace_id",
         "request_id"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "left_pane"
+          ]
+        },
+        {
+          "required": [
+            "right_pane"
+          ]
+        },
+        {
+          "required": [
+            "split_fraction"
+          ]
+        },
+        {
+          "required": [
+            "maximize"
+          ]
+        },
+        {
+          "required": [
+            "restore_split"
+          ],
+          "properties": {
+            "restore_split": {
+              "enum": [
+                true
+              ]
+            }
+          }
+        }
       ]
     },
     "annotations": {
@@ -512,7 +566,7 @@
   {
     "name": "studio_find_relations",
     "title": "Find Relations",
-    "description": "Find declared foreign-key neighbors around the supplied table_ids, up to the requested hop count. This build reports database edges only; it does not infer application relationships or return ranked paths.",
+    "description": "Find declared foreign-key neighbors around supplied table_ids, up to the requested hop count. Each edge has id for graph focus and, when a corresponding record relationship is available, a separate record_relation_id for studio_follow_record or studio_show_record_graph after a full row is inspected. Never pass the graph edge id as a record relation id. This reports declared database edges only; it does not infer application relationships or rank paths.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -529,9 +583,6 @@
           }
         },
         "hops": {
-          "type": "integer"
-        },
-        "limit": {
           "type": "integer"
         }
       },
@@ -789,7 +840,7 @@
   {
     "name": "studio_set_camera",
     "title": "Set Camera",
-    "description": "Set a bounded graph zoom and/or explicit pan coordinates in the selected workspace. Fit-to-selection and animated camera modes are not supported in this app build.",
+    "description": "Set graph zoom (clamped to 0.2–4) and/or explicit pan coordinates in the selected workspace. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000; invalid coordinates fail without changing the view. Fit-to-selection and animated camera modes are unsupported.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -800,10 +851,14 @@
           "type": "number"
         },
         "pan_x": {
-          "type": "number"
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
         },
         "pan_y": {
-          "type": "number"
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
         },
         "expected_view_revision": {
           "type": "string"
@@ -817,7 +872,24 @@
       "required": [
         "workspace_id",
         "request_id"
-      ]
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "zoom"
+          ]
+        },
+        {
+          "required": [
+            "pan_x",
+            "pan_y"
+          ]
+        }
+      ],
+      "dependentRequired": {
+        "pan_x": ["pan_y"],
+        "pan_y": ["pan_x"]
+      }
     },
     "annotations": {
       "title": "Set Camera",
@@ -830,7 +902,7 @@
   {
     "name": "studio_arrange_tables",
     "title": "Arrange Tables",
-    "description": "Compact the named tables around x/y, pin one table at explicit coordinates with operation=position, or relayout the current graph. The app returns the resulting positions; arbitrary multi-table position batches are not supported.",
+    "description": "Compact named tables around optional x/y, place exactly one table at explicit x/y with operation=position, or relayout the current graph. Coordinates must be between -1,000,000 and 1,000,000. The app returns resulting positions; arbitrary multi-table position batches are unsupported.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -852,10 +924,14 @@
           ]
         },
         "x": {
-          "type": "number"
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
         },
         "y": {
-          "type": "number"
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
         },
         "expected_view_revision": {
           "type": "string"
@@ -869,6 +945,70 @@
       "required": [
         "workspace_id",
         "request_id"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "enum": [
+                  "position"
+                ]
+              }
+            },
+            "required": [
+              "operation"
+            ]
+          },
+          "then": {
+            "required": [
+              "table_ids",
+              "x",
+              "y"
+            ],
+            "properties": {
+              "table_ids": {
+                "minItems": 1,
+                "maxItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "not": {
+                  "required": [
+                    "operation"
+                  ]
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "enum": [
+                      "compact"
+                    ]
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "table_ids"
+            ],
+            "properties": {
+              "table_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        }
       ]
     },
     "annotations": {
@@ -1011,28 +1151,48 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "text": { "type": "string" },
+              "id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
               "anchors": {
                 "type": "array",
                 "maxItems": 4,
                 "items": {
                   "type": "object",
                   "properties": {
-                    "table_id": { "type": "string" },
-                    "column_id": { "type": "string" }
+                    "table_id": {
+                      "type": "string"
+                    },
+                    "column_id": {
+                      "type": "string"
+                    }
                   },
-                  "required": ["table_id"],
+                  "required": [
+                    "table_id"
+                  ],
                   "additionalProperties": false
                 }
               },
-              "evidence_refs": { "type": "array", "items": { "type": "string" }, "maxItems": 8 }
+              "evidence_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 8
+              }
             },
-            "required": ["text"],
+            "required": [
+              "text"
+            ],
             "additionalProperties": false
           }
         },
-        "annotation_id": { "type": "string" },
+        "annotation_id": {
+          "type": "string"
+        },
         "annotation_ids": {
           "type": "array",
           "items": {
@@ -1048,10 +1208,16 @@
           "items": {
             "type": "object",
             "properties": {
-              "table_id": { "type": "string" },
-              "column_id": { "type": "string" }
+              "table_id": {
+                "type": "string"
+              },
+              "column_id": {
+                "type": "string"
+              }
             },
-            "required": ["table_id"],
+            "required": [
+              "table_id"
+            ],
             "additionalProperties": false
           }
         },
@@ -1379,7 +1545,7 @@
   {
     "name": "studio_follow_record",
     "title": "Follow Record",
-    "description": "Follow the record currently shown in the full record inspector through exactly one declared database relationship or one explicitly identified saved application mapping. If record_id is supplied, it must match the selected record. Choose one direction (incoming or outgoing); the app loads its bounded page and returns record identities, has_more/next_offset, provenance and current inspector state. display_intent must be show; data-only follow is unavailable, so use row or read-only query tools. Main inputs: workspace/source guards, relation_id or mapping_id, optional record_id, direction, display_intent, request_id.",
+    "description": "Follow the record currently shown in the full record inspector through exactly one declared database relationship or one explicitly identified saved application mapping. For a foreign key, pass the record_relation_id returned by studio_find_relations as relation_id; the schema graph edge id is different. A bounded studio_inspect_value cell slice has no full record identity, so first inspect a complete table or query row in the app. If record_id is supplied, it must match the selected record. Choose incoming or outgoing; the app returns bounded records, continuation, provenance and inspector state. display_intent must be show; use row or query tools for data-only reads.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1497,7 +1663,7 @@
   {
     "name": "studio_show_record_graph",
     "title": "Show Record Graph",
-    "description": "Show a one-edge neighborhood for the stable-identity record currently shown in the inspector. If seed_records is supplied, it must contain exactly one {record_id} matching that current record; this tool does not inspect arbitrary seed records or perform multi-hop traversal. Expand source-declared relation_ids only; the app expands the first eight IDs, reports any omitted count, and supports incoming, outgoing or both directions. Results may be prepared in the background for an inactive workspace. Main inputs: workspace/source guards, optional exact seed record, relation_ids, direction, request_id.",
+    "description": "Show a one-edge neighborhood for the stable-identity record currently shown in the full inspector. Get record relation IDs from studio_find_relations.record_relation_id; graph edge IDs are different. With no relation_ids this shows the seed record only. If seed_records is supplied, it must contain exactly one {record_id} matching the current record; arbitrary seeds and multi-hop traversal are unavailable. The app expands the first eight declared relation IDs and reports omissions. Incoming, outgoing and both directions are supported; an inactive workspace may prepare in the background.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1862,12 +2028,25 @@
                 "items": {
                   "type": "object",
                   "properties": {
-                    "kind": { "type": "string" },
-                    "object_id": { "type": "string" },
-                    "table_id": { "type": "string" },
-                    "result_id": { "type": "string" },
-                    "row_offset": { "type": "integer", "minimum": 0 },
-                    "column_id": { "type": "string" }
+                    "kind": {
+                      "type": "string"
+                    },
+                    "object_id": {
+                      "type": "string"
+                    },
+                    "table_id": {
+                      "type": "string"
+                    },
+                    "result_id": {
+                      "type": "string"
+                    },
+                    "row_offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "column_id": {
+                      "type": "string"
+                    }
                   },
                   "additionalProperties": false
                 },
@@ -1966,12 +2145,25 @@
                 "items": {
                   "type": "object",
                   "properties": {
-                    "kind": { "type": "string" },
-                    "object_id": { "type": "string" },
-                    "table_id": { "type": "string" },
-                    "result_id": { "type": "string" },
-                    "row_offset": { "type": "integer", "minimum": 0 },
-                    "column_id": { "type": "string" }
+                    "kind": {
+                      "type": "string"
+                    },
+                    "object_id": {
+                      "type": "string"
+                    },
+                    "table_id": {
+                      "type": "string"
+                    },
+                    "result_id": {
+                      "type": "string"
+                    },
+                    "row_offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "column_id": {
+                      "type": "string"
+                    }
                   },
                   "additionalProperties": false
                 },
@@ -2073,7 +2265,7 @@
   {
     "name": "studio_wait_events",
     "title": "Wait Events",
-    "description": "Wait up to 10 seconds for the selected workspace view/presentation state to change, then return the current snapshot and event cursor. This build does not filter job events or return a durable event stream.",
+    "description": "Wait up to 10 seconds for the selected workspace view or current presentation state to change, then return its snapshot and event cursor. Call studio_get_job for exact job progress and studio_get_presentation for a particular presentation. This build has no job/presentation ID filters or durable event stream; passing those filters fails explicitly.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2081,12 +2273,6 @@
           "type": "string"
         },
         "workspace_id": {
-          "type": "string"
-        },
-        "presentation_id": {
-          "type": "string"
-        },
-        "job_id": {
           "type": "string"
         },
         "after_cursor": {
@@ -2312,13 +2498,28 @@
           "description": "Durable notes to add or replace by ID; use human language, exact table/field IDs only when named. A relation_id must name a declared relation.",
           "items": {
             "type": "object",
-            "required": ["id", "text"],
+            "required": [
+              "id",
+              "text"
+            ],
             "properties": {
-              "id": { "type": "string", "maxLength": 200 },
-              "text": { "type": "string", "maxLength": 4000 },
-              "table_id": { "type": "string" },
-              "column_name": { "type": "string" },
-              "relation_id": { "type": "string" }
+              "id": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 4000
+              },
+              "table_id": {
+                "type": "string"
+              },
+              "column_name": {
+                "type": "string"
+              },
+              "relation_id": {
+                "type": "string"
+              }
             },
             "additionalProperties": false
           }
@@ -2326,7 +2527,9 @@
         "note_ids_remove": {
           "type": "array",
           "maxItems": 100,
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "IDs of durable notes to remove."
         }
       },
@@ -2564,7 +2767,9 @@
           "properties": {
             "result_ids": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "maxItems": 40
             },
             "table_pages": {
@@ -2572,11 +2777,22 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "table_id": { "type": "string" },
-                  "offset": { "type": "integer", "minimum": 0 },
-                  "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                  "table_id": {
+                    "type": "string"
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
                 },
-                "required": ["table_id"],
+                "required": [
+                  "table_id"
+                ],
                 "additionalProperties": false
               },
               "maxItems": 40
@@ -2674,11 +2890,22 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "table_id": { "type": "string" },
-                  "offset": { "type": "integer", "minimum": 0 },
-                  "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                  "table_id": {
+                    "type": "string"
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
                 },
-                "required": ["table_id"],
+                "required": [
+                  "table_id"
+                ],
                 "additionalProperties": false
               },
               "maxItems": 40

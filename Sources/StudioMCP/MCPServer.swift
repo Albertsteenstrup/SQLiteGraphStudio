@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 public final class MCPServer {
     public static let serverVersion = "0.1.0"
@@ -159,11 +160,32 @@ public final class MCPServer {
                     error: (-32602, "tools/call arguments must be an object", nil)
                 )
             }
-            guard MCPToolCatalog.tool(named: name) != nil else {
+            guard let tool = MCPToolCatalog.tool(named: name) else {
                 return responseIfNeeded(
                     isNotification: isNotification,
                     id: requestID,
                     error: (-32602, "Unknown tool: \(name)", nil)
+                )
+            }
+
+            guard let inputSchema = tool.json["inputSchema"] as? [String: Any] else {
+                return responseIfNeeded(
+                    isNotification: isNotification,
+                    id: requestID,
+                    error: (-32603, "The tool catalog has no valid input schema for \(name).", ["tool": name])
+                )
+            }
+            if let issue = MCPToolArgumentSchemaValidator.validate(arguments, against: inputSchema) {
+                return responseIfNeeded(
+                    isNotification: isNotification,
+                    id: requestID,
+                    error: (-32602, "Invalid arguments for \(name) at \(issue.path): \(issue.message)", [
+                        "code": "INVALID_ARGUMENT",
+                        "tool": name,
+                        "path": issue.path,
+                        "keyword": issue.keyword,
+                        "detail": issue.message,
+                    ])
                 )
             }
 
@@ -290,5 +312,221 @@ public final class MCPServer {
               let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
         else { return nil }
         return data
+    }
+}
+
+private struct MCPToolArgumentSchemaIssue {
+    let path: String
+    let keyword: String
+    let message: String
+}
+
+/// Validates the JSON Schema subset used by the bundled MCP tool catalog.
+/// Keeping this at the protocol boundary means malformed calls never reach the
+/// app bridge, while source and workspace invariants remain coordinator policy.
+private enum MCPToolArgumentSchemaValidator {
+    private static let maximumDepth = 64
+
+    static func validate(_ value: Any, against schema: [String: Any]) -> MCPToolArgumentSchemaIssue? {
+        validate(value, against: schema, path: "", depth: 0)
+    }
+
+    private static func validate(
+        _ value: Any,
+        against schema: [String: Any],
+        path: String,
+        depth: Int
+    ) -> MCPToolArgumentSchemaIssue? {
+        guard depth < maximumDepth else {
+            return issue(path, "depth", "The argument structure is nested too deeply.")
+        }
+
+        if let declaredType = schema["type"] {
+            let allowedTypes = (declaredType as? [String]) ?? (declaredType as? String).map { [$0] }
+            if let allowedTypes, !allowedTypes.contains(where: { matchesType(value, type: $0) }) {
+                return issue(path, "type", "Expected \(allowedTypes.joined(separator: " or ")).")
+            }
+        }
+
+        if let allowedValues = schema["enum"] as? [Any],
+           !allowedValues.contains(where: { areJSONEqual(value, $0) }) {
+            return issue(path, "enum", "The value is not one of the allowed choices.")
+        }
+        if let constant = schema["const"], !areJSONEqual(value, constant) {
+            return issue(path, "const", "The value does not match the required constant.")
+        }
+
+        if let number = jsonNumber(value) {
+            if let minimum = jsonNumber(schema["minimum"]), number.compare(minimum) == .orderedAscending {
+                return issue(path, "minimum", "The number is below the allowed minimum.")
+            }
+            if let maximum = jsonNumber(schema["maximum"]), number.compare(maximum) == .orderedDescending {
+                return issue(path, "maximum", "The number is above the allowed maximum.")
+            }
+            if let minimum = jsonNumber(schema["exclusiveMinimum"]), number.compare(minimum) != .orderedDescending {
+                return issue(path, "exclusiveMinimum", "The number must be greater than the exclusive minimum.")
+            }
+            if let maximum = jsonNumber(schema["exclusiveMaximum"]), number.compare(maximum) != .orderedAscending {
+                return issue(path, "exclusiveMaximum", "The number must be less than the exclusive maximum.")
+            }
+        }
+
+        if let string = value as? String {
+            let length = string.unicodeScalars.count
+            if let minimum = schema["minLength"] as? Int, length < minimum {
+                return issue(path, "minLength", "The string is shorter than the allowed minimum length.")
+            }
+            if let maximum = schema["maxLength"] as? Int, length > maximum {
+                return issue(path, "maxLength", "The string is longer than the allowed maximum length.")
+            }
+            if let pattern = schema["pattern"] as? String {
+                guard let expression = try? NSRegularExpression(pattern: pattern) else {
+                    return issue(path, "pattern", "The catalog contains an invalid string pattern.")
+                }
+                let range = NSRange(string.startIndex..<string.endIndex, in: string)
+                guard expression.firstMatch(in: string, range: range) != nil else {
+                    return issue(path, "pattern", "The string does not match the required pattern.")
+                }
+            }
+        }
+
+        if let array = value as? [Any] {
+            if let minimum = schema["minItems"] as? Int, array.count < minimum {
+                return issue(path, "minItems", "The array has fewer items than the allowed minimum.")
+            }
+            if let maximum = schema["maxItems"] as? Int, array.count > maximum {
+                return issue(path, "maxItems", "The array has more items than the allowed maximum.")
+            }
+            if let itemSchema = schema["items"] as? [String: Any] {
+                for (index, item) in array.enumerated() {
+                    if let failure = validate(item, against: itemSchema, path: childPath(path, String(index)), depth: depth + 1) {
+                        return failure
+                    }
+                }
+            }
+        }
+
+        if let object = value as? [String: Any] {
+            if let required = schema["required"] as? [String] {
+                for key in required.sorted() where object[key] == nil {
+                    return issue(childPath(path, key), "required", "A required argument is missing.")
+                }
+            }
+
+            if let properties = schema["properties"] as? [String: [String: Any]] {
+                for key in properties.keys.sorted() {
+                    guard let child = object[key], let childSchema = properties[key] else { continue }
+                    if let failure = validate(child, against: childSchema, path: childPath(path, key), depth: depth + 1) {
+                        return failure
+                    }
+                }
+
+                let additionalSchema = schema["additionalProperties"]
+                for key in object.keys.sorted() where properties[key] == nil {
+                    if let allowed = additionalSchema as? Bool, !allowed {
+                        return issue(childPath(path, key), "additionalProperties", "This argument is not supported.")
+                    }
+                    if let childSchema = additionalSchema as? [String: Any], let child = object[key] {
+                        if let failure = validate(child, against: childSchema, path: childPath(path, key), depth: depth + 1) {
+                            return failure
+                        }
+                    }
+                }
+            } else if let allowed = schema["additionalProperties"] as? Bool, !allowed,
+                      let unexpected = object.keys.sorted().first {
+                return issue(childPath(path, unexpected), "additionalProperties", "This argument is not supported.")
+            }
+
+            if let dependencies = schema["dependentRequired"] as? [String: [String]] {
+                for trigger in dependencies.keys.sorted() where object[trigger] != nil {
+                    for dependency in (dependencies[trigger] ?? []).sorted() where object[dependency] == nil {
+                        return issue(childPath(path, dependency), "dependentRequired", "This argument is required when \(trigger) is supplied.")
+                    }
+                }
+            }
+        }
+
+        if let alternatives = schema["anyOf"] as? [[String: Any]],
+           !alternatives.contains(where: { validate(value, against: $0, path: path, depth: depth + 1) == nil }) {
+            return issue(path, "anyOf", "The arguments do not match any supported input shape.")
+        }
+        if let alternatives = schema["oneOf"] as? [[String: Any]] {
+            let matches = alternatives.reduce(into: 0) { count, alternative in
+                if validate(value, against: alternative, path: path, depth: depth + 1) == nil { count += 1 }
+            }
+            if matches != 1 {
+                return issue(path, "oneOf", "The arguments must match exactly one supported input shape.")
+            }
+        }
+        if let schemas = schema["allOf"] as? [[String: Any]] {
+            for childSchema in schemas {
+                if let failure = validate(value, against: childSchema, path: path, depth: depth + 1) { return failure }
+            }
+        }
+        if let condition = schema["if"] as? [String: Any] {
+            let conditionMatches = validate(value, against: condition, path: path, depth: depth + 1) == nil
+            let consequence = conditionMatches ? schema["then"] : schema["else"]
+            if let consequence = consequence as? [String: Any],
+               let failure = validate(value, against: consequence, path: path, depth: depth + 1) {
+                return failure
+            }
+        }
+        if let excluded = schema["not"] as? [String: Any],
+           validate(value, against: excluded, path: path, depth: depth + 1) == nil {
+            return issue(path, "not", "The arguments match a disallowed input shape.")
+        }
+
+        return nil
+    }
+
+    private static func matchesType(_ value: Any, type: String) -> Bool {
+        switch type {
+        case "object": return value is [String: Any]
+        case "array": return value is [Any]
+        case "string": return value is String
+        case "boolean": return jsonBoolean(value) != nil
+        case "number": return jsonNumber(value) != nil
+        case "integer":
+            guard let number = jsonNumber(value) else { return false }
+            let value = number.doubleValue
+            return value.isFinite && value.rounded(.towardZero) == value
+        case "null": return value is NSNull
+        default: return false
+        }
+    }
+
+    private static func areJSONEqual(_ lhs: Any, _ rhs: Any) -> Bool {
+        if let left = jsonNumber(lhs), let right = jsonNumber(rhs) { return left.compare(right) == .orderedSame }
+        if let left = jsonBoolean(lhs), let right = jsonBoolean(rhs) { return left == right }
+        if lhs is NSNull || rhs is NSNull { return lhs is NSNull && rhs is NSNull }
+        if let left = lhs as? String, let right = rhs as? String { return left == right }
+        if let left = lhs as? [Any], let right = rhs as? [Any] {
+            return left.count == right.count && zip(left, right).allSatisfy { areJSONEqual($0.0, $0.1) }
+        }
+        if let left = lhs as? [String: Any], let right = rhs as? [String: Any] {
+            guard left.count == right.count else { return false }
+            return left.allSatisfy { key, value in right[key].map { areJSONEqual(value, $0) } ?? false }
+        }
+        return false
+    }
+
+    private static func jsonNumber(_ value: Any?) -> NSNumber? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite else { return nil }
+        return number
+    }
+
+    private static func jsonBoolean(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    private static func childPath(_ path: String, _ component: String) -> String {
+        path + "/" + component.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1")
+    }
+
+    private static func issue(_ path: String, _ keyword: String, _ message: String) -> MCPToolArgumentSchemaIssue {
+        MCPToolArgumentSchemaIssue(path: path.isEmpty ? "/" : path, keyword: keyword, message: message)
     }
 }

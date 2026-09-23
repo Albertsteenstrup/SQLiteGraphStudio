@@ -48,6 +48,83 @@ struct StudioSpeechNarratorTests {
         }
     }
 
+    @Test
+    func diskSpoolStreamsAFullFastUtteranceInFIFOOrder() async throws {
+        let channel = SpeechPCMChunkChannel(capacity: 1)
+        let spool = try SpeechPCMChunkSpool(channel: channel, maximumBytes: 1_000_000)
+        let chunkCount: Int16 = 200
+        for value in 0..<chunkCount {
+            try spool.append(makePCMBuffer(value: value))
+        }
+        spool.finish()
+
+        var iterator = SpeechAudioStream(channel: channel).makeAsyncIterator()
+        for expected in 0..<chunkCount {
+            #expect(try await pcmValue(from: iterator.next()) == expected)
+        }
+        #expect(try await iterator.next() == nil)
+    }
+
+    @Test
+    func diskSpoolDeliversCommittedAudioBeforeARealSizeLimitError() async throws {
+        let channel = SpeechPCMChunkChannel(capacity: 1)
+        let spool = try SpeechPCMChunkSpool(channel: channel, maximumBytes: 64)
+        try spool.append(makePCMBuffer(value: 11))
+        do {
+            try spool.append(makePCMBuffer(value: 12))
+            Issue.record("Expected the spool size limit to stop additional audio.")
+        } catch let error as StreamingSpeechError {
+            #expect(error == .speechSpoolLimitExceeded)
+        }
+
+        var iterator = SpeechAudioStream(channel: channel).makeAsyncIterator()
+        #expect(try await pcmValue(from: iterator.next()) == 11)
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the spool error after all previously committed audio.")
+        } catch let error as StreamingSpeechError {
+            #expect(error == .speechSpoolLimitExceeded)
+        }
+    }
+
+    @Test
+    func diskSpoolPreservesPlanarFloatAudioFormatAndSamples() async throws {
+        let channel = SpeechPCMChunkChannel(capacity: 1)
+        let spool = try SpeechPCMChunkSpool(channel: channel)
+        try spool.append(makePlanarStereoFloatBuffer(left: 0.25, right: -0.75))
+        spool.finish()
+
+        var iterator = SpeechAudioStream(channel: channel).makeAsyncIterator()
+        let chunk = try await iterator.next()
+        #expect(chunk?.sampleRate == 44_100)
+        #expect(chunk?.channelCount == 2)
+        #expect(chunk?.frameLength == 1)
+        #expect(chunk?.audioBuffer.format.commonFormat == .pcmFormatFloat32)
+        let buffers = chunk.map {
+            UnsafeMutableAudioBufferListPointer($0.audioBuffer.mutableAudioBufferList)
+        }
+        #expect(buffers?.count == 2)
+        #expect(buffers?.first?.mData?.load(as: Float.self) == 0.25)
+        #expect(buffers?.last?.mData?.load(as: Float.self) == -0.75)
+        #expect(try await iterator.next() == nil)
+    }
+
+    @Test
+    func cancellingDiskSpoolWakesAWorkerBlockedOnTheBoundedChannel() async throws {
+        let channel = SpeechPCMChunkChannel(capacity: 1)
+        let spool = try SpeechPCMChunkSpool(channel: channel)
+        let first = try SpeechPCMChunk(copying: makePCMBuffer(value: 1))
+        #expect(channel.push(first))
+        try spool.append(makePCMBuffer(value: 2))
+        try spool.append(makePCMBuffer(value: 3))
+        spool.cancel()
+
+        var iterator = SpeechAudioStream(channel: channel).makeAsyncIterator()
+        await #expect(throws: CancellationError.self) {
+            try await iterator.next()
+        }
+    }
+
     @Test @MainActor
     func narratorExposesInjectedProviderStreamToScheduler() async throws {
         let provider = TestStreamingSpeechProvider()
@@ -157,6 +234,34 @@ struct StudioSpeechNarratorTests {
         }
         data.storeBytes(of: value, as: Int16.self)
         return buffer
+    }
+
+    private func makePlanarStereoFloatBuffer(left: Float, right: Float) throws -> AVAudioPCMBuffer {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 44_100,
+            channels: 2,
+            interleaved: false
+        ), let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else {
+            throw StreamingSpeechError.invalidPCMBuffer
+        }
+        buffer.frameLength = 1
+        let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        guard buffers.count == 2,
+              let leftData = buffers[0].mData,
+              let rightData = buffers[1].mData else {
+            throw StreamingSpeechError.invalidPCMBuffer
+        }
+        leftData.storeBytes(of: left, as: Float.self)
+        rightData.storeBytes(of: right, as: Float.self)
+        return buffer
+    }
+
+    private func pcmValue(from chunk: SpeechPCMChunk?) -> Int16? {
+        guard let chunk,
+              let data = UnsafeMutableAudioBufferListPointer(chunk.audioBuffer.mutableAudioBufferList)
+                .first?.mData else { return nil }
+        return data.load(as: Int16.self)
     }
 }
 

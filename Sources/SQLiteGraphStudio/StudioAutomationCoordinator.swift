@@ -874,6 +874,10 @@ final class StudioAutomationCoordinator {
         case "studio_update_workspace":
             let tab = try workspace(args, context: context)
             let changes = args["changes"] as? [String: Any] ?? args
+            guard !changes.isEmpty, Set(changes.keys).isSubset(of: ["activate", "activation_intent"]),
+                  bool(changes, "activate") == true || string(changes, "activation_intent") == "foreground" else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "This build supports only activate=true or activation_intent=foreground for workspace updates. Reconnect the task context to switch its bound workspace first.")
+            }
             if bool(changes, "activate") == true || string(changes, "activation_intent") == "foreground" { workspaces.activate(tab.id) }
             return workspacePayload(tab)
         case "studio_close_workspace":
@@ -886,6 +890,21 @@ final class StudioAutomationCoordinator {
         case "studio_set_layout":
             let tab = try workspace(args, context: context)
             let session = tab.session
+            if let raw = args["left_pane"], !(raw is String) || string(args, "left_pane").flatMap(PaneContentKind.init(rawValue:)) == nil {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "left_pane must be schema, tables, or query.")
+            }
+            if let raw = args["right_pane"], !(raw is String) || string(args, "right_pane").flatMap(PaneContentKind.init(rawValue:)) == nil {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "right_pane must be schema, tables, or query.")
+            }
+            if let raw = args["maximize"], !(raw is String) || string(args, "maximize").flatMap(WorkspacePaneSide.init(rawValue:)) == nil {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "maximize must be left or right.")
+            }
+            if args["split_fraction"] != nil && (number(args, "split_fraction")?.isFinite != true) {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "split_fraction must be a finite number.")
+            }
+            guard args["left_pane"] != nil || args["right_pane"] != nil || args["split_fraction"] != nil || args["maximize"] != nil || bool(args, "restore_split") == true else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "Specify a pane, split_fraction, maximize, or restore_split=true.")
+            }
             if let left = string(args, "left_pane"), let kind = PaneContentKind(rawValue: left) { session.setPaneContent(kind, for: .left) }
             if let right = string(args, "right_pane"), let kind = PaneContentKind(rawValue: right) { session.setPaneContent(kind, for: .right) }
             if let fraction = number(args, "split_fraction") { session.workspaceSplitFraction = min(0.85, max(0.15, fraction)) }
@@ -943,8 +962,9 @@ final class StudioAutomationCoordinator {
                 if frontier.isEmpty { break }
             }
             let edges = tab.session.graph.edges.filter { visited.contains($0.sourceID) && visited.contains($0.targetID) }
-            return ["source_id": sourceID(tab), "table_ids": visited.sorted(), "declared_relationships": edges.map(edgePayload),
-                    "warning": "Only declared database relationships are shown; proximity and names do not create an edge."]
+            return ["source_id": sourceID(tab), "table_ids": visited.sorted(),
+                    "declared_relationships": edges.map { edgePayload($0, recordRelationships: tab.session.records.relationships) },
+                    "warning": "Only declared database relationships are shown; proximity and names do not create an edge. Use record_relation_id, when present, for studio_follow_record or studio_show_record_graph; id is the graph-edge ID used by studio_focus_keys."]
         case "studio_refresh_source":
             let tab = try sourceWorkspace(args, context: context)
             viewAnnotations.clear(nil, in: tab.id)
@@ -1060,10 +1080,24 @@ final class StudioAutomationCoordinator {
             session.ensurePaneVisible(.schema, preferredSide: .left)
             session.markAutomationViewChanged()
             return ["workspace_id": tab.id.uuidString, "visible_table_ids": chosen.sorted(),
-                    "declared_relationships": graph.edges.filter { chosen.contains($0.sourceID) && chosen.contains($0.targetID) }.map(edgePayload),
+                    "declared_relationships": graph.edges.filter { chosen.contains($0.sourceID) && chosen.contains($0.targetID) }.map { edgePayload($0, recordRelationships: tab.session.records.relationships) },
                     "view_revision": viewRevision(tab), "visual_state": visualState(tab)]
         case "studio_set_camera":
             let tab = try workspace(args, context: context)
+            guard args["zoom"] != nil || args["pan_x"] != nil || args["pan_y"] != nil else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "Specify zoom or both pan_x and pan_y.")
+            }
+            guard (args["pan_x"] == nil) == (args["pan_y"] == nil) else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "pan_x and pan_y must be supplied together.")
+            }
+            for key in ["zoom", "pan_x", "pan_y"] where args[key] != nil {
+                guard let value = number(args, key), value.isFinite else {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "\(key) must be a finite number.")
+                }
+                if key != "zoom", abs(value) > 1_000_000 {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "\(key) must be within the graph's usable coordinate range of -1,000,000 to 1,000,000.")
+                }
+            }
             if let zoom = number(args, "zoom") { tab.session.graphZoom = min(4, max(0.2, zoom)) }
             if let x = number(args, "pan_x"), let y = number(args, "pan_y") { tab.session.graphPan = CGSize(width: x, height: y) }
             tab.session.markAutomationViewChanged()
@@ -1073,13 +1107,22 @@ final class StudioAutomationCoordinator {
             let ids = strings(args, "table_ids") ?? []
             guard ids.allSatisfy({ tab.session.graph.contains(nodeID: $0) }) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "One or more table IDs do not exist.") }
             let mode = string(args, "operation") ?? "compact"
+            for key in ["x", "y"] where args[key] != nil {
+                guard let value = number(args, key), value.isFinite, abs(value) <= 1_000_000 else {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "\(key) must be a finite graph coordinate between -1,000,000 and 1,000,000.")
+                }
+            }
             if mode == "compact" {
+                guard !ids.isEmpty else {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "Compact needs at least one table ID.")
+                }
                 let midpoint = CGPoint(x: number(args, "x") ?? 0, y: number(args, "y") ?? 0)
                 for (index, id) in ids.enumerated() {
                     tab.session.graphLayout.pin(nodeID: id, at: CGPoint(x: midpoint.x + CGFloat(index % 3) * 320,
                                                                           y: midpoint.y + CGFloat(index / 3) * 230))
                 }
-            } else if mode == "position", let id = ids.first, let x = number(args, "x"), let y = number(args, "y") {
+            } else if mode == "position", ids.count == 1, let id = ids.first,
+                      let x = number(args, "x"), let y = number(args, "y") {
                 tab.session.graphLayout.pin(nodeID: id, at: CGPoint(x: x, y: y))
             } else if mode == "relayout" {
                 tab.session.graphLayout.relayout(for: tab.session.graph)
@@ -2191,6 +2234,9 @@ final class StudioAutomationCoordinator {
         case "studio_get_presentation":
             return presentationPayload(try presentation(args, context: context))
         case "studio_wait_events":
+            if args["presentation_id"] != nil || args["job_id"] != nil {
+                throw Failure(code: "TOOL_UNAVAILABLE", detail: "This build waits for workspace view and current-presentation changes only. Use studio_get_presentation or studio_get_job for an exact presentation or job; ID-specific event filters are unavailable.")
+            }
             let tab = try workspace(args, context: context)
             let previous = string(args, "after_cursor")
             let waitMS = min(10_000, max(1, args["wait_ms"] as? Int ?? args["wait_timeout_ms"] as? Int ?? 1_000))
@@ -3846,10 +3892,19 @@ final class StudioAutomationCoordinator {
          "indexes": descriptor.indexes.map { ["name": $0.name, "columns": $0.columns, "unique": $0.isUnique] }]
     }
 
-    private func edgePayload(_ edge: GraphEdge) -> [String: Any] {
-        ["id": edge.id, "source_table_id": edge.sourceID, "source_column": edge.sourceColumn,
-         "target_table_id": edge.targetID, "target_column": edge.targetColumn, "cardinality": edge.cardinality.rawValue,
-         "evidence": "declared_database_relation"]
+    private func edgePayload(_ edge: GraphEdge, recordRelationships: [RecordRelationship]) -> [String: Any] {
+        let recordRelation = recordRelationships.first { relation in
+            guard relation.sourceDescriptor?.id == edge.sourceID,
+                  relation.targetDescriptor?.id == edge.targetID else { return false }
+            return zip(relation.sourceColumns, relation.targetColumns).contains { source, target in
+                source == edge.sourceColumn && target == edge.targetColumn
+            }
+        }
+        return ["id": edge.id, "record_relation_id": nullable(recordRelation?.id),
+                "source_table_id": edge.sourceID, "source_column": edge.sourceColumn,
+                "target_table_id": edge.targetID, "target_column": edge.targetColumn,
+                "cardinality": edge.cardinality.rawValue,
+                "evidence": "declared_database_relation"]
     }
 
     private func recordGraphMappingPayload(_ mapping: RecordGraphMapping, index: Int, status: String,

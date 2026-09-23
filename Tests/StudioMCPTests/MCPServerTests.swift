@@ -3,7 +3,7 @@ import XCTest
 @testable import StudioMCP
 
 final class MCPServerTests: XCTestCase {
-    func testCatalogHasAllSixtyOneUniqueDocumentedTools() {
+    func testCatalogHasAllSixtyTwoUniqueDocumentedTools() {
         XCTAssertEqual(MCPToolCatalog.tools.count, 62)
         XCTAssertEqual(Set(MCPToolCatalog.names).count, 62)
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_status"))
@@ -249,6 +249,104 @@ final class MCPServerTests: XCTestCase {
         ]))
         XCTAssertEqual((object(unknown)["error"] as? [String: Any])?["code"] as? Int, -32602)
         XCTAssertNil(dispatcher.lastCall)
+    }
+
+    func testToolCallsAreValidatedAgainstCatalogBeforeDispatch() throws {
+        let dispatcher = RecordingDispatcher()
+        let server = MCPServer(dispatcher: dispatcher, clientID: "schema-validation")
+        try initializeLegacy(server)
+
+        let appContext: [String: Any] = ["context_id": "context:test"]
+        let cases: [(name: String, arguments: [String: Any], path: String, keyword: String)] = [
+            ("studio_scan_project", appContext, "/project_path", "required"),
+            ("studio_set_layout", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "layout-empty",
+            ]) { _, new in new }, "/", "anyOf"),
+            ("studio_set_layout", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "layout-enum", "left_pane": "left",
+            ]) { _, new in new }, "/left_pane", "enum"),
+            ("studio_set_layout", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "layout-bool-number", "split_fraction": true,
+            ]) { _, new in new }, "/split_fraction", "type"),
+            ("studio_set_camera", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "camera-half-pan", "pan_x": 12,
+            ]) { _, new in new }, "/", "anyOf"),
+            ("studio_update_workspace", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "workspace-background",
+                "changes": ["activation_intent": "background"],
+            ]) { _, new in new }, "/changes/activation_intent", "enum"),
+            ("studio_update_workspace", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "workspace-unknown-change",
+                "changes": ["activate": true, "rename": "ignored"],
+            ]) { _, new in new }, "/changes/rename", "additionalProperties"),
+            ("studio_arrange_tables", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "arrange-position-many", "operation": "position",
+                "table_ids": ["a", "b"], "x": 1, "y": 2,
+            ]) { _, new in new }, "/table_ids", "maxItems"),
+            ("studio_arrange_tables", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "arrange-empty",
+            ]) { _, new in new }, "/table_ids", "required"),
+            ("studio_find_relations", appContext.merging([
+                "workspace_id": "workspace:test", "table_ids": [true],
+            ]) { _, new in new }, "/table_ids/0", "type"),
+            ("studio_list_record_mappings", appContext.merging(["limit": 6]) { _, new in new }, "/limit", "maximum"),
+            ("studio_connect_context", ["resume_context_id": "context:prior"], "/resume_token", "dependentRequired"),
+            ("studio_follow_record", appContext.merging([
+                "request_id": "follow-both", "relation_id": "relation:1", "mapping_id": "mapping:1",
+            ]) { _, new in new }, "/", "oneOf"),
+            ("studio_show_record_graph", appContext.merging([
+                "request_id": "record-extra", "seed_records": [["record_id": "record:1", "extra": true]],
+            ]) { _, new in new }, "/seed_records/0/extra", "additionalProperties"),
+            ("studio_update_annotations", appContext.merging([
+                "request_id": "annotation-pattern", "expected_metadata_revision": "not-a-revision",
+            ]) { _, new in new }, "/expected_metadata_revision", "pattern"),
+        ]
+
+        for (index, testCase) in cases.enumerated() {
+            let response = try server.handleMessage(json([
+                "jsonrpc": "2.0", "id": "invalid-\(index)", "method": "tools/call",
+                "params": ["name": testCase.name, "arguments": testCase.arguments],
+            ]))
+            let error = object(response)["error"] as? [String: Any]
+            XCTAssertEqual(error?["code"] as? Int, -32602, testCase.name)
+            let data = error?["data"] as? [String: Any]
+            XCTAssertEqual(data?["code"] as? String, "INVALID_ARGUMENT", testCase.name)
+            XCTAssertEqual(data?["tool"] as? String, testCase.name, testCase.name)
+            XCTAssertEqual(data?["path"] as? String, testCase.path, testCase.name)
+            XCTAssertEqual(data?["keyword"] as? String, testCase.keyword, testCase.name)
+            XCTAssertNil(dispatcher.lastCall, "Invalid \(testCase.name) call reached the dispatcher")
+        }
+
+        let valid = try server.handleMessage(json([
+            "jsonrpc": "2.0", "id": "valid-camera", "method": "tools/call",
+            "params": [
+                "name": "studio_set_camera",
+                "arguments": appContext.merging([
+                    "workspace_id": "workspace:test", "request_id": "camera-valid", "zoom": 1.0,
+                    "legacy_client_hint": "preserved",
+                ]) { _, new in new },
+            ],
+        ]))
+        XCTAssertEqual((object(valid)["result"] as? [String: Any])?["isError"] as? Bool, false)
+        XCTAssertEqual(dispatcher.lastCall?.name, "studio_set_camera")
+        XCTAssertEqual(dispatcher.lastCall?.arguments["legacy_client_hint"] as? String, "preserved")
+
+        let validRevisionCall = try server.handleMessage(json([
+            "jsonrpc": "2.0", "id": "valid-revision", "method": "tools/call",
+            "params": [
+                "name": "studio_update_annotations",
+                "arguments": appContext.merging([
+                    "request_id": "annotation-valid-pattern", "expected_metadata_revision": String(repeating: "a", count: 64),
+                ]) { _, new in new },
+            ],
+        ]))
+        XCTAssertEqual((object(validRevisionCall)["result"] as? [String: Any])?["isError"] as? Bool, false)
+        XCTAssertEqual(dispatcher.lastCall?.name, "studio_update_annotations")
+
+        let toolCatalog = Dictionary(uniqueKeysWithValues: MCPToolCatalog.tools.map { ($0.name, $0) })
+        let relationSchema = toolCatalog["studio_find_relations"]?.json["inputSchema"] as? [String: Any]
+        let relationProperties = relationSchema?["properties"] as? [String: Any]
+        XCTAssertNil(relationProperties?["limit"], "An ignored limit must not be advertised")
     }
 
     func testMalformedJSONReturnsParseError() throws {

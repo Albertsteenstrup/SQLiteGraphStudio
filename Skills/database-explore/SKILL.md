@@ -15,7 +15,7 @@ If MCP is unavailable, use the existing read-only database and repository tools 
 
 ## Find evidence, then choose what to show
 
-- Use `studio_search_schema`, `studio_describe_schema`, and `studio_find_relations` to identify exact table, field, and declared key IDs. Read relevant code and docs for application behavior. Label code-derived relationships as application behavior or inference.
+- Use `studio_search_schema`, `studio_describe_schema`, and `studio_find_relations` to identify exact table, field, and declared key IDs. A returned graph-edge `id` is for `studio_focus_keys`; use its separate `record_relation_id` for `studio_follow_record` or `studio_show_record_graph` after the user has inspected a full row with a stable identity. Read relevant code and docs for application behavior. Label code-derived relationships as application behavior or inference.
 - Declared foreign keys may appear as graph edges. Tables related only by application logic can be displayed close together and explained in words; never add a visual relationship edge for them.
 - Start with a small useful set of core and supporting tables when that helps. The user may ask for all connected tables; then cover the requested scope, possibly in several views, and disclose traversal limits. You may also show a subset, return to an earlier group, or expand farther when it makes the explanation clearer.
 - Use `studio_show_tables`, `studio_select_objects`, `studio_expand_tables`, `studio_focus_keys`, `studio_arrange_tables`, and `studio_set_camera` as needed. Moving disconnected tables together changes layout only. Preserve a path back to the full view.

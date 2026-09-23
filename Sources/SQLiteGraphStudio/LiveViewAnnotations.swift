@@ -137,15 +137,75 @@ final class LiveViewAnnotationStore {
 struct LiveViewAnnotationOverlay: View {
     let store: LiveViewAnnotationStore
     let workspaces: WorkspaceTabController
+    @State private var isExpanded = false
 
     var body: some View {
         let temporary = store.annotations(in: workspaces.activeTabID)
         let saved = savedAnnotations()
         if !temporary.isEmpty || !saved.isEmpty {
+            VStack(alignment: .trailing, spacing: 8) {
+                if isExpanded {
+                    expandedNotes(temporary: temporary, saved: saved)
+                } else {
+                    notesToggle(temporaryCount: temporary.count, savedCount: saved.count)
+                }
+            }
+            .animation(.snappy(duration: 0.18), value: isExpanded)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Explanation notes")
+            .onChange(of: temporary.isEmpty, initial: true) { _, isEmpty in
+                // Open a new live explanation automatically, while keeping saved
+                // notes tucked away until the user asks to see them.
+                isExpanded = !isEmpty
+            }
+            .onChange(of: workspaces.activeTabID) { _, _ in
+                isExpanded = !temporary.isEmpty
+            }
+        }
+    }
+
+    private func notesToggle(temporaryCount: Int, savedCount: Int) -> some View {
+        let count = temporaryCount + savedCount
+        let title = temporaryCount > 0 ? "Explanation notes" : "Saved notes"
+        return Button {
+            isExpanded = true
+        } label: {
+            Label("\(title) · \(count)", systemImage: "text.bubble")
+                .font(.callout)
+        }
+        .buttonStyle(.bordered)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityLabel("Show explanation notes")
+        .accessibilityValue("\(count) notes")
+        .accessibilityIdentifier("liveViewAnnotationToggle")
+    }
+
+    private func expandedNotes(temporary: [LiveViewAnnotation], saved: [LiveViewAnnotation]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Explanation notes")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Button {
+                    isExpanded = false
+                } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .buttonStyle(.borderless)
+                .help("Collapse explanation notes")
+                .accessibilityLabel("Hide explanation notes")
+                .accessibilityIdentifier("liveViewAnnotationToggle")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            Divider()
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     if !temporary.isEmpty {
-                        Text("Explanation notes")
+                        Text("Current explanation")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         ForEach(temporary) { noteCard($0) }
@@ -159,13 +219,11 @@ struct LiveViewAnnotationOverlay: View {
                 }
                 .padding(12)
             }
-            .frame(width: 340)
-            .frame(maxHeight: 260)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .shadow(radius: 6)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Explanation notes")
         }
+        .frame(width: 340)
+        .frame(maxHeight: 260)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .shadow(radius: 6)
     }
 
     private func savedAnnotations() -> [LiveViewAnnotation] {
