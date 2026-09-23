@@ -3,15 +3,132 @@ import Observation
 import SwiftUI
 
 public struct StudioRootView: View {
+    @State private var workspaceTabs: WorkspaceTabController
+
+    public init(session: AppSession, workspaceTabs: WorkspaceTabController? = nil) {
+        _workspaceTabs = State(initialValue: workspaceTabs ?? WorkspaceTabController(initialSession: session))
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            WorkspaceTabBar(controller: workspaceTabs)
+            if let activeTab = workspaceTabs.activeTab {
+                WorkspaceSessionRootView(
+                    session: activeTab.session,
+                    openDocument: { workspaceTabs.presentOpenPanel() }
+                )
+                    .id(activeTab.id)
+            } else {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+}
+
+private struct WorkspaceTabBar: View {
+    @Bindable var controller: WorkspaceTabController
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(controller.tabs) { tab in
+                        HStack(spacing: 0) {
+                            Button {
+                                controller.activate(tab.id)
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: tab.kind.systemImage)
+                                        .font(.caption.weight(.semibold))
+                                    Text(tab.title)
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                        .frame(maxWidth: 190)
+                                }
+                                .foregroundStyle(controller.activeTabID == tab.id ? StudioPalette.primaryText : StudioPalette.secondaryText)
+                                .padding(.leading, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Show \(tab.title) workspace")
+
+                            Button {
+                                Task { await controller.closeAndWait(tab.id) }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(StudioPalette.tertiaryText)
+                                    .frame(width: 28, height: 30)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Close \(tab.title) workspace")
+                            .accessibilityLabel("Close \(tab.title) workspace")
+                        }
+                        .background(
+                            Capsule().fill(controller.activeTabID == tab.id
+                                           ? StudioPalette.chromeFillStrong
+                                           : StudioPalette.headerSurface.opacity(0.72))
+                        )
+                        .overlay {
+                            Capsule().stroke(controller.activeTabID == tab.id
+                                             ? StudioPalette.border
+                                             : StudioPalette.borderSoft, lineWidth: 1)
+                        }
+                    }
+                }
+                .padding(.vertical, 7)
+            }
+            .scrollIndicators(.hidden)
+
+            Button {
+                controller.createTab()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .frame(width: 32, height: 32)
+                    .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("New workspace tab")
+            .accessibilityLabel("New workspace tab")
+
+            Button {
+                controller.presentOpenPanel()
+            } label: {
+                Image(systemName: "folder")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .frame(width: 32, height: 32)
+                    .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Open database or workspace in a new tab")
+            .accessibilityLabel("Open database or workspace")
+        }
+        .padding(.horizontal, 16)
+        .background(StudioPalette.chromeFill.opacity(0.76))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(StudioPalette.borderSoft).frame(height: 1)
+        }
+    }
+}
+
+private struct WorkspaceSessionRootView: View {
     @Bindable private var session: AppSession
+    private let openDocument: () -> Void
     @State private var isMinimapHovered = false
     @State private var skillsToastVisible = false
     @State private var skillsRepeatTask: Task<Void, Never>? = nil
     @State private var skillsToastDismissedForURL: URL? = nil
     @State private var refreshToastTask: Task<Void, Never>? = nil
 
-    public init(session: AppSession) {
+    init(session: AppSession, openDocument: @escaping () -> Void) {
         self.session = session
+        self.openDocument = openDocument
     }
 
     private var schemaIsVisible: Bool {
@@ -23,7 +140,7 @@ public struct StudioRootView: View {
         return session.side(containing: .schema) != nil
     }
 
-    public var body: some View {
+    var body: some View {
         ZStack {
             rootBackground
 
@@ -31,9 +148,9 @@ public struct StudioRootView: View {
                 SchemaReviewWorkspaceView(session: session, review: review)
             } else if session.hasOpenDatabase {
                 WorkspaceLayoutView(session: session)
-                    .padding(session.storyPlaybackOverlay == nil ? 16 : 0)
+                    .padding(16)
             } else {
-                EmptyDatabaseView(session: session)
+                EmptyDatabaseView(session: session, openDocument: openDocument)
                     .padding(24)
             }
 
@@ -41,7 +158,6 @@ public struct StudioRootView: View {
             // Rendered at the root ZStack level so it's never clipped by pane containers
             // and always appears above the dock nav.
             if session.hasOpenDatabase
-                && session.storyPlaybackOverlay == nil
                 && !session.graph.nodes.isEmpty
                 && schemaIsVisible {
                 GeometryReader { geo in
@@ -132,7 +248,7 @@ public struct StudioRootView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .padding(.bottom, session.storyPlaybackOverlay == nil ? 20 : 132)
+            .padding(.bottom, 20)
         }
         .overlay(alignment: .top) {
             if session.isPostgreSQL {
@@ -149,16 +265,6 @@ public struct StudioRootView: View {
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
         .animation(.snappy(duration: 0.3), value: session.refreshToast?.id)
-        .animation(.snappy(duration: 0.32), value: session.storyPlaybackOverlay != nil)
-        .background {
-            StoryPlaybackKeyboardMonitor(
-                isActive: session.storyPlaybackOverlay != nil,
-                sendCommand: { commandKind in
-                    session.storyPlaybackCommand = StoryPlaybackCommand(kind: commandKind)
-                }
-            )
-            .frame(width: 0, height: 0)
-        }
         .onChange(of: session.refreshToast?.id) { _, newID in
             refreshToastTask?.cancel()
             guard newID != nil else { return }
@@ -303,19 +409,11 @@ private struct WorkspaceLayoutView: View {
     @Bindable var session: AppSession
     @State private var databaseNameSide: WorkspacePaneSide = .left
 
-    private var storyPlaybackState: StoryPlaybackOverlayState? {
-        session.storyPlaybackOverlay
-    }
-
-    private var isStoryPlaybackActive: Bool {
-        storyPlaybackState != nil
-    }
-
     private var fullscreenSide: WorkspacePaneSide? {
         if let side = session.maximizedPaneSide {
             return side
         }
-        if isStoryPlaybackActive || session.showAllGraphTableCards {
+        if session.showAllGraphTableCards {
             return session.side(containing: .schema) ?? .left
         }
         return nil
@@ -326,21 +424,7 @@ private struct WorkspaceLayoutView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            splitLayout
-
-            if let storyPlaybackState {
-                StoryPlaybackBottomBar(
-                    state: storyPlaybackState,
-                    displayedText: session.storyPlaybackDisplayedText,
-                    sendCommand: { commandKind in
-                        session.storyPlaybackCommand = StoryPlaybackCommand(kind: commandKind)
-                    }
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.snappy(duration: 0.32), value: isStoryPlaybackActive)
+        splitLayout
         .animation(.snappy(duration: 0.32), value: fullscreenSide)
     }
 
@@ -350,7 +434,6 @@ private struct WorkspaceLayoutView: View {
                 PaneShell(
                     session: session,
                     side: .left,
-                    isCanvasMode: isStoryCanvasMode(for: .left),
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left
                 )
                 .id("workspace-pane-left")
@@ -366,7 +449,6 @@ private struct WorkspaceLayoutView: View {
                 PaneShell(
                     session: session,
                     side: .right,
-                    isCanvasMode: isStoryCanvasMode(for: .right),
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right
                 )
                 .id("workspace-pane-right")
@@ -388,6 +470,7 @@ private struct WorkspaceLayoutView: View {
                 else { return }
                 // Keep the current owner at an even split so the title cannot flicker.
                 databaseNameSide = left > right ? .left : .right
+                session.workspaceSplitFraction = min(max(left / (left + right), 0.25), 0.75)
             }
 
             if !isFullscreen {
@@ -402,11 +485,7 @@ private struct WorkspaceLayoutView: View {
         if let fullscreenSide {
             return .fullscreen(fullscreenSide)
         }
-        return .split(defaultFraction: 0.6)
-    }
-
-    private func isStoryCanvasMode(for side: WorkspacePaneSide) -> Bool {
-        isStoryPlaybackActive && session.paneState(for: side).kind == .schema
+        return .split(defaultFraction: session.workspaceSplitFraction)
     }
 
     private func paneOpacity(for side: WorkspacePaneSide) -> Double {
@@ -601,38 +680,30 @@ private struct PaneShell: View {
     @Bindable var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let side: WorkspacePaneSide
-    let isCanvasMode: Bool
     let showsDatabaseName: Bool
     @State private var isDropTargeted = false
 
     private var paneState: WorkspacePaneState { session.paneState(for: side) }
     private var isMaximized: Bool { session.maximizedPaneSide == side }
-    private var cornerRadius: CGFloat { isCanvasMode ? 0 : 32 }
-    private var headerHeight: CGFloat { isCanvasMode ? 0 : 58 }
 
     var body: some View {
         ZStack(alignment: .top) {
             VStack(spacing: 0) {
-                Spacer().frame(height: headerHeight)
+                Spacer().frame(height: 58)
                 PaneContentView(session: session, kind: paneState.kind, side: side)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(isCanvasMode ? Color.clear : StudioPalette.chromeFill.opacity(0.88)))
+            .background(RoundedRectangle(cornerRadius: 32, style: .continuous)
+                .fill(StudioPalette.chromeFill.opacity(0.88)))
             .overlay {
-                if !isCanvasMode {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
-                }
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
             }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
 
-            if !isCanvasMode {
-                paneHeader
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+            paneHeader
+                .transition(.opacity.combined(with: .move(edge: .top)))
         }
-        .animation(.snappy(duration: 0.28), value: isCanvasMode)
         .dropDestination(for: WorkspaceDockItem.self) { items, _ in
             guard let item = items.first else { return false }
             session.applyDockItem(item, to: side)
@@ -886,621 +957,6 @@ private struct WorkspaceDockPill: View {
     }
 }
 
-private struct StoryPlaybackBottomBar: View {
-    let state: StoryPlaybackOverlayState
-    let displayedText: String
-    let sendCommand: (StoryPlaybackCommand.Kind) -> Void
-
-    private var clusterColor: Color? {
-        state.clusterColorHex.flatMap { Color(studioHex: $0) }
-    }
-
-    private var beatText: String {
-        let text = displayedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? state.displayedText : text
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            storySummary
-                .frame(width: 300, alignment: .leading)
-
-            Divider()
-                .frame(height: 72)
-                .opacity(0.55)
-
-            playbackText
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            controls
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: 104, maxHeight: 118, alignment: .center)
-        .background(StudioPalette.chromeFillStrong)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill((clusterColor ?? StudioPalette.border).opacity(clusterColor == nil ? 0.85 : 0.72))
-                .frame(height: 1)
-        }
-        .shadow(color: StudioPalette.shadow.opacity(0.36), radius: 18, y: -6)
-    }
-
-    private var storySummary: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(clusterColor ?? StudioPalette.accentSoft)
-                    .frame(width: 8, height: 8)
-
-                Text(state.clusterLabel ?? "Story")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .lineLimit(1)
-
-                Text("\(min(state.index + 1, state.playbackCount))/\(state.playbackCount)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(StudioPalette.tertiaryText)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(StudioPalette.headerSurface, in: Capsule())
-
-                if state.isPaused {
-                    Text("Paused")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(StudioPalette.secondaryText)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
-                }
-            }
-
-            Text(state.title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(StudioPalette.primaryText)
-                .lineLimit(1)
-
-            if let userStoryText = state.userStoryText {
-                Text(userStoryText)
-                    .font(.caption)
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var playbackText: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(beatText)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(StudioPalette.primaryText)
-                .lineLimit(3)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(nil, value: displayedText)
-
-            if let acceptanceText = state.acceptanceText {
-                Text(acceptanceText)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(StudioPalette.tertiaryText)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private var controls: some View {
-        HStack(spacing: 7) {
-            if state.isReadAloudEnabled, let readAloudStatus = state.readAloudStatus.displayText {
-                readAloudStatusPill(readAloudStatus)
-            }
-
-            storyControlButton(
-                systemImage: "backward.end.fill",
-                help: "Previous beat",
-                isDisabled: !state.canGoBackward || state.isReadAloudBusy
-            ) {
-                sendCommand(.previous)
-            }
-
-            storyControlButton(
-                systemImage: state.isPaused ? "play.fill" : "pause.fill",
-                help: state.isPaused ? "Resume story" : "Pause story",
-                isDisabled: state.isReadAloudBusy
-            ) {
-                sendCommand(.togglePause)
-            }
-
-            storyControlButton(
-                systemImage: state.isReadAloudEnabled ? "speaker.wave.2.fill" : "speaker.wave.2",
-                help: state.isReadAloudEnabled ? "Disable read aloud" : "Read beats aloud with Kokoro Bella",
-                isActive: state.isReadAloudEnabled
-            ) {
-                sendCommand(.toggleReadAloud)
-            }
-
-            storyControlButton(
-                systemImage: "forward.end.fill",
-                help: "Next beat",
-                isDisabled: !state.canGoForward || state.isReadAloudBusy
-            ) {
-                sendCommand(.next)
-            }
-
-            storyControlButton(systemImage: "xmark", help: "Stop story") {
-                sendCommand(.stop)
-            }
-        }
-    }
-
-    private func readAloudStatusPill(_ text: String) -> some View {
-        Group {
-            if state.readAloudStatus.requiresInstall {
-                Button {
-                    sendCommand(.installReadAloud)
-                } label: {
-                    Label(text, systemImage: "arrow.down.circle.fill")
-                        .font(.caption2.weight(.bold))
-                        .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(StudioPalette.accent, in: Capsule())
-                .help("Install Kokoro for read aloud")
-            } else {
-                HStack(spacing: 5) {
-                    if state.isReadAloudBusy {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.58)
-                            .frame(width: 10, height: 10)
-                    }
-
-                    Text(text)
-                        .font(.caption2.weight(.bold))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(StudioPalette.secondaryText)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
-            }
-        }
-    }
-
-    private func storyControlButton(
-        systemImage: String,
-        help: String,
-        isDisabled: Bool = false,
-        isActive: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(isDisabled ? StudioPalette.tertiaryText : isActive ? Color.white : StudioPalette.secondaryText)
-                .frame(width: 30, height: 30)
-                .background(isActive ? StudioPalette.accent : StudioPalette.headerSurface.opacity(isDisabled ? 0.46 : 0.82), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .help(help)
-    }
-}
-
-private struct StoryPlaybackKeyboardMonitor: NSViewRepresentable {
-    let isActive: Bool
-    let sendCommand: (StoryPlaybackCommand.Kind) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        context.coordinator.update(isActive: isActive, sendCommand: sendCommand)
-        return NSView(frame: .zero)
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.update(isActive: isActive, sendCommand: sendCommand)
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.stopMonitoring()
-    }
-
-    @MainActor
-    final class Coordinator {
-        private var eventMonitor: Any?
-        private var isActive = false
-        private var sendCommand: ((StoryPlaybackCommand.Kind) -> Void)?
-
-        func update(isActive: Bool, sendCommand: @escaping (StoryPlaybackCommand.Kind) -> Void) {
-            self.sendCommand = sendCommand
-            guard self.isActive != isActive else { return }
-            self.isActive = isActive
-            if isActive {
-                startMonitoring()
-            } else {
-                stopMonitoring()
-            }
-        }
-
-        func stopMonitoring() {
-            if let eventMonitor {
-                NSEvent.removeMonitor(eventMonitor)
-                self.eventMonitor = nil
-            }
-        }
-
-        private func startMonitoring() {
-            stopMonitoring()
-            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self, self.isActive else { return event }
-                guard !Self.isTextInputFocused else { return event }
-                let blockedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-                guard event.modifierFlags.intersection(blockedModifiers).isEmpty else { return event }
-                guard let command = Self.command(for: event) else { return event }
-                self.sendCommand?(command)
-                return nil
-            }
-        }
-
-        private static var isTextInputFocused: Bool {
-            NSApp.keyWindow?.firstResponder is NSTextView
-                || NSApp.keyWindow?.firstResponder is NSTextField
-        }
-
-        private static func command(for event: NSEvent) -> StoryPlaybackCommand.Kind? {
-            switch event.keyCode {
-            case 123:
-                return .previous
-            case 124:
-                return .next
-            case 49:
-                return .togglePause
-            default:
-                return nil
-            }
-        }
-    }
-}
-
-/// Affine translation used by story-card drag tests and any AppKit hit-test math.
-enum StoryPlaybackCardDragTransform: Sendable {
-    static func affineTransform(for offset: CGSize) -> CGAffineTransform {
-        CGAffineTransform(translationX: offset.width, y: offset.height)
-    }
-}
-
-/// Bottom-aligned story card with local drag offset so dragging stays 1:1 with the
-/// pointer and does not re-render the whole workspace on every frame.
-private struct StoryPlaybackOverlayHost: View {
-    let state: StoryPlaybackOverlayState
-    let displayedText: String
-    let sendCommand: (StoryPlaybackCommand.Kind) -> Void
-
-    @State private var dragOffset: CGSize = .zero
-
-    var body: some View {
-        StoryPlaybackOverlayCard(
-            state: state,
-            displayedText: displayedText,
-            offset: $dragOffset,
-            sendCommand: sendCommand
-        )
-        .offset(dragOffset)
-        .onChange(of: state.index) { _, _ in
-            dragOffset = .zero
-        }
-        .onChange(of: state.title) { _, _ in
-            dragOffset = .zero
-        }
-    }
-}
-
-private struct StoryPlaybackOverlayCard: View {
-    let state: StoryPlaybackOverlayState
-    let displayedText: String
-    @Binding var offset: CGSize
-    let sendCommand: (StoryPlaybackCommand.Kind) -> Void
-
-    @State private var dragStartOffset: CGSize?
-    @State private var isExpanded = false
-
-    private var clusterColor: Color? {
-        state.clusterColorHex.flatMap { Color(studioHex: $0) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            playbackHeaderRow
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(state.title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .multilineTextAlignment(.leading)
-                    .contentShape(Rectangle())
-                    .gesture(dragGesture)
-
-                if isExpanded {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            StoryUserCardFormatView(
-                                actor: state.actor,
-                                goal: state.goal,
-                                benefit: state.benefit,
-                                fallbackText: state.userStoryText,
-                                conversation: state.conversation,
-                                acceptanceCriteria: state.acceptanceCriteria
-                            )
-
-                            Divider().opacity(0.55)
-
-                            Text(displayedText)
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(StudioPalette.primaryText)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .multilineTextAlignment(.leading)
-                                .animation(nil, value: displayedText)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, 6)
-                    }
-                    .frame(height: 280, alignment: .top)
-                } else {
-                    compactStoryBody
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 13)
-            .overlay(alignment: .leading) {
-                Capsule()
-                    .fill(clusterColor ?? StudioPalette.accentSoft)
-                    .frame(width: 3)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(StudioPalette.chromeFillStrong)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(borderColor, lineWidth: 1.35)
-        }
-        .shadow(color: StudioPalette.shadow.opacity(0.85), radius: 22, y: 12)
-        .frame(width: isExpanded ? 640 : 580, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .transaction { transaction in
-            if dragStartOffset != nil {
-                transaction.animation = nil
-            }
-        }
-        .animation(nil, value: displayedText)
-        .animation(.snappy(duration: 0.18), value: isExpanded)
-    }
-
-    private var borderColor: Color {
-        if let clusterColor {
-            return clusterColor.opacity(0.72)
-        }
-        return StudioPalette.border
-    }
-
-    private var playbackHeaderRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(StudioPalette.tertiaryText)
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
-                .gesture(dragGesture)
-                .help("Drag story card")
-
-            Image(systemName: "book.pages")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(StudioPalette.secondaryText)
-
-            Text(state.clusterLabel ?? "Story")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(StudioPalette.secondaryText)
-                .lineLimit(1)
-
-            Text("\(min(state.index + 1, state.playbackCount))/\(state.playbackCount)")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(StudioPalette.tertiaryText)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(StudioPalette.headerSurface, in: Capsule())
-
-            if state.isPaused {
-                Text("Paused")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
-            }
-
-            if state.isReadAloudEnabled, let readAloudStatus = state.readAloudStatus.displayText {
-                readAloudStatusPill(readAloudStatus)
-            }
-
-            Spacer(minLength: 8)
-
-            controls
-
-            Button {
-                isExpanded.toggle()
-            } label: {
-                Image(systemName: isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .frame(width: 24, height: 24)
-                    .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .help(isExpanded ? "Minimize story card" : "Expand story card")
-        }
-    }
-
-    private func readAloudStatusPill(_ text: String) -> some View {
-        Group {
-            if state.readAloudStatus.requiresInstall {
-                Button {
-                    sendCommand(.installReadAloud)
-                } label: {
-                    Label(text, systemImage: "arrow.down.circle.fill")
-                        .font(.caption2.weight(.bold))
-                        .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(StudioPalette.accent, in: Capsule())
-                .help("Install Kokoro for read aloud")
-            } else {
-                HStack(spacing: 5) {
-                    if state.isReadAloudBusy {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.58)
-                            .frame(width: 10, height: 10)
-                    }
-
-                    Text(text)
-                        .font(.caption2.weight(.bold))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(StudioPalette.secondaryText)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(StudioPalette.headerSurface.opacity(0.8), in: Capsule())
-            }
-        }
-    }
-
-    private var compactStoryBody: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let userStoryText = state.userStoryText {
-                Text(userStoryText)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-            }
-
-            Text(displayedText)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(StudioPalette.primaryText)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .multilineTextAlignment(.leading)
-                .lineLimit(4)
-                .animation(nil, value: displayedText)
-
-            if let acceptanceText = state.acceptanceText {
-                Text(acceptanceText)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(StudioPalette.tertiaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var controls: some View {
-        HStack(spacing: 6) {
-            storyControlButton(
-                systemImage: "backward.end.fill",
-                help: "Previous beat",
-                isDisabled: !state.canGoBackward || state.isReadAloudBusy
-            ) {
-                sendCommand(.previous)
-            }
-
-            storyControlButton(
-                systemImage: state.isPaused ? "play.fill" : "pause.fill",
-                help: state.isPaused ? "Resume story" : "Pause story",
-                isDisabled: state.isReadAloudBusy
-            ) {
-                sendCommand(.togglePause)
-            }
-
-            storyControlButton(
-                systemImage: state.isReadAloudEnabled ? "speaker.wave.2.fill" : "speaker.wave.2",
-                help: state.isReadAloudEnabled ? "Disable read aloud" : "Read beats aloud with Kokoro Bella",
-                isActive: state.isReadAloudEnabled
-            ) {
-                sendCommand(.toggleReadAloud)
-            }
-
-            storyControlButton(
-                systemImage: "forward.end.fill",
-                help: "Next beat",
-                isDisabled: !state.canGoForward || state.isReadAloudBusy
-            ) {
-                sendCommand(.next)
-            }
-
-            storyControlButton(systemImage: "xmark", help: "Stop story") {
-                sendCommand(.stop)
-            }
-        }
-    }
-
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                if dragStartOffset == nil {
-                    dragStartOffset = offset
-                }
-                let start = dragStartOffset ?? .zero
-                var transaction = Transaction()
-                transaction.animation = nil
-                withTransaction(transaction) {
-                    offset = CGSize(
-                        width: start.width + value.translation.width,
-                        height: start.height + value.translation.height
-                    )
-                }
-            }
-            .onEnded { _ in
-                dragStartOffset = nil
-            }
-    }
-
-    private func storyControlButton(
-        systemImage: String,
-        help: String,
-        isDisabled: Bool = false,
-        isActive: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(isDisabled ? StudioPalette.tertiaryText : isActive ? Color.white : StudioPalette.secondaryText)
-                .frame(width: 28, height: 28)
-                .background(isActive ? StudioPalette.accent : StudioPalette.headerSurface.opacity(isDisabled ? 0.46 : 0.82), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .help(help)
-    }
-}
-
 private struct OpenTablePickerView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var session: AppSession
@@ -1731,6 +1187,7 @@ private struct OpenTablePickerView: View {
 
 private struct EmptyDatabaseView: View {
     @Bindable var session: AppSession
+    let openDocument: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -1749,7 +1206,7 @@ private struct EmptyDatabaseView: View {
 
                 VStack(spacing: 10) {
                     Button {
-                        session.presentOpenDatabasePanel()
+                        openDocument()
                     } label: {
                         Label("Choose Database File", systemImage: "folder")
                     }

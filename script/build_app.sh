@@ -22,18 +22,34 @@ ICNS_PATH="$SCRIPT_DIR/AppIcon.icns"
 MIN_MACOS_VERSION="$(sgs_metadata LSMinimumSystemVersion)"
 ARCHS=("arm64" "x86_64")
 UNIVERSAL_BINARY="$DIST_DIR/$APP_NAME.universal"
+UNIVERSAL_MCP_BINARY="$DIST_DIR/StudioMCP.universal"
+POCKET_TTS_REQUIRED="${SGS_POCKET_TTS_RUNTIME_REQUIRED:-0}"
+if [[ "$POCKET_TTS_REQUIRED" != "0" && "$POCKET_TTS_REQUIRED" != "1" ]]; then
+    echo "SGS_POCKET_TTS_RUNTIME_REQUIRED must be 0 or 1." >&2
+    exit 2
+fi
+if [[ "$POCKET_TTS_REQUIRED" == "1" && -z "${SGS_POCKET_TTS_RUNTIME:-}" ]]; then
+    echo "Pocket TTS was required for this release, but SGS_POCKET_TTS_RUNTIME is unset." >&2
+    exit 2
+fi
 
 if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
     SGS_POSTGRES_RUNTIME="$(python3 "$SCRIPT_DIR/package_postgres_runtime.py" check-source "$SGS_POSTGRES_RUNTIME" "$APP_BUNDLE")"
+fi
+if [[ -n "${SGS_POCKET_TTS_RUNTIME:-}" ]]; then
+    SGS_POCKET_TTS_RUNTIME="$(python3 "$SCRIPT_DIR/package_pocket_tts_runtime.py" check-source \
+        "$SGS_POCKET_TTS_RUNTIME" "$APP_BUNDLE" "${ARCHS[@]}")"
 fi
 
 echo "==> Building universal release binary (${ARCHS[*]})..."
 cd "$PROJECT_DIR"
 
 rm -f "$UNIVERSAL_BINARY"
+rm -f "$UNIVERSAL_MCP_BINARY"
 mkdir -p "$DIST_DIR"
 
 BINARY_PATHS=()
+MCP_BINARY_PATHS=()
 RESOURCE_BUILD_DIR=""
 
 for arch in "${ARCHS[@]}"; do
@@ -41,21 +57,24 @@ for arch in "${ARCHS[@]}"; do
 
     echo "    Building $arch ($triple)..."
     swift build -c release --product "$APP_NAME" --triple "$triple"
+    swift build -c release --product StudioMCP --triple "$triple"
 
     build_dir="$(swift build -c release --triple "$triple" --show-bin-path)"
     binary_path="$build_dir/$APP_NAME"
+    mcp_binary_path="$build_dir/StudioMCP"
 
-    if [ ! -f "$binary_path" ]; then
-        echo "Error: Expected binary not found at $binary_path"
+    if [ ! -f "$binary_path" ] || [ ! -f "$mcp_binary_path" ]; then
+        echo "Error: Expected app or MCP helper binary not found in $build_dir"
         exit 1
     fi
 
-    if ! lipo -archs "$binary_path" | grep -qw "$arch"; then
-        echo "Error: $binary_path does not contain expected architecture $arch"
+    if ! lipo -archs "$binary_path" | grep -qw "$arch" || ! lipo -archs "$mcp_binary_path" | grep -qw "$arch"; then
+        echo "Error: App or MCP helper does not contain expected architecture $arch"
         exit 1
     fi
 
     BINARY_PATHS+=("$binary_path")
+    MCP_BINARY_PATHS+=("$mcp_binary_path")
 
     if [ "$arch" = "arm64" ]; then
         RESOURCE_BUILD_DIR="$build_dir"
@@ -63,9 +82,11 @@ for arch in "${ARCHS[@]}"; do
 done
 
 lipo -create "${BINARY_PATHS[@]}" -output "$UNIVERSAL_BINARY"
+lipo -create "${MCP_BINARY_PATHS[@]}" -output "$UNIVERSAL_MCP_BINARY"
 
-if ! lipo -archs "$UNIVERSAL_BINARY" | grep -qw "arm64" || ! lipo -archs "$UNIVERSAL_BINARY" | grep -qw "x86_64"; then
-    echo "Error: Universal binary is missing arm64 or x86_64"
+if ! lipo -archs "$UNIVERSAL_BINARY" | grep -qw "arm64" || ! lipo -archs "$UNIVERSAL_BINARY" | grep -qw "x86_64" \
+   || ! lipo -archs "$UNIVERSAL_MCP_BINARY" | grep -qw "arm64" || ! lipo -archs "$UNIVERSAL_MCP_BINARY" | grep -qw "x86_64"; then
+    echo "Error: Universal app or MCP helper is missing arm64 or x86_64"
     exit 1
 fi
 
@@ -78,6 +99,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 # Copy binary
 cp "$UNIVERSAL_BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$UNIVERSAL_MCP_BINARY" "$APP_BUNDLE/Contents/MacOS/StudioMCP"
 
 # Copy icon
 if [ -f "$ICNS_PATH" ]; then
@@ -100,6 +122,10 @@ if [[ -n "${SGS_POSTGRES_RUNTIME:-}" ]]; then
     python3 "$SCRIPT_DIR/package_postgres_runtime.py" package "$SGS_POSTGRES_RUNTIME" \
         "$APP_BUNDLE/Contents/Resources/PostgreSQL" "${ARCHS[@]}"
 fi
+if [[ -n "${SGS_POCKET_TTS_RUNTIME:-}" ]]; then
+    python3 "$SCRIPT_DIR/package_pocket_tts_runtime.py" package "$SGS_POCKET_TTS_RUNTIME" \
+        "$APP_BUNDLE/Contents/Resources/PocketTTSRuntime" "${ARCHS[@]}"
+fi
 
 # Strip macOS metadata that breaks codesigning (ignore permission errors from iCloud)
 chmod -R u+rw "$APP_BUNDLE" 2>/dev/null || true
@@ -113,6 +139,11 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
         python3 "$SCRIPT_DIR/package_postgres_runtime.py" sign \
             "$APP_BUNDLE/Contents/Resources/PostgreSQL" "$SIGNING_IDENTITY"
     fi
+    if [[ -n "${SGS_POCKET_TTS_RUNTIME:-}" ]]; then
+        python3 "$SCRIPT_DIR/package_pocket_tts_runtime.py" sign \
+            "$APP_BUNDLE/Contents/Resources/PocketTTSRuntime" "$SIGNING_IDENTITY"
+    fi
+    codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/MacOS/StudioMCP"
     codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
     codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 else

@@ -1,31 +1,35 @@
 import Foundation
+import CryptoKit
+import Darwin
 
 /// AI-authored metadata that lives next to a `.sqlite` file as `<name>.sqlite.studio.json`.
 ///
 /// The `graph-clusters` skill populates `clusters` so the physics engine groups related tables
 /// together by the user's chosen lens. The `schema-descriptions` skill populates `tables`
-/// so table and column descriptions stay easy to edit without rewriting SQLite DDL. The
-/// `story-flows` skill populates `stories` so authored application flows can play back on
-/// the schema graph.
+/// so table and column descriptions stay easy to edit without rewriting SQLite DDL.
+/// Older sidecars may contain `stories`. The store backs those entries up and removes
+/// them when it next loads the sidecar; they are not part of the current model.
 public struct SchemaSidecar: Codable, Sendable, Hashable {
     public var version: Int
     public var clusters: [ClusterHint]
     public var tables: [String: TableDescription]
-    public var stories: [Story]
     public var recordGraphMappings: [RecordGraphMapping]
+    /// Explicitly saved, human-readable notes. Temporary view annotations are
+    /// kept in the workspace instead and never enter this sidecar.
+    public var notes: [Note]
 
     public init(
         version: Int = 1,
         clusters: [ClusterHint] = [],
         tables: [String: TableDescription] = [:],
-        stories: [Story] = [],
-        recordGraphMappings: [RecordGraphMapping] = []
+        recordGraphMappings: [RecordGraphMapping] = [],
+        notes: [Note] = []
     ) {
         self.version = version
         self.clusters = clusters
         self.tables = tables
-        self.stories = stories
         self.recordGraphMappings = recordGraphMappings
+        self.notes = notes
     }
 
     public static let empty = SchemaSidecar()
@@ -34,8 +38,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         case version
         case clusters
         case tables
-        case stories
         case recordGraphMappings
+        case notes
     }
 
     public init(from decoder: Decoder) throws {
@@ -43,8 +47,8 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         clusters = try container.decodeIfPresent([ClusterHint].self, forKey: .clusters) ?? []
         tables = try container.decodeIfPresent([String: TableDescription].self, forKey: .tables) ?? [:]
-        stories = try container.decodeIfPresent([Story].self, forKey: .stories) ?? []
         recordGraphMappings = try container.decodeIfPresent([RecordGraphMapping].self, forKey: .recordGraphMappings) ?? []
+        notes = try container.decodeIfPresent([Note].self, forKey: .notes) ?? []
     }
 
     public struct ClusterHint: Codable, Sendable, Hashable, Identifiable {
@@ -82,407 +86,32 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         }
     }
 
-    public struct Story: Codable, Sendable, Hashable, Identifiable {
+    public struct Note: Codable, Sendable, Hashable, Identifiable {
         public var id: String
-        public var title: String
-        public var createdAt: String
-        public var prompt: String?
-        public var actor: String?
-        public var goal: String?
-        public var benefit: String?
-        public var clusters: [String]
-        public var relatedStories: [StoryRelation]
-        public var conversation: [String]
-        public var acceptanceCriteria: [AcceptanceCriterion]
-        public var playback: [StoryPlaybackStep]
-
-        public init(
-            id: String,
-            title: String,
-            createdAt: String,
-            prompt: String? = nil,
-            actor: String? = nil,
-            goal: String? = nil,
-            benefit: String? = nil,
-            clusters: [String] = [],
-            relatedStories: [StoryRelation] = [],
-            conversation: [String] = [],
-            acceptanceCriteria: [AcceptanceCriterion] = [],
-            playback: [StoryPlaybackStep]
-        ) {
-            self.id = id
-            self.title = title
-            self.createdAt = createdAt
-            self.prompt = prompt
-            self.actor = actor
-            self.goal = goal
-            self.benefit = benefit
-            self.clusters = clusters
-            self.relatedStories = relatedStories
-            self.conversation = conversation
-            self.acceptanceCriteria = acceptanceCriteria
-            self.playback = playback
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case id
-            case title
-            case createdAt = "created_at"
-            case prompt
-            case actor
-            case goal
-            case benefit
-            case clusters
-            case relatedStories = "related_stories"
-            case conversation
-            case acceptanceCriteria = "acceptance_criteria"
-            case playback
-        }
-
-        public init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
-            title = try container.decodeIfPresent(String.self, forKey: .title) ?? "Untitled Story"
-            createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
-            prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
-            actor = try container.decodeIfPresent(String.self, forKey: .actor)
-            goal = try container.decodeIfPresent(String.self, forKey: .goal)
-            benefit = try container.decodeIfPresent(String.self, forKey: .benefit)
-            clusters = try container.decodeIfPresent([String].self, forKey: .clusters) ?? []
-            relatedStories = try container.decodeIfPresent([StoryRelation].self, forKey: .relatedStories) ?? []
-            conversation = try container.decodeIfPresent([String].self, forKey: .conversation) ?? []
-            acceptanceCriteria = try container.decodeIfPresent([AcceptanceCriterion].self, forKey: .acceptanceCriteria) ?? []
-            playback = try container.decodeIfPresent([StoryPlaybackStep].self, forKey: .playback) ?? []
-        }
-
-        public var userStoryText: String? {
-            guard let actor = actor?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let goal = goal?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let benefit = benefit?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !actor.isEmpty,
-                  !goal.isEmpty,
-                  !benefit.isEmpty
-            else {
-                return nil
-            }
-            return "As \(actor), I want \(goal), so that \(benefit)."
-        }
-
-        public var coveredTableIDs: [String] {
-            var ordered: [String] = []
-            var seen: Set<String> = []
-
-            func append(_ tableID: String?) {
-                guard let tableID = tableID?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !tableID.isEmpty,
-                      !seen.contains(tableID)
-                else {
-                    return
-                }
-                seen.insert(tableID)
-                ordered.append(tableID)
-            }
-
-            for beat in playback {
-                append(beat.focus)
-                append(beat.expand)
-                append(beat.relation?.table)
-                for table in beat.tables {
-                    append(table)
-                }
-            }
-
-            return ordered
-        }
-
-        public var primaryTableIDs: [String] {
-            var ordered: [String] = []
-            var seen: Set<String> = []
-
-            func append(_ tableID: String?) {
-                guard let tableID = tableID?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !tableID.isEmpty,
-                      !seen.contains(tableID)
-                else {
-                    return
-                }
-                seen.insert(tableID)
-                ordered.append(tableID)
-            }
-
-            for beat in playback {
-                append(beat.focus)
-                append(beat.expand)
-                append(beat.relation?.table)
-            }
-
-            if ordered.isEmpty {
-                return Array(coveredTableIDs.prefix(3))
-            }
-
-            return ordered
-        }
-    }
-
-    public struct StoryRelation: Codable, Sendable, Hashable, Identifiable {
-        public var storyID: String
-        public var kind: String
-        public var note: String?
-
-        public var id: String {
-            "\(storyID)|\(kind)|\(note ?? "")"
-        }
-
-        public init(storyID: String, kind: String = "related", note: String? = nil) {
-            self.storyID = storyID
-            self.kind = kind
-            self.note = note
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case storyID = "story_id"
-            case kind
-            case note
-        }
-
-        public init(from decoder: Decoder) throws {
-            let singleValueContainer = try decoder.singleValueContainer()
-            if let storyID = try? singleValueContainer.decode(String.self) {
-                self.storyID = storyID
-                kind = "related"
-                note = nil
-                return
-            }
-
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            storyID = try container.decodeIfPresent(String.self, forKey: .storyID) ?? ""
-            kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "related"
-            note = try container.decodeIfPresent(String.self, forKey: .note)
-        }
-
-        public func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(storyID, forKey: .storyID)
-            try container.encode(kind, forKey: .kind)
-            try container.encodeIfPresent(note, forKey: .note)
-        }
-    }
-
-    public struct AcceptanceCriterion: Codable, Sendable, Hashable, Identifiable {
-        public var id: String
-        public var text: String?
-        public var given: String?
-        public var when: String?
-        public var then: String?
-
-        public init(
-            id: String,
-            text: String? = nil,
-            given: String? = nil,
-            when: String? = nil,
-            then: String? = nil
-        ) {
-            self.id = id
-            self.text = text
-            self.given = given
-            self.when = when
-            self.then = then
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case id
-            case text
-            case given
-            case when
-            case then
-        }
-
-        public init(from decoder: Decoder) throws {
-            let singleValueContainer = try decoder.singleValueContainer()
-            if let text = try? singleValueContainer.decode(String.self) {
-                id = UUID().uuidString
-                self.text = text
-                given = nil
-                when = nil
-                then = nil
-                return
-            }
-
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
-            text = try container.decodeIfPresent(String.self, forKey: .text)
-            given = try container.decodeIfPresent(String.self, forKey: .given)
-            when = try container.decodeIfPresent(String.self, forKey: .when)
-            then = try container.decodeIfPresent(String.self, forKey: .then)
-        }
-
-        public var displayText: String {
-            if let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-                return text
-            }
-
-            let parts = [
-                given.map { "Given \($0)" },
-                when.map { "when \($0)" },
-                then.map { "then \($0)" },
-            ].compactMap { part -> String? in
-                guard let part = part?.trimmingCharacters(in: .whitespacesAndNewlines), !part.isEmpty else { return nil }
-                return part
-            }
-
-            return parts.joined(separator: ", ")
-        }
-    }
-
-    public struct StoryPlaybackStep: Codable, Sendable, Hashable {
         public var text: String
-        public var spokenText: String?
-        public var tables: [String]
-        public var focus: String?
-        public var expand: String?
-        public var relation: StoryColumnReference?
-        public var durationMilliseconds: Int?
+        public var tableID: String?
+        public var columnName: String?
+        public var relationID: String?
 
-        public init(
-            text: String,
-            spokenText: String? = nil,
-            tables: [String],
-            focus: String? = nil,
-            expand: String? = nil,
-            relation: StoryColumnReference? = nil,
-            durationMilliseconds: Int? = nil
-        ) {
+        public init(id: String, text: String, tableID: String? = nil,
+                    columnName: String? = nil, relationID: String? = nil) {
+            self.id = id
             self.text = text
-            self.spokenText = spokenText
-            self.tables = tables
-            self.focus = focus
-            self.expand = expand
-            self.relation = relation
-            self.durationMilliseconds = durationMilliseconds
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case text
-            case spokenText = "spoken_text"
-            case humanText = "human_text"
-            case tables
-            case focus
-            case expand
-            case relation
-            case durationMilliseconds = "duration_ms"
-        }
-
-        public init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
-            spokenText = try container.decodeIfPresent(String.self, forKey: .spokenText)
-                ?? container.decodeIfPresent(String.self, forKey: .humanText)
-            tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []
-            focus = try container.decodeIfPresent(String.self, forKey: .focus)
-            expand = try container.decodeIfPresent(String.self, forKey: .expand)
-            relation = try container.decodeIfPresent(StoryColumnReference.self, forKey: .relation)
-            durationMilliseconds = try container.decodeIfPresent(Int.self, forKey: .durationMilliseconds)
-        }
-
-        public func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(text, forKey: .text)
-            try container.encodeIfPresent(spokenText, forKey: .spokenText)
-            try container.encode(tables, forKey: .tables)
-            try container.encodeIfPresent(focus, forKey: .focus)
-            try container.encodeIfPresent(expand, forKey: .expand)
-            try container.encodeIfPresent(relation, forKey: .relation)
-            try container.encodeIfPresent(durationMilliseconds, forKey: .durationMilliseconds)
+            self.tableID = tableID
+            self.columnName = columnName
+            self.relationID = relationID
         }
     }
 
-    public struct StoryColumnReference: Codable, Sendable, Hashable {
-        public var table: String
-        public var column: String
 
-        public init(table: String, column: String) {
-            self.table = table
-            self.column = column
-        }
-    }
-
-    /// Returns `nodeID -> clusterGroupID` for every table named in a cluster hint.
-    public var nodeToClusterGroup: [String: String] {
-        var map: [String: String] = [:]
-        for cluster in clusters {
-            for table in cluster.tables where map[table] == nil {
-                map[table] = cluster.id
-            }
-        }
-        return map
-    }
-
-    public func clusterCoverage(for story: Story) -> [StoryClusterCoverage] {
-        let clusterGroupByNode = nodeToClusterGroup
-        let coveredTables = Set(story.coveredTableIDs)
-        var tableIDsByCluster: [String: [String]] = [:]
-
-        for tableID in story.coveredTableIDs {
-            guard let clusterID = clusterGroupByNode[tableID] else { continue }
-            tableIDsByCluster[clusterID, default: []].append(tableID)
-        }
-
-        for clusterID in story.clusters where tableIDsByCluster[clusterID] == nil {
-            tableIDsByCluster[clusterID] = clusters
-                .first { $0.id == clusterID }?
-                .tables
-                .filter { coveredTables.contains($0) } ?? []
-        }
-
-        return tableIDsByCluster.map { clusterID, tableIDs in
-            let cluster = clusters.first { $0.id == clusterID }
-            return StoryClusterCoverage(
-                clusterID: clusterID,
-                label: cluster?.label,
-                color: cluster?.color,
-                tableIDs: tableIDs
-            )
-        }
-        .sorted { lhs, rhs in
-            if lhs.tableIDs.count == rhs.tableIDs.count {
-                return lhs.clusterID.localizedStandardCompare(rhs.clusterID) == .orderedAscending
-            }
-            return lhs.tableIDs.count > rhs.tableIDs.count
-        }
-    }
-
-    public func primaryClusterCoverage(for story: Story) -> StoryClusterCoverage? {
-        let coverage = clusterCoverage(for: story)
-        if let explicitClusterID = story.clusters.first,
-           let explicit = coverage.first(where: { $0.clusterID == explicitClusterID }) {
-            return explicit
-        }
-        return coverage.first
-    }
-
-    public struct StoryClusterCoverage: Sendable, Hashable, Identifiable {
-        public var clusterID: String
-        public var label: String?
-        public var color: String?
-        public var tableIDs: [String]
-
-        public var id: String { clusterID }
-
-        public init(clusterID: String, label: String?, color: String?, tableIDs: [String]) {
-            self.clusterID = clusterID
-            self.label = label
-            self.color = color
-            self.tableIDs = tableIDs
-        }
-
-        public var displayLabel: String {
-            let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (trimmed?.isEmpty == false) ? trimmed! : clusterID
-        }
-    }
 }
 
 public enum SchemaSidecarStore {
+    public struct Snapshot: Sendable {
+        public var sidecar: SchemaSidecar
+        public var revision: String
+    }
+
     /// `mydb.sqlite` -> `mydb.sqlite.studio.json` (sibling file, easy for AI to read/write).
     public static func sidecarURL(for databaseURL: URL) -> URL {
         let name = databaseURL.lastPathComponent + ".studio.json"
@@ -490,15 +119,48 @@ public enum SchemaSidecarStore {
     }
 
     public static func load(for databaseURL: URL) throws -> SchemaSidecar {
+        try loadSnapshot(for: databaseURL).sidecar
+    }
+
+    /// Reads the sidecar and its content revision from the same bytes. An
+    /// absent file has a distinct revision so a later creation is a conflict.
+    public static func loadSnapshot(for databaseURL: URL) throws -> Snapshot {
         let url = sidecarURL(for: databaseURL)
-        let data: Data
+        guard let data = try readIfPresent(at: url) else {
+            return Snapshot(sidecar: .empty, revision: revision(of: nil))
+        }
+        let sidecar = try decodeAndValidate(data)
+        guard try containsLegacyStories(in: data) else {
+            return Snapshot(sidecar: sidecar, revision: revision(of: data))
+        }
+
+        // Loading an absent sidecar remains read-only. For an existing legacy
+        // sidecar, serialize migration with writers and re-read after taking
+        // the lock so a save that won the race is never replaced by stale bytes.
+        return try withExclusiveWriteLock(for: databaseURL) {
+            guard let currentData = try readIfPresent(at: url) else {
+                return Snapshot(sidecar: .empty, revision: revision(of: nil))
+            }
+            let currentSidecar = try decodeAndValidate(currentData)
+            guard try containsLegacyStories(in: currentData) else {
+                return Snapshot(sidecar: currentSidecar, revision: revision(of: currentData))
+            }
+            let migrated = try migrateLegacyStories(currentData, at: url)
+            return Snapshot(sidecar: try decodeAndValidate(migrated), revision: revision(of: migrated))
+        }
+    }
+
+    private static func readIfPresent(at url: URL) throws -> Data? {
         do {
-            data = try Data(contentsOf: url)
+            return try Data(contentsOf: url)
         } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
-            return .empty
+            return nil
         } catch {
             throw SchemaMetadataError.unreadable(error.localizedDescription)
         }
+    }
+
+    private static func decodeAndValidate(_ data: Data) throws -> SchemaSidecar {
         struct VersionEnvelope: Decodable { var version: Int? }
         let version: Int
         do { version = try JSONDecoder().decode(VersionEnvelope.self, from: data).version ?? 1 }
@@ -510,18 +172,213 @@ public enum SchemaSidecarStore {
         } catch {
             throw SchemaMetadataError.malformed(error.localizedDescription)
         }
-        guard Set(sidecar.stories.map(\.id)).count == sidecar.stories.count,
-              Set(sidecar.clusters.map(\.id)).count == sidecar.clusters.count else {
-            throw SchemaMetadataError.malformed("Story and cluster identifiers must be unique.")
+        guard Set(sidecar.clusters.map(\.id)).count == sidecar.clusters.count else {
+            throw SchemaMetadataError.malformed("Cluster identifiers must be unique.")
+        }
+        guard Set(sidecar.notes.map(\.id)).count == sidecar.notes.count,
+              sidecar.notes.count <= 500,
+              sidecar.notes.allSatisfy({ validNote($0) }) else {
+            throw SchemaMetadataError.malformed("Saved note identifiers must be unique and notes must stay within their field limits.")
         }
         return sidecar
     }
 
+    private static func containsLegacyStories(in data: Data) throws -> Bool {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SchemaMetadataError.malformed("The metadata document must be a JSON object.")
+        }
+        return root["stories"] != nil
+    }
+
+    public static func revision(for databaseURL: URL) throws -> String {
+        let url = sidecarURL(for: databaseURL)
+        guard FileManager.default.fileExists(atPath: url.path) else { return revision(of: nil) }
+        return revision(of: try Data(contentsOf: url))
+    }
+
+    private static func revision(of data: Data?) -> String {
+        let tagged = Data([data == nil ? 0 : 1]) + (data ?? Data())
+        return SHA256.hash(data: tagged).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func validNote(_ note: SchemaSidecar.Note) -> Bool {
+        !note.id.isEmpty && note.id.count <= 200
+            && !note.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && note.text.count <= 4_000
+            && (note.tableID?.count ?? 0) <= 500
+            && (note.columnName?.count ?? 0) <= 500
+            && (note.relationID?.count ?? 0) <= 500
+            && (note.columnName == nil || note.tableID != nil)
+    }
+
     public static func save(_ sidecar: SchemaSidecar, for databaseURL: URL) throws {
+        _ = try withExclusiveWriteLock(for: databaseURL) {
+            try write(sidecar, for: databaseURL, expectedRevision: nil)
+        }
+    }
+
+    /// An optimistic write for coding-agent requests. A client must first read
+    /// the current revision, and a stale request cannot replace another edit.
+    @discardableResult
+    public static func save(_ sidecar: SchemaSidecar, for databaseURL: URL,
+                            expectedRevision: String) throws -> String {
+        try withExclusiveWriteLock(for: databaseURL) {
+            try write(sidecar, for: databaseURL, expectedRevision: expectedRevision)
+        }
+    }
+
+    private static func withExclusiveWriteLock<T>(for databaseURL: URL, _ operation: () throws -> T) throws -> T {
+        let lockURL = sidecarURL(for: databaseURL).appendingPathExtension("lock")
+        let normalizedLockURL = lockURL.deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .appendingPathComponent(lockURL.lastPathComponent)
+            .standardizedFileURL
+        let processLock = SchemaSidecarProcessLockRegistry.shared.lock(for: normalizedLockURL.path)
+        processLock.lock()
+        defer { processLock.unlock() }
+
+        let fd = lockURL.path.withCString { Darwin.open($0, O_CREAT | O_RDWR | O_NOFOLLOW, mode_t(0o600)) }
+        guard fd >= 0 else {
+            throw SchemaMetadataError.unreadable("Could not lock metadata for an atomic update.")
+        }
+        defer { _ = Darwin.close(fd) }
+        guard Darwin.lockf(fd, F_LOCK, 0) == 0 else {
+            throw SchemaMetadataError.unreadable("Could not acquire the metadata write lock.")
+        }
+        defer { _ = Darwin.lockf(fd, F_ULOCK, 0) }
+        return try operation()
+    }
+
+    private static func write(_ sidecar: SchemaSidecar, for databaseURL: URL,
+                              expectedRevision: String?) throws -> String {
+        guard Set(sidecar.notes.map(\.id)).count == sidecar.notes.count,
+              sidecar.notes.count <= 500,
+              sidecar.notes.allSatisfy({ validNote($0) }) else {
+            throw SchemaMetadataError.malformed("Saved note identifiers must be unique and notes must stay within their field limits.")
+        }
         let url = sidecarURL(for: databaseURL)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(sidecar)
+        let encoded = try encoder.encode(sidecar)
+        guard var replacement = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            throw SchemaMetadataError.malformed("The metadata document must be a JSON object.")
+        }
+        replacement.removeValue(forKey: "stories")
+
+        var root = [String: Any]()
+        let existing = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        if let expectedRevision, expectedRevision != revision(of: existing) {
+            throw SchemaMetadataError.conflict(revision(of: existing))
+        }
+        if let existing {
+            guard let existingRoot = try JSONSerialization.jsonObject(with: existing) as? [String: Any] else {
+                throw SchemaMetadataError.malformed("The existing metadata document must be a JSON object.")
+            }
+            let version = existingRoot["version"] as? Int ?? 1
+            guard version == 1 else { throw SchemaMetadataError.unsupportedVersion(version) }
+            root = existingRoot
+            if root["stories"] != nil {
+                try backupOriginal(existing, at: url)
+            }
+        }
+
+        let oldTables = root["tables"] as? [String: [String: Any]] ?? [:]
+        let newTables = replacement["tables"] as? [String: [String: Any]] ?? [:]
+        var preservedTables = [String: [String: Any]]()
+        for id in Set(oldTables.keys).union(newTables.keys) {
+            let merged = mergeKnownFields(
+                oldTables[id] ?? [:], newTables[id] ?? [:],
+                names: ["description", "columns"]
+            )
+            if !merged.isEmpty { preservedTables[id] = merged }
+        }
+        root["tables"] = preservedTables
+        root["clusters"] = mergeIdentifiedEntries(
+            existing: root["clusters"], replacement: replacement["clusters"],
+            knownFields: ["id", "label", "tables", "color"]
+        )
+        root["recordGraphMappings"] = mergeIdentifiedEntries(
+            existing: root["recordGraphMappings"], replacement: replacement["recordGraphMappings"],
+            knownFields: ["id", "name", "nodeTable", "nodeIDColumns", "labelColumn", "edgeTable", "sourceColumns", "targetColumns", "typeColumn", "isDirected", "nodeScope", "edgeScope"]
+        )
+        root["notes"] = mergeIdentifiedEntries(
+            existing: root["notes"], replacement: replacement["notes"],
+            knownFields: ["id", "text", "tableID", "columnName", "relationID"]
+        )
+        root["version"] = replacement["version"]
+        root.removeValue(forKey: "stories")
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try data.write(to: url, options: .atomic)
+        return revision(of: data)
+    }
+
+    /// The caller holds the same write lock used by save. Migration changes the
+    /// original only after a byte-for-byte backup is verified.
+    private static func migrateLegacyStories(_ data: Data, at url: URL) throws -> Data {
+        guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SchemaMetadataError.malformed("The metadata document must be a JSON object.")
+        }
+        guard root.removeValue(forKey: "stories") != nil else { return data }
+        let replacement = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try backupOriginal(data, at: url)
+        try replacement.write(to: url, options: .atomic)
+        return replacement
+    }
+
+    private static func backupOriginal(_ data: Data, at url: URL) throws {
+        let backup = url.deletingLastPathComponent().appendingPathComponent(
+            url.lastPathComponent + ".stories-backup-" + UUID().uuidString + ".json"
+        )
+        guard FileManager.default.createFile(
+            atPath: backup.path, contents: data,
+            attributes: [.posixPermissions: NSNumber(value: 0o600)]
+        ) else {
+            throw SchemaMetadataError.unreadable("Could not back up old story metadata at \(backup.path).")
+        }
+        guard try Data(contentsOf: backup) == data else {
+            throw SchemaMetadataError.unreadable("Story metadata backup failed verification at \(backup.path).")
+        }
+    }
+
+    private static func mergeKnownFields(
+        _ old: [String: Any], _ updated: [String: Any], names: Set<String>
+    ) -> [String: Any] {
+        var result = old
+        for name in names { result[name] = updated[name] }
+        return result
+    }
+
+    private static func mergeIdentifiedEntries(
+        existing: Any?, replacement: Any?, knownFields: Set<String>
+    ) -> [[String: Any]] {
+        let old = existing as? [[String: Any]] ?? []
+        let updated = replacement as? [[String: Any]] ?? []
+        let byID = Dictionary(old.compactMap { item -> (String, [String: Any])? in
+            guard let id = item["id"] as? String else { return nil }
+            return (id, item)
+        }, uniquingKeysWith: { first, _ in first })
+        return updated.map { item in
+            guard let id = item["id"] as? String else { return item }
+            return mergeKnownFields(byID[id] ?? [:], item, names: knownFields)
+        }
+    }
+}
+
+/// `lockf` record locks are process-owned, so two descriptors held by threads
+/// in this process do not exclude each other. Keep a stable mutex per lock-file
+/// path and acquire it before the interprocess lock.
+private final class SchemaSidecarProcessLockRegistry: @unchecked Sendable {
+    static let shared = SchemaSidecarProcessLockRegistry()
+
+    private let registryLock = NSLock()
+    private var locks: [String: NSLock] = [:]
+
+    func lock(for path: String) -> NSLock {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        if let existing = locks[path] { return existing }
+        let lock = NSLock()
+        locks[path] = lock
+        return lock
     }
 }

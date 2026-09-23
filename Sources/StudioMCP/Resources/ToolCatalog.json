@@ -1,0 +1,2930 @@
+[
+  {
+    "name": "studio_status",
+    "title": "Status",
+    "description": "Check whether Graph Studio and its local bridge are available before offering or opening a visualization. This does not launch the app. `appRunning` refers to the app copy paired with this MCP helper; `otherCopyRunning` warns that a different copy is open. Ask before launching or closing an app copy. The result reports installed/running state, supported protocol versions, tool count, bridge diagnostics and available capabilities. No UI change.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "context_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Status",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_connect_context",
+    "title": "Connect Context",
+    "description": "Create a new task context, or securely resume one after the MCP stdio connection was interrupted while Graph Studio remained open. A new context returns an opaque context_id and secret resume_token. Keep both, plus client_task_id, in this coding task's own session state. To resume, pass resume_context_id (the prior context_id), the exact prior client_task_id, and resume_token; the token rotates on success, so replace the saved token. Task names alone never recover a context. A disconnected context keeps its workspace, artifacts, and request receipts for up to 24 hours; retention is capped at 128 detached contexts and 4,096 receipts. Active contexts cannot be resumed by another client. A native transfer remains authoritative: without an explicit workspace_id, a reconnect never reclaims a transferred tab. For a new context, supply workspace_id to attach an available tab deliberately; one unowned tab is attached automatically. Pass the returned context_id to every later app-bound tool.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "client_task_id": {
+          "type": "string"
+        },
+        "resume_context_id": {
+          "type": "string",
+          "description": "The opaque context_id returned when this coding task first connected."
+        },
+        "resume_token": {
+          "type": "string",
+          "description": "Secret resume capability returned by the prior connect response. Required with resume_context_id; it rotates after successful recovery."
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "dependentRequired": {
+        "resume_context_id": ["resume_token"],
+        "resume_token": ["resume_context_id"]
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Connect Context",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_launch",
+    "title": "Launch",
+    "description": "Open Graph Studio and wait for its private local bridge to become ready. Call only for an explicit visualization request; this tool does not choose or open a database. Use studio_status for a no-launch availability check.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "foreground_intent": {
+          "type": "boolean"
+        },
+        "wait_ms": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Launch",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_open_source",
+    "title": "Open Source",
+    "description": "Open the local database or supported schema artifact at source_path in Graph Studio. The app uses its existing document and restore flows; it does not infer a path from the recent-file list. Set activate only when this workspace should become foreground.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_path": {
+          "type": "string"
+        },
+        "activate": {
+          "type": "boolean"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "source_path",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Open Source",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_list_workspaces",
+    "title": "List Workspaces",
+    "description": "List only this task's workspaces and unowned native tabs available to attach, including their IDs, source labels and active state. Tabs owned by other live coding tasks are hidden. This does not change the view.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "List Workspaces",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_create_workspace",
+    "title": "Create Workspace",
+    "description": "Create a new workspace tab, optionally opening the live source_id already loaded in this coding task's bound tab. It cannot copy a source from another task's workspace. The new tab starts with its own view and stays in the background unless activation is explicitly requested; the task context then binds to the new tab.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "preview",
+            "comparison",
+            "explanation",
+            "artifact"
+          ]
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "activate": {
+          "type": "boolean"
+        },
+        "activation_intent": {
+          "type": "string",
+          "enum": [
+            "background",
+            "foreground"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Create Workspace",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_update_workspace",
+    "title": "Update Workspace",
+    "description": "Activate the specified workspace when requested. In this app build, the only supported change is activate=true or activation_intent=foreground; rename and reorder changes are not available.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "changes": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "activate": {
+              "type": "boolean"
+            },
+            "activation_intent": {
+              "type": "string",
+              "enum": [
+                "background",
+                "foreground"
+              ]
+            }
+          }
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "changes",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Update Workspace",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_close_workspace",
+    "title": "Close Workspace",
+    "description": "Close a workspace and cancel its pending work. Use when asked to close it; preserve restorable drafts and release shared source resources only when no remaining workspace uses them. Main inputs: Workspace, expected revision Result and effect: Closure receipt, saved draft state, cancelled jobs. No source file deletion.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Close Workspace",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_get_view",
+    "title": "Get View",
+    "description": "Read the current workspace panes, graph selection and visibility, camera, active table/query and rendered state. This tool returns the current view snapshot; it does not fetch arbitrary cell values.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Get View",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_set_layout",
+    "title": "Set Layout",
+    "description": "Choose the schema, table or query pane on either side, adjust the split, or maximize a pane in the workspace. Values apply only to the selected workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "left_pane": {
+          "type": "string",
+          "enum": [
+            "schema",
+            "tables",
+            "query"
+          ]
+        },
+        "right_pane": {
+          "type": "string",
+          "enum": [
+            "schema",
+            "tables",
+            "query"
+          ]
+        },
+        "split_fraction": {
+          "type": "number"
+        },
+        "maximize": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ]
+        },
+        "restore_split": {
+          "type": "boolean"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Set Layout",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_capture_view",
+    "title": "Capture View",
+    "description": "Save an in-memory checkpoint of the current graph selection, expansion, visibility and camera for this workspace. The checkpoint can be restored with studio_restore_view and is lost when Graph Studio closes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Capture View",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_restore_view",
+    "title": "Restore View",
+    "description": "Restore a checkpoint previously returned by studio_capture_view in the same workspace. This app build does not restore an arbitrary history entry.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "type": "string"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "checkpoint_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Restore View",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_search_schema",
+    "title": "Search Schema",
+    "description": "Search loaded table and column names and saved descriptions by case-insensitive substring. Results are bounded and include exact IDs; fuzzy ranking and pagination are not currently available.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "text"
+      ]
+    },
+    "annotations": {
+      "title": "Search Schema",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_describe_schema",
+    "title": "Describe Schema",
+    "description": "Return bounded table and column metadata for the current source, including declared primary-key and foreign-key facts and saved descriptions. This build returns table summaries and does not support section-level pagination.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "object_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Describe Schema",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_find_relations",
+    "title": "Find Relations",
+    "description": "Find declared foreign-key neighbors around the supplied table_ids, up to the requested hop count. This build reports database edges only; it does not infer application relationships or return ranked paths.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hops": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "table_ids"
+      ]
+    },
+    "annotations": {
+      "title": "Find Relations",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_refresh_source",
+    "title": "Refresh Source",
+    "description": "Ask Graph Studio to refresh the selected source schema using its existing refresh flow. The app returns a refresh-started status; poll the workspace with studio_get_view to inspect the result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "source_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Refresh Source",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_show_tables",
+    "title": "Show Tables",
+    "description": "Show, add, hide or restore all named tables in the schema graph. This changes graph visibility and ensures the schema pane is available; camera fitting is controlled separately.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "add",
+            "remove",
+            "all"
+          ]
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "table_ids",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Show Tables",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_select_objects",
+    "title": "Select Objects",
+    "description": "Select the supplied table/object IDs in the graph. The current app build supports table selection; emphasis styling and selection operations beyond replacement are not available.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "object_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Select Objects",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_expand_tables",
+    "title": "Expand Tables",
+    "description": "Expand or collapse the supplied table cards in the current schema graph. This changes graph detail in the selected workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "add",
+            "remove",
+            "collapse_all"
+          ]
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Expand Tables",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_focus_keys",
+    "title": "Focus Keys",
+    "description": "Focus declared relationships or key IDs in the schema graph. The current implementation applies one chosen edge focus and may include its table neighbors; it does not focus multiple independent edges at once. Supply at least one table_ids, relation_ids or key_ids value.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "incoming",
+            "outgoing",
+            "both"
+          ]
+        },
+        "include_all_neighbors": {
+          "type": "boolean"
+        },
+        "compact_layout": {
+          "type": "boolean"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Focus Keys",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_set_camera",
+    "title": "Set Camera",
+    "description": "Set a bounded graph zoom and/or explicit pan coordinates in the selected workspace. Fit-to-selection and animated camera modes are not supported in this app build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "zoom": {
+          "type": "number"
+        },
+        "pan_x": {
+          "type": "number"
+        },
+        "pan_y": {
+          "type": "number"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Set Camera",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_arrange_tables",
+    "title": "Arrange Tables",
+    "description": "Compact the named tables around x/y, pin one table at explicit coordinates with operation=position, or relayout the current graph. The app returns the resulting positions; arbitrary multi-table position batches are not supported.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "position",
+            "relayout"
+          ]
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Arrange Tables",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_set_node_sizing",
+    "title": "Set Node Sizing",
+    "description": "Choose uniform, field-count, row-count or relationship-count sizing for graph nodes. The change is temporary by default; set persist=true only when the user asks to save this metric as the database's default. The scale is built in and has no emphasis tuning values.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "metric": {
+          "type": "string",
+          "enum": [
+            "uniform",
+            "fields",
+            "rows",
+            "relations"
+          ]
+        },
+        "persist": {
+          "type": "boolean",
+          "default": false,
+          "description": "Save the metric as the database's default only when explicitly requested."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "metric",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Set Node Sizing",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_set_groups",
+    "title": "Set Groups",
+    "description": "Apply temporary graph groups with labels and colors to organize a useful lens. Use operation=replace or merge, or set restore_authored=true to return to saved groups; these groups do not add database relationships. Persist requested table grouping separately with studio_update_annotations.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "table_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tables": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "color": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "merge"
+          ]
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        },
+        "restore_authored": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Set Groups",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_annotate_view",
+    "title": "Annotate View",
+    "description": "Add, replace or clear up to 20 temporary plain-text notes in a workspace. Use ordinary human language and short evidence references. A note can point to real table or field IDs; its visible anchor button selects the table and expands it for a field. This never creates an edge, including for an application-level association. These notes are not persisted. When the user wants durable notes, descriptions or groups, call studio_get_annotations and then studio_update_annotations with the current metadata revision. Main inputs: operation, annotations or one text note, optional annotation_ids for clearing, workspace_id and request_id. Returns the current notes and view revision.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" },
+              "anchors": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "table_id": { "type": "string" },
+                    "column_id": { "type": "string" }
+                  },
+                  "required": ["table_id"],
+                  "additionalProperties": false
+                }
+              },
+              "evidence_refs": { "type": "array", "items": { "type": "string" }, "maxItems": 8 }
+            },
+            "required": ["text"],
+            "additionalProperties": false
+          }
+        },
+        "annotation_id": { "type": "string" },
+        "annotation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": "string"
+        },
+        "anchors": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "properties": {
+              "table_id": { "type": "string" },
+              "column_id": { "type": "string" }
+            },
+            "required": ["table_id"],
+            "additionalProperties": false
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "add",
+            "replace",
+            "clear"
+          ]
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "operation",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Annotate View",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_open_table",
+    "title": "Open Table",
+    "description": "Open a table or view in the current workspace and load its first bounded page. The native grid marks oversized cells as omitted while leaving other fields visible; use studio_inspect_value for a bounded slice. This app build does not accept a record or filter context in the open request.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "table_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Open Table",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_configure_table",
+    "title": "Configure Table",
+    "description": "Apply a text search, typed filters, one sort column and page size to a table grid. Multi-column sorting is rejected with TOOL_UNAVAILABLE; the view remains in the current workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_id": {
+          "type": "string"
+        },
+        "search_text": {
+          "type": "string"
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "comparison": {
+                "type": "string",
+                "enum": [
+                  "contains",
+                  "equal",
+                  "notEqual",
+                  "lessThan",
+                  "lessThanOrEqual",
+                  "greaterThan",
+                  "greaterThanOrEqual",
+                  "between",
+                  "isNull",
+                  "isNotNull"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "upper_value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "ascending",
+                  "descending"
+                ]
+              }
+            }
+          }
+        },
+        "page_size": {
+          "type": "integer"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "table_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Configure Table",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_fetch_rows",
+    "title": "Fetch Rows",
+    "description": "Read a bounded page from a named table, optionally with typed filters and one sort column. Supply column_ids to project only those values at the database boundary; declared key columns may also be read for identity but are not returned unless requested. Materialized pages reject a cell above 256 KiB, more than 512 columns, or more than 8 MiB of data; narrow the projection or inspect one cell in bounded slices. The current app uses offset paging; stable cursors, exact counts and caller-selected byte budgets are not available.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_id": {
+          "type": "string"
+        },
+        "column_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "comparison": {
+                "type": "string",
+                "enum": [
+                  "contains",
+                  "equal",
+                  "notEqual",
+                  "lessThan",
+                  "lessThanOrEqual",
+                  "greaterThan",
+                  "greaterThanOrEqual",
+                  "between",
+                  "isNull",
+                  "isNotNull"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "upper_value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "ascending",
+                  "descending"
+                ]
+              }
+            }
+          }
+        },
+        "search_text": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "table_id"
+      ]
+    },
+    "annotations": {
+      "title": "Fetch Rows",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_inspect_value",
+    "title": "Inspect Value",
+    "description": "Read one exact cell from the open table's current filter and sort. Defaults to display_intent=data: the database returns at most max_length characters (text/scalar) or bytes (binary), plus the full byte/character counts and truthful complete/truncated/has_more flags; data mode leaves the app view untouched. Set value_offset to read the next slice. Use display_intent=show only when the user wants to see the selected cell in Graph Studio; this opens a one-cell bounded inspector and does not load other row fields or a record key. NULL, empty text/blob, and binary slices remain distinct. Pass expected_view_revision when relying on a displayed row offset because edits or a different sort can move it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_id": {
+          "type": "string"
+        },
+        "column_name": {
+          "type": "string"
+        },
+        "row_index": {
+          "type": "integer"
+        },
+        "expected_view_revision": {
+          "type": "string",
+          "description": "Revision from studio_get_view or a table action; reject a stale visible row offset."
+        },
+        "display_intent": {
+          "type": "string",
+          "enum": [
+            "data",
+            "show"
+          ],
+          "default": "data",
+          "description": "data returns a bounded slice without changing the view; show opens a bounded one-cell inspector."
+        },
+        "value_offset": {
+          "type": "integer"
+        },
+        "max_length": {
+          "type": "integer",
+          "description": "Maximum characters for text/scalar values or bytes for binary values; capped at 65536."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "table_id",
+        "column_name",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Inspect Value",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_follow_record",
+    "title": "Follow Record",
+    "description": "Follow the record currently shown in the full record inspector through exactly one declared database relationship or one explicitly identified saved application mapping. If record_id is supplied, it must match the selected record. Choose one direction (incoming or outgoing); the app loads its bounded page and returns record identities, has_more/next_offset, provenance and current inspector state. display_intent must be show; data-only follow is unavailable, so use row or read-only query tools. Main inputs: workspace/source guards, relation_id or mapping_id, optional record_id, direction, display_intent, request_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "source_revision": {
+          "type": "string"
+        },
+        "record_id": {
+          "type": "string",
+          "description": "Optional exact guard; must equal the record currently shown in the inspector."
+        },
+        "relation_id": {
+          "type": "string",
+          "description": "A declared source relationship. Supply this or mapping_id."
+        },
+        "mapping_id": {
+          "type": "string",
+          "description": "An explicitly identified saved application mapping. Supply this or relation_id."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "incoming",
+            "outgoing"
+          ],
+          "default": "outgoing"
+        },
+        "display_intent": {
+          "type": "string",
+          "enum": [
+            "show"
+          ],
+          "default": "show"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "relation_id"
+          ]
+        },
+        {
+          "required": [
+            "mapping_id"
+          ]
+        }
+      ],
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Follow Record",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_list_record_mappings",
+    "title": "List Record Mappings",
+    "description": "Read application-defined record graph mappings from the currently open source's `.studio.json` sidecar. Use this before following a non-foreign-key graph connection: list mappings to discover exact `mapping_id` values, or pass one `mapping_id` to read its definition, then inspect a record from its `node_table` and call `studio_follow_record` with that `mapping_id`. These mappings are application configuration, not database-declared relationships; never invent a `relation_id` for them. The result includes sidecar index provenance, current-schema validation status, node/edge tables and columns, direction, and typed scope filters. Invalid and duplicate-ID entries remain visible with diagnostics but are not followable. List output is paginated (at most 5 entries); long strings and scope literals are bounded, and BLOB scope literals are redacted to byte counts. Read-only: it neither changes the view nor reads database rows or writes files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "description": "Optional exact source guard from studio_get_view."
+        },
+        "source_revision": {
+          "type": "string",
+          "description": "Optional exact source revision guard."
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "mapping_id": {
+          "type": "string",
+          "description": "Optional exact ID from a previous list result. Reads only matching sidecar entries; if duplicate IDs exist, results identify them as ambiguous and not followable."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based page offset; when mapping_id is supplied, offset counts entries with that ID."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 5,
+          "description": "Page size, capped at 5 to keep sidecar definitions and scoped values bounded."
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "List Record Mappings",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_show_record_graph",
+    "title": "Show Record Graph",
+    "description": "Show a one-edge neighborhood for the stable-identity record currently shown in the inspector. If seed_records is supplied, it must contain exactly one {record_id} matching that current record; this tool does not inspect arbitrary seed records or perform multi-hop traversal. Expand source-declared relation_ids only; the app expands the first eight IDs, reports any omitted count, and supports incoming, outgoing or both directions. Results may be prepared in the background for an inactive workspace. Main inputs: workspace/source guards, optional exact seed record, relation_ids, direction, request_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "source_revision": {
+          "type": "string"
+        },
+        "seed_records": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "record_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "record_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "relation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Declared relationships; the app expands at most the first eight and reports omitted IDs."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "incoming",
+            "outgoing",
+            "both"
+          ],
+          "default": "outgoing"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Show Record Graph",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_prepare_query",
+    "title": "Prepare Query",
+    "description": "Place SQL and an optional title in the current workspace query editor without running it. Query parameters and draft IDs are not supported by this build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "sql": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "sql",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Prepare Query",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_run_query",
+    "title": "Run Query",
+    "description": "Start one read-only SELECT, VALUES, or WITH query as a cancellable job and return promptly with job_id. Poll studio_get_job for queued/running/completed/failed/cancelled status; on completion it returns result_id and a small preview capped at 10 rows, 20 columns, and 256 text characters per cell. Materialization rejects a cell above 256 KiB, more than 512 columns, or more than 8 MiB of data; select fewer fields/rows or use SQL to return a bounded expression. Call studio_show_query_results with result_id when the user should see the result grid, and studio_fetch_query_results for more bounded pages. Use row_limit (maximum 500) and timeout_seconds (1–30, default 30); timeout_ms remains an accepted legacy timeout input. Use studio_cancel_job when the user changes direction. Cancelled or stale-source queries never publish a result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "sql": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "timeout_ms": {
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Maximum database execution time before the job fails; defaults to 30 seconds. The tool call itself returns promptly with a job_id."
+        },
+        "row_limit": {
+          "type": "integer"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "sql",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Run Query",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_explain_query",
+    "title": "Explain Query",
+    "description": "Show a non-executing plan for an MCP-policy-approved SELECT, VALUES or read-only WITH query. PRAGMA and EXPLAIN SQL text are rejected; use this tool for an explain plan.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "sql": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "sql"
+      ]
+    },
+    "annotations": {
+      "title": "Explain Query",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_fetch_query_results",
+    "title": "Fetch Query Results",
+    "description": "Read a bounded offset page from a query result retained in the same app instance and workspace. Expired results require running the query again; cursor and byte-budget paging are not available.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "result_id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "result_id"
+      ]
+    },
+    "annotations": {
+      "title": "Fetch Query Results",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_show_query_results",
+    "title": "Show Query Results",
+    "description": "Show an existing result in the selected workspace and return its bounded rows. Column reordering, highlights and schema links are not supported in this app build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "result_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "expected_view_revision": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "result_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Show Query Results",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_get_job",
+    "title": "Get Job",
+    "description": "Inspect a query, export, verified speech-asset install, or short speech-test job started by this coding task context. Query jobs return queued/running/completed/failed/cancelled; completion includes result_id and a small bounded result_preview. Call studio_show_query_results to put that captured result in the native grid, or studio_fetch_query_results for another page. Query results are discarded if their source changes or workspace closes. Export and speech jobs include progress and errors. Jobs are private to the creating context; workspace-scoped job details include their exact workspace_id. Speech-asset transfers are app-wide but their job receipt belongs to the creating context; transfer completion does not mean Pocket TTS is ready until model startup succeeds.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string",
+          "description": "Exact workspace returned with the job; required when the current MCP context is bound to another workspace."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "job_id"
+      ]
+    },
+    "annotations": {
+      "title": "Get Job",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_cancel_job",
+    "title": "Cancel Job",
+    "description": "Cancel a query, export, speech-asset install, or speech-test job owned by this coding task context. Use as soon as the user changes direction; query cancellation waits for the active database read to stop, then returns the final cancelled receipt. A cancelled query has no result_id and cannot update the result grid. Speech install cancellation preserves resumable partial bytes; speech-test cancellation stops only that test narrator. Completed jobs stay completed. Read studio_get_job afterward for the final state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string",
+          "description": "Exact workspace returned with the job; required when the current MCP context is bound to another workspace."
+        },
+        "reason": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "job_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Cancel Job",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_start_presentation",
+    "title": "Start Presentation",
+    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "point_id": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              },
+              "narration": {
+                "type": "string"
+              },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "timing": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "evidence_refs": {
+                "type": "array",
+                "description": "Optional evidence pointers used by this point. Store object IDs only; never include SQL, credentials, or arbitrary row payloads here.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": { "type": "string" },
+                    "object_id": { "type": "string" },
+                    "table_id": { "type": "string" },
+                    "result_id": { "type": "string" },
+                    "row_offset": { "type": "integer", "minimum": 0 },
+                    "column_id": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                "maxItems": 32
+              }
+            }
+          }
+        },
+        "narration_mode": {
+          "type": "string",
+          "default": "app_default",
+          "description": "Follow the saved source/global narration preference, or explicitly enable or disable speech for this presentation.",
+          "enum": [
+            "app_default",
+            "enabled",
+            "disabled"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        },
+        "activation_intent": {
+          "type": "string",
+          "enum": [
+            "foreground",
+            "background"
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "workspace_id",
+        "points",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Start Presentation",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_update_presentation",
+    "title": "Update Presentation",
+    "description": "Append points, replace pending points or replace the current and pending points for an active presentation. A revision mismatch is rejected; replacing a current point invalidates its pending action/audio state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "presentation_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "append",
+            "replace_pending",
+            "replace_current_and_pending"
+          ]
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "point_id": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              },
+              "narration": {
+                "type": "string"
+              },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "timing": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "evidence_refs": {
+                "type": "array",
+                "description": "Optional evidence pointers used by this point. Store object IDs only; never include SQL, credentials, or arbitrary row payloads here.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": { "type": "string" },
+                    "object_id": { "type": "string" },
+                    "table_id": { "type": "string" },
+                    "result_id": { "type": "string" },
+                    "row_offset": { "type": "integer", "minimum": 0 },
+                    "column_id": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                "maxItems": 32
+              }
+            }
+          }
+        },
+        "finish_after_queue": {
+          "type": "boolean"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "presentation_id",
+        "operation",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Update Presentation",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_control_presentation",
+    "title": "Control Presentation",
+    "description": "Pause, continue, go back/next, repeat, end or return from an active presentation. The `set_speed` control returns TOOL_UNAVAILABLE in this app build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "presentation_id": {
+          "type": "string"
+        },
+        "control": {
+          "type": "string",
+          "enum": [
+            "pause",
+            "continue",
+            "back",
+            "next",
+            "repeat",
+            "set_speed",
+            "end",
+            "return"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "presentation_id",
+        "control",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Control Presentation",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_get_presentation",
+    "title": "Get Presentation",
+    "description": "Read the current point, playback status and rendered visibility for a presentation created by this coding task context in its bound workspace. Use this before claiming a point was shown or heard, and after reconnecting or revising playback. This build does not provide history cursors or separate pending-point pagination.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "presentation_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "presentation_id"
+      ]
+    },
+    "annotations": {
+      "title": "Get Presentation",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_wait_events",
+    "title": "Wait Events",
+    "description": "Wait up to 10 seconds for the selected workspace view/presentation state to change, then return the current snapshot and event cursor. This build does not filter job events or return a durable event stream.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "context_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "presentation_id": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "after_cursor": {
+          "type": "string"
+        },
+        "wait_ms": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Wait Events",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_get_preferences",
+    "title": "Get Preferences",
+    "description": "Read saved global and source-specific explanation preferences and the current onboarding questions. This does not update preferences.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Get Preferences",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_update_preferences",
+    "title": "Update Preferences",
+    "description": "Save a nonempty set of supported string preferences at global or source scope, or return a one-answer override without persisting it. The app accepts technical_level, source_familiarity, detail, pace, narration, language and goal.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "global",
+            "source",
+            "this_answer"
+          ]
+        },
+        "preferences": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "technical_level": {
+              "type": "string"
+            },
+            "source_familiarity": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "pace": {
+              "type": "string"
+            },
+            "narration": {
+              "type": "string"
+            },
+            "language": {
+              "type": "string"
+            },
+            "goal": {
+              "type": "string"
+            }
+          }
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "scope",
+        "preferences",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Update Preferences",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_get_annotations",
+    "title": "Get Annotations",
+    "description": "Read the current source-sidecar metadata revision, saved table/column descriptions, graph clusters, and a bounded page of durable notes. Call this before studio_update_annotations and pass the returned metadata_revision as expected_metadata_revision; if an update conflicts, read again and merge the intended changes. Notes may describe application-level connections without drawing a database relation. Use studio_annotate_view for temporary presentation notes. Record mappings have a separate paged discovery tool.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "object_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Start index in the saved notes matching object_ids; default 0."
+        },
+        "note_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum notes to return, default 25. Page until has_more_notes is false."
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Get Annotations",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_update_annotations",
+    "title": "Update Annotations",
+    "description": "Save durable table/column descriptions, graph groups, and/or plain-language notes to the local source sidecar, then refresh the app. First call studio_get_annotations and send its metadata_revision as expected_metadata_revision so concurrent edits cannot be silently overwritten. On METADATA_CONFLICT, re-read, merge the user's intended changes, and retry with a new request_id. Use notes_upsert for application-level explanations or evidence that should survive sessions; this never creates a visual database relation. Use studio_annotate_view for temporary notes. This tool does not edit record mappings or database data.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "expected_metadata_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Exact metadata_revision returned by a current studio_get_annotations call."
+        },
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "columns": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "table_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tables": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "color": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "notes_upsert": {
+          "type": "array",
+          "maxItems": 100,
+          "description": "Durable notes to add or replace by ID; use human language, exact table/field IDs only when named. A relation_id must name a declared relation.",
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "properties": {
+              "id": { "type": "string", "maxLength": 200 },
+              "text": { "type": "string", "maxLength": 4000 },
+              "table_id": { "type": "string" },
+              "column_name": { "type": "string" },
+              "relation_id": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "note_ids_remove": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "string" },
+          "description": "IDs of durable notes to remove."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "request_id",
+        "expected_metadata_revision"
+      ]
+    },
+    "annotations": {
+      "title": "Update Annotations",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_capture_schema",
+    "title": "Capture Schema",
+    "description": "Capture schema metadata from the current source as a versioned local snapshot artifact. The capture reads schema only and does not export table rows.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Capture Schema",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_inspect_artifact",
+    "title": "Inspect Artifact",
+    "description": "Inspect a captured schema, comparison, proposal, saved explanation, or fresh explanation-refresh draft by summary, object ID, or search term. For saved and refresh artifacts, use detail_scope=object with an exact table ID to read its fields, declared key relations, and only the rows captured in that artifact; use point/result IDs to inspect saved captions or result pages. Refresh drafts expose fresh facts only and never return old narration as current claims. Artifact paths must name local files; this build does not provide cursor paging.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string"
+        },
+        "search": {
+          "type": "string"
+        },
+        "detail_scope": {
+          "type": "string",
+          "enum": [
+            "summary",
+            "object"
+          ]
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "before",
+            "after"
+          ]
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Inspect Artifact",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_update_preview",
+    "title": "Update Preview",
+    "description": "Create a projected schema preview from a matching captured baseline and compact change plan. The app writes a local proposal artifact and never executes migrations.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "baseline_fingerprint": {
+          "type": "string"
+        },
+        "baseline_artifact_id": {
+          "type": "string"
+        },
+        "plan": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "destination": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "baseline_fingerprint",
+        "plan",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Update Preview",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_compare_schemas",
+    "title": "Compare Schemas",
+    "description": "Compare two captured schema snapshots from the same database engine and save a local comparison artifact. Both inputs must be artifact IDs registered in or paths accessible to the app.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "before_snapshot": {
+          "type": "string"
+        },
+        "after_snapshot": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "before_snapshot",
+        "after_snapshot",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Compare Schemas",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_show_artifact",
+    "title": "Show Artifact",
+    "description": "Open or focus a local schema comparison or proposal artifact in Graph Studio. Raw schema snapshots can be inspected or compared but cannot be shown as a comparison view.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "activate": {
+          "type": "boolean"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Show Artifact",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_save_explanation",
+    "title": "Save Explanation",
+    "description": "Save only points that have actually appeared in the live presentation, and only when the user requests a saved explanation. The artifact captures a credential-free schema snapshot, captions and saved words, point timing/actions/evidence references, and only rows named in included_result_scope. Set result_ids to query-result IDs whose current displayed page was used; set table_pages to already loaded table pages with exact table_id/offset/limit. This build captures at most 1,000 rows, clips long cell text, records omissions, and never stores SQL or a source locator. The artifact is atomic and never overwrites an existing file. Offline replay applies saved graph/layout/table selections and shows captured table/query pages referenced by each point; unreferenced saved pages remain available in the manual historical view. Replay never contacts the original source.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "presentation_id": {
+          "type": "string",
+          "description": "The active presentation whose displayed points should be saved. Pending points are never included."
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "included_result_scope": {
+          "type": "object",
+          "description": "Explicit snapshot scope. result_ids selects the displayed result pages; table_pages selects already loaded table pages. Omit to save no row values.",
+          "properties": {
+            "result_ids": {
+              "type": "array",
+              "items": { "type": "string" },
+              "maxItems": 40
+            },
+            "table_pages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "table_id": { "type": "string" },
+                  "offset": { "type": "integer", "minimum": 0 },
+                  "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["table_id"],
+                "additionalProperties": false
+              },
+              "maxItems": 40
+            }
+          },
+          "additionalProperties": false
+        },
+        "cache_audio": {
+          "type": "boolean",
+          "description": "Audio caching is not available in this build. Leave false or omit."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "presentation_id",
+        "title",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Save Explanation",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_open_explanation",
+    "title": "Open Explanation",
+    "description": "Open a saved .sgexplanation into a dedicated offline tab. No source is reopened or queried, even if its original file still exists. start_mode=manual shows the captured graph, saved rows, result values, and point list without starting playback; start_mode=replay plays saved captions/words while applying supported graph/layout/table selections and showing only captured table/query pages referenced by each point. Other saved pages remain available in the manual historical view. A missing capture is labelled; replay never fetches fresh data. The capture time, source-identity hash, and historical status remain visible. create_workspace must be true or omitted; an existing live tab is never replaced.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "create_workspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Must be true or omitted. Historical artifacts always open in a dedicated offline tab."
+        },
+        "start_mode": {
+          "type": "string",
+          "enum": [
+            "replay",
+            "manual"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "artifact_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Open Explanation",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_prepare_explanation_refresh",
+    "title": "Prepare Explanation Refresh",
+    "description": "Only when the user requests fresh data, compare the saved historical artifact with an explicitly bound currently open source_id. refresh_scope.tables selects fresh read-only table pages with table_id, offset, and limit (limit at most 100); omitting it captures schema only. Save a separate .sgrefresh draft that contains the new schema and explicitly selected fresh rows, plus schema-change labels. It deliberately contains no old captions or narration. Return the draft to the agent to rewrite claims before starting/saving a new explanation. The original artifact is never modified and old narration is never paired with new rows.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "refresh_scope": {
+          "type": "object",
+          "properties": {
+            "tables": {
+              "type": "array",
+              "description": "Explicit fresh row pages to read from the selected live source.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "table_id": { "type": "string" },
+                  "offset": { "type": "integer", "minimum": 0 },
+                  "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["table_id"],
+                "additionalProperties": false
+              },
+              "maxItems": 40
+            }
+          },
+          "additionalProperties": false
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "artifact_id",
+        "source_id",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Prepare Explanation Refresh",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_export",
+    "title": "Export",
+    "description": "Start a cancellable local export job. CSV and JSON are supported for table rows, retained query results, and visible explanation captions. Set scope.kind explicitly: table_rows supports displayed (only the currently loaded grid page) or all_matching (current grid filters and sort, ignoring page offset); query_result supports displayed (the last fetched result page) or captured (the complete bounded result snapshot); transcript supports displayed (current visible caption) or captured (visible caption history). Query snapshots never rerun as all_matching, and table scope never silently expands beyond the selected table. Pass an absolute destination or ~/ path with a matching .csv/.json extension. Existing files fail unless overwrite=true. A query snapshot contains at most its studio_run_query row_limit (maximum 500); an all_matching table export has a timeout_seconds budget capped at 300 seconds. Larger exports return job_id immediately; use studio_get_job and studio_cancel_job. Graph images and explanation packages return TOOL_UNAVAILABLE in this build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string",
+          "description": "Required for object_type=table_rows: exact table ID or name. Omit for query_result and transcript."
+        },
+        "object_type": {
+          "type": "string",
+          "enum": [
+            "table_rows",
+            "query_result",
+            "transcript"
+          ],
+          "description": "The exact data being exported; format and scope are interpreted only for this object type."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "csv",
+            "json"
+          ]
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "displayed",
+                "captured",
+                "all_matching"
+              ],
+              "description": "Explicit export extent. Availability depends on object_type; unsupported combinations fail without expanding scope."
+            },
+            "result_id": {
+              "type": "string",
+              "description": "Required for query_result; use the result_id returned by studio_run_query."
+            },
+            "presentation_id": {
+              "type": "string",
+              "description": "Optional for transcript; defaults to the current presentation in workspace_id."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "destination": {
+          "type": "string"
+        },
+        "overwrite": {
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300,
+          "default": 300,
+          "description": "Time budget for an all_matching table export. The maximum is 300 seconds; other export kinds write retained data."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "object_type",
+        "format",
+        "scope",
+        "destination",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Export",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "studio_get_speech",
+    "title": "Get Speech",
+    "description": "Report the provider actually speaking in this app, or the current local default while idle, with provider ID, availability and PCM-streaming support. Also report Pocket TTS readiness, its exact supported package ID, verified preset asset size, whether a download can be offered, and the reason when unavailable. A completed asset download is not a successful model startup; Pocket TTS is ready only after the worker loads the pinned preset and completes its handshake. Read-only; no download.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "context_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "title": "Get Speech",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_configure_speech",
+    "title": "Configure Speech",
+    "description": "Enable or disable Graph Studio narration with settings.enabled (boolean) or settings.narration (enabled/disabled). Scope may be general, source, or temporary; durable=false also makes the choice temporary. General and source choices apply to future presentations using narration_mode=app_default. A temporary choice returns narration_mode_for_next_presentation for the agent to pass explicitly. This build uses streamed macOS speech and returns TOOL_UNAVAILABLE for voice, provider, or speed selection; no model download or microphone capture occurs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "general",
+            "source",
+            "temporary"
+          ]
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "settings",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Configure Speech",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_manage_speech_assets",
+    "title": "Manage Speech Assets",
+    "description": "Offer, explicitly install, cancel, or retry the one pinned nongated Pocket TTS English 2026-09 Alba asset package. Call action=offer first to explain whether this build contains the managed runtime and to show the exact 225,470,926-byte preset size; offer never starts a transfer. Call action=install only after the user wants the download. Installation verifies each pinned file's size and SHA-256, writes resumable partials, and returns a job_id immediately; inspect it with studio_get_job. Use action=cancel with that job_id, or action=retry after a failed or paused transfer (optionally pass the prior job_id). If the runtime is not packaged, return status=unavailable without downloading. Only package_id pocket-tts-english-2026-09-alba is accepted; no arbitrary URLs or gated assets.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package_id": {
+          "type": "string",
+          "enum": [
+            "pocket-tts-english-2026-09-alba"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "description": "offer is read-only; install starts the user-requested transfer; cancel and retry require a job_id.",
+          "enum": [
+            "offer",
+            "install",
+            "cancel",
+            "retry"
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "description": "Required for cancel; optional for retry to identify the prior paused or failed install."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "package_id",
+        "action",
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Manage Speech Assets",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_test_speech",
+    "title": "Test Speech",
+    "description": "Play a short local speech sample only in the exact visible workspace. This is audible and returns a job_id immediately; inspect/cancel it with studio_get_job or studio_cancel_job. The default follows the app's provider selection, macos forces the built-in voice, and alba requires the verified Pocket TTS runtime and preset. Text defaults to a short sample and is capped at 280 characters. The test is rejected while another presentation or speech test is speaking, and it never stops or replaces another narrator. An unavailable Alba test reports Pocket TTS readiness without falling back to a different voice.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "voice_id": {
+          "type": "string",
+          "default": "app_default",
+          "enum": [
+            "app_default",
+            "macos",
+            "alba"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 280,
+          "description": "Optional sample text, no more than max_characters (at most 280)."
+        },
+        "diagnostic_id": {
+          "type": "string",
+          "description": "Optional canned diagnostic, currently only short_sample.",
+          "enum": [
+            "short_sample"
+          ]
+        },
+        "workspace_id": {
+          "type": "string",
+          "description": "Must identify the visible owning workspace."
+        },
+        "max_characters": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 280,
+          "default": 280
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Stable idempotency key for this mutation; reuse it only with identical arguments."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "request_id"
+      ]
+    },
+    "annotations": {
+      "title": "Test Speech",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  }
+]

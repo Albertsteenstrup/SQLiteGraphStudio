@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - StudioSkill
@@ -23,11 +24,22 @@ public struct StudioSkillDirectoryTarget: Identifiable, Sendable, Hashable {
     public var id: String { subpath }
 }
 
+public enum StudioSkillInstallationError: LocalizedError {
+    case customizedSkill(URL)
+
+    public var errorDescription: String? {
+        switch self {
+        case .customizedSkill(let url):
+            "The existing skill has local changes and was left untouched: \(url.path)"
+        }
+    }
+}
+
 // MARK: - StudioSkills namespace
 
 public enum StudioSkills {
 
-    public static let all: [StudioSkill] = [graphClusters, schemaDescriptions, storyFlows, databaseDiff, databasePreview]
+    public static let all: [StudioSkill] = [graphClusters, schemaDescriptions, databaseExplore, databaseDiff, databasePreview]
 
     // MARK: Skills
 
@@ -45,11 +57,11 @@ public enum StudioSkills {
         fullContent: schemaDescriptionsContent
     )
 
-    public static let storyFlows = StudioSkill(
-        id: "story-flows",
-        title: "story-flows",
-        shortDescription: "Adds user-story-inspired flow stories with acceptance notes, graph playback, and hidden read-aloud narration to the .studio.json sidecar.",
-        fullContent: storyFlowsContent
+    public static let databaseExplore = StudioSkill(
+        id: "database-explore",
+        title: "database-explore",
+        shortDescription: "Investigates the data model and shows useful live explanations through Graph Studio MCP, without a fixed story format.",
+        fullContent: databaseExploreContent
     )
 
     public static let databaseDiff = StudioSkill(
@@ -63,219 +75,6 @@ public enum StudioSkills {
         shortDescription: "Previews proposed schema changes from a small plan and cached metadata, without running migrations.",
         fullContent: databasePreviewContent
     )
-
-    static let databasePreviewContent = #"""
-    ---
-    name: database-preview
-    description: Show proposed SQLite or PostgreSQL table, field and relation changes in SQLite Graph Studio before implementing them. Use a compact change plan and cached schema metadata for quick design iterations without executing migrations.
-    ---
-
-    # Database preview
-
-    Show intended schema changes before writing migrations or changing a database.
-    Create a `.sgpreview` from one captured baseline and a small JSON plan. The app
-    uses the same blue/red borders, field counts, New/Removed badges and relation
-    diffs as schema review, with a persistent **Proposed · not applied** label.
-
-    ## Keep iterations cheap
-
-    Find the executable inside a built `SQLiteGraphStudio.app`, normally
-    `/Applications/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio` or the
-    SQLiteGraphStudio project's `dist/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`.
-    Set `studio` to that executable and `bundle` to its containing `.app`.
-
-    Reuse a captured snapshot JSON or an actual `.sgreview` file. With `.sgreview`,
-    choose `--side after` for its resulting schema or `--side before` for its original
-    schema. Check the reported `baseRef` against the intended starting point. A
-    proposal cannot itself become a captured baseline.
-
-    If no suitable capture exists, run `--schema-review snapshot DATABASE BASE.json`
-    once against the chosen SQLite file, PostgreSQL connection document, or backup.
-    Store the baseline and plan in a temporary or Git-local directory, for example
-    the path returned by `git rev-parse --git-path schema-preview`. Associate a cache
-    with the exact source revision or database snapshot; refresh it when that source
-    changes. A preview does not check whether a live database has changed since capture.
-
-    ```bash
-    # Cheap index: don't load the entire snapshot into the agent's context.
-    "$studio" --schema-review inspect "$baseline" --find order
-    # Read only the fields and incident relations needed for the design.
-    "$studio" --schema-review inspect "$baseline" --table public.orders --column status
-    # Write plan.json, then project it without SQL, a server, or migration replay.
-    "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview
-    open -n -a "$bundle" changes.sgpreview
-    ```
-
-    `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
-    to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than
-    one detailed table. Optional `--column NAME` narrows fields and relations to
-    that field; repeat it for multiple fields. Omit it when full table context is
-    needed. Raw snapshot metadata need not pass through the agent.
-
-    For each iteration, edit the small plan and rerun only `preview` to the **same
-    output file**. The open preview reloads automatically, keeping selection and
-    the overview camera. Don't reopen windows, recapture, restore backups, replay
-    migrations, or rewrite complete before/after schemas on each iteration. The CLI
-    prints a short summary; inspect the visual result when a change affects the design.
-
-    ## Plan format
-
-    ```json
-    {
-      "baseFingerprint": "COPY_FROM_INSPECT",
-      "title": "Proposed order approval",
-      "changes": [
-        {"op":"addColumn","table":"public.orders","column":{"name":"approved_at","type":"timestamp with time zone"}},
-        {"op":"alterColumn","table":"public.orders","column":"status","set":{"notNull":true,"defaultSQL":"'pending'"}},
-        {"op":"addTable","table":"public.order_approval","columns":[
-          {"name":"id","type":"bigint","primaryKeyOrdinal":1,"notNull":true},
-          {"name":"order_id","type":"bigint","notNull":true}
-        ]},
-        {"op":"addRelation","id":"approval_order","source":"public.order_approval","target":"public.orders","sourceColumns":["order_id"],"targetColumns":["id"]}
-      ]
-    }
-    ```
-
-    Use actual table/field IDs from `inspect`, adapting the example to the engine.
-    SQLite IDs are unqualified; PostgreSQL IDs include the schema. Table names with
-    dots can supply explicit `schema` and `name` whose concatenation equals the ID.
-
-    Supported operations, processed in order:
-
-    | `op` | Required properties | Optional properties |
-    | --- | --- | --- |
-    | `addTable` | `table`, `columns` | `schema`, `name`, `kind` (table/view/materializedView) |
-    | `removeTable` | `table` | `cascade` |
-    | `renameTable` | `table`, `to` | `schema`, `name` |
-    | `addColumn` | `table`, `column` object | — |
-    | `alterColumn` | `table`, `column` name, `set` object | — |
-    | `removeColumn` | `table`, `column` name | `cascade` |
-    | `renameColumn` | `table`, `column` name, `to` | — |
-    | `addRelation` | `id`, `source`, `target`, `sourceColumns`, `targetColumns` | `definition` |
-    | `alterRelation` | `id`, `set` object | — |
-    | `removeRelation` | `id` | — |
-
-    New fields require `name` and `type`. Optional field properties: `notNull`
-    (default false), `defaultSQL` (default null), `primaryKeyOrdinal` (default 0),
-    `generated` (default 0), `identity` (default empty string). `alterColumn.set`
-    accepts these properties except `name`; omitted properties are preserved.
-    Set `defaultSQL:null` to remove a default. Type/default text is displayed, never
-    executed or validated as SQL. Describe unstated design assumptions in `notes`.
-
-    `alterRelation.set` accepts `source`, `target`, `sourceColumns`, `targetColumns`,
-    and `definition`. Use the ID returned by `inspect` for an existing relation;
-    assign a readable unique ID to a new one. An omitted relation definition shows
-    that actions are unspecified. Include the intended definition to preview action
-    changes such as ON DELETE CASCADE. Renaming a table/field updates its relation
-    endpoints; a rename appears visually as removal plus addition.
-
-    Removing an object with relations requires removing those relations first or
-    explicit `cascade:true`; cascaded removals are shown. Unknown IDs/properties,
-    duplicate objects, broken relations and mismatched fingerprints fail without
-    replacing the last valid preview. Fix the plan instead of silently skipping errors.
-
-    ## Meaning of the result
-
-    This is a design projection of tables, fields and declared relations. It does
-    not project or validate indexes, triggers, other constraints, data changes,
-    permissions, routines, extension behavior or whether a migration will succeed.
-    Captured definition metadata is not presented as newly generated DDL.
-
-    No code-review marker or hook receipt is written. Creating a preview does not
-    apply or approve the proposed changes. After implementation, use the sibling
-    `database-diff` workflow to compare real schemas through the existing review gate.
-    Report the proposed outcome and baseline, and link the preview file. Keep the
-    baseline stable while exploring alternatives; revise it explicitly if the
-    underlying schema changes.
-    """#
-
-    static let databaseDiffContent = #"""
-    ---
-    name: database-diff
-    description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite Graph Studio for a PR, a local integration, or two database versions. Use after the existing code review finishes when database definitions or migrations changed.
-    ---
-
-    # Database diff
-
-    Create a `.sgreview` file containing before/after schema snapshots and open it in
-    SQLite Graph Studio. The app shows added/removed tables, field changes, and
-    foreign-key changes in both the graph and a table comparison. This is schema
-    evidence, not proof that data migrations or deployment are safe.
-
-    ## Choose the comparison
-
-    Keep exact immutable before/after revisions and explain their meaning:
-
-    - PR: merge-base to the exact PR head for branch changes; use target-to-merged-tree
-      when reviewing the resulting integration instead.
-    - Push: actual remote main SHA to the exact outgoing SHA.
-    - Local fetch/integrate: current local SHA to the fetched incoming SHA before a
-      fast-forward, or the final resolved tree for a merge. Git's pre-merge-commit hook
-      does not cover fast-forward merges; run this skill explicitly after code review.
-    - Two files: label the selected before and after versions by filename.
-
-    Run the repository's existing code-review rounds first. Do not emit a schema
-    review pass or launch the visual follow-up until the first review has completed.
-    Use the repository's database-review hook/adapter when installed; preserve its
-    exact-tree receipt and artifact hash checks. A new head, base, merge resolution,
-    or artifact invalidates that receipt. Never mark an unseen artifact as presented.
-
-    ## Capture real schemas
-
-    Find the built app executable at
-    `/Applications/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`, or the
-    project's `dist/SQLiteGraphStudio.app/Contents/MacOS/SQLiteGraphStudio`.
-    Use the same executable for capture, comparison, and display.
-
-    ```bash
-    "$studio" --schema-review snapshot before.sqlite before.json
-    "$studio" --schema-review snapshot after.sqlite after.json
-    "$studio" --schema-review compare before.json after.json change.sgreview \
-      --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
-      --note "Exact source revisions; schema only, no row data."
-    open -a /path/to/SQLiteGraphStudio.app change.sgreview
-    ```
-
-    Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
-    custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection
-    documents. PostgreSQL capture is read-only; `--socket PATH` selects an explicitly
-    owned local Unix socket. SQLite capture is read-only and does not count or export
-    rows. Connection credentials and row values never belong in snapshots.
-
-    For code revisions, materialize each schema in a separate disposable database
-    using the repository's trusted migration adapter. Never apply migrations to the
-    user's active database to obtain a diff. Do not import application code from an
-    unreviewed revision. The existing code review does not authorize arbitrary remote
-    scripts, production access, or weakening database isolation.
-
-    If a snapshot cannot be produced completely, stop the database-review step with
-    the concrete error. Do not infer a complete schema from regex parsing a SQL patch,
-    or turn unsupported syntax, missing privileges, or failed migrations into an empty
-    schema. For data-only migrations, still show the changed migration paths and state
-    that the schema is unchanged; data effects remain part of the original review.
-
-    ## Review and handoff
-
-    Open the `.sgreview` file and inspect changed tables and their relationships.
-    Blue solid inner borders and `+`/`~` labels indicate additions/changes. Red dashed
-    inner borders and `−` labels indicate removals. The existing outer group colour is
-    preserved. Removed tables remain faded with a Removed badge. Modified relations
-    show both their removed and added definitions. Table details show field types,
-    nullability, defaults, key membership, and available definition changes.
-
-    Report the exact base/head, affected tables, artifact path, and unsupported scope.
-    No automatic rename inference is made: a rename appears as removal plus addition.
-    Snapshots cover tables/views, fields, declared foreign keys, and available
-    index/trigger/constraint definitions; row data, grants, RLS, stored routines,
-    extensions, and deployment behavior are not a complete part of this review.
-    Keep the normal code review authoritative for those changes. Never claim a schema
-    diff approves a merge or push. Preserve the user's existing publication authority.
-
-    The comparison is self-contained: opening it never connects to a database or
-    executes SQL. Existing `.studio.json` notes and cluster colours are separate; do
-    not overwrite them. Save review artifacts outside source control unless the user
-    or repository workflow asks for them to be committed.
-    """#
 
     // MARK: Installation targets
 
@@ -323,6 +122,7 @@ public enum StudioSkills {
 
     public static func install(_ skills: [StudioSkill], to directory: URL) throws {
         let fm = FileManager.default
+        var files: [(StudioSkill, URL)] = []
         for skill in skills {
             for target in installationTargets(for: skill) {
                 let guardURL = directory.appendingPathComponent(target.guardDirectory)
@@ -330,11 +130,10 @@ public enum StudioSkills {
                 guard fm.fileExists(atPath: guardURL.path, isDirectory: &isDir), isDir.boolValue else {
                     continue
                 }
-                let fileURL = directory.appendingPathComponent(target.subpath)
-                try fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try skill.fullContent.write(to: fileURL, atomically: true, encoding: .utf8)
+                files.append((skill, directory.appendingPathComponent(target.subpath)))
             }
         }
+        try installFiles(files, in: directory, retiringLegacyIn: nil)
     }
 
     public static func install(
@@ -346,12 +145,53 @@ public enum StudioSkills {
         let guardURL = directory.appendingPathComponent(targetDirectory.subpath)
         try fm.createDirectory(at: guardURL, withIntermediateDirectories: true)
 
+        var files: [(StudioSkill, URL)] = []
         for skill in skills {
             for target in installationTargets(for: skill) where target.guardDirectory == targetDirectory.subpath {
-                let fileURL = directory.appendingPathComponent(target.subpath)
-                try fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try skill.fullContent.write(to: fileURL, atomically: true, encoding: .utf8)
+                files.append((skill, directory.appendingPathComponent(target.subpath)))
             }
+        }
+        try installFiles(files, in: directory, retiringLegacyIn: targetDirectory.subpath)
+    }
+
+    private static func installFiles(
+        _ files: [(StudioSkill, URL)], in directory: URL, retiringLegacyIn selectedDirectory: String?
+    ) throws {
+        let fm = FileManager.default
+        // Check every destination first so a customized skill cannot leave a half-updated set.
+        for (skill, url) in files where fm.fileExists(atPath: url.path) {
+            let existing = try Data(contentsOf: url)
+            guard existing == Data(skill.fullContent.utf8) || isKnownManaged(existing, skillID: skill.id) else {
+                throw StudioSkillInstallationError.customizedSkill(url)
+            }
+        }
+        for (skill, url) in files {
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let current = try? Data(contentsOf: url)
+            if current != Data(skill.fullContent.utf8) {
+                try skill.fullContent.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+        if Set(files.map { $0.0.id }) == Set(all.map(\.id)) {
+            try removeManagedLegacyStorySkill(in: directory, targetDirectory: selectedDirectory)
+        }
+    }
+
+    private static func isKnownManaged(_ data: Data, skillID: String) -> Bool {
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return knownManagedHashes[skillID]?.contains(hash) == true
+    }
+
+    /// Removes only byte-identical released copies. A user-edited legacy skill remains intact.
+    public static func removeManagedLegacyStorySkill(
+        in directory: URL, targetDirectory: String? = nil
+    ) throws {
+        let old = StudioSkill(id: "story-flows", title: "", shortDescription: "", fullContent: "")
+        for target in installationTargets(for: old) where targetDirectory == nil || target.guardDirectory == targetDirectory {
+            let url = directory.appendingPathComponent(target.subpath)
+            guard FileManager.default.fileExists(atPath: url.path),
+                  isKnownManaged(try Data(contentsOf: url), skillID: old.id) else { continue }
+            try FileManager.default.removeItem(at: url)
         }
     }
 
@@ -366,13 +206,15 @@ public enum StudioSkills {
 
     public static func installedTargets(for skill: StudioSkill, in directory: URL) -> [StudioSkillInstallationTarget] {
         availableInstallationTargets(for: skill, in: directory).filter { target in
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent(target.subpath).path)
+            let url = directory.appendingPathComponent(target.subpath)
+            return (try? Data(contentsOf: url)) == Data(skill.fullContent.utf8)
         }
     }
 
     public static func missingTargets(for skill: StudioSkill, in directory: URL) -> [StudioSkillInstallationTarget] {
         availableInstallationTargets(for: skill, in: directory).filter { target in
-            !FileManager.default.fileExists(atPath: directory.appendingPathComponent(target.subpath).path)
+            let url = directory.appendingPathComponent(target.subpath)
+            return (try? Data(contentsOf: url)) != Data(skill.fullContent.utf8)
         }
     }
 
@@ -420,362 +262,9 @@ public enum StudioSkills {
         let availableTargets = availableInstallationTargets(for: skill, in: directory)
         guard !availableTargets.isEmpty else { return false }
         return availableTargets.allSatisfy { target in
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent(target.subpath).path)
+            let url = directory.appendingPathComponent(target.subpath)
+            return (try? Data(contentsOf: url)) == Data(skill.fullContent.utf8)
         }
     }
 
-    // MARK: - Skill content
-    // Source of truth: ./Skills/<id>/SKILL.md in the repository root.
-
-    // swiftlint:disable line_length
-    private static let graphClustersContent = #"""
-    ---
-    name: graph-clusters
-    description: Generate cluster hints for the SQLite Graph Studio physics engine so related tables group together by a chosen lens. Default to domain areas (auth, billing, content, etc.) unless the user asks to cluster around another concept such as people, artifacts, departments, workflows, or ownership.
-    ---
-
-    # graph-clusters
-
-    You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared.
-
-    The sidecar is loaded when a document opens and re-read when the user clicks **Relayout** in the graph view. The user can edit your output by hand at any time.
-
-    ## Database documents and read-only discovery
-
-    Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
-
-    For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
-
-    For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
-
-    The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
-
-    ## Inputs you need
-
-    Before writing the file, gather:
-
-    1. **The opened database file or PostgreSQL document path.** Ask the user if not obvious — the sidecar lives next to it (e.g. `app.sqlite` → `app.sqlite.studio.json`).
-    2. **The schema.** Use the read-only discovery workflow above. You need table names and foreign-key columns.
-    3. **Task context and clustering lens.** What is the user *working on*, and what do they want the graph organized around? Default to domain areas if they do not say. A clustering tuned to "show me the tables around each department" looks different from "I'm refactoring the billing flow."
-
-    If the database has fewer than ~6 tables, clustering rarely helps — recommend skipping the skill and just letting the FK-based default lay out.
-
-    ## How to choose clusters
-
-    Group tables by the user's requested **clustering lens**, not by FK chains. Foreign keys already create attraction; clusters should add a *second* signal on top, capturing semantic groupings the schema doesn't express.
-
-    Use **domain area** as the default lens when the user does not specify one. If they do specify a lens, follow it. Valid lenses can be anything that makes the schema easier to reason about: persons, artifacts, departments, workflows, bounded contexts, ownership teams, lifecycle stages, or another concept from the user's task.
-
-    Good signals:
-    - **Naming prefixes** (`auth_*`, `billing_*`, `event_*`) — strong, usually correct.
-    - **Shared subject matter** even without prefixes — `users`, `sessions`, `password_resets` all belong to auth.
-    - **Requested lens terms** — if the user asks for departments, cluster around department ownership; if they ask for artifacts, cluster tables by the objects those artifacts represent.
-    - **What references what** — a hub table that 8 others reference is the center of its cluster.
-    - **The user's task** — if they said "I'm working on the order pipeline", that's a cluster, even if the tables span multiple prefixes.
-
-    Cluster count guidance:
-    - 6–12 tables: 2–3 clusters
-    - 13–30 tables: 3–6 clusters
-    - 30–150 tables: 5–9 clusters; larger catalogs can use more meaningful groups. Keep authored domain groups intact; the app handles their layout internally.
-
-    Tables that don't fit anywhere are fine to leave out of all clusters. The app computes deterministic groups for unassigned tables from schema, names, and relationships. These inferred groups are not written into the sidecar.
-
-    ## Output format
-
-    Write to `<document>.studio.json` beside the opened database file or PostgreSQL connection document. Preserve existing `tables` and `stories` blocks — the other skills write to the same file.
-
-    ```json
-    {
-      "version": 1,
-      "clusters": [
-        {
-          "id": "auth",
-          "label": "Authentication & Users",
-          "tables": ["users", "sessions", "password_resets", "auth_tokens"],
-          "color": "#7CC3FF"
-        },
-        {
-          "id": "billing",
-          "label": "Billing",
-          "tables": ["customers", "subscriptions", "invoices", "payments", "refunds"],
-          "color": "#F8B26A"
-        },
-        {
-          "id": "content",
-          "label": "Content",
-          "tables": ["posts", "comments", "tags", "post_tags"]
-        }
-      ]
-    }
-    ```
-
-    Field rules:
-    - `id` — short, lowercase, no spaces. Used internally and in error messages.
-    - `label` — human-readable name shown on graph groups, in the table picker, and in table tooltips (e.g. "Authentication & Users").
-    - `tables` — exact case-sensitive table IDs; PostgreSQL uses schema-qualified IDs such as `public.orders`. Names not in the schema are skipped.
-    - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. The app provides a stable colour when omitted.
-
-    ## Workflow
-
-    1. Read `<document>.studio.json` if it already exists — preserve `tables`, `stories`, and other unrelated fields; update only `clusters`.
-    2. List the tables using read-only schema discovery or existing schema docs.
-    3. Choose meaningful clusters for the requested lens and briefly explain them. When the user has requested this change, write the sidecar using that scope.
-    4. Write the file with `Write`.
-    5. Tell the user to click **Relayout** in the running app to reload the sidecar and rebuild the layout with the new groups and colours.
-
-    ## What not to do
-
-    - Don't create a cluster per table — the physics engine already handles single nodes.
-    - Don't put every table in a cluster — leaving some uncluttered lets the FK-based fallback handle them.
-    - Don't write `strength`, `weight`, or other fields not in the format above — they're ignored and signal you're guessing.
-    - Don't run SQL beyond read-only schema discovery or a `LIMIT 5` sample — the user's data isn't the clustering input.
-    - Don't commit the sidecar without asking. Some users want it gitignored.
-    """#
-
-    private static let schemaDescriptionsContent = #"""
-    ---
-    name: schema-descriptions
-    description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
-    ---
-
-    # schema-descriptions
-
-    You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
-
-    Descriptions are intentionally a sidecar so users can edit them directly without changing the database schema.
-
-    ## Database documents and read-only discovery
-
-    Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
-
-    For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
-
-    For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
-
-    The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
-
-    ## Inputs you need
-
-    Before writing the file, gather:
-
-    1. **The opened database file or PostgreSQL document path.** Ask the user if not obvious. The sidecar lives next to it (for example, `app.sqlite` -> `app.sqlite.studio.json`).
-    2. **The schema.** Use the read-only discovery workflow above. You need exact table and column names.
-    3. **Small samples only when useful.** Pull up to 5 rows for unclear tables or columns. Do not inspect more data than needed for documentation.
-
-    ## Output format
-
-    Preserve any existing `clusters` block. Add or replace only the `tables` entries you are documenting.
-
-    ```json
-    {
-      "version": 1,
-      "tables": {
-        "users": {
-          "description": "auth.users -- App account roster, one row per signed-up user.",
-          "columns": {
-            "email": "Lowercased login email.",
-            "status": "active | suspended | pending"
-          }
-        },
-        "orders": {
-          "description": "billing.orders -- Customer purchase record, one row per checkout.",
-          "columns": {
-            "total_cents": "Order total in cents.",
-            "created_at": "UTC timestamp from checkout."
-          }
-        }
-      },
-      "clusters": []
-    }
-    ```
-
-    Field rules:
-
-    - `tables` - object keyed by exact case-sensitive table or view ID; use schema-qualified PostgreSQL IDs such as `public.orders`.
-    - `description` - optional table-level description shown verbatim when hovering the table name.
-    - `columns` - optional object keyed by exact case-sensitive column name.
-    - Unknown table or column names are ignored by the app, so verify spelling before writing.
-
-    ## Workflow
-
-    1. Read `<document>.studio.json` if it already exists.
-    2. List the schema using read-only schema discovery or existing schema docs.
-    3. Draft concise table and column descriptions.
-    4. Write the sidecar JSON, preserving unrelated fields such as `clusters`.
-    5. Tell the user to click **Relayout** in the running app to reload the sidecar and rebuild the layout. Query headers match full table IDs such as `public.orders.total`; unqualified column notes appear only when the column can be resolved unambiguously.
-
-    ## Writing good descriptions
-
-    Tooltip space is small. Aim for:
-
-    - **Tables**: `cluster_name.table_id -- short description`, preserving the full table ID (for example `commerce.public.orders -- One row per checkout.`). State the table grain: what one row represents. Use an existing cluster id when present; use `unclustered` only when the table is not in any cluster.
-      - Good: `authoring.comments -- Reader comments, with replies linked to parent comments.`
-      - Bad: `This table contains users.`
-    - **Columns**: 3-10 words. Include format, unit, source of truth, or a quirk.
-      - Good: `Cents, never null`, `FK -> tenants.id, NULL for staff`, `active | suspended | pending`
-      - Bad: `The user's email address.`
-
-    Skip obvious columns like `id`, `created_at`, and `updated_at` unless they have a real quirk. Do not speculate. If you would be guessing, leave the field out.
-
-    ## What not to do
-
-    - Don't modify database DDL or add SQL comments. Descriptions belong in the sidecar.
-    - Don't overwrite existing `clusters`.
-    - Don't invent table or column names.
-    - Don't read more than 5 sample rows per table.
-    - Don't commit the sidecar without asking. Some users want it gitignored.
-    """#
-
-    private static let storyFlowsContent = #"""
-    ---
-    name: story-flows
-    description: Write user-story-inspired flow stories with acceptance notes and narrated schema playback to a SQLite Graph Studio sidecar file. Use when the user asks what happens during an application flow, lifecycle, workflow, signup, checkout, import, sync, deletion, permission change, or other behavior that should be captured as a user-centered story and shown as table graph playback.
-    ---
-
-    # story-flows
-
-    You write user-story-inspired flow stories to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads the `stories` array when the document opens and when the user opens **Features -> Stories**.
-
-    Use the user story pattern as inspiration: capture who benefits (`actor`), what they need (`goal`), and why it matters (`benefit`). Keep it lighter than a Jira ticket when that fits the question: short title and value statement, useful conversation notes, acceptance criteria that confirm the flow, and graph playback beats that explain how the data moves through the schema.
-
-    The app plays each playback beat by moving the graph viewport, expanding the focused table, spotlighting the tables in the beat with a warm animated fill, highlighting relation edges for a referenced column, and typing the beat text on screen. Users can also enable read-aloud playback; when they do, the app reads the beat's hidden `spoken_text` with Kokoro-82M's Bella voice (`af_bella`). The app does not show `spoken_text`; if it is missing, the app reads `text`.
-
-    ## Database documents and read-only discovery
-
-    Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
-
-    For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
-
-    For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
-
-    The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
-
-    ## Inputs you need
-
-    Before writing the file, gather:
-
-    1. **The opened database file or PostgreSQL document path.** Ask if it is not obvious. The sidecar lives next to it, for example `app.sqlite` -> `app.sqlite.studio.json`.
-    2. **The user flow and persona.** Capture the exact flow question and who benefits, such as "what happens when a user signs up?"
-    3. **The schema.** Use the read-only discovery workflow above. You need exact table and column names.
-    4. **Tiny samples only if necessary.** Use `LIMIT 5` only when a table's role is unclear. Do not inspect more data than needed.
-
-    ## Output format
-
-    Preserve existing `tables` and `clusters`. Append one new object to `stories`; do not replace older stories unless the user asks.
-
-    ```json
-    {
-      "version": 1,
-      "tables": {},
-      "clusters": [],
-      "stories": [
-        {
-          "id": "user-signup-2026-05-18T14-30-00Z",
-          "title": "User Signup",
-          "created_at": "2026-05-18T14:30:00Z",
-          "prompt": "What happens when a user signs up?",
-          "actor": "a new user",
-          "goal": "to create an account",
-          "benefit": "I can start using a personal workspace",
-          "clusters": ["auth", "workspace"],
-          "related_stories": [
-            { "story_id": "user-signs-in-2026-05-18T14-10-00Z", "kind": "precedes" }
-          ],
-          "conversation": [
-            "Signup creates both identity and the first usable workspace.",
-            "Email verification is outside this story unless the schema shows verification tables."
-          ],
-          "acceptance_criteria": [
-            {
-              "id": "AC1",
-              "given": "a valid signup request",
-              "when": "the signup completes",
-              "then": "a users row exists for the new account"
-            },
-            {
-              "id": "AC2",
-              "given": "the users row exists",
-              "when": "workspace provisioning runs",
-              "then": "a workspace and membership are linked to that user"
-            }
-          ],
-          "playback": [
-            {
-              "text": "A new user row is inserted first. This row becomes the identity anchor for the rest of the signup flow.",
-              "spoken_text": "First, the app creates the user's account record. Everything else in signup will attach back to that identity.",
-              "tables": ["users"],
-              "focus": "users",
-              "expand": "users"
-            },
-            {
-              "text": "The users.id key is then reused by dependent records, so the graph highlights every table attached to that account identity.",
-              "spoken_text": "Next, the new user's identifier is reused by nearby records, so the account can be connected to sessions and membership details.",
-              "tables": ["users", "sessions", "memberships"],
-              "focus": "users",
-              "expand": "users",
-              "relation": { "table": "users", "column": "id" }
-            },
-            {
-              "text": "A default workspace is created and linked back through membership, giving the new user a place to start.",
-              "spoken_text": "Finally, the app creates a starter workspace and links the user into it, so there is a usable place to land after signup.",
-              "tables": ["workspaces", "memberships", "users"],
-              "focus": "workspaces",
-              "expand": "workspaces"
-            }
-          ]
-        }
-      ]
-    }
-    ```
-
-    Field rules:
-
-    - `id` - unique, stable, lowercase slug. Include a timestamp suffix if needed.
-    - `title` - short human label shown in the app's Stories list.
-    - `created_at` - ISO-8601 UTC timestamp for when you append the story.
-    - `prompt` - optional copy of the user's question.
-    - `actor` - user or stakeholder role. Include the article if natural, e.g. `a new user`.
-    - `goal` - user-visible goal, not implementation.
-    - `benefit` - user or business value.
-    - `clusters` - optional existing top-level cluster IDs whose tables are central to the story. Use the same cluster IDs already present in the sidecar; do not invent new story-only cluster names. Omit this when the sidecar has no relevant clusters.
-    - `related_stories` - optional lightweight links to existing stories. Each link is `{ "story_id": "...", "kind": "..." }`; use only intentional relations such as `precedes`, `follows`, `depends_on`, `extends`, `alternative`, or `related`.
-    - `conversation` - optional short notes, assumptions, exclusions, or open questions discovered while inspecting the schema.
-    - `acceptance_criteria` - confirmation of done. Prefer Given/When/Then objects with stable IDs (`AC1`, `AC2`). Plain strings are supported but less precise.
-    - `playback` - ordered graph playback beats. Aim for 3-7 beats. The app ignores the old `steps` key.
-    - `text` - narration typed during the beat. Keep it concise and specific.
-    - `spoken_text` - optional hidden human-language version read aloud with Kokoro-82M Bella. Write this for every beat when the story should sound natural over audio. Avoid raw table syntax unless it helps the listener; never put anything here that should be visibly shown.
-    - `tables` - exact case-sensitive table IDs spotlighted during playback; PostgreSQL requires schema-qualified IDs such as `public.orders`.
-    - `focus` - optional exact table ID the viewport should move toward.
-    - `expand` - optional exact table ID whose columns should be opened.
-    - `relation` - optional `{ "table": "...", "column": "..." }` for a real PK/FK/REF column; the app highlights connected edges and pulls related tables into view.
-    - `duration_ms` - optional step duration. Use only when a step needs unusual timing.
-
-    ## Workflow
-
-    1. Read `<document>.studio.json` if it exists.
-    2. List the schema and identify the tables and foreign-key columns used by the requested flow.
-    3. Draft the story card: `actor`, `goal`, and `benefit`. Keep it value-oriented, but do not force awkward wording.
-    4. Assign `clusters` by matching the story's playback tables to existing top-level `clusters[].tables`. Prefer the smallest useful set of cluster IDs; leave it empty if the flow crosses the whole schema or no cluster exists.
-    5. Add `related_stories` only when the sidecar already has a clearly connected story. Keep links sparse and obvious; do not create a complete graph.
-    6. Add conversation notes only for useful assumptions, exclusions, or questions.
-    7. Add acceptance criteria that are observable and testable.
-    8. Draft the graph playback beats in causal order: record created, identity/relation fan-out, downstream records, final state. For each beat, write visible `text` for the graph card and hidden `spoken_text` for read-aloud playback.
-    9. Verify every table and relation column exists exactly as written.
-    10. Append the story to `stories`, preserving existing `tables`, `clusters`, and earlier `stories`.
-    11. Tell the user to open **Features -> Stories** and activate the new story.
-
-    ## What not to do
-
-    - Don't modify database DDL or create tables in the database. Stories belong in the sidecar. Narrate application writes without executing them.
-    - Don't invent table or column names.
-    - Don't invent cluster IDs; story clusters must reuse existing top-level sidecar cluster IDs.
-    - Don't over-link stories. Prefer no `related_stories` over speculative links.
-    - Don't make `actor`, `goal`, or `benefit` only about tables or UI mechanics; the story should keep a user or stakeholder value thread.
-    - Don't write the old `steps` key. Playback belongs in `playback`.
-    - Don't show or mention `spoken_text` in visible story copy; it is for hidden voiceover only.
-    - Don't use `relation` for a column unless it participates in a declared foreign-key relationship.
-    - Don't overwrite existing stories unless the user explicitly asks.
-    - Don't read more than 5 sample rows per table.
-    """#
-    // swiftlint:enable line_length
 }

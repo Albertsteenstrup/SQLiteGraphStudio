@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Testing
 @testable import StudioCore
 
@@ -116,6 +117,32 @@ struct DatabaseServiceTests {
 
         let firstValue = try #require(chunk.rows.first?.values.first)
         #expect(firstValue == .integer(5_001))
+    }
+
+    @Test
+    func projectedMCPReadDoesNotSelectUnrequestedLargeValues() async throws {
+        let url = TestSupport.temporaryDatabaseURL(named: "large-projection")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let queue = try DatabaseQueue(path: url.path)
+        try await queue.write { db in
+            try db.execute(sql: "CREATE TABLE documents(id INTEGER PRIMARY KEY, note TEXT, payload BLOB)")
+            try db.execute(sql: "INSERT INTO documents(id, note, payload) VALUES (?, ?, ?)",
+                           arguments: [1, String(repeating: "é", count: 100_000), Data(count: 16 * 1024 * 1024)])
+        }
+        let reader = DatabaseService()
+        try await reader.open(url: url, readOnly: true, includeRowCounts: false)
+        let descriptor = try await reader.fetchDescriptor(named: "documents")
+        var query = TableQueryState(limit: 1)
+        query.projectedColumns = ["id"]
+        let plan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor, dialect: .sqlite)
+        #expect(plan.projectedColumns == ["id"])
+        #expect(!plan.selectSQL.contains("\"payload\""))
+        #expect(!plan.selectSQL.contains("\"note\""))
+
+        let chunk = try await reader.fetchChunk(query: query, descriptor: descriptor)
+        #expect(chunk.rows.map(\.values) == [[.integer(1)]])
+        await reader.close()
     }
 
     @Test

@@ -4,6 +4,171 @@ import Testing
 @testable import StudioCore
 
 @MainActor @Suite(.serialized) struct PostgresDumpTests {
+    @Test func dumpRegistryRetainsOneRuntimeUntilItsFinalLeaseAndDropsFailedOpens() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-dump-registry-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("source.dump")
+        let alias = directory.appendingPathComponent("alias.dump")
+        try Data("archive identity".utf8).write(to: source)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: source)
+
+        actor PreparationCounter {
+            private(set) var count = 0
+            private var shouldFail = true
+
+            func nextShouldFail() -> Bool {
+                count += 1
+                defer { shouldFail = false }
+                return shouldFail
+            }
+
+            func preparationCount() -> Int { count }
+        }
+        let counter = PreparationCounter()
+        let registry = PostgresDumpRegistry { _, _ in
+            if await counter.nextShouldFail() {
+                throw DatabaseUserError(kind: .generic, message: "Expected first preparation failure")
+            }
+            return try PostgresDumpSession(runtime: PostgresRuntime(bin: directory.appendingPathComponent("missing-bin")))
+        }
+
+        await #expect(throws: DatabaseUserError.self) { try await registry.acquire(url: source) }
+        let first = try await registry.acquire(url: source)
+        let second = try await registry.acquire(url: alias)
+        #expect(first.session === second.session)
+        let preparationCount = await counter.preparationCount()
+        #expect(preparationCount == 2)
+        let runtimeDirectory = first.session.directory
+        #expect(FileManager.default.fileExists(atPath: runtimeDirectory.path))
+
+        await first.release()
+        await first.release()
+        #expect(FileManager.default.fileExists(atPath: runtimeDirectory.path), "One open tab still owns the restored runtime")
+        await second.release()
+        #expect(!FileManager.default.fileExists(atPath: runtimeDirectory.path), "The final owner releases the restored runtime")
+
+        // Releasing either lease twice must not consume another owner's claim.
+        await first.release()
+        await second.release()
+        let finalPreparationCount = await counter.preparationCount()
+        #expect(finalPreparationCount == 2)
+    }
+
+    @Test func cancellingTheFinalInFlightOpenStopsPreparationAndReleasesItsReservation() async throws {
+        actor PreparationState {
+            private var started = false
+            private var cancelled = false
+
+            func markStarted() { started = true }
+            func markCancelled() { cancelled = true }
+            func didStart() -> Bool { started }
+            func didCancel() -> Bool { cancelled }
+        }
+
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-cancelled-dump-\(UUID()).dump")
+        let state = PreparationState()
+        let registry = PostgresDumpRegistry { _, _ in
+            await state.markStarted()
+            do {
+                try await Task.sleep(for: .seconds(30))
+                return try PostgresDumpSession(runtime: PostgresRuntime(bin: source.deletingLastPathComponent()))
+            } catch {
+                await state.markCancelled()
+                throw error
+            }
+        }
+        let opening = Task { try await registry.acquire(url: source) }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !(await state.didStart()), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await state.didStart())
+
+        opening.cancel()
+        await #expect(throws: CancellationError.self) { try await opening.value }
+        #expect(await state.didCancel(), "The final cancelled opener must stop the shared preparation task")
+    }
+
+    @Test func cancellingOneOfTwoInFlightOpensLeavesTheOtherOwnerUsable() async throws {
+        actor PreparationGate {
+            private var started = false
+            private var cancelled = false
+            private var continuation: CheckedContinuation<Void, any Error>?
+
+            func waitForPermission() async throws {
+                started = true
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        self.continuation = continuation
+                    }
+                } onCancel: {
+                    Task { await self.cancelPreparation() }
+                }
+            }
+
+            func allowPreparation() {
+                let continuation = self.continuation
+                self.continuation = nil
+                continuation?.resume(returning: ())
+            }
+
+            private func cancelPreparation() {
+                cancelled = true
+                let continuation = self.continuation
+                self.continuation = nil
+                continuation?.resume(throwing: CancellationError())
+            }
+
+            func markCancelled() { cancelled = true }
+            func didStart() -> Bool { started }
+            func didCancel() -> Bool { cancelled }
+        }
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-two-open-dump-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.dump")
+        try Data("shared archive".utf8).write(to: source)
+        let gate = PreparationGate()
+        let registry = PostgresDumpRegistry { _, _ in
+            do {
+                try await gate.waitForPermission()
+                try Task.checkCancellation()
+                return try PostgresDumpSession(runtime: PostgresRuntime(bin: directory.appendingPathComponent("missing-bin")))
+            } catch {
+                await gate.markCancelled()
+                throw error
+            }
+        }
+
+        let cancelledOpen = Task { try await registry.acquire(url: source) }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !(await gate.didStart()), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let survivingOpen = Task { try await registry.acquire(url: source) }
+        let ownersDeadline = ContinuousClock.now + .seconds(2)
+        while await registry.ownershipCount(for: source) < 2, ContinuousClock.now < ownersDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await registry.ownershipCount(for: source) == 2)
+
+        cancelledOpen.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelledOpen.value }
+        #expect(await registry.ownershipCount(for: source) == 1)
+        #expect(!(await gate.didCancel()), "The remaining opener must keep shared preparation alive")
+
+        await gate.allowPreparation()
+        let lease = try await survivingOpen.value
+        let runtimeDirectory = lease.session.directory
+        #expect(FileManager.default.fileExists(atPath: runtimeDirectory.path))
+        await lease.release()
+        #expect(!FileManager.default.fileExists(atPath: runtimeDirectory.path), "The final surviving lease cleans up the runtime")
+        #expect(!(await gate.didCancel()))
+    }
+
     @Test func fifoAndDirectoryArchivesAreRejectedWithoutBlocking() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -406,5 +571,39 @@ import Testing
         }
         await session.closeAndWait()
         #expect(try Data(contentsOf: url) == original)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SGS_POSTGRES_DUMP_TEST_FILE"] != nil,
+                   "Set SGS_POSTGRES_DUMP_TEST_FILE to verify two tabs sharing one restored PostgreSQL runtime"))
+    func twoTabsShareRestoredDumpUntilTheFinalTabCloses() async throws {
+        let url = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["SGS_POSTGRES_DUMP_TEST_FILE"]))
+        let firstService = DatabaseService()
+        let secondService = DatabaseService()
+        let controller = WorkspaceTabController(
+            initialSession: AppSession(databaseService: firstService)
+        ) {
+            AppSession(databaseService: secondService)
+        }
+        let first = controller.activeTab!
+        await first.session.openDocument(url: url)
+        let firstDump = try #require(await firstService.dumpSession)
+        let second = controller.createTab()
+        await second.session.openDocument(url: url)
+        let secondDump = try #require(await secondService.dumpSession)
+
+        #expect(first.session.presentedError == nil)
+        #expect(second.session.presentedError == nil)
+        #expect(firstDump === secondDump)
+        #expect(firstDump.directory == secondDump.directory)
+
+        await controller.closeAndWait(first.id)
+        #expect(!first.session.hasOpenDatabase)
+        #expect(second.session.hasOpenDatabase)
+        #expect(FileManager.default.fileExists(atPath: secondDump.socketPath))
+        let result = try await secondService.executeReadOnlyQuery(sql: "SELECT 1")
+        #expect(result.rows.first?.values.first?.displayText == "1")
+
+        await controller.closeAndWait(second.id)
+        #expect(!FileManager.default.fileExists(atPath: secondDump.directory.path))
     }
 }

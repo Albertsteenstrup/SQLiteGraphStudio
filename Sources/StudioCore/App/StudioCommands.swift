@@ -1,18 +1,34 @@
 import SwiftUI
 
 public struct StudioCommands: Commands {
-    private let session: AppSession
+    @Bindable private var workspaceTabs: WorkspaceTabController
+    private let fallbackSession: AppSession
+
+    private var session: AppSession {
+        workspaceTabs.activeSession ?? fallbackSession
+    }
 
     public init(session: AppSession) {
-        self.session = session
+        self.workspaceTabs = WorkspaceTabController(initialSession: session)
+        self.fallbackSession = session
+    }
+
+    public init(controller: WorkspaceTabController) {
+        self.workspaceTabs = controller
+        self.fallbackSession = AppSession()
     }
 
     public var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("Open Database File…") {
-                session.presentOpenDatabasePanel()
+                workspaceTabs.presentOpenPanel()
             }
             .keyboardShortcut("o")
+
+            Button("New Workspace Tab") {
+                workspaceTabs.createTab()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button("Compare Database Schemas…") { session.presentSchemaComparison() }
 
@@ -22,17 +38,18 @@ public struct StudioCommands: Commands {
                 } else {
                     ForEach(session.recentDatabaseURLs, id: \.path) { url in
                         Button(url.lastPathComponent) {
-                            session.openRecentDatabase(url)
+                            Task { await workspaceTabs.openDocument(url) }
                         }
                     }
                 }
             }
             .disabled(session.recentDatabaseURLs.isEmpty)
 
-            Button("Close Database") {
-                session.closeDatabase()
+            Button("Close Workspace Tab") {
+                guard let activeTabID = workspaceTabs.activeTabID else { return }
+                Task { await workspaceTabs.closeAndWait(activeTabID) }
             }
-            .disabled(!session.hasOpenDatabase)
+            .disabled(workspaceTabs.activeTabID == nil)
             .keyboardShortcut("w")
         }
 

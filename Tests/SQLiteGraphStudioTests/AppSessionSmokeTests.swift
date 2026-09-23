@@ -64,66 +64,69 @@ struct AppSessionSmokeTests {
     }
 
     @Test
-    func sessionRestoresPersistedStoryGraphLayoutForDatabase() async throws {
-        let url = try TestSupport.createFixture(named: "persisted-story-layout")
-        let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"
-        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+    func automationScopeAndRenderAcknowledgementTrackVisibleRevision() async throws {
+        let url = try TestSupport.createFixture(named: "automation-visible-scope")
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+        let allTableIDs = Set(session.graph.nodes.map(\.id))
+        let firstTableID = try #require(allTableIDs.sorted().first)
 
-        do {
-            let firstSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-            await firstSession.openDatabase(url: url)
-            firstSession.showStoryCardsInGraph = true
-            firstSession.showOnlyStoryCardsInGraph = true
-            firstSession.pinStoryGraphPosition(
-                "dedicated-story",
-                at: CGPoint(x: 140, y: -88),
-                mode: .dedicated(.fitAll)
-            )
-            firstSession.pinStoryGraphPosition(
-                "anchored-story",
-                at: CGPoint(x: -96, y: 52),
-                mode: .anchoredToTables
-            )
-            firstSession.persistStoryGraphLayout()
+        session.setAutomationVisibleTableIDs([firstTableID, "not-in-this-schema"])
+        let scopedRevision = session.automationViewRevision
+        #expect(session.graphVisibleTableIDs == [firstTableID])
 
-            let secondSession = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-            await secondSession.openDatabase(url: url)
+        session.acknowledgeAutomationViewRendered(
+            revision: scopedRevision,
+            displayedTableIDs: allTableIDs
+        )
+        #expect(session.automationRenderedViewRevision == scopedRevision)
+        #expect(session.automationRenderedTableIDs == [firstTableID])
 
-            #expect(
-                secondSession.pinnedStoryGraphPosition(for: "dedicated-story", mode: .dedicated(.fitAll))
-                    == CGPoint(x: 140, y: -88)
-            )
-            #expect(
-                secondSession.pinnedStoryGraphPosition(for: "anchored-story", mode: .anchoredToTables)
-                    == CGPoint(x: -96, y: 52)
-            )
-        }
+        session.markAutomationViewChanged()
+        let changedRevision = session.automationViewRevision
+        #expect(changedRevision > scopedRevision)
+        #expect(session.automationRenderedViewRevision == nil)
+        #expect(session.automationRenderedTableIDs.isEmpty)
 
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+        session.acknowledgeAutomationViewRendered(
+            revision: scopedRevision,
+            displayedTableIDs: allTableIDs
+        )
+        #expect(session.automationRenderedViewRevision == nil)
+
+        session.acknowledgeAutomationViewRendered(
+            revision: changedRevision,
+            displayedTableIDs: [firstTableID]
+        )
+        #expect(session.automationRenderedViewRevision == changedRevision)
+        #expect(session.automationRenderedTableIDs == [firstTableID])
+
+        session.setAutomationVisibleTableIDs(nil)
+        #expect(session.graphVisibleTableIDs == allTableIDs)
     }
 
     @Test
-    func sessionClearsPersistedStoryGraphLayoutForDatabase() async throws {
-        let url = try TestSupport.createFixture(named: "clear-story-layout")
-        let defaultsSuiteName = "SQLiteGraphStudioTests.\(UUID().uuidString)"
-        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+    func automationGroupsOverrideLayoutGroupingWithoutChangingSidecar() async throws {
+        let url = try TestSupport.createFixture(named: "automation-group-override")
+        let authored = SchemaSidecar(clusters: [
+            .init(id: "authored", label: "Authored group", tables: ["authors"]),
+        ])
+        try SchemaSidecarStore.save(authored, for: url)
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
 
-        do {
-            let session = AppSession(databaseService: DatabaseService(), userDefaults: userDefaults)
-            await session.openDatabase(url: url)
-            session.showStoryCardsInGraph = true
-            session.pinStoryGraphPosition("anchored-story", at: CGPoint(x: 42, y: -18), mode: .anchoredToTables)
-            session.persistStoryGraphLayout()
+        #expect(session.graphGrouping.group(for: "authors")?.id == "authored")
+        session.setAutomationGroups([
+            .init(id: "temporary", label: "Temporary group", tables: ["posts"]),
+        ])
+        #expect(session.graphGrouping.group(for: "posts")?.id == "temporary")
+        #expect(session.graphGrouping.group(for: "authors")?.id == "authored")
+        #expect(session.schemaSidecar == authored)
+        #expect(try SchemaSidecarStore.load(for: url).clusters == authored.clusters)
 
-            session.clearPersistedStoryGraphLayout()
-
-            #expect(session.pinnedStoryGraphPosition(for: "anchored-story", mode: .anchoredToTables) == nil)
-            #expect(userDefaults.data(forKey: "SQLiteGraphStudio.story-graph-layout.\(url.path)") == nil)
-        }
-
-        userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+        session.setAutomationGroups(nil)
+        #expect(session.graphGrouping.group(for: "authors")?.id == "authored")
+        #expect(session.schemaSidecar == authored)
     }
 
     @Test
@@ -172,186 +175,6 @@ struct AppSessionSmokeTests {
         #expect(session.descriptionForQueryResultColumn("email") == "authors.email: Public contact email.")
         #expect(session.descriptionForQueryResultColumn("posts") == "Published and draft posts.")
         #expect(session.descriptionForQueryResultColumn("missing") == nil)
-    }
-
-    @Test
-    func sessionReadsStoriesFromSidecar() async throws {
-        let url = try TestSupport.createFixture(named: "sidecar-stories")
-        let story = SchemaSidecar.Story(
-            id: "author-onboarding",
-            title: "Author Onboarding",
-            createdAt: "2026-05-18T12:00:00Z",
-            prompt: "What happens when an author signs up?",
-            actor: "a new author",
-            goal: "to create an account",
-            benefit: "I can publish posts under my own identity",
-            acceptanceCriteria: [
-                .init(
-                    id: "AC1",
-                    given: "a valid signup request",
-                    when: "the author account is created",
-                    then: "the author can be found by email"
-                ),
-            ],
-            playback: [
-                .init(
-                    text: "The author account is created first.",
-                    spokenText: "First, the author gets an account record.",
-                    tables: ["authors"],
-                    focus: "authors",
-                    expand: "authors",
-                    relation: .init(table: "authors", column: "id")
-                ),
-            ]
-        )
-        let sidecar = SchemaSidecar(stories: [story])
-        try SchemaSidecarStore.save(sidecar, for: url)
-
-        let session = AppSession(databaseService: DatabaseService())
-        await session.openDatabase(url: url)
-
-        #expect(session.stories.first?.id == "author-onboarding")
-        #expect(session.stories.first?.userStoryText == "As a new author, I want to create an account, so that I can publish posts under my own identity.")
-        #expect(session.stories.first?.acceptanceCriteria.first?.displayText == "Given a valid signup request, when the author account is created, then the author can be found by email")
-        #expect(session.stories.first?.playback.first?.spokenText == "First, the author gets an account record.")
-        #expect(session.stories.first?.playback.first?.relation?.column == "id")
-    }
-
-    @Test
-    func storyPlaybackAcceptsHumanTextAlias() async throws {
-        let url = try TestSupport.createFixture(named: "sidecar-story-human-text")
-        let sidecarJSON = """
-        {
-          "version": 1,
-          "stories": [
-            {
-              "id": "human-text-alias",
-              "title": "Human Text Alias",
-              "created_at": "2026-05-18T12:00:00Z",
-              "playback": [
-                {
-                  "text": "The visible graph beat stays technical.",
-                  "human_text": "The hidden voiceover can sound more natural.",
-                  "tables": ["authors"]
-                }
-              ]
-            }
-          ]
-        }
-        """
-        try sidecarJSON.write(to: SchemaSidecarStore.sidecarURL(for: url), atomically: true, encoding: .utf8)
-
-        let session = AppSession(databaseService: DatabaseService())
-        await session.openDatabase(url: url)
-
-        #expect(session.stories.first?.playback.first?.text == "The visible graph beat stays technical.")
-        #expect(session.stories.first?.playback.first?.spokenText == "The hidden voiceover can sound more natural.")
-    }
-
-    @Test
-    func storiesReadClusterLanguageAndLightweightRelations() async throws {
-        let url = try TestSupport.createFixture(named: "sidecar-story-clusters")
-        let sidecarJSON = """
-        {
-          "version": 1,
-          "clusters": [
-            {
-              "id": "publishing",
-              "label": "Publishing",
-              "tables": ["authors", "posts"],
-              "color": "#A8E6A3"
-            }
-          ],
-          "stories": [
-            {
-              "id": "author-onboarding",
-              "title": "Author Onboarding",
-              "created_at": "2026-05-18T12:00:00Z",
-              "clusters": ["publishing"],
-              "related_stories": [
-                { "story_id": "author-publishes-post", "kind": "precedes" },
-                "author-edits-post"
-              ],
-              "playback": [
-                {
-                  "text": "The author account anchors publishing work.",
-                  "tables": ["authors", "posts"],
-                  "focus": "authors"
-                }
-              ]
-            }
-          ]
-        }
-        """
-        try sidecarJSON.write(to: SchemaSidecarStore.sidecarURL(for: url), atomically: true, encoding: .utf8)
-
-        let session = AppSession(databaseService: DatabaseService())
-        await session.openDatabase(url: url)
-
-        let story = try #require(session.stories.first)
-        #expect(story.clusters == ["publishing"])
-        #expect(story.relatedStories.map(\.storyID) == ["author-publishes-post", "author-edits-post"])
-        #expect(story.relatedStories.map(\.kind) == ["precedes", "related"])
-        #expect(story.coveredTableIDs == ["authors", "posts"])
-        #expect(story.primaryTableIDs == ["authors"])
-
-        let coverage = session.schemaSidecar.clusterCoverage(for: story)
-        #expect(coverage.first?.clusterID == "publishing")
-        #expect(coverage.first?.displayLabel == "Publishing")
-        #expect(coverage.first?.tableIDs == ["authors", "posts"])
-    }
-
-    @Test
-    func legacyStoryStepsDoNotDrivePlayback() async throws {
-        let url = try TestSupport.createFixture(named: "legacy-story-steps")
-        let legacyJSON = """
-        {
-          "version": 1,
-          "stories": [
-            {
-              "id": "legacy-steps",
-              "title": "Legacy Steps",
-              "created_at": "2026-05-18T12:00:00Z",
-              "steps": [
-                {
-                  "text": "This old playback shape should not run.",
-                  "tables": ["authors"],
-                  "focus": "authors"
-                }
-              ]
-            }
-          ]
-        }
-        """
-        try legacyJSON.write(to: SchemaSidecarStore.sidecarURL(for: url), atomically: true, encoding: .utf8)
-
-        let session = AppSession(databaseService: DatabaseService())
-        await session.openDatabase(url: url)
-
-        #expect(session.stories.first?.id == "legacy-steps")
-        #expect(session.stories.first?.playback.isEmpty == true)
-    }
-
-    @Test
-    func sessionDeletesStoriesFromSidecar() async throws {
-        let url = try TestSupport.createFixture(named: "sidecar-story-delete-\(UUID().uuidString)")
-        let story = SchemaSidecar.Story(
-            id: "delete-me",
-            title: "Delete Me",
-            createdAt: "2026-05-18T12:00:00Z",
-            playback: [
-                .init(text: "A short story.", tables: ["authors"], focus: "authors")
-            ]
-        )
-        try SchemaSidecarStore.save(SchemaSidecar(stories: [story]), for: url)
-
-        let session = AppSession(databaseService: DatabaseService())
-        await session.openDatabase(url: url)
-        session.deleteStory(id: "delete-me")
-
-        #expect(session.stories.isEmpty)
-        #expect(try SchemaSidecarStore.load(for: url).stories.isEmpty)
-        #expect(session.refreshToast?.message == "Updated: -1 story")
     }
 
     @Test

@@ -21,7 +21,6 @@ struct AppSessionPostgreSQLMetadataTests {
         #expect(session.schemaSidecar == sidecar)
         #expect(session.tableDescription(for: "public.orders") == "Order records.")
         #expect(session.columnDescription(for: "public.orders", column: "external_ref") == "Checkout reference.")
-        #expect(session.stories.first?.playback.first?.tables == ["public.orders"])
         #expect(SchemaSidecarStore.sidecarURL(for: fixture.documentURL).lastPathComponent == "catalog.\(fileExtension).studio.json")
         #expect(try Data(contentsOf: fixture.documentURL) == documentBefore)
         #expect(await service.currentTarget == nil)
@@ -72,30 +71,6 @@ struct AppSessionPostgreSQLMetadataTests {
         #expect(session.schemaSidecar == updated)
         session.closeDatabase()
         #expect(session.graphGrouping == .empty)
-    }
-
-    @Test
-    func postgresStoryDeletionWritesOnlySiblingMetadata() async throws {
-        let fixture = try makeFixture()
-        defer { fixture.cleanUp() }
-        let sidecar = metadata(description: "Order records.")
-        try SchemaSidecarStore.save(sidecar, for: fixture.documentURL)
-        let documentBefore = try Data(contentsOf: fixture.documentURL)
-        let service = DatabaseService()
-        let session = AppSession(databaseService: service, userDefaults: fixture.defaults)
-        session.apply(snapshot: snapshot(), target: target, documentURL: fixture.documentURL)
-        session.schemaSidecar = sidecar
-
-        session.deleteStory(id: "checkout")
-
-        let saved = try SchemaSidecarStore.load(for: fixture.documentURL)
-        #expect(saved.stories.isEmpty)
-        #expect(saved.tables == sidecar.tables)
-        #expect(saved.clusters == sidecar.clusters)
-        #expect(session.stories.isEmpty)
-        #expect(session.refreshToast?.message == "Updated: -1 story")
-        #expect(try Data(contentsOf: fixture.documentURL) == documentBefore)
-        #expect(await service.currentTarget == nil)
     }
 
     @Test
@@ -312,10 +287,7 @@ struct AppSessionPostgreSQLMetadataTests {
     private func metadata(description: String) -> SchemaSidecar {
         SchemaSidecar(
             clusters: [.init(id: "commerce", label: "Commerce", tables: ["public.orders"], color: "#7CC3FF")],
-            tables: ["public.orders": .init(description: description, columns: ["external_ref": "Checkout reference."])],
-            stories: [.init(id: "checkout", title: "Checkout", createdAt: "2026-09-05T10:00:00Z", playback: [
-                .init(text: "The order captures checkout.", tables: ["public.orders"], focus: "public.orders"),
-            ])]
+            tables: ["public.orders": .init(description: description, columns: ["external_ref": "Checkout reference."])]
         )
     }
 

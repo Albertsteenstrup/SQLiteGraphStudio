@@ -2,6 +2,14 @@
 import CryptoKit
 import Foundation
 
+/// Limits materialized result pages. Large individual values remain accessible
+/// through readBoundedCell instead of being copied into every row or query page.
+public enum DatabaseReadBudget {
+    public static let maxCellBytes = 262_144
+    public static let maxResultBytes = 8_388_608
+    public static let maxColumns = 512
+}
+
 public enum SQLiteObjectType: String, Sendable, Hashable, CaseIterable {
     case table
     case partitionedTable
@@ -915,10 +923,47 @@ public struct TableCreateDraft: Sendable, Hashable {
 public struct TableRow: Sendable, Hashable {
     public let identity: TableRowIdentity
     public let values: [SQLiteValue]
+    /// Columns omitted from the materialized page because their values are too large.
+    public let omittedColumnIndices: Set<Int>
 
-    public init(identity: TableRowIdentity, values: [SQLiteValue]) {
+    public init(identity: TableRowIdentity, values: [SQLiteValue], omittedColumnIndices: Set<Int> = []) {
         self.identity = identity
         self.values = values
+        self.omittedColumnIndices = omittedColumnIndices
+    }
+}
+
+/// A single cell returned as a database-side slice. Text offsets count Unicode
+/// scalar values; binary offsets count bytes. `value` is always at most the
+/// requested slice size, even when the stored cell is much larger.
+public struct BoundedCellRead: Sendable, Hashable {
+    public let storageType: String
+    public let value: SQLiteValue
+    public let byteCount: Int?
+    public let characterCount: Int?
+    public let offset: Int
+    public let returnedLength: Int
+
+    public init(storageType: String, value: SQLiteValue, byteCount: Int?, characterCount: Int?, offset: Int, returnedLength: Int) {
+        self.storageType = storageType
+        self.value = value
+        self.byteCount = byteCount
+        self.characterCount = characterCount
+        self.offset = offset
+        self.returnedLength = returnedLength
+    }
+
+    public var isBinary: Bool {
+        if case .blob = value { return true }
+        return ["blob", "bytea"].contains(storageType.lowercased())
+    }
+
+    public var isNull: Bool { value == .null }
+    public var offsetUnit: String { isBinary ? "bytes" : "characters" }
+    public var totalLength: Int? { isBinary ? byteCount : characterCount }
+    public var hasMore: Bool { (totalLength ?? 0) > offset + returnedLength }
+    public var isComplete: Bool {
+        isNull || totalLength == 0 || (offset == 0 && totalLength == returnedLength)
     }
 }
 
@@ -1048,6 +1093,11 @@ public struct TableQueryState: Sendable, Hashable {
     public var after: TablePageCursor? = nil
     public var requestExactCount = false
     public var cachedExactCount: Int? = nil
+    /// MCP-only narrow reads keep large unrequested values out of the database
+    /// result. Native table browsing leaves this nil and receives every column.
+    public var projectedColumns: [String]? = nil
+    /// Lets the native grid omit oversized non-key cells and inspect them separately.
+    public var omitOversizedCells = false
     public var searchText: String
     public var columnFilters: [ColumnFilter]
     public var sort: SortState?

@@ -152,7 +152,10 @@ public struct TableWorkspaceView: View {
                 requestColumnDrop: { column in
                     pendingColumnDrop = column
                 },
-                inspectRow: { session.inspectRecord(in: activeTab, row: $0) }
+                inspectRow: { session.inspectRecord(in: activeTab, row: $0) },
+                inspectCellSlice: { row, columnName in
+                    session.inspectCellSlice(in: activeTab, row: row, columnName: columnName)
+                }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(StudioPalette.gridSurface.opacity(0.96))

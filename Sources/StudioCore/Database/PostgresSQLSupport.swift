@@ -9,20 +9,40 @@ public enum PostgresQueryParameter: Sendable, Hashable {
     case bytes(Data)
 }
 
+/// Optional projection used to read one cell without transferring its complete
+/// text or binary value through the database client.
+public struct BoundedCellProjection: Sendable, Hashable {
+    public let columnName: String
+    public let offset: Int
+    public let length: Int
+    public let expectedRowIdentity: TableRowIdentity?
+
+    public init(columnName: String, offset: Int, length: Int, expectedRowIdentity: TableRowIdentity? = nil) {
+        self.columnName = columnName
+        self.offset = offset
+        self.length = length
+        self.expectedRowIdentity = expectedRowIdentity
+    }
+}
+
 public struct PostgresTableQueryPlan: Sendable, Hashable {
     public let countSQL: String
     public let selectSQL: String
+    /// Database columns in result order, excluding SQLite's synthetic rowid.
+    public let projectedColumns: [String]
     public let parameters: [PostgresQueryParameter]
     public let countParameterCount: Int
 
     public init(
         countSQL: String,
         selectSQL: String,
+        projectedColumns: [String],
         parameters: [PostgresQueryParameter],
         countParameterCount: Int
     ) {
         self.countSQL = countSQL
         self.selectSQL = selectSQL
+        self.projectedColumns = projectedColumns
         self.parameters = parameters
         self.countParameterCount = countParameterCount
     }
@@ -51,14 +71,23 @@ public enum PostgresTableQueryBuilder {
         return order
     }
 
-    public static func makePlan(query: TableQueryState, descriptor: TableDescriptor, dialect: TableSQLDialect = .postgres) throws -> PostgresTableQueryPlan {
+    public static func makePlan(query: TableQueryState, descriptor: TableDescriptor, dialect: TableSQLDialect = .postgres,
+                                boundedCell: BoundedCellProjection? = nil) throws -> PostgresTableQueryPlan {
         guard query.offset >= 0, query.limit >= 0 else { throw invalid("Page offset and limit must not be negative.") }
+        if let boundedCell {
+            guard boundedCell.offset >= 0, boundedCell.offset < Int.max,
+                  (1...65_536).contains(boundedCell.length),
+                  Set(descriptor.columns.map(\.name)).contains(boundedCell.columnName) else {
+                throw invalid("A bounded cell read needs a known column, a nonnegative offset, and a length from 1 to 65536.")
+            }
+        }
         let columns = Dictionary(uniqueKeysWithValues: descriptor.columns.map { ($0.name, $0) })
         var parameters: [PostgresQueryParameter] = []
         var conditions: [String] = []
         func bind(_ value: PostgresQueryParameter) -> String {
             parameters.append(value)
-            return dialect == .postgres ? "$\(parameters.count)" : "?"
+            if dialect == .postgres { return "$\(parameters.count)" }
+            return boundedCell == nil ? "?" : "?\(parameters.count)"
         }
         func literalPattern(_ value: String) -> String {
             "%" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_") + "%"
@@ -155,11 +184,140 @@ public enum PostgresTableQueryBuilder {
         }
         let whereClause = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
         let orderClause = order.isEmpty ? "" : " ORDER BY " + order.map { "\(quoteIdentifier($0.columnName)) \($0.direction.sqlKeyword) NULLS LAST" }.joined(separator: ", ")
-        var projection = descriptor.columns.map { quoteIdentifier($0.name) }
-        if dialect == .sqlite && descriptor.rowIdentityStrategy == .rowID { projection.append("_rowid_ AS __sgs_rowid__") }
+        let projectedNames: [String]
+        var projection: [String]
+        if let boundedCell {
+            let cell = quoteIdentifier(boundedCell.columnName)
+            let start = bind(.integer(Int64(boundedCell.offset + 1)))
+            let length = bind(.integer(Int64(boundedCell.length)))
+            projectedNames = [boundedCell.columnName]
+            if dialect == .sqlite {
+                projection = [
+                    "typeof(\(cell)) AS __sgs_cell_type__",
+                    "CASE WHEN \(cell) IS NULL THEN NULL ELSE length(CAST(\(cell) AS BLOB)) END AS __sgs_cell_bytes__",
+                    "CASE WHEN \(cell) IS NULL OR typeof(\(cell)) = 'blob' THEN NULL ELSE length(CAST(\(cell) AS TEXT)) END AS __sgs_cell_characters__",
+                    "CASE WHEN \(cell) IS NULL OR typeof(\(cell)) = 'blob' THEN NULL ELSE substr(CAST(\(cell) AS TEXT), \(start), \(length)) END AS __sgs_cell_text_slice__",
+                    "CASE WHEN typeof(\(cell)) = 'blob' THEN CASE WHEN length(\(cell)) = 0 THEN zeroblob(0) ELSE substr(\(cell), \(start), \(length)) END ELSE NULL END AS __sgs_cell_blob_slice__"
+                ]
+            } else {
+                let isBytea = columns[boundedCell.columnName]?.declaredType.lowercased() == "bytea"
+                let byteCount = isBytea
+                    ? "pg_catalog.octet_length(\(cell))"
+                    : "pg_catalog.octet_length(pg_catalog.convert_to(\(cell)::text, 'UTF8'))"
+                let characterCount = isBytea ? "NULL::bigint" : "pg_catalog.char_length(\(cell)::text)"
+                let textSlice = isBytea ? "NULL::text" : "pg_catalog.substr(\(cell)::text, \(start)::integer, \(length)::integer)"
+                let blobSlice = isBytea ? "pg_catalog.substr(\(cell), \(start)::integer, \(length)::integer)" : "NULL::bytea"
+                projection = [
+                    "pg_catalog.pg_typeof(\(cell))::text AS __sgs_cell_type__",
+                    "CASE WHEN \(cell) IS NULL THEN NULL ELSE \(byteCount) END AS __sgs_cell_bytes__",
+                    "CASE WHEN \(cell) IS NULL THEN NULL ELSE \(characterCount) END AS __sgs_cell_characters__",
+                    "CASE WHEN \(cell) IS NULL THEN NULL ELSE \(textSlice) END AS __sgs_cell_text_slice__",
+                    "CASE WHEN \(cell) IS NULL THEN NULL ELSE \(blobSlice) END AS __sgs_cell_blob_slice__"
+                ]
+            }
+            if let expectedRowIdentity = boundedCell.expectedRowIdentity {
+                projection.append(try identityMatchProjection(
+                    expectedRowIdentity,
+                    descriptor: descriptor,
+                    columns: columns,
+                    dialect: dialect,
+                    bind: bind,
+                    operand: operand
+                ))
+            }
+        } else {
+            let selected = query.projectedColumns ?? descriptor.columns.map(\.name)
+            guard !selected.isEmpty, Set(selected).count == selected.count,
+                  Set(selected).isSubset(of: Set(descriptor.columns.map(\.name))) else {
+                throw invalid("Projected columns must be distinct columns in this table.")
+            }
+            var names = selected
+            // Declared keys remain available for row identity without retrieving
+            // unrelated large values. Keyless views have no stable row identity.
+            let identityNames = query.projectedColumns == nil ? descriptor.fallbackSortColumns : descriptor.primaryKeyColumns
+            for name in identityNames where name != "_rowid_" && !names.contains(name) {
+                names.append(name)
+            }
+            projectedNames = names
+            var selectedSQL = names.map(quoteIdentifier)
+            if dialect == .sqlite && descriptor.rowIdentityStrategy == .rowID { selectedSQL.append("_rowid_ AS __sgs_rowid__") }
+            projection = selectedSQL
+        }
         let limit = bind(.integer(Int64(query.limit)))
         let offset = bind(.integer(Int64(query.after == nil ? query.offset : 0)))
-        return PostgresTableQueryPlan(countSQL: "SELECT COUNT(*) FROM \(table)\(countWhere)", selectSQL: "SELECT \(projection.joined(separator: ", ")) FROM \(table)\(whereClause)\(orderClause) LIMIT \(limit) OFFSET \(offset)", parameters: parameters, countParameterCount: countParameterCount)
+        return PostgresTableQueryPlan(countSQL: "SELECT COUNT(*) FROM \(table)\(countWhere)", selectSQL: "SELECT \(projection.joined(separator: ", ")) FROM \(table)\(whereClause)\(orderClause) LIMIT \(limit) OFFSET \(offset)", projectedColumns: projectedNames, parameters: parameters, countParameterCount: countParameterCount)
+    }
+
+    private static func identityMatchProjection(
+        _ identity: TableRowIdentity,
+        descriptor: TableDescriptor,
+        columns: [String: TableColumn],
+        dialect: TableSQLDialect,
+        bind: (PostgresQueryParameter) -> String,
+        operand: (String, TableColumn) throws -> String
+    ) throws -> String {
+        let matches: [String]
+        switch identity {
+        case .rowID(let id):
+            // The rowid aliases can be shadowed by user columns. If any are
+            // present, the loaded identity cannot be trusted as SQLite's rowid.
+            guard dialect == .sqlite, descriptor.rowIdentityStrategy == .rowID,
+                  !descriptor.columns.contains(where: { ["rowid", "_rowid_", "oid"].contains($0.name.lowercased()) }) else {
+                throw invalid("This row has no stable identity for inspecting large values.")
+            }
+            matches = ["_rowid_ IS \(bind(.integer(id)))"]
+
+        case .primaryKey(let components):
+            guard !descriptor.primaryKeyColumns.isEmpty,
+                  components.map(\.columnName) == descriptor.primaryKeyColumns else {
+                throw invalid("This row has no stable identity for inspecting large values.")
+            }
+            matches = try components.map { component in
+                guard let column = columns[component.columnName] else {
+                    throw invalid("This row has no stable identity for inspecting large values.")
+                }
+                let valueExpression: String
+                if dialect == .sqlite {
+                    valueExpression = bind(sqliteParameter(for: component.value))
+                } else {
+                    valueExpression = try postgresIdentityOperand(component.value, column: column, bind: bind, operand: operand)
+                }
+                let equality = dialect == .sqlite ? "IS" : "IS NOT DISTINCT FROM"
+                return "\(quoteIdentifier(component.columnName)) \(equality) \(valueExpression)"
+            }
+        }
+        let conjunction = matches.joined(separator: " AND ")
+        if dialect == .sqlite {
+            return "CASE WHEN \(conjunction) THEN 1 ELSE 0 END AS __sgs_identity_matches__"
+        }
+        return "CASE WHEN \(conjunction) THEN TRUE ELSE FALSE END AS __sgs_identity_matches__"
+    }
+
+    private static func sqliteParameter(for value: SQLiteValue) -> PostgresQueryParameter {
+        switch value {
+        case .null: .null
+        case .integer(let value): .integer(value)
+        case .double(let value): .double(value)
+        case .boolean(let value): .boolean(value)
+        case .blob(let value): .bytes(value)
+        case .exactNumeric(let value), .text(let value), .uuid(let value), .dateTime(let value), .json(let value), .array(let value): .text(value)
+        }
+    }
+
+    private static func postgresIdentityOperand(
+        _ value: SQLiteValue,
+        column: TableColumn,
+        bind: (PostgresQueryParameter) -> String,
+        operand: (String, TableColumn) throws -> String
+    ) throws -> String {
+        if case .blob(let data) = value {
+            guard column.declaredType.lowercased() == "bytea" else {
+                throw invalid("This row has no stable identity for inspecting large values.")
+            }
+            return bind(.bytes(data))
+        }
+        if value == .null { return bind(.null) }
+        return try operand(ResultSerialization.exactText(value), column)
     }
     /// Only a type name/typmod/array grammar may enter a cast; values stay bound.
     static func postgresCast(_ type: String) throws -> String {

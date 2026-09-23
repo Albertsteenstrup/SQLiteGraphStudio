@@ -1,5 +1,23 @@
 import Foundation
 
+/// Reads successive, bounded slices from one database snapshot. The reader is
+/// valid only while its enclosing snapshot operation is running.
+public struct BoundedCellSnapshotReader: Sendable {
+    private let readSlice: @MainActor @Sendable (Int, Int) async throws -> BoundedCellRead?
+
+    init(readSlice: @escaping @MainActor @Sendable (Int, Int) async throws -> BoundedCellRead?) {
+        self.readSlice = readSlice
+    }
+
+    public func read(offset: Int, length: Int = 4_096) async throws -> BoundedCellRead? {
+        try Task.checkCancellation()
+        guard offset >= 0, offset < Int.max, (1...4_096).contains(length) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Snapshot cell slices require a nonnegative offset and a length from 1 to 4096.")
+        }
+        return try await readSlice(offset, length)
+    }
+}
+
 /// The operations shared by every database target. The facade owns target
 /// selection; each backend owns the wire/storage-specific implementation.
 public protocol DatabaseBackend: AnyObject, Sendable {
@@ -11,6 +29,14 @@ public protocol DatabaseBackend: AnyObject, Sendable {
     func loadCatalogSnapshot() async throws -> CatalogSnapshot
     func fetchDescriptor(named tableName: String) async throws -> EditableTableDescriptor
     func fetchChunk(query: TableQueryState, descriptor: EditableTableDescriptor) async throws -> TableChunk
+    func readBoundedCell(query: TableQueryState, descriptor: EditableTableDescriptor, columnName: String, offset: Int, length: Int, expectedRowIdentity: TableRowIdentity?) async throws -> BoundedCellRead?
+    func withBoundedCellReadSnapshot<T: Sendable>(
+        query: TableQueryState,
+        descriptor: EditableTableDescriptor,
+        columnName: String,
+        expectedRowIdentity: TableRowIdentity?,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T
     func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int, limit: Int) async throws -> RecordPage
     func fetchRelated(record: RecordSnapshot, relationship: RecordRelationship, direction: RecordDirection, offset: Int, limit: Int) async throws -> RecordPage
     func commitEdit(_ change: CellEditChange) async throws
@@ -27,8 +53,32 @@ public protocol DatabaseBackend: AnyObject, Sendable {
     func serializeQueryResult(_ result: QueryResult, format: DataTransferFormat) async throws -> String
     func serializeTableRows(descriptor: EditableTableDescriptor, rows: [TableRow], format: DataTransferFormat) async throws -> String
     func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
-                         timeoutSeconds: TimeInterval, cancellation: ExportCancellation, progress: @escaping @Sendable (Int) -> Void) async throws -> Int
+                         timeoutSeconds: TimeInterval, cancellation: ExportCancellation, failIfExists: Bool,
+                         progress: @escaping @Sendable (Int) -> Void) async throws -> Int
     func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat) async throws -> ImportRowsResult
+}
+
+public extension DatabaseBackend {
+    /// Compatibility entry point for callers that address a cell by its current
+    /// query offset without carrying a previously loaded row identity.
+    func readBoundedCell(query: TableQueryState, descriptor: EditableTableDescriptor, columnName: String,
+                         offset: Int = 0, length: Int = 4_096) async throws -> BoundedCellRead? {
+        try await readBoundedCell(query: query, descriptor: descriptor, columnName: columnName,
+                                  offset: offset, length: length, expectedRowIdentity: nil)
+    }
+
+    /// Backends must explicitly provide a stable snapshot before they can
+    /// support actions that span multiple cell slices.
+    func withBoundedCellReadSnapshot<T: Sendable>(
+        query: TableQueryState,
+        descriptor: EditableTableDescriptor,
+        columnName: String,
+        expectedRowIdentity: TableRowIdentity?,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T {
+        throw DatabaseUserError(kind: .invalidInput,
+                                message: "Full-value actions are unavailable because this database source cannot provide a consistent read snapshot.")
+    }
 }
 
 public actor DatabaseService {
@@ -47,7 +97,8 @@ public actor DatabaseService {
     }
 
     private var backend: Backend?
-    private(set) var dumpSession: PostgresDumpSession?
+    private var dumpLease: PostgresDumpLease?
+    var dumpSession: PostgresDumpSession? { dumpLease?.session }
     private var pendingCleanup: Task<Void, Never>?
     private var openGeneration = UUID()
     public private(set) var currentTarget: DatabaseTarget?
@@ -95,18 +146,19 @@ public actor DatabaseService {
 
     public func open(dump url: URL, progress: @escaping @Sendable (String) async -> Void = { _ in }) async throws {
         let generation = try await beginOpen()
-        let dump = try await PostgresDumpSession.prepare(url: url, progress: progress)
+        let lease = try await PostgresDumpRegistry.shared.acquire(url: url, progress: progress)
+        let dump = lease.session
         let postgres = PostgresDatabaseBackend(configuration: dump.configuration, unixSocketPath: dump.socketPath)
         do {
             guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
             try await postgres.open()
             guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
-            dumpSession = dump
+            dumpLease = lease
             backend = .postgres(postgres)
             currentTarget = .postgresDump(url.standardizedFileURL)
         } catch {
             await postgres.close()
-            await dump.close()
+            await lease.release()
             throw error
         }
     }
@@ -122,16 +174,16 @@ public actor DatabaseService {
     private func retireCurrentBackend() -> Task<Void, Never> {
         let previousCleanup = pendingCleanup
         let previous = backend
-        let previousDump = dumpSession
+        let previousDumpLease = dumpLease
         backend = nil
-        dumpSession = nil
+        dumpLease = nil
         currentTarget = nil
         // Keep teardown owned while actor reentrancy allows another open or
         // Quit to enter. Every later transition joins the same cleanup chain.
         let cleanup = Task {
             await previousCleanup?.value
             await previous?.value.close()
-            await previousDump?.close()
+            await previousDumpLease?.release()
         }
         pendingCleanup = cleanup
         return cleanup
@@ -160,6 +212,31 @@ public actor DatabaseService {
 
     public func fetchChunk(query: TableQueryState, descriptor: EditableTableDescriptor) async throws -> TableChunk {
         try await requireBackend().fetchChunk(query: query, descriptor: descriptor)
+    }
+
+    public func readBoundedCell(query: TableQueryState, descriptor: EditableTableDescriptor, columnName: String,
+                                offset: Int = 0, length: Int = 4_096,
+                                expectedRowIdentity: TableRowIdentity? = nil) async throws -> BoundedCellRead? {
+        try await requireBackend().readBoundedCell(query: query, descriptor: descriptor, columnName: columnName,
+                                                   offset: offset, length: length, expectedRowIdentity: expectedRowIdentity)
+    }
+
+    /// Keeps a read-only database snapshot open for the complete callback so
+    /// every bounded slice comes from one stable version of the selected row.
+    public func withBoundedCellReadSnapshot<T: Sendable>(
+        query: TableQueryState,
+        descriptor: EditableTableDescriptor,
+        columnName: String,
+        expectedRowIdentity: TableRowIdentity?,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T {
+        try await requireBackend().withBoundedCellReadSnapshot(
+            query: query,
+            descriptor: descriptor,
+            columnName: columnName,
+            expectedRowIdentity: expectedRowIdentity,
+            operation: operation
+        )
     }
 
     public nonisolated func recordRelationships(catalog: CatalogSnapshot) -> [RecordRelationship] {
@@ -238,11 +315,14 @@ public actor DatabaseService {
 
     public func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
                                 timeoutSeconds: TimeInterval = 300, expectedTarget: DatabaseTarget? = nil, cancellation: ExportCancellation = ExportCancellation(),
+                                failIfExists: Bool = false,
                                 progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
         try Task.checkCancellation()
         if let expectedTarget, currentTarget != expectedTarget { throw CancellationError() }
         let source = try requireBackend()
-        return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format, timeoutSeconds: timeoutSeconds, cancellation: cancellation, progress: progress)
+        return try await source.exportTableRows(query: query, descriptor: descriptor, to: destination, format: format,
+                                                timeoutSeconds: timeoutSeconds, cancellation: cancellation,
+                                                failIfExists: failIfExists, progress: progress)
     }
 
     public func importRows(into descriptor: EditableTableDescriptor, text: String, format: DataTransferFormat, expectedTarget: DatabaseTarget? = nil) async throws -> ImportRowsResult {

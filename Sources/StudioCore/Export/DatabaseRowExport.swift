@@ -6,16 +6,18 @@ import PostgresNIO
 extension SQLiteDatabaseBackend {
     public func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
                                 timeoutSeconds: TimeInterval = 300, cancellation: ExportCancellation = ExportCancellation(),
+                                failIfExists: Bool = false,
                                 progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
         guard let pool else { throw DatabaseUserError(kind: .generic, message: "No database is open.") }
         var snapshotQuery = query
         snapshotQuery.offset = 0
         snapshotQuery.after = nil
         snapshotQuery.limit = Int.max
-        let plan = try makeQueryPlan(query: snapshotQuery, descriptor: descriptor)
+        let plan = try Self.makeQueryPlan(query: snapshotQuery, descriptor: descriptor)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            let writer = try AtomicRowExportWriter(destination: destination, names: descriptor.columns.map(\.name), format: format, cancellation: cancellation)
+            let writer = try AtomicRowExportWriter(destination: destination, names: descriptor.columns.map(\.name), format: format,
+                                                   cancellation: cancellation, failIfExists: failIfExists)
             defer { writer.abort() }
             try await withQueryTimeout(seconds: timeoutSeconds) {
                 try await withTaskCancellationHandler {
@@ -40,6 +42,7 @@ extension SQLiteDatabaseBackend {
 extension PostgresDatabaseBackend {
     public func exportTableRows(query: TableQueryState, descriptor: TableDescriptor, to destination: URL, format: DataTransferFormat,
                                 timeoutSeconds: TimeInterval = 300, cancellation: ExportCancellation = ExportCancellation(),
+                                failIfExists: Bool = false,
                                 progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
         var snapshotQuery = query
         snapshotQuery.offset = 0
@@ -48,7 +51,8 @@ extension PostgresDatabaseBackend {
         let plan = try PostgresTableQueryBuilder.makePlan(query: snapshotQuery, descriptor: descriptor)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            let writer = try AtomicRowExportWriter(destination: destination, names: descriptor.columns.map(\.name), format: format, cancellation: cancellation)
+            let writer = try AtomicRowExportWriter(destination: destination, names: descriptor.columns.map(\.name), format: format,
+                                                   cancellation: cancellation, failIfExists: failIfExists)
             defer { writer.abort() }
             try await withReadOnlyTransaction(timeoutSeconds: timeoutSeconds) { connection in
                 progress(0)

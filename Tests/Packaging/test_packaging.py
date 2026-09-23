@@ -3,6 +3,7 @@
 These tests never build, sign, submit, install, or launch the real application.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import plistlib
@@ -29,6 +30,7 @@ class PackagingTests(unittest.TestCase):
         self.bin = self.root / "build"
         self.bin.mkdir()
         (self.bin / "SQLiteGraphStudio").write_text("fixture executable")
+        (self.bin / "StudioMCP").write_text("fixture MCP helper")
         resources = self.bin / "SQLiteGraphStudio_SQLiteGraphStudio.bundle"
         resources.mkdir()
         (resources / "asset.txt").write_text("fixture resource")
@@ -72,6 +74,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.env.pop("SIGNING_IDENTITY", None)
         self.env.pop("NOTARYTOOL_PROFILE", None)
         self.env.pop("SGS_POSTGRES_RUNTIME", None)
+        self.env.pop("SGS_POCKET_TTS_RUNTIME", None)
         for key in ["SGS_TEST_FAIL_TOOL", "SGS_TEST_APP_ARCHS", "SGS_TEST_OTOOL_OUTPUT"]:
             self.env.pop(key, None)
 
@@ -144,8 +147,16 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.assertEqual(result.returncode, 0, result.stderr)
         resource = self.root / "dist/SQLiteGraphStudio.app/Contents/Resources/SQLiteGraphStudio_SQLiteGraphStudio.bundle/asset.txt"
         self.assertEqual(resource.read_text(), "fixture resource")
+        helper = self.root / "dist/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        self.assertEqual(helper.read_text(), "fixture MCP helper")
         self.assertNotIn("pkill", self.log())
         self.assertNotIn("hdiutil", self.log())
+
+    def test_release_bundles_mcp_helper(self):
+        result = self.run_script("build_app.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        helper = self.root / "dist/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        self.assertEqual(helper.read_text(), "universal fixture")
 
     def test_signed_release_signs_before_dmg_then_notarizes_and_validates(self):
         self.env.update(SIGNING_IDENTITY="Developer ID Application: Example (TEAM)", NOTARYTOOL_PROFILE="example-profile")
@@ -372,7 +383,8 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         app_signature = next(i for i, line in enumerate(commands) if line.startswith("codesign --force") and line.endswith("SQLiteGraphStudio.app"))
         nested = [line for line in commands[:app_signature] if line.startswith("codesign --force")]
         native_files = [p.relative_to(source) for p in source.rglob("*") if p.is_file() and not p.is_symlink() and p.read_bytes().startswith(bytes.fromhex("cffaedfe"))]
-        self.assertEqual(len(nested), len(native_files))
+        self.assertEqual(len(nested), len(native_files) + 1)
+        self.assertTrue(any(line.endswith("SQLiteGraphStudio.app/Contents/MacOS/StudioMCP") for line in nested))
         for relative in native_files:
             self.assertTrue(any(line.endswith(str(self.packaged_runtime() / relative)) for line in nested), relative)
         self.assertTrue(all("--options runtime --timestamp --sign" in line for line in nested))
@@ -386,6 +398,64 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.assertIn("/Resources/PostgreSQL/", self.log())
         self.assertNotIn("hdiutil", self.log())
         self.assertFalse(any(line.startswith("codesign --force") and line.endswith("SQLiteGraphStudio.app") for line in self.log().splitlines()))
+
+
+class PocketTTSPackagingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="sgs-pocket-packaging-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "Pocket TTS runtime"
+        python = self.source / "python/bin/python3"
+        python.parent.mkdir(parents=True)
+        python.write_bytes(bytes.fromhex("cffaedfe") + b"fixture universal Python")
+        python.chmod(0o755)
+
+        lock = self.source / "requirements.lock"
+        lock.write_text("pocket-tts==3.1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
+        manifest = {
+            "schema_version": 1,
+            "python_minor": "3.12",
+            "pocket_tts_version": "3.1.0",
+            "protocol_version": 1,
+            "requirements_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+            "architectures": ["arm64", "x86_64"],
+        }
+        (self.source / "runtime-manifest.json").write_text(json.dumps(manifest))
+
+        self.tools = self.root / "tools"
+        self.tools.mkdir()
+        lipo = self.tools / "lipo"
+        lipo.write_text("#!/bin/sh\nprintf 'arm64 x86_64\\n'\n")
+        lipo.chmod(0o755)
+        self.env = dict(os.environ, PATH=f"{self.tools}:{os.environ['PATH']}")
+        self.packager = ROOT / "script/package_pocket_tts_runtime.py"
+
+    def run_packager(self, *args):
+        return subprocess.run(
+            [os.sys.executable, str(self.packager), *map(str, args)],
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_manifest_must_be_an_object(self):
+        (self.source / "runtime-manifest.json").write_text("[]")
+        result = self.run_packager("check-source", self.source, self.root / "app", "arm64")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("manifest must be a JSON object", result.stderr)
+
+    def test_valid_locked_runtime_is_checked_and_worker_is_packaged(self):
+        destination = self.root / "app/Contents/Resources/PocketTTSRuntime"
+        result = self.run_packager("package", self.source, destination, "arm64", "x86_64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((destination / "python/bin/python3").is_file())
+        self.assertTrue((destination / "requirements.lock").is_file())
+        packaged_worker = destination / "pocket_tts_worker.py"
+        self.assertEqual(
+            packaged_worker.read_bytes(),
+            (ROOT / "script/pocket-tts-runtime/pocket_tts_worker.py").read_bytes(),
+        )
 
 
 if __name__ == "__main__":

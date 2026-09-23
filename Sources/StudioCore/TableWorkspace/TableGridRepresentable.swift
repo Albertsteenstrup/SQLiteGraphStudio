@@ -6,6 +6,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
     public let revision: Int
     public let columnDescription: (String) -> String?
     public let inspectRow: (Int) -> Void
+    public let inspectCellSlice: (Int, String) -> Void
     public let requestColumnDrop: (TableColumn) -> Void
 
     public init(
@@ -13,13 +14,15 @@ public struct TableGridRepresentable: NSViewRepresentable {
         revision: Int,
         columnDescription: @escaping (String) -> String?,
         requestColumnDrop: @escaping (TableColumn) -> Void,
-        inspectRow: @escaping (Int) -> Void = { _ in }
+        inspectRow: @escaping (Int) -> Void = { _ in },
+        inspectCellSlice: @escaping (Int, String) -> Void = { _, _ in }
     ) {
         self.tab = tab
         self.revision = revision
         self.columnDescription = columnDescription
         self.requestColumnDrop = requestColumnDrop
         self.inspectRow = inspectRow
+        self.inspectCellSlice = inspectCellSlice
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -27,7 +30,8 @@ public struct TableGridRepresentable: NSViewRepresentable {
             tab: tab,
             columnDescription: columnDescription,
             requestColumnDrop: requestColumnDrop,
-            inspectRow: inspectRow
+            inspectRow: inspectRow,
+            inspectCellSlice: inspectCellSlice
         )
     }
 
@@ -44,7 +48,8 @@ public struct TableGridRepresentable: NSViewRepresentable {
             columnDescription: columnDescription,
             requestColumnDrop: requestColumnDrop,
             scrollView: nsView,
-            inspectRow: inspectRow
+            inspectRow: inspectRow,
+            inspectCellSlice: inspectCellSlice
         )
     }
 
@@ -53,6 +58,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
         private var tab: TableTabModel
         private var columnDescription: (String) -> String?
         private var inspectRow: (Int) -> Void
+        private var inspectCellSlice: (Int, String) -> Void
         private var requestColumnDrop: (TableColumn) -> Void
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
@@ -69,12 +75,14 @@ public struct TableGridRepresentable: NSViewRepresentable {
             tab: TableTabModel,
             columnDescription: @escaping (String) -> String?,
             requestColumnDrop: @escaping (TableColumn) -> Void,
-            inspectRow: @escaping (Int) -> Void
+            inspectRow: @escaping (Int) -> Void,
+            inspectCellSlice: @escaping (Int, String) -> Void = { _, _ in }
         ) {
             self.tab = tab
             self.columnDescription = columnDescription
             self.requestColumnDrop = requestColumnDrop
             self.inspectRow = inspectRow
+            self.inspectCellSlice = inspectCellSlice
         }
 
         deinit {
@@ -148,11 +156,13 @@ public struct TableGridRepresentable: NSViewRepresentable {
             columnDescription: @escaping (String) -> String?,
             requestColumnDrop: @escaping (TableColumn) -> Void,
             scrollView: NSScrollView,
-            inspectRow: @escaping (Int) -> Void
+            inspectRow: @escaping (Int) -> Void,
+            inspectCellSlice: @escaping (Int, String) -> Void = { _, _ in }
         ) {
             let tabChanged = self.tab.id != tab.id
             self.tab = tab
             self.inspectRow = inspectRow
+            self.inspectCellSlice = inspectCellSlice
             self.columnDescription = columnDescription
             self.requestColumnDrop = requestColumnDrop
             self.scrollView = scrollView
@@ -211,7 +221,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
             let column = tab.descriptor.columns[columnIndex]
             let valueText = tab.displayedValue(row: row, column: columnIndex)
             let isLoaded = tab.row(at: row) != nil
-            let isEditable = tab.isEditable && column.isEditable && isLoaded
+            let isEditable = isLoaded && tab.canEditCell(row: row, column: columnIndex)
 
             view.configure(
                 value: valueText,
@@ -398,7 +408,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
             for row in selectedRows {
                 guard let tableRow = tab.row(at: row) else { continue }
                 let values = selectedColumns.compactMap { index in
-                    tableRow.values.indices.contains(index) ? tableRow.values[index].displayText : nil
+                    tableRow.values.indices.contains(index) ? tab.displayedValue(row: row, column: index) : nil
                 }
                 lines.append(values.joined(separator: "\t"))
             }
@@ -431,7 +441,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
                     let columnIndex = startColumn + columnOffset
                     guard tab.descriptor.columns.indices.contains(columnIndex) else { continue }
                     let column = tab.descriptor.columns[columnIndex]
-                    guard column.isEditable else { continue }
+                    guard tab.canEditCell(row: targetRow, column: columnIndex) else { continue }
                     tab.commitEdit(row: targetRow, columnName: column.name, rawValue: value)
                 }
             }
@@ -444,16 +454,26 @@ public struct TableGridRepresentable: NSViewRepresentable {
 
             let point = tableView.convert(event.locationInWindow, from: nil)
             let clickedRow = tableView.row(at: point)
-            let clickedColumnIndex = tableView.column(at: point)
+            let visualColumnIndex = tableView.column(at: point)
+            let clickedColumnName = tableView.tableColumns.indices.contains(visualColumnIndex)
+                ? tableView.tableColumns[visualColumnIndex].identifier.rawValue
+                : nil
+            return makeContextMenu(row: clickedRow, columnName: clickedColumnName)
+        }
 
-            let clickedColumn: TableColumn? = {
-                guard clickedColumnIndex >= 0,
-                      tab.descriptor.columns.indices.contains(clickedColumnIndex)
-                else { return nil }
-                return tab.descriptor.columns[clickedColumnIndex]
-            }()
+        /// Kept separate from the pointer-event adapter so the native menu contract
+        /// can be regression-tested without synthesizing a window mouse event.
+        func makeContextMenu(row clickedRow: Int, columnName clickedColumnName: String?) -> NSMenu {
+            let clickedColumn = clickedColumnName.flatMap { name in
+                tab.descriptor.columns.first { $0.name == name }
+            }
+            let clickedColumnIndex = clickedColumnName.flatMap { name in
+                tab.descriptor.columns.firstIndex { $0.name == name }
+            } ?? -1
 
             let isRowLoaded = clickedRow >= 0 && tab.row(at: clickedRow) != nil
+            let clickedCellIsOmitted = clickedRow >= 0 && clickedColumn != nil
+                && tab.isValueOmitted(row: clickedRow, column: clickedColumnIndex)
 
             // Store context for action methods
             contextMenuRow = clickedRow >= 0 ? clickedRow : nil
@@ -469,13 +489,19 @@ public struct TableGridRepresentable: NSViewRepresentable {
             let menu = NSMenu()
             let inspectItem = NSMenuItem(title: "Inspect Record…", action: #selector(contextMenuInspect(_:)), keyEquivalent: "")
             inspectItem.target = self
-            inspectItem.isEnabled = isRowLoaded
+            inspectItem.isEnabled = isRowLoaded && tab.row(at: clickedRow)?.omittedColumnIndices.isEmpty == true
             menu.addItem(inspectItem)
+            if clickedCellIsOmitted {
+                let inspectSliceItem = NSMenuItem(title: "Inspect Cell Slice…", action: #selector(contextMenuInspectCellSlice(_:)), keyEquivalent: "")
+                inspectSliceItem.target = self
+                inspectSliceItem.isEnabled = isRowLoaded
+                menu.addItem(inspectSliceItem)
+            }
             menu.addItem(.separator())
 
             let setNullItem = NSMenuItem(title: "Set Null", action: #selector(contextMenuSetNull(_:)), keyEquivalent: "")
             setNullItem.target = self
-            setNullItem.isEnabled = itemStates.setNullEnabled
+            setNullItem.isEnabled = itemStates.setNullEnabled && !clickedCellIsOmitted
             menu.addItem(setNullItem)
 
             menu.addItem(NSMenuItem.separator())
@@ -487,7 +513,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
 
             let pasteItem = NSMenuItem(title: "Paste", action: #selector(contextMenuPaste(_:)), keyEquivalent: "")
             pasteItem.target = self
-            pasteItem.isEnabled = itemStates.pasteEnabled
+            pasteItem.isEnabled = itemStates.pasteEnabled && !clickedCellIsOmitted
             menu.addItem(pasteItem)
 
             menu.addItem(NSMenuItem.separator())
@@ -500,6 +526,7 @@ public struct TableGridRepresentable: NSViewRepresentable {
             let cloneRowItem = NSMenuItem(title: "Clone row", action: #selector(contextMenuCloneRow(_:)), keyEquivalent: "")
             cloneRowItem.target = self
             cloneRowItem.isEnabled = itemStates.cloneRowEnabled
+                && !(clickedRow >= 0 && tab.row(at: clickedRow)?.omittedColumnIndices.isEmpty == false)
             menu.addItem(cloneRowItem)
 
             let deleteRowItem = NSMenuItem(title: "Delete row", action: #selector(contextMenuDeleteRow(_:)), keyEquivalent: "")
@@ -511,12 +538,21 @@ public struct TableGridRepresentable: NSViewRepresentable {
         }
 
         @objc func contextMenuInspect(_ sender: Any?) {
-            guard let row = contextMenuRow, tab.row(at: row) != nil else { return }
+            guard let row = contextMenuRow, let loaded = tab.row(at: row), loaded.omittedColumnIndices.isEmpty else { return }
             inspectRow(row)
         }
 
+        @objc func contextMenuInspectCellSlice(_ sender: Any?) {
+            guard let row = contextMenuRow, let columnName = contextMenuColumnName,
+                  let columnIndex = tab.descriptor.columns.firstIndex(where: { $0.name == columnName }),
+                  tab.isValueOmitted(row: row, column: columnIndex) else { return }
+            inspectCellSlice(row, columnName)
+        }
+
         @objc func contextMenuSetNull(_ sender: Any?) {
-            guard let row = contextMenuRow, let columnName = contextMenuColumnName else { return }
+            guard let row = contextMenuRow, let columnName = contextMenuColumnName,
+                  let column = tab.descriptor.columns.firstIndex(where: { $0.name == columnName }),
+                  !tab.isValueOmitted(row: row, column: column) else { return }
             tab.commitEdit(row: row, columnName: columnName, rawValue: "NULL")
         }
 

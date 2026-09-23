@@ -7,16 +7,12 @@ struct ClusterTitleCacheTokenTests {
         let before = ClusterTitleCacheToken.make(
             layoutRevision: 3,
             sidecarRevision: 3,
-            playbackKey: 0,
-            isStoryOnlyMode: false,
             hasFocusPlan: false,
             showClusterHalos: true
         )
         let after = ClusterTitleCacheToken.make(
             layoutRevision: 4,
             sidecarRevision: 4,
-            playbackKey: 0,
-            isStoryOnlyMode: false,
             hasFocusPlan: false,
             showClusterHalos: true
         )

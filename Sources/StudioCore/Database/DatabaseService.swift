@@ -1,5 +1,32 @@
 @preconcurrency import GRDB
 import Foundation
+import SQLite3
+
+/// Inspect SQLite's live statement before GRDB copies text/blob values into
+/// Swift. A response-size check after Row.fetchAll would already be too late.
+private func chargeSQLiteReadBudget(_ statement: Statement, usedBytes: inout Int,
+                                    skippingColumnIndices: Set<Int> = []) throws {
+    let raw = statement.sqliteStatement
+    let columnCount = Int(sqlite3_column_count(raw))
+    guard columnCount <= DatabaseReadBudget.maxColumns else {
+        throw DatabaseUserError(kind: .invalidInput, message: "The result has too many columns. Select at most \(DatabaseReadBudget.maxColumns) columns.")
+    }
+    for index in 0..<columnCount {
+        if skippingColumnIndices.contains(index) { continue }
+        let column = Int32(index)
+        let type = sqlite3_column_type(raw, column)
+        let size = type == SQLITE_TEXT || type == SQLITE_BLOB
+            ? Int(sqlite3_column_bytes(raw, column)) : 8
+        guard size <= DatabaseReadBudget.maxCellBytes else {
+            throw DatabaseUserError(kind: .invalidInput, message: "A result value exceeds the \(DatabaseReadBudget.maxCellBytes)-byte page limit. Select fewer fields or inspect that cell in bounded slices.")
+        }
+        let charged = size + 32
+        guard usedBytes <= DatabaseReadBudget.maxResultBytes - charged else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The result exceeds the \(DatabaseReadBudget.maxResultBytes)-byte page limit. Select fewer columns or rows.")
+        }
+        usedBytes += charged
+    }
+}
 
 public struct CatalogSnapshot: Sendable {
     public let descriptors: [EditableTableDescriptor]
@@ -31,6 +58,13 @@ public actor SQLiteDatabaseBackend {
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
             try db.execute(sql: "PRAGMA busy_timeout = 3000")
+            if readOnly {
+                // The MCP reader is a separate read-only pool. Disable schema
+                // trust as well so a crafted view cannot invoke unsafe functions
+                // hidden from the submitted SQL text.
+                try db.execute(sql: "PRAGMA trusted_schema = OFF")
+                try db.execute(sql: "PRAGMA query_only = ON")
+            }
         }
 
         pool = try DatabasePool(path: url.path, configuration: configuration)
@@ -197,50 +231,87 @@ public actor SQLiteDatabaseBackend {
 
         var page = query
         page.limit = min(query.limit, 10_000) + 1
-        let queryPlan = try makeQueryPlan(query: page, descriptor: descriptor)
+        let queryPlan = try Self.makeQueryPlan(query: page, descriptor: descriptor)
+        let valueColumns = query.projectedColumns ?? descriptor.columns.map(\.name)
         let clock = ContinuousClock()
         let startedAt = clock.now
         let result = try await pool.read { db in
                 let exactCount = query.requestExactCount ? try Int.fetchOne(db, sql: queryPlan.countSQL, arguments: queryPlan.countArguments) : query.cachedExactCount
-                let rows = try Row.fetchAll(db, sql: queryPlan.selectSQL, arguments: queryPlan.selectArguments)
                 let limit = min(query.limit, 10_000)
-                let countState = TableCountState.forPage(query: query, rowCount: min(rows.count, limit), hasMore: rows.count > limit, exactCount: exactCount)
+                let statement = try db.makeStatement(sql: queryPlan.selectSQL)
+                let cursor = try Row.fetchCursor(statement, arguments: queryPlan.selectArguments)
+                var rawColumnIndexes: [String: Int] = [:]
+                for (index, name) in statement.columnNames.enumerated() where rawColumnIndexes[name] == nil {
+                    rawColumnIndexes[name] = index
+                }
+                let identityColumns: Set<String>
+                switch descriptor.rowIdentityStrategy {
+                case .primaryKey: identityColumns = Set(descriptor.primaryKeyColumns)
+                case .rowID: identityColumns = []
+                case .readOnly: identityColumns = Set(descriptor.fallbackSortColumns)
+                }
+                var readBytes = 0
+                var pageRows: [TableRow] = []
+                var hasMore = false
+                while let row = try cursor.next() {
+                    if pageRows.count >= limit {
+                        hasMore = true
+                        break
+                    }
+                    var omittedVisibleColumns: Set<Int> = []
+                    var omittedRawColumns: Set<Int> = []
+                    if query.omitOversizedCells {
+                        for (visibleIndex, columnName) in valueColumns.enumerated() where !identityColumns.contains(columnName) {
+                            guard let rawIndex = rawColumnIndexes[columnName] else { continue }
+                            let rawColumn = Int32(rawIndex)
+                            let type = sqlite3_column_type(statement.sqliteStatement, rawColumn)
+                            if (type == SQLITE_TEXT || type == SQLITE_BLOB),
+                               sqlite3_column_bytes(statement.sqliteStatement, rawColumn) > DatabaseReadBudget.maxCellBytes {
+                                omittedVisibleColumns.insert(visibleIndex)
+                                omittedRawColumns.insert(rawIndex)
+                            }
+                        }
+                    }
+                    try chargeSQLiteReadBudget(statement, usedBytes: &readBytes, skippingColumnIndices: omittedRawColumns)
+                    let rowValues = valueColumns.enumerated().map { visibleIndex, columnName in
+                        if omittedVisibleColumns.contains(visibleIndex) { return SQLiteValue.null }
+                        let dbValue: DatabaseValue = row[columnName]
+                        return SQLiteValue(databaseValue: dbValue)
+                    }
+
+                    let identity: TableRowIdentity
+                    switch descriptor.rowIdentityStrategy {
+                    case .primaryKey:
+                        let components = descriptor.primaryKeyColumns.map { columnName in
+                            IdentityComponent(
+                                columnName: columnName,
+                                value: SQLiteValue(databaseValue: row[columnName])
+                            )
+                        }
+                        identity = .primaryKey(components)
+                    case .rowID:
+                        let rowID: Int64 = row["__sgs_rowid__"]
+                        identity = .rowID(rowID)
+                    case .readOnly:
+                        let identityColumns = query.projectedColumns == nil ? descriptor.fallbackSortColumns : valueColumns
+                        let components = identityColumns.map { columnName in
+                            IdentityComponent(
+                                columnName: columnName,
+                                value: SQLiteValue(databaseValue: row[columnName])
+                            )
+                        }
+                        identity = .primaryKey(components)
+                    }
+                    pageRows.append(TableRow(identity: identity, values: rowValues,
+                                             omittedColumnIndices: omittedVisibleColumns))
+                }
+                let countState = TableCountState.forPage(query: query, rowCount: pageRows.count, hasMore: hasMore, exactCount: exactCount)
                 return TableChunk(
-                    rows: rows.prefix(limit).map { row in
-                        let rowValues = descriptor.columns.map { column in
-                            let dbValue: DatabaseValue = row[column.name]
-                            return SQLiteValue(databaseValue: dbValue)
-                        }
-
-                        let identity: TableRowIdentity
-                        switch descriptor.rowIdentityStrategy {
-                        case .primaryKey:
-                            let components = descriptor.primaryKeyColumns.map { columnName in
-                                IdentityComponent(
-                                    columnName: columnName,
-                                    value: SQLiteValue(databaseValue: row[columnName])
-                                )
-                            }
-                            identity = .primaryKey(components)
-                        case .rowID:
-                            let rowID: Int64 = row["__sgs_rowid__"]
-                            identity = .rowID(rowID)
-                        case .readOnly:
-                            let components = descriptor.fallbackSortColumns.map { columnName in
-                                IdentityComponent(
-                                    columnName: columnName,
-                                    value: SQLiteValue(databaseValue: row[columnName])
-                                )
-                            }
-                            identity = .primaryKey(components)
-                        }
-
-                        return TableRow(identity: identity, values: rowValues)
-                    },
-                    totalRowCount: max(countState.navigationCount, query.offset + min(rows.count, limit) + (rows.count > limit ? 1 : 0)),
+                    rows: pageRows,
+                    totalRowCount: max(countState.navigationCount, query.offset + pageRows.count + (hasMore ? 1 : 0)),
                     offset: query.offset,
                     limit: limit,
-                    countState: countState, hasMore: rows.count > limit
+                    countState: countState, hasMore: hasMore
                 )
         }
 
@@ -249,6 +320,81 @@ public actor SQLiteDatabaseBackend {
             "Fetched \(result.rows.count, privacy: .public) rows from \(descriptor.name, privacy: .public) in \(elapsed, format: .fixed(precision: 2)) ms"
         )
         return result
+    }
+
+    public func readBoundedCell(query: TableQueryState, descriptor: EditableTableDescriptor, columnName: String,
+                                offset: Int, length: Int, expectedRowIdentity: TableRowIdentity?) async throws -> BoundedCellRead? {
+        guard offset >= 0, offset < Int.max, (1...65_536).contains(length) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Cell slices require a nonnegative offset and a length from 1 to 65536.")
+        }
+        guard query.offset >= 0, query.offset <= Int.max - 10_001 else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Invalid row offset.")
+        }
+        guard let pool else { throw SQLiteUserError(kind: .generic, message: "No database is open.") }
+        var oneRow = query
+        oneRow.limit = 1
+        oneRow.requestExactCount = false
+        oneRow.cachedExactCount = nil
+        oneRow.after = nil
+        let plan = try Self.makeQueryPlan(query: oneRow, descriptor: descriptor,
+                                          boundedCell: BoundedCellProjection(columnName: columnName, offset: offset, length: length,
+                                                                            expectedRowIdentity: expectedRowIdentity))
+        guard let row = try pool.read({ db in
+            try Row.fetchOne(db, sql: plan.selectSQL, arguments: plan.selectArguments)
+        }) else { return nil }
+        return Self.boundedCellRead(from: row, offset: offset, expectedRowIdentity: expectedRowIdentity)
+    }
+
+    public func withBoundedCellReadSnapshot<T: Sendable>(
+        query: TableQueryState,
+        descriptor: EditableTableDescriptor,
+        columnName: String,
+        expectedRowIdentity: TableRowIdentity?,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T {
+        guard query.offset >= 0, query.offset <= Int.max - 10_001 else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Invalid row offset.")
+        }
+        guard let pool else { throw SQLiteUserError(kind: .generic, message: "No database is open.") }
+        let session = SQLiteBoundedCellReadSession(snapshot: try pool.makeSnapshot())
+        let reader = BoundedCellSnapshotReader { offset, length in
+            try await session.read(query: query, descriptor: descriptor, columnName: columnName,
+                                   expectedRowIdentity: expectedRowIdentity, offset: offset, length: length)
+        }
+        do {
+            let result = try await operation(reader)
+            await session.close()
+            return result
+        } catch {
+            await session.close()
+            throw error
+        }
+    }
+
+    fileprivate static func boundedCellRead(from row: Row, offset: Int,
+                                            expectedRowIdentity: TableRowIdentity?) -> BoundedCellRead? {
+        if expectedRowIdentity != nil, (row["__sgs_identity_matches__"] as Int?) != 1 { return nil }
+        let storageType: String = row["__sgs_cell_type__"]
+        let byteCount = row["__sgs_cell_bytes__"] as Int?
+        let characterCount = row["__sgs_cell_characters__"] as Int?
+        let value: SQLiteValue
+        let blobSlice: DatabaseValue = row["__sgs_cell_blob_slice__"]
+        if storageType.lowercased() == "blob" {
+            if case .blob(let bytes) = blobSlice.storage { value = .blob(bytes) }
+            else { value = .blob(Data()) }
+        } else if let text = row["__sgs_cell_text_slice__"] as String? {
+            value = .text(text)
+        } else {
+            value = .null
+        }
+        let returnedLength: Int
+        switch value {
+        case .blob(let data): returnedLength = data.count
+        case .text(let text): returnedLength = text.unicodeScalars.count
+        default: returnedLength = 0
+        }
+        return BoundedCellRead(storageType: storageType, value: value, byteCount: byteCount,
+                               characterCount: characterCount, offset: offset, returnedLength: returnedLength)
     }
 
     public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
@@ -270,8 +416,20 @@ public actor SQLiteDatabaseBackend {
         guard let pool else { throw SQLiteUserError(kind: .generic, message: "No database is open.") }
         let values = try await pool.read { db in
             try db.readOnly {
-                try Row.fetchAll(db, sql: plan.sql, arguments: StatementArguments(plan.parameters.map(\.databaseValue)))
-                    .map { row in (0..<row.count).map { SQLiteValue(databaseValue: row[$0] as DatabaseValue) } }
+                let statement = try db.makeStatement(sql: plan.sql)
+                let cursor = try Row.fetchCursor(statement, arguments: StatementArguments(plan.parameters.map(\.databaseValue)))
+                var readBytes = 0
+                var result: [[SQLiteValue]] = []
+                while let row = try cursor.next() {
+                    if result.count >= plan.limit {
+                        // RecordAccess.page only needs the extra row's presence.
+                        result.append([])
+                        break
+                    }
+                    try chargeSQLiteReadBudget(statement, usedBytes: &readBytes)
+                    result.append((0..<row.count).map { SQLiteValue(databaseValue: row[$0] as DatabaseValue) })
+                }
+                return result
             }
         }
         try Task.checkCancellation()
@@ -586,18 +744,23 @@ public actor SQLiteDatabaseBackend {
             try await pool.read { db in
                 let statement = try db.makeStatement(sql: sql)
                 let columnNames = statement.columnNames
+                guard columnNames.count <= DatabaseReadBudget.maxColumns else {
+                    throw DatabaseUserError(kind: .invalidInput, message: "The result has too many columns. Select at most \(DatabaseReadBudget.maxColumns) columns.")
+                }
                 let cursor = try Row.fetchCursor(statement)
 
                 var rows: [QueryResultRow] = []
                 var inferredTypes = Array(repeating: "", count: columnNames.count)
                 var truncated = false
                 var index = 0
+                var readBytes = 0
 
                 while let row = try cursor.next() {
                     if rows.count >= rowLimit {
                         truncated = true
                         break
                     }
+                    try chargeSQLiteReadBudget(statement, usedBytes: &readBytes)
 
                     let values = columnNames.indices.map { columnIndex in
                         SQLiteValue(databaseValue: row[columnIndex])
@@ -983,8 +1146,9 @@ public actor SQLiteDatabaseBackend {
         return unique
     }
 
-    func makeQueryPlan(query: TableQueryState, descriptor: EditableTableDescriptor) throws -> QueryPlan {
-        let plan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor, dialect: .sqlite)
+    static func makeQueryPlan(query: TableQueryState, descriptor: EditableTableDescriptor,
+                                          boundedCell: BoundedCellProjection? = nil) throws -> QueryPlan {
+        let plan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor, dialect: .sqlite, boundedCell: boundedCell)
         func arguments(_ parameters: [PostgresQueryParameter]) -> StatementArguments {
             StatementArguments(parameters.map { parameter -> DatabaseValue in
                 switch parameter {
@@ -1106,6 +1270,51 @@ struct QueryPlan {
     let countArguments: StatementArguments
     let selectSQL: String
     let selectArguments: StatementArguments
+}
+
+/// Owns the GRDB snapshot on a dedicated actor so bounded reads never block the
+/// main actor while the multi-slice operation holds its consistent view.
+private actor SQLiteBoundedCellReadSession {
+    private var snapshot: DatabaseSnapshot?
+
+    init(snapshot: DatabaseSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func read(query: TableQueryState, descriptor: EditableTableDescriptor, columnName: String,
+              expectedRowIdentity: TableRowIdentity?, offset: Int, length: Int) throws -> BoundedCellRead? {
+        try Task.checkCancellation()
+        guard offset >= 0, offset < Int.max, (1...4_096).contains(length) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Snapshot cell slices require a nonnegative offset and a length from 1 to 4096.")
+        }
+        guard let snapshot else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The cell snapshot has already ended.")
+        }
+        var oneRow = query
+        oneRow.limit = 1
+        oneRow.requestExactCount = false
+        oneRow.cachedExactCount = nil
+        oneRow.after = nil
+        let plan = try SQLiteDatabaseBackend.makeQueryPlan(
+            query: oneRow,
+            descriptor: descriptor,
+            boundedCell: BoundedCellProjection(columnName: columnName, offset: offset, length: length,
+                                               expectedRowIdentity: expectedRowIdentity)
+        )
+        let result: BoundedCellRead? = try snapshot.read { db -> BoundedCellRead? in
+            guard let row = try Row.fetchOne(db, sql: plan.selectSQL, arguments: plan.selectArguments) else { return nil }
+            return SQLiteDatabaseBackend.boundedCellRead(from: row, offset: offset,
+                                                         expectedRowIdentity: expectedRowIdentity)
+        }
+        try Task.checkCancellation()
+        return result
+    }
+
+    func close() {
+        guard let snapshot else { return }
+        self.snapshot = nil
+        try? snapshot.close()
+    }
 }
 
 private struct QueryStatement {

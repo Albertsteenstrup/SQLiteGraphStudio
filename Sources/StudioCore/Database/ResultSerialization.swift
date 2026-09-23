@@ -20,7 +20,13 @@ public enum ResultSerialization {
     }
 
     public static func serializeTableRows(descriptor: TableDescriptor, rows: [TableRow], format: DataTransferFormat) throws -> String {
-        try serialize(names: descriptor.columns.map(\.name), rows: rows.map(\.values), format: format)
+        guard !rows.contains(where: { !$0.omittedColumnIndices.isEmpty }) else {
+            throw DatabaseUserError(
+                kind: .invalidInput,
+                message: "Cannot serialize rows with large values omitted. Fetch the complete values or export all matching rows."
+            )
+        }
+        return try serialize(names: descriptor.columns.map(\.name), rows: rows.map(\.values), format: format)
     }
 
     static func serialize(names: [String], rows: [[DatabaseResultValue]], format: DataTransferFormat) throws -> String {

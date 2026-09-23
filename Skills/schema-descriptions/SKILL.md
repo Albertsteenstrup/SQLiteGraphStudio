@@ -7,17 +7,17 @@ description: Add table and column descriptions to a SQLite Graph Studio sidecar 
 
 You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
-Descriptions are intentionally a sidecar so users can edit them directly without changing the database schema.
+Descriptions are intentionally sidecar metadata so users can edit them directly without changing the database schema. When Graph Studio MCP is available, use `studio_get_annotations` to read the current `metadata_revision`, then pass it as `expected_metadata_revision` to `studio_update_annotations` when saving requested descriptions with immediate refresh. On `METADATA_CONFLICT`, read again, merge the user's intended descriptions, and retry with a new `request_id`. The file workflow below remains available offline.
 
 ## Database documents and read-only discovery
 
 Append `.studio.json` to the complete opened filename. A SQLite file uses `app.sqlite.studio.json`; a PostgreSQL connection document uses `catalog.postgres.studio.json` or `catalog.pgstudio.studio.json`. Keep the sidecar beside that document, even when another document connects to the same database. Never put credentials in the sidecar or modify the connection document.
 
-For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. This includes `tables` keys, cluster membership, and story playback `tables`, `focus`, `expand`, and `relation.table`. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
+For PostgreSQL, use the app's exact schema-qualified table IDs, such as `public.orders`, everywhere a table is referenced. Keep column names exact and unqualified. Do not remove the schema or split IDs on dots: schema, table, and column names can themselves contain dots. When writing discovery SQL, quote the schema and object separately, for example `"public"."orders"`.
 
-For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Inspect at most five sample rows per table when their meaning is otherwise unclear.
+For SQLite, inspect schema with `sqlite3 -readonly <db> ".tables"` and `sqlite3 -readonly <db> ".schema"`, or use existing schema documentation. For PostgreSQL, use a schema export or an already authorized connection that enforces read-only transactions. Inspect `pg_catalog` or `information_schema` with SELECT queries; include table/view names, columns, and declared foreign keys. Do not run DDL, migrations, data changes, or arbitrary database functions. Read a small bounded sample only when it changes the description; fetch more if the user's question requires it.
 
-The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions; **Features -> Stories** reloads the story list. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
+The app loads local metadata when the document opens. **Relayout** reloads notes and groups and rebuilds graph positions. Cluster colours are used for graph groups, table borders, and the table picker. Local sidecar and skill edits do not enable database writes.
 
 ## Inputs you need
 
@@ -67,7 +67,7 @@ Field rules:
 2. List the schema using read-only schema discovery or existing schema docs.
 3. Draft concise table and column descriptions.
 4. Write the sidecar JSON, preserving unrelated fields such as `clusters`.
-5. Tell the user to click **Relayout** in the running app to reload the sidecar and rebuild the layout. Query headers match full table IDs such as `public.orders.total`; unqualified column notes appear only when the column can be resolved unambiguously.
+5. If MCP is connected, fetch the latest revision with `studio_get_annotations`, save through `studio_update_annotations` using that revision, and confirm the refreshed view. For offline sidecar edits, tell the user to click **Relayout** in the running app. Query headers match full table IDs such as `public.orders.total`; unqualified column notes appear only when the column can be resolved unambiguously.
 
 ## Writing good descriptions
 
@@ -87,5 +87,5 @@ Skip obvious columns like `id`, `created_at`, and `updated_at` unless they have 
 - Don't modify database DDL or add SQL comments. Descriptions belong in the sidecar.
 - Don't overwrite existing `clusters`.
 - Don't invent table or column names.
-- Don't read more than 5 sample rows per table.
+- Read only the bounded samples needed to support the requested descriptions.
 - Don't commit the sidecar without asking. Some users want it gitignored.

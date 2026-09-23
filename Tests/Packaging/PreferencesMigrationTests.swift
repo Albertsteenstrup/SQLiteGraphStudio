@@ -30,7 +30,7 @@ enum PreferencesMigrationTests {
         let merged = defaults.persistentDomain(forName: destination) ?? [:]
         try expect(merged[historyKey] as? Data == legacy[historyKey] as? Data, "copies missing query history")
         try expect(merged[layoutKey] as? Data == legacy[layoutKey] as? Data, "copies compatible graph layout")
-        try expect(merged[storyKey] as? Data == legacy[storyKey] as? Data, "copies story layout")
+        try expect(merged[storyKey] == nil, "does not revive removed story layout")
         try expect(merged[recentKey] as? [String] == ["/fixture.sqlite"], "copies recent documents")
         try expect(merged[savedKey] as? Data == Data("current saved".utf8), "keeps existing canonical saved queries")
         try expect(merged["existing"] as? Bool == false, "preserves unrelated existing values")

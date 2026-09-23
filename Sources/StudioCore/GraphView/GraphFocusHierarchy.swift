@@ -7,19 +7,11 @@ enum GraphFocusTier: Sendable, Equatable {
 }
 
 struct GraphFocusPlan: Sendable, Equatable {
-    let activeStoryIDs: Set<String>
-    let relatedStoryIDs: Set<String>
     let activeTableIDs: Set<String>
     let relatedTableIDs: Set<String>
 
     var isActive: Bool {
-        !activeStoryIDs.isEmpty || !activeTableIDs.isEmpty
-    }
-
-    func tierForStory(_ id: String) -> GraphFocusTier {
-        if activeStoryIDs.contains(id) { return .active }
-        if relatedStoryIDs.contains(id) { return .related }
-        return .hidden
+        !activeTableIDs.isEmpty
     }
 
     func tierForTable(_ id: String) -> GraphFocusTier {
@@ -28,54 +20,8 @@ struct GraphFocusPlan: Sendable, Equatable {
         return .hidden
     }
 
-    func visibleStoryIDs() -> Set<String> {
-        activeStoryIDs.union(relatedStoryIDs)
-    }
-
     func visibleTableIDs() -> Set<String> {
         activeTableIDs.union(relatedTableIDs)
-    }
-}
-
-enum StoryStarFormationLayout {
-    static func graphPositions(
-        hubCenter: CGPoint,
-        relatedStoryIDs: [String],
-        tableIDs: [String],
-        tableSize: (String) -> CGSize,
-        gap: CGFloat = 92,
-        interItemGap: CGFloat = 36
-    ) -> (tablePositions: [String: CGPoint], storyPositions: [String: CGPoint]) {
-        let hubSize = CGSize(width: StoryGraphCardLayout.width, height: StoryGraphCardLayout.height)
-        let storyItems = relatedStoryIDs.map {
-            GraphFocusRingLayout.Item(id: $0, size: hubSize)
-        }
-        let tableItems = tableIDs.map {
-            GraphFocusRingLayout.Item(id: $0, size: tableSize($0))
-        }
-        let items = storyItems + tableItems
-        guard !items.isEmpty else { return ([:], [:]) }
-
-        let layout = GraphFocusRingLayout.graphPositions(
-            hubCenter: hubCenter,
-            hubSize: hubSize,
-            items: items,
-            gap: gap,
-            interItemGap: interItemGap
-        )
-
-        var tablePositions: [String: CGPoint] = [:]
-        var storyPositions: [String: CGPoint] = [:]
-        let tableIDSet = Set(tableIDs)
-        for item in items {
-            guard let point = layout[item.id] else { continue }
-            if tableIDSet.contains(item.id) {
-                tablePositions[item.id] = point
-            } else {
-                storyPositions[item.id] = point
-            }
-        }
-        return (tablePositions, storyPositions)
     }
 }
 

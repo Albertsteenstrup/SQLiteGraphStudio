@@ -9,6 +9,7 @@ public final class ExportCancellation: @unchecked Sendable {
     private var cancelled = false
     public init() {}
     public func cancel() { lock.withLock { cancelled = true } }
+    public var isCancelled: Bool { lock.withLock { cancelled } }
     public func check() throws { try lock.withLock { if cancelled { throw CancellationError() } } }
     func publish(_ body: () throws -> Void) throws {
         try lock.withLock {
@@ -27,15 +28,17 @@ final class AtomicRowExportWriter: @unchecked Sendable {
     private let keys: [String]
     private let format: DataTransferFormat
     private let cancellation: ExportCancellation
+    private let failIfExists: Bool
     private var finished = false
     private(set) var rowCount = 0
 
-    init(destination: URL, names: [String], format: DataTransferFormat, cancellation: ExportCancellation) throws {
+    init(destination: URL, names: [String], format: DataTransferFormat, cancellation: ExportCancellation, failIfExists: Bool = false) throws {
         self.destination = destination
         self.temporaryURL = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
         self.keys = ResultSerialization.uniqueNames(names)
         self.format = format
         self.cancellation = cancellation
+        self.failIfExists = failIfExists
         try cancellation.check()
         let descriptor = Darwin.open(temporaryURL.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -61,13 +64,23 @@ final class AtomicRowExportWriter: @unchecked Sendable {
         if format == .json { try write("]") }
         try handle.synchronize()
         try handle.close()
-        // Cancellation and rename have one ordered boundary: a cancellation
-        // accepted before publication leaves the old destination untouched.
+        // Cancellation and publication have one ordered boundary: a cancellation
+        // accepted before publication leaves the destination untouched.
         try cancellation.publish {
-            guard Darwin.rename(temporaryURL.path, destination.path) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            if failIfExists {
+                // Both paths share a directory. link() publishes atomically and fails
+                // with EEXIST if another process creates the destination after preflight.
+                guard Darwin.link(temporaryURL.path, destination.path) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                finished = true
+                _ = Darwin.unlink(temporaryURL.path)
+            } else {
+                guard Darwin.rename(temporaryURL.path, destination.path) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                finished = true
             }
-            finished = true
         }
         return rowCount
     }
@@ -83,12 +96,14 @@ final class AtomicRowExportWriter: @unchecked Sendable {
 
 public enum StreamingRowExport {
     public static func write(names: [String], rows: [[DatabaseResultValue]], to destination: URL, format: DataTransferFormat,
-                             cancellation: ExportCancellation = ExportCancellation(), progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
+                             cancellation: ExportCancellation = ExportCancellation(), failIfExists: Bool = false,
+                             progress: @escaping @Sendable (Int) -> Void = { _ in }) async throws -> Int {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             // The retained result is immutable. File IO and encoding stay off the UI actor.
             return try await Task.detached {
-                let writer = try AtomicRowExportWriter(destination: destination, names: names, format: format, cancellation: cancellation)
+                let writer = try AtomicRowExportWriter(destination: destination, names: names, format: format,
+                                                       cancellation: cancellation, failIfExists: failIfExists)
                 defer { writer.abort() }
                 progress(0)
                 for values in rows {

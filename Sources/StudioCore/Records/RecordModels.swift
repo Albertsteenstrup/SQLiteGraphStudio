@@ -38,13 +38,17 @@ public struct RecordSnapshot: Identifiable, Hashable, Sendable {
     public let values: [SQLiteValue]
     public let identity: RecordIdentity?
     public let label: String
-    public init(descriptor: TableDescriptor?, columns: [QueryResultColumn], values: [SQLiteValue], identity: RecordIdentity?, label: String) {
+    /// Set when this snapshot contains only one bounded cell slice.
+    public let partialCellRead: BoundedCellRead?
+    public init(descriptor: TableDescriptor?, columns: [QueryResultColumn], values: [SQLiteValue], identity: RecordIdentity?, label: String,
+                partialCellRead: BoundedCellRead? = nil) {
         self.id = identity?.id ?? "snapshot:" + UUID().uuidString
         self.descriptor = descriptor
         self.columns = columns
         self.values = values
         self.identity = identity
         self.label = label
+        self.partialCellRead = partialCellRead
     }
     public var table: RecordTableID? { descriptor.map(RecordTableID.init(descriptor:)) }
     /// Duplicate column labels are ambiguous, not silently resolved to the first.

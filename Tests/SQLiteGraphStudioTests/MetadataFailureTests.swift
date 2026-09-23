@@ -34,6 +34,9 @@ struct MetadataFailureTests {
         state.reload(for: url, descriptors: [])
         #expect(state.sidecar == good)
         guard case .failed(.malformed) = state.status else { Issue.record("Expected malformed state"); return }
+        // Saving over malformed metadata would discard unknown user fields.
+        // Repair is explicit: remove the invalid file before saving a new one.
+        try FileManager.default.removeItem(at: file)
         try SchemaSidecarStore.save(.empty, for: url)
         state.reload(for: url, descriptors: [])
         #expect(state.status == .loaded)
@@ -70,18 +73,31 @@ struct MetadataFailureTests {
         try Data("{\"version\":999,\"tables\":[]}".utf8).write(to: file)
         #expect(throws: SchemaMetadataError.unsupportedVersion(999)) { _ = try SchemaSidecarStore.load(for: url) }
     }
-    @Test func duplicateStoryIDsCannotReplaceLastGoodMetadata() throws {
+    @Test func legacyStoryEntriesAreBackedUpAndRemovedWithoutReplacingCurrentSchemaFields() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
         let file = SchemaSidecarStore.sidecarURL(for: url)
-        defer { try? FileManager.default.removeItem(at: file) }
+        defer {
+            try? FileManager.default.removeItem(at: file)
+            let parent = file.deletingLastPathComponent()
+            let backups = (try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? []
+            for backup in backups where backup.lastPathComponent.hasPrefix(file.lastPathComponent + ".stories-backup-") {
+                try? FileManager.default.removeItem(at: backup)
+            }
+        }
         var state = SchemaMetadataState()
         let good = SchemaSidecar(tables: ["t": .init(description: "Good")])
         try SchemaSidecarStore.save(good, for: url)
         state.reload(for: url, descriptors: [])
-        try Data("{\"version\":1,\"stories\":[{\"id\":\"same\"},{\"id\":\"same\"}]}".utf8).write(to: file)
+        let legacy = Data("{\"version\":1,\"tables\":{\"t\":{\"description\":\"Good\"}},\"stories\":[{\"id\":\"same\"},{\"id\":\"same\"}]}".utf8)
+        try legacy.write(to: file)
         state.reload(for: url, descriptors: [])
         #expect(state.sidecar == good)
-        guard case .failed(.malformed) = state.status else { Issue.record("Duplicate identity must be malformed"); return }
+        #expect(state.status == .loaded)
+        let rewritten = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        #expect(rewritten["stories"] == nil)
+        let backups = try FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(file.lastPathComponent + ".stories-backup-") }
+        #expect(backups.contains { (try? Data(contentsOf: $0)) == legacy })
     }
 
 }

@@ -22,6 +22,244 @@ struct TableBrowsingRegressionTests {
         #expect(chunk.totalRowCount == 3) // 2 known rows plus a navigation sentinel, not all 1205.
         await service.close()
     }
+    @Test func boundedCellReadsStreamSlicesWithoutLoadingHugeTextOrBlobValues() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-bounded-cell-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let text = String(repeating: "é🛰️", count: 50_000)
+        let blob = Data(repeating: 0xA7, count: 8 * 1_024 * 1_024)
+        let queue = try DatabaseQueue(path: url.path)
+        try await queue.write { db in
+            try db.execute(sql: "CREATE TABLE cells(id INTEGER PRIMARY KEY, note TEXT, payload BLOB, nullable BLOB, empty_text TEXT, empty_blob BLOB, scalar INTEGER)")
+            try db.execute(sql: "INSERT INTO cells VALUES (?, ?, ?, NULL, ?, ?, ?)", arguments: [1, text, blob, "", Data(), 42])
+        }
+
+        let service = DatabaseService()
+        try await service.open(url: url, readOnly: true, includeRowCounts: false)
+        let descriptor = try await service.fetchDescriptor(named: "cells")
+        let query = TableQueryState(offset: 0, limit: 1)
+        let textSlice = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                       columnName: "note", offset: 7, length: 12))
+        let expectedScalars = Array(text.unicodeScalars)[7..<19]
+        #expect(textSlice.value == .text(String(String.UnicodeScalarView(expectedScalars))))
+        #expect(textSlice.characterCount == text.unicodeScalars.count)
+        #expect(textSlice.byteCount == text.utf8.count)
+        #expect(textSlice.returnedLength == 12)
+        #expect(textSlice.hasMore)
+        #expect(!textSlice.isComplete)
+
+        let blobSlice = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                       columnName: "payload", offset: 100, length: 19))
+        #expect(blobSlice.storageType == "blob")
+        #expect(blobSlice.value == .blob(Data(repeating: 0xA7, count: 19)))
+        #expect(blobSlice.byteCount == blob.count)
+        #expect(blobSlice.characterCount == nil)
+        #expect(blobSlice.returnedLength == 19)
+        #expect(blobSlice.offsetUnit == "bytes")
+
+        let pastBlobEnd = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                         columnName: "payload", offset: blob.count + 4, length: 9))
+        #expect(pastBlobEnd.value == .blob(Data()))
+        #expect(pastBlobEnd.isBinary)
+        #expect(pastBlobEnd.byteCount == blob.count)
+        #expect(!pastBlobEnd.hasMore)
+        #expect(!pastBlobEnd.isComplete)
+
+        let emptyText = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                      columnName: "empty_text", offset: 0, length: 16))
+        #expect(emptyText.storageType == "text")
+        #expect(emptyText.value == .text(""))
+        #expect(emptyText.byteCount == 0)
+        #expect(emptyText.characterCount == 0)
+        #expect(emptyText.isComplete)
+
+        let emptyBlob = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                      columnName: "empty_blob", offset: 0, length: 16))
+        #expect(emptyBlob.value == .blob(Data()))
+        #expect(emptyBlob.isBinary)
+        #expect(emptyBlob.byteCount == 0)
+        #expect(emptyBlob.isComplete)
+
+        let nullValue = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                       columnName: "nullable", offset: 4, length: 16))
+        #expect(nullValue.isNull)
+        #expect(nullValue.value == .null)
+        #expect(nullValue.byteCount == nil)
+        #expect(nullValue.characterCount == nil)
+        #expect(nullValue.isComplete)
+
+        let scalar = try #require(try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                                                    columnName: "scalar", offset: 0, length: 16))
+        #expect(scalar.storageType == "integer")
+        #expect(scalar.value == .text("42"))
+        #expect(scalar.isComplete)
+        await #expect(throws: DatabaseUserError.self) {
+            try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                              columnName: "payload", offset: -1, length: -999_999)
+        }
+        await #expect(throws: DatabaseUserError.self) {
+            try await service.readBoundedCell(query: query, descriptor: descriptor,
+                                              columnName: "payload", offset: 0, length: 65_537)
+        }
+        await service.close()
+    }
+
+    @Test func fullCellActionsUseOneSnapshotAcrossSameLengthConcurrentUpdates() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-cell-snapshot-\(UUID().uuidString).sqlite")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(atPath: url.path + "-wal")
+            try? FileManager.default.removeItem(atPath: url.path + "-shm")
+        }
+        let originalText = String(repeating: "é", count: 140_000)
+        let updatedText = String(repeating: "ø", count: 140_000)
+        let originalBlob = Data(repeating: 0xA7, count: 280_000)
+        let updatedBlob = Data(repeating: 0xB8, count: originalBlob.count)
+        let finalBlob = Data(repeating: 0xC9, count: originalBlob.count)
+        let writer = try DatabaseQueue(path: url.path)
+        try await writer.write { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "CREATE TABLE cells(id INTEGER PRIMARY KEY, note TEXT, payload BLOB)")
+            try db.execute(sql: "INSERT INTO cells VALUES (1, ?, ?)", arguments: [originalText, originalBlob])
+        }
+
+        let service = DatabaseService()
+        try await service.open(url: url, includeRowCounts: false)
+        let descriptor = try await service.fetchDescriptor(named: "cells")
+        var query = TableQueryState(limit: 1)
+        query.omitOversizedCells = true
+        let page = try await service.fetchChunk(query: query, descriptor: descriptor)
+        let row = try #require(page.rows.first)
+        #expect(row.omittedColumnIndices == [1, 2])
+
+        let textSlices = try await service.withBoundedCellReadSnapshot(
+            query: query,
+            descriptor: descriptor,
+            columnName: "note",
+            expectedRowIdentity: row.identity
+        ) { reader in
+            let first = try #require(try await reader.read(offset: 0))
+            try await writer.write { db in
+                try db.execute(sql: "UPDATE cells SET note = ?, payload = ? WHERE id = 1",
+                               arguments: [updatedText, updatedBlob])
+            }
+            let middle = try #require(try await reader.read(offset: 4_096))
+            let lastOffset = originalText.unicodeScalars.count - 1
+            let last = try #require(try await reader.read(offset: lastOffset))
+            return [first, middle, last]
+        }
+        #expect(textSlices.map(\.value) == [
+            .text(String(repeating: "é", count: 4_096)),
+            .text(String(repeating: "é", count: 4_096)),
+            .text("é")
+        ])
+        #expect(textSlices.map(\.characterCount) == Array(repeating: originalText.unicodeScalars.count, count: 3))
+        #expect(textSlices.map(\.byteCount) == Array(repeating: originalText.utf8.count, count: 3))
+
+        let blobSlices = try await service.withBoundedCellReadSnapshot(
+            query: query,
+            descriptor: descriptor,
+            columnName: "payload",
+            expectedRowIdentity: row.identity
+        ) { reader in
+            let first = try #require(try await reader.read(offset: 0))
+            try await writer.write { db in
+                try db.execute(sql: "UPDATE cells SET payload = ? WHERE id = 1", arguments: [finalBlob])
+            }
+            let middle = try #require(try await reader.read(offset: 4_096))
+            let last = try #require(try await reader.read(offset: originalBlob.count - 1))
+            return [first, middle, last]
+        }
+        #expect(blobSlices.map(\.value) == [
+            .blob(Data(repeating: 0xB8, count: 4_096)),
+            .blob(Data(repeating: 0xB8, count: 4_096)),
+            .blob(Data([0xB8]))
+        ])
+        #expect(blobSlices.map(\.byteCount) == Array(repeating: originalBlob.count, count: 3))
+
+        let copiedText = try await service.withBoundedCellReadSnapshot(
+            query: query, descriptor: descriptor, columnName: "note", expectedRowIdentity: row.identity
+        ) { reader in
+            try await BoundedCellOperations.collectForClipboard { offset, length in
+                try await reader.read(offset: offset, length: length)
+            }
+        }
+        #expect(copiedText == .text(updatedText))
+
+        let copiedBlob = try await service.withBoundedCellReadSnapshot(
+            query: query, descriptor: descriptor, columnName: "payload", expectedRowIdentity: row.identity
+        ) { reader in
+            try await BoundedCellOperations.collectForClipboard { offset, length in
+                try await reader.read(offset: offset, length: length)
+            }
+        }
+        #expect(copiedBlob == .binary(finalBlob))
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let textDestination = folder.appendingPathComponent("value.txt")
+        let textBytes = try await service.withBoundedCellReadSnapshot(
+            query: query, descriptor: descriptor, columnName: "note", expectedRowIdentity: row.identity
+        ) { reader in
+            try await BoundedCellOperations.saveToFile(at: textDestination) { offset, length in
+                try await reader.read(offset: offset, length: length)
+            }
+        }
+        #expect(textBytes == updatedText.utf8.count)
+        #expect(try String(contentsOf: textDestination, encoding: .utf8) == updatedText)
+
+        let blobDestination = folder.appendingPathComponent("value.bin")
+        let blobBytes = try await service.withBoundedCellReadSnapshot(
+            query: query, descriptor: descriptor, columnName: "payload", expectedRowIdentity: row.identity
+        ) { reader in
+            try await BoundedCellOperations.saveToFile(at: blobDestination) { offset, length in
+                try await reader.read(offset: offset, length: length)
+            }
+        }
+        #expect(blobBytes == finalBlob.count)
+        #expect(try Data(contentsOf: blobDestination) == finalBlob)
+
+        await service.close()
+        try writer.close()
+    }
+
+    @Test func resultPagesRejectOversizedCellsBeforeMaterializingThem() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-page-budget-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fixture = try DatabaseQueue(path: url.path)
+        try await fixture.write { db in
+            try db.execute(sql: "CREATE TABLE large_cells(id INTEGER PRIMARY KEY, payload BLOB); INSERT INTO large_cells VALUES(1, zeroblob(300000))")
+            try db.execute(sql: "CREATE TABLE record_sentinel(id INTEGER PRIMARY KEY, payload BLOB); INSERT INTO record_sentinel VALUES(1, x'01'), (2, zeroblob(300000))")
+        }
+        let service = DatabaseService()
+        try await service.open(url: url, readOnly: true, includeRowCounts: false)
+        let descriptor = try await service.fetchDescriptor(named: "large_cells")
+        await #expect(throws: DatabaseUserError.self) {
+            try await service.fetchChunk(query: .init(limit: 1), descriptor: descriptor)
+        }
+        await #expect(throws: DatabaseUserError.self) {
+            try await service.fetchRecords(descriptor: descriptor,
+                                           predicates: [IdentityComponent(columnName: "id", value: .integer(1))])
+        }
+        let sentinelDescriptor = try await service.fetchDescriptor(named: "record_sentinel")
+        let tablePage = try await service.fetchChunk(query: .init(limit: 1), descriptor: sentinelDescriptor)
+        #expect(tablePage.rows.count == 1)
+        #expect(tablePage.hasMore)
+        let recordPage = try await service.fetchRecords(descriptor: sentinelDescriptor, predicates: [], limit: 1)
+        #expect(recordPage.records.count == 1)
+        #expect(recordPage.hasMore)
+        var projected = TableQueryState(limit: 1)
+        projected.projectedColumns = ["id"]
+        let safePage = try await service.fetchChunk(query: projected, descriptor: descriptor)
+        #expect(safePage.rows.first?.values == [.integer(1)])
+        await #expect(throws: DatabaseUserError.self) {
+            try await service.executeReadOnlyQuery(sql: "SELECT randomblob(300000)", rowLimit: 1)
+        }
+        await #expect(throws: DatabaseUserError.self) {
+            try await service.executeReadOnlyQuery(sql: "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<150) SELECT zeroblob(65536) FROM n", rowLimit: 200)
+        }
+        await service.close()
+    }
     @Test func typedFiltersUseEqualityRangeAndNullSemantics() async throws {
         let url = try Self.fixture()
         let service = DatabaseService()

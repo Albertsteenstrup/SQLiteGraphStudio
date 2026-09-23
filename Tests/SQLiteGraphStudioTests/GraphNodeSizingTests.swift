@@ -91,7 +91,7 @@ struct GraphNodeSizingTests {
         #expect(detail.anchorMap.nodeCards["a"]?.frame == frames["a"])
     }
 
-    @Test func preferenceSurvivesRelaunchAndInvalidStoredValueFallsBackToUniform() throws {
+    @Test func temporarySizingDoesNotPersistWithoutSourceAndInvalidLegacyValueFallsBackToUniform() throws {
         let suite = "GraphNodeSizingTests.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -99,7 +99,8 @@ struct GraphNodeSizingTests {
         #expect(session.graphNodeSizeMetric == .uniform)
         session.graphNodeSizeMetric = .fields
         let restored = AppSession(userDefaults: defaults)
-        #expect(restored.graphNodeSizeMetric == .fields)
+        #expect(restored.graphNodeSizeMetric == .uniform)
+        restored.graphNodeSizeMetric = .fields
         restored.tables = [table("a", fields: 5), table("b", fields: 10)]
         #expect(restored.graphNodeSizeProfile.areas["a"]! < restored.graphNodeSizeProfile.areas["b"]!)
         defaults.set("invalid", forKey: "SQLiteGraphStudio.graph-node-size-metric")
@@ -128,7 +129,7 @@ struct GraphNodeSizingTests {
         let session = AppSession(userDefaults: defaults)
         await session.openDatabase(url: url)
         #expect(session.presentedError == nil)
-        session.graphNodeSizeMetric = .relations
+        session.setGraphNodeSizeMetric(.relations, persist: true)
         #expect(session.graphRelationCounts == ["parent": 1, "child": 2])
         let original = session.graphNodeSizeProfile
         #expect(await session.applyGraphFilter(.init(maximumRelations: 1)))
@@ -145,5 +146,9 @@ struct GraphNodeSizingTests {
         #expect(session.graphNodeSizeProfile.areas.isEmpty)
         #expect(session.graphNodeSizeProfile.unknownIDs.isEmpty)
         #expect(session.graphNodeSizeMetric == .rows)
+        let restored = AppSession(userDefaults: defaults)
+        await restored.openDatabase(url: url)
+        #expect(restored.graphNodeSizeMetric == .relations)
+        await restored.closeAndWait()
     }
 }

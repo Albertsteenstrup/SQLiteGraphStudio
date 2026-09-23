@@ -4,12 +4,14 @@ public enum SchemaMetadataError: Error, Sendable, Equatable, LocalizedError {
     case unreadable(String)
     case malformed(String)
     case unsupportedVersion(Int)
+    case conflict(String)
 
     public var errorDescription: String? {
         switch self {
         case .unreadable(let detail): return "Cannot read metadata: \(detail)"
         case .malformed(let detail): return "Malformed metadata: \(detail)"
         case .unsupportedVersion(let version): return "Metadata version \(version) is unsupported; this app supports version 1."
+        case .conflict: return "Metadata changed since it was read. Reload the annotations and retry the update."
         }
     }
 }
@@ -75,13 +77,11 @@ public struct SchemaMetadataState: Sendable {
             for nameOfColumn in description.columns.keys { column(nameOfColumn, in: name) }
         }
         for cluster in sidecar.clusters { for name in cluster.tables { table(name) } }
-        let clusterIDs = Set(sidecar.clusters.map(\.id))
-        let storyIDs = Set(sidecar.stories.map(\.id))
-        for story in sidecar.stories {
-            for name in story.coveredTableIDs { table(name) }
-            for step in story.playback { if let relation = step.relation { column(relation.column, in: relation.table) } }
-            for id in story.clusters where !clusterIDs.contains(id) { issues.insert("Story ‘\(story.title)’ references missing cluster ‘\(id)’.") }
-            for relation in story.relatedStories where !storyIDs.contains(relation.storyID) { issues.insert("Story ‘\(story.title)’ references missing story ‘\(relation.storyID)’.") }
+        for note in sidecar.notes {
+            if let tableID = note.tableID { table(tableID) }
+            if let tableID = note.tableID, let columnName = note.columnName {
+                column(columnName, in: tableID)
+            }
         }
         return issues.sorted()
     }

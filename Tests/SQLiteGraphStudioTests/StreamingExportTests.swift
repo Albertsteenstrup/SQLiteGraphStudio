@@ -76,6 +76,22 @@ struct StreamingExportTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["failed.json"])
     }
 
+    @Test func exclusivePublicationNeverOverwritesExistingDestination() async throws {
+        let directory = try exportDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("existing.csv")
+        try "keep this file".write(to: destination, atomically: true, encoding: .utf8)
+        do {
+            _ = try await StreamingRowExport.write(names: ["id"], rows: [[.integer(1)]], to: destination,
+                                                   format: .csv, failIfExists: true)
+            Issue.record("Exclusive export must fail when the destination already exists")
+        } catch let error as POSIXError {
+            #expect(error.code == .EEXIST)
+        }
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "keep this file")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["existing.csv"])
+    }
+
     @Test func sqliteCancellationInsideReadQueuePreservesDestination() async throws {
         let directory = try exportDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -59,7 +59,9 @@ private struct RecordInspectorView: View {
                         Button("Show connections", systemImage: "point.3.connected.trianglepath.dotted") { session.records.showConnections() }
                             .buttonStyle(.borderedProminent)
                     } else {
-                        Text("Loaded values only. No proven unique locator is available; record graph and identity-dependent navigation are unavailable.")
+                        Text(record.partialCellRead == nil
+                             ? "Loaded values only. No proven unique locator is available; record graph and identity-dependent navigation are unavailable."
+                             : "This is a bounded slice of one cell. Other fields and record identity were not loaded.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     if let table = record.descriptor?.name, let description = session.tableDescription(for: table) {
@@ -70,13 +72,26 @@ private struct RecordInspectorView: View {
                 Text("Values").font(.headline)
                 ForEach(Array(record.columns.enumerated()), id: \.offset) { index, column in
                     if record.values.indices.contains(index) {
-                        RecordValueView(column: column, value: record.values[index], description: record.descriptor.flatMap { session.columnDescription(for: $0.name, column: column.name) })
-                            .id("\(record.id):\(index)")
+                        let sliceNavigation = session.gridCellSliceNavigation(for: record)
+                        RecordValueView(column: column, value: record.values[index],
+                                        description: record.descriptor.flatMap { session.columnDescription(for: $0.name, column: column.name) },
+                                        partialRead: record.partialCellRead,
+                                        sliceNavigation: sliceNavigation,
+                                        onPreviousSlice: { _ = session.navigateGridCellSlice(for: record, direction: .previous) },
+                                        onNextSlice: { _ = session.navigateGridCellSlice(for: record, direction: .next) },
+                                        withReadSnapshot: { operation in
+                                            try await session.withGridCellReadSnapshot(for: record, operation: operation)
+                                        },
+                                        onShowSlice: { read in session.showGridCellSlice(for: record, read: read) })
+                            .id(record.partialCellRead == nil ? "\(record.id):\(index)" : "slice:\(session.records.originLabel):\(index)")
                     }
                 }
                 Divider()
                 Text("Relationships").font(.headline)
-                if record.table == nil {
+                if record.partialCellRead != nil {
+                    Text("Connections are unavailable for a cell slice because the row key was not loaded.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if record.table == nil {
                     Text("Query provenance is unverified. Values remain inspectable without inferring a source table.").font(.caption).foregroundStyle(.secondary)
                 } else {
                     relationshipSection(.outgoing)
@@ -90,7 +105,7 @@ private struct RecordInspectorView: View {
                     }
                 }
             }.padding(20)
-        }.id(record.id)
+        }.id(record.partialCellRead == nil ? record.id : "slice:\(session.records.originLabel)")
     }
 
     private func relationshipSection(_ direction: RecordDirection) -> some View {
@@ -164,20 +179,34 @@ private struct RecordRelationshipView: View {
 }
 
 private struct RecordValueView: View {
+    typealias FullCellOperation = @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> String
+    typealias FullCellOperationRunner = @MainActor @Sendable (@escaping FullCellOperation) async throws -> String
+
     let column: QueryResultColumn
     let value: SQLiteValue
     let description: String?
+    let partialRead: BoundedCellRead?
+    let sliceNavigation: GridCellSliceNavigationState?
+    let onPreviousSlice: () -> Void
+    let onNextSlice: () -> Void
+    let withReadSnapshot: FullCellOperationRunner
+    let onShowSlice: (BoundedCellRead) -> Void
     @State private var expanded = false
     @State private var pretty = false
     @State private var content: String?
     @State private var copied = false
+    @State private var searchText = ""
+    @State private var lastFoundOffset: Int?
+    @State private var operationStatus: String?
+    @State private var operationTask: Task<Void, Never>?
+    @State private var isOperating = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(column.name).font(.subheadline.bold()).textSelection(.enabled)
                 Text(column.typeLabel).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Button(copied ? "Copied" : "Copy exact value") {
+                Button(copied ? "Copied" : (partialRead == nil ? "Copy exact value" : "Copy shown slice")) {
                     Task {
                         let value = value
                         let raw = await Task.detached { RecordValuePresentation.raw(value) }.value
@@ -188,7 +217,45 @@ private struct RecordValueView: View {
                 }.font(.caption)
             }
             if let description { Text(description).font(.caption).foregroundStyle(.secondary) }
-            if expanded {
+            if let partialRead {
+                HStack(spacing: 10) {
+                    Text(partialReadDescription(partialRead)).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if let sliceNavigation {
+                        Button("Previous slice", systemImage: "chevron.left") { onPreviousSlice() }
+                            .disabled(!sliceNavigation.canReadPrevious || sliceNavigation.isLoading)
+                        Button("Next slice", systemImage: "chevron.right") { onNextSlice() }
+                            .disabled(!sliceNavigation.canReadNext || sliceNavigation.isLoading)
+                        if sliceNavigation.isLoading { ProgressView().controlSize(.small) }
+                    }
+                }
+                Text(RecordValuePresentation.summary(value)).font(.system(.callout, design: .monospaced)).lineLimit(5).textSelection(.enabled)
+                if sliceNavigation != nil {
+                    if !partialRead.isBinary && !partialRead.isNull {
+                        HStack(spacing: 8) {
+                            TextField("Find text in value", text: $searchText)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Find text in \(column.name)")
+                            Button("Find next") { findNext(in: partialRead) }
+                                .disabled(searchText.isEmpty || isOperating)
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Button("Copy full value") { copyFullValue() }
+                            .disabled(isOperating || partialRead.isNull)
+                        Button("Save full value…") { saveFullValue() }
+                            .disabled(isOperating || partialRead.isNull)
+                        if isOperating {
+                            ProgressView().controlSize(.small)
+                            Button("Cancel") { operationTask?.cancel() }
+                        }
+                    }.font(.caption)
+                    if let operationStatus {
+                        Text(operationStatus).font(.caption).foregroundStyle(.secondary)
+                            .accessibilityLabel(operationStatus)
+                    }
+                }
+            } else if expanded {
                 HStack {
                     Button("Collapse value") { expanded = false }
                     Toggle("Format JSON", isOn: $pretty).toggleStyle(.checkbox)
@@ -211,6 +278,99 @@ private struct RecordValueView: View {
             guard !Task.isCancelled else { return }
             content = result
         }
+        .onDisappear { operationTask?.cancel() }
+        .onChange(of: searchText) { _, _ in lastFoundOffset = nil }
+    }
+
+    private func startOperation(_ work: @escaping () async throws -> String) {
+        operationTask?.cancel()
+        isOperating = true
+        operationStatus = nil
+        operationTask = Task { @MainActor in
+            defer { isOperating = false; operationTask = nil }
+            do { operationStatus = try await work() }
+            catch is CancellationError { operationStatus = "Cancelled." }
+            catch { operationStatus = error.localizedDescription }
+        }
+    }
+
+    private func findNext(in current: BoundedCellRead) {
+        let needle = searchText
+        let next = min(current.totalLength ?? 0, (lastFoundOffset ?? -1) + 1)
+        startOperation {
+            var foundOffset: Int?
+            var foundSlice: BoundedCellRead?
+            let status = try await withReadSnapshot { reader in
+                var result = try await BoundedCellOperations.findText(needle, startingAt: next) { offset, length in
+                    try await reader.read(offset: offset, length: length)
+                }
+                if result == nil && next > 0 {
+                    result = try await BoundedCellOperations.findText(needle) { offset, length in
+                        try await reader.read(offset: offset, length: length)
+                    }
+                }
+                guard let result else { return "No match in this value." }
+                guard let matchSlice = try await reader.read(offset: result) else {
+                    throw BoundedCellOperations.Failure.changedValue
+                }
+                foundOffset = result
+                foundSlice = matchSlice
+                return "Match at character \(result + 1)."
+            }
+            if let foundOffset, let foundSlice {
+                lastFoundOffset = foundOffset
+                onShowSlice(foundSlice)
+            }
+            return status
+        }
+    }
+
+    private func copyFullValue() {
+        startOperation {
+            try await withReadSnapshot { reader in
+                let exact = try await BoundedCellOperations.collectForClipboard { offset, length in
+                    try await reader.read(offset: offset, length: length)
+                }
+                try Task.checkCancellation()
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                switch exact {
+                case .text(let text):
+                    guard pasteboard.setString(text, forType: .string) else { throw CocoaError(.fileWriteUnknown) }
+                    return "Copied the complete text value (\(text.unicodeScalars.count) characters)."
+                case .binary(let data):
+                    guard pasteboard.setData(data, forType: NSPasteboard.PasteboardType("public.data")) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    return "Copied the complete binary value (\(data.count) bytes)."
+                }
+            }
+        }
+    }
+
+    private func saveFullValue() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(column.name).\(partialRead?.isBinary == true ? "bin" : "txt")"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        startOperation {
+            try await withReadSnapshot { reader in
+                let bytes = try await BoundedCellOperations.saveToFile(at: destination) { offset, length in
+                    try await reader.read(offset: offset, length: length)
+                }
+                return "Saved the complete value (\(bytes) bytes) to \(destination.lastPathComponent)."
+            }
+        }
+    }
+
+    private func partialReadDescription(_ read: BoundedCellRead) -> String {
+        if read.isNull { return "The value is NULL." }
+        guard let totalLength = read.totalLength else { return "Showing a bounded value slice." }
+        let end = read.offset + read.returnedLength
+        let range = read.returnedLength == 0 ? "No content at offset \(read.offset)."
+            : "Showing \(read.offset + 1)–\(end) of \(totalLength) \(read.offsetUnit)."
+        if read.hasMore { return range + " More content follows." }
+        return range
     }
 }
 

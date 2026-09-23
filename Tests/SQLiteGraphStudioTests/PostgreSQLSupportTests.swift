@@ -5,6 +5,48 @@ import Testing
 
 struct PostgreSQLSupportTests {
     @Test
+    func projectedPostgresReadIncludesOnlyRequestedValuesAndDeclaredKey() throws {
+        let columns = [
+            TableColumn(name: "id", declaredType: "bigint", notNull: true, defaultValueSQL: nil, primaryKeyOrdinal: 1, hiddenValue: 0),
+            TableColumn(name: "summary", declaredType: "text", notNull: false, defaultValueSQL: nil, primaryKeyOrdinal: 0, hiddenValue: 0),
+            TableColumn(name: "payload", declaredType: "bytea", notNull: false, defaultValueSQL: nil, primaryKeyOrdinal: 0, hiddenValue: 0),
+        ]
+        let descriptor = TableDescriptor(name: "public.documents", schemaName: "public", objectName: "documents",
+                                         objectType: .table, columns: columns, primaryKeyColumns: ["id"],
+                                         rowIdentityStrategy: .primaryKey, isWithoutRowID: false, isEditable: false)
+        var query = TableQueryState(limit: 1)
+        query.projectedColumns = ["summary"]
+        let plan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor)
+        #expect(plan.projectedColumns == ["summary", "id"])
+        #expect(!plan.selectSQL.contains("\"payload\""))
+    }
+    @Test
+    func boundedPostgresCellProjectionSelectsSlicesAndPreservesBinaryTypes() throws {
+        let columns = [
+            TableColumn(name: "id", declaredType: "bigint", notNull: true, defaultValueSQL: nil, primaryKeyOrdinal: 1, hiddenValue: 0),
+            TableColumn(name: "summary", declaredType: "text", notNull: false, defaultValueSQL: nil, primaryKeyOrdinal: 0, hiddenValue: 0),
+            TableColumn(name: "payload", declaredType: "bytea", notNull: false, defaultValueSQL: nil, primaryKeyOrdinal: 0, hiddenValue: 0),
+        ]
+        let descriptor = TableDescriptor(name: "public.documents", schemaName: "public", objectName: "documents",
+                                         objectType: .table, columns: columns, primaryKeyColumns: ["id"],
+                                         rowIdentityStrategy: .primaryKey, isWithoutRowID: false, isEditable: false)
+        let query = TableQueryState(columnFilters: [.init(columnName: "id", value: "1")], offset: 2, limit: 1)
+        let textPlan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor,
+                                                              boundedCell: .init(columnName: "summary", offset: 4, length: 8))
+        #expect(textPlan.projectedColumns == ["summary"])
+        #expect(textPlan.selectSQL.contains("pg_catalog.substr(\"summary\"::text"))
+        #expect(textPlan.selectSQL.contains("pg_catalog.char_length(\"summary\"::text)"))
+        #expect(!textPlan.selectSQL.contains("\"summary\", \"id\""))
+        #expect(textPlan.parameters.count == 5) // filter, slice offset/length, LIMIT, OFFSET
+
+        let binaryPlan = try PostgresTableQueryBuilder.makePlan(query: query, descriptor: descriptor,
+                                                                boundedCell: .init(columnName: "payload", offset: 4, length: 8))
+        #expect(binaryPlan.selectSQL.contains("pg_catalog.octet_length(\"payload\")"))
+        #expect(binaryPlan.selectSQL.contains("pg_catalog.substr(\"payload\", "))
+        #expect(binaryPlan.selectSQL.contains("NULL::text"))
+        #expect(!binaryPlan.selectSQL.contains("\"payload\", \"id\""))
+    }
+    @Test
     func postgresDocumentsDecodeWithoutCredentials() throws {
         let json = """
         {
@@ -365,6 +407,90 @@ struct PostgreSQLSupportTests {
         #expect(PostgresValueMapper.map(jsonb) == .json(#"{"active":true}"#))
         #expect(PostgresValueMapper.map(array) == .array(#"{"first","second"}"#))
         #expect(PostgresValueMapper.map(binary) == .blob(Data([0x00, 0xFF, 0x10])))
+    }
+
+    @Test
+    func postgresResultReadBudgetEnforcesCellColumnAndAggregateCaps() throws {
+        try PostgresResultReadBudget.validateColumnCount(DatabaseReadBudget.maxColumns)
+        do {
+            try PostgresResultReadBudget.validateColumnCount(DatabaseReadBudget.maxColumns + 1)
+            Issue.record("PostgreSQL result column count must be capped")
+        } catch let error as DatabaseUserError {
+            #expect(error.kind == .invalidInput)
+            #expect(error.message.contains("too many columns"))
+        }
+
+        let exactCell = PostgresData(string: String(repeating: "x", count: DatabaseReadBudget.maxCellBytes))
+        var budget = PostgresResultReadBudget()
+        try budget.charge([exactCell])
+        let usedBeforeOversizedCell = budget.usedBytes
+        let oversizedCell = PostgresData(string: String(repeating: "x", count: DatabaseReadBudget.maxCellBytes + 1))
+        do {
+            try budget.charge([oversizedCell])
+            Issue.record("PostgreSQL cell values above the page cap must be rejected")
+        } catch let error as DatabaseUserError {
+            #expect(error.kind == .invalidInput)
+            #expect(error.message.contains("result value exceeds"))
+        }
+        #expect(budget.usedBytes == usedBeforeOversizedCell)
+
+        let aggregateCell = PostgresData(string: String(repeating: "x", count: DatabaseReadBudget.maxCellBytes - 1))
+        var aggregate = PostgresResultReadBudget()
+        for _ in 0..<31 { try aggregate.charge([aggregateCell]) }
+        let usedBeforeOverflow = aggregate.usedBytes
+        do {
+            try aggregate.charge([aggregateCell])
+            Issue.record("PostgreSQL result pages above the aggregate cap must be rejected")
+        } catch let error as DatabaseUserError {
+            #expect(error.kind == .invalidInput)
+            #expect(error.message.contains("result exceeds"))
+        }
+        #expect(aggregate.usedBytes == usedBeforeOverflow)
+
+        var omitting = PostgresResultReadBudget()
+        let omitted = try omitting.charge([oversizedCell, PostgresData(int64: 7)], omittingOversizedCellsAt: [0])
+        #expect(omitted == [0])
+        #expect(omitting.usedBytes == 80) // two small placeholder/value charges
+    }
+
+    @Test
+    func postgresBackendRejectsOutOfRangeBoundedCellRequestsBeforeConnecting() async throws {
+        let backend = PostgresDatabaseBackend(
+            configuration: PostgresConnectionConfiguration(
+                host: "127.0.0.1",
+                database: "catalog",
+                username: "reader",
+                tlsMode: .disabled
+            )
+        )
+        let descriptor = TableDescriptor(
+            name: "public.documents",
+            schemaName: "public",
+            objectName: "documents",
+            objectType: .table,
+            columns: [TableColumn(name: "payload", declaredType: "text", notNull: false,
+                                  defaultValueSQL: nil, primaryKeyOrdinal: 0, hiddenValue: 0)],
+            primaryKeyColumns: [],
+            rowIdentityStrategy: .readOnly,
+            isWithoutRowID: false,
+            isEditable: false
+        )
+
+        for (offset, length) in [(-1, 1), (0, 0), (0, 65_537), (Int.max, 1)] {
+            do {
+                _ = try await backend.readBoundedCell(
+                    query: TableQueryState(limit: 1),
+                    descriptor: descriptor,
+                    columnName: "payload",
+                    offset: offset,
+                    length: length
+                )
+                Issue.record("Expected invalid bounded-cell request for offset \(offset), length \(length)")
+            } catch let error as DatabaseUserError {
+                #expect(error.kind == .invalidInput)
+                #expect(error.message.contains("Cell slices"))
+            }
+        }
     }
 
     @Test

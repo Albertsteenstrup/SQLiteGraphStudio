@@ -51,7 +51,7 @@ struct StudioSkillsTests {
 
     @Test
     func everySkillSupportsPostgresDocumentSidecarsAndReadOnlyDiscovery() {
-        for skill in [StudioSkills.graphClusters, StudioSkills.schemaDescriptions, StudioSkills.storyFlows] {
+        for skill in [StudioSkills.graphClusters, StudioSkills.schemaDescriptions] {
             #expect(skill.fullContent.contains(".postgres.studio.json"))
             #expect(skill.fullContent.contains(".pgstudio.studio.json"))
             #expect(skill.fullContent.contains("schema-qualified"))
@@ -73,9 +73,9 @@ struct StudioSkillsTests {
 
         #expect(StudioSkills.isInstalled(StudioSkills.graphClusters, in: root))
         #expect(StudioSkills.isInstalled(StudioSkills.schemaDescriptions, in: root))
-        #expect(!StudioSkills.isInstalled(StudioSkills.storyFlows, in: root))
-        #expect(StudioSkills.missingTargets(for: StudioSkills.storyFlows, in: root).map(\.subpath) == [
-            ".agents/skills/story-flows/SKILL.md",
+        #expect(!StudioSkills.isInstalled(StudioSkills.databaseExplore, in: root))
+        #expect(StudioSkills.missingTargets(for: StudioSkills.databaseExplore, in: root).map(\.subpath) == [
+            ".agents/skills/database-explore/SKILL.md",
         ])
         #expect(StudioSkills.hasMissingInstallableSkills(in: root))
     }
@@ -87,9 +87,9 @@ struct StudioSkillsTests {
         try writeInstalledSkill(StudioSkills.graphClusters, targetSubpath: ".agents/skills/graph-clusters/SKILL.md", in: root)
         try writeInstalledSkill(StudioSkills.schemaDescriptions, targetSubpath: ".agents/skills/schema-descriptions/SKILL.md", in: root)
 
-        try StudioSkills.install([StudioSkills.storyFlows, StudioSkills.databaseDiff, StudioSkills.databasePreview], to: root)
+        try StudioSkills.install([StudioSkills.databaseExplore, StudioSkills.databaseDiff, StudioSkills.databasePreview], to: root)
 
-        #expect(StudioSkills.isInstalled(StudioSkills.storyFlows, in: root))
+        #expect(StudioSkills.isInstalled(StudioSkills.databaseExplore, in: root))
         #expect(!StudioSkills.hasMissingInstallableSkills(in: root))
     }
 
@@ -131,7 +131,23 @@ struct StudioSkillsTests {
         #expect(!StudioSkills.hasMissingInstallableSkills(in: root))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".agents/skills/graph-clusters/SKILL.md").path))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".agents/skills/schema-descriptions/SKILL.md").path))
-        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".agents/skills/story-flows/SKILL.md").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".agents/skills/database-explore/SKILL.md").path))
+    }
+
+    @Test
+    func customizedSkillIsNotOverwrittenOrPartiallyReinstalled() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try createDirectory(".agents/skills", in: root)
+        let customized = root.appendingPathComponent(".agents/skills/graph-clusters/SKILL.md")
+        try FileManager.default.createDirectory(at: customized.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "User's own clustering instructions\n".write(to: customized, atomically: true, encoding: .utf8)
+
+        #expect(throws: StudioSkillInstallationError.self) {
+            try StudioSkills.install(StudioSkills.all, to: root)
+        }
+        #expect(try String(contentsOf: customized, encoding: .utf8) == "User's own clustering instructions\n")
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".agents/skills/database-explore/SKILL.md").path))
     }
 
     private func makeTemporaryRoot() throws -> URL {

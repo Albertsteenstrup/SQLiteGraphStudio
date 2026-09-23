@@ -2,8 +2,6 @@
 
 A macOS app for browsing SQLite databases and connecting to PostgreSQL in a strictly read-only mode. Explore schemas as interactive graphs, browse rows, run safe read queries, and export results.
 
-![SQLite Graph Studio in use](docs/demo-20261405.gif)
-
 <p>
   <a href="../../releases/latest">
     <img src="https://img.shields.io/github/v/release/Albertsteenstrup/SQLiteGraphStudio?label=Download&amp;style=for-the-badge" alt="Download latest release">
@@ -24,7 +22,9 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 - User-selected PostgreSQL connection documents with schema-qualified catalog browsing, paging, search, filtering, sorting, exports, query history, and non-executing EXPLAIN
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
-- AI-authored flow stories — agents can append user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, and narrated graph playback to the sidecar; **Graph options (…) → Stories** plays them back and can show them as minimal graph-native cards connected to the schema tables they cover (via the [story-flows](Skills/story-flows/SKILL.md) skill)
+- Local MCP bridge — Codex and Claude Code can inspect the active task's source context and request supported schema views through Graph Studio. The bridge reports status without opening the app; launching is an explicit tool action.
+- Workspace tabs — each tab keeps its own graph/data split, camera, filters and query drafts; restorable browsing state returns after relaunch without running saved drafts or restarting speech.
+- Guided explanations — an agent can show a small set of tables, inspect rows or a read-only result, and add short captioned points with local streamed macOS narration and immediate playback controls.
 
 ## AI Skills
 
@@ -32,13 +32,27 @@ Five optional AI coding agent skills support schema exploration and review:
 
 - **graph-clusters** — Groups your tables into meaningful clusters. It defaults to domain areas, and you can ask for another lens such as people, artifacts, departments, workflows, or ownership. Run from your AI coding agent.
 - **schema-descriptions** — Annotates your tables and columns with hover descriptions shown in the graph, table grids, and query results. Run from your AI coding agent.
-- **story-flows** — Turns questions like "what happens when a user signs up?" into user-story-inspired flow cards with acceptance notes, schema-cluster tags, lightweight story links, graph playback, and hidden `spoken_text` for optional read-aloud playback.
 - **database-diff** — Compares database versions after code review, showing table, field, and foreign-key changes for a PR or local integration. See [the skill](Skills/database-diff/SKILL.md).
 - **database-preview** — Shows intended schema changes before implementation using a compact plan and cached metadata. Iteration runs without migrations or a database server. See [the skill](Skills/database-preview/SKILL.md).
+- **database-explore** — Helps an agent inspect the current source and schema through the local MCP bridge, when the app-side action is supported. See [the skill](Skills/database-explore/SKILL.md).
 
-Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. Skills are installed next to your database or PostgreSQL connection document so any AI coding agent in that directory can use them.
+Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. The in-app installer places project skills next to your database or PostgreSQL connection document so agents in that directory can use them. The user-wide MCP setup below also installs the canonical Codex and Claude Code skills in their normal per-user directories.
 
 For Codex, create `.agents/skills` in your repo first; the app installs all five skills there. Use `/skills` or mention a skill such as `$database-diff` or `$database-preview` in Codex to invoke it.
+
+### Local MCP bridge
+
+The `StudioMCP` executable provides a newline-framed JSON-RPC stdio server for Codex and Claude Code. For a normal installation, place the app in `/Applications` and register both user-level clients with the helper shipped inside the app:
+
+```bash
+"/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP" setup all
+```
+
+This packaged helper path is the stable setup route: it does not depend on a repository checkout or a SwiftPM build directory. From Graph Studio, choose **Coding Agents → Install local MCP and skills…**. The review defaults to user-wide setup and also offers a project folder. Project setup writes Codex MCP configuration to that project's `.codex/config.toml` and asks Claude Code to merge its project server into `.mcp.json`; it installs skills under that project's `.agents/skills` or `.claude/skills`. Codex loads project configuration only after you trust the project. Project setup refuses symlinked configuration and skill destinations. `swift run StudioMCP setup all` is for development checkouts and remains user-wide; use `setup codex` or `setup claude` to select clients. Run setup after placing the app at its final path because each client stores the helper's absolute executable path. Existing entries named `sqlite-graph-studio` are left unchanged when they point elsewhere, and unrelated configuration is kept. A skill file is updated only when it matches a released Graph Studio managed version; customized files are reported and left intact. The retired `story-flows` skill is removed only when its file exactly matches a known released copy. After writing a client entry, setup reads it back and starts the bundled helper for an MCP handshake, tool discovery, and a read-only `studio_status` call. This checks the helper and bridge status; it does not claim that a running coding-agent session has loaded the server. Restart or reload the client, then call `studio_status` from that client to confirm its live connection.
+
+`studio_status` never launches Graph Studio. When a user asks to see a visualization, `studio_launch` opens the app and waits for its private local bridge to become ready. App-bound tools require Graph Studio to be running; tools without an app-side handler return a structured `TOOL_UNAVAILABLE` error. The bridge is local to the same macOS user and does not expose database write operations.
+
+See the [agent exploration implementation status](docs/agent-exploration-implementation-status.md) for current coverage and validation limits.
 
 ## Database schema comparisons
 
@@ -112,7 +126,7 @@ PostgreSQL sessions are permanently read-only:
 
 PostgreSQL metadata is read from pg_catalog in set-based queries. System and temporary schemas are excluded. Tables, partitioned tables, views, and materialized views include columns, format_type output, nullability, defaults, generated and identity metadata, primary keys, indexes, foreign keys, named CHECK constraints, user triggers, row estimates, and graph cardinality. Initial catalog loading does not count table rows. Query results are capped at 500 visible rows by default (up to 10,000 for the backend request) and report truncation; table browsing uses bound search/filter/paging values.
 
-PostgreSQL uses the same local groups, colours, notes, stories and AI skills as SQLite. Put metadata next to the selected document: `fjordholm.dump.studio.json` for `fjordholm.dump`, `fjordholm.postgres.studio.json` for `fjordholm.postgres`, or `workspace.pgstudio.studio.json` for `workspace.pgstudio`. Table references must use the exact schema-qualified catalog ID, for example `public.orders`. **Relayout** reloads the sidecar and rebuilds the graph. Story deletion changes only this local sidecar; it never writes to PostgreSQL. The selected document appears in **Open Recent**, and its path owns saved queries and layout even when a fresh local copy is restored.
+PostgreSQL uses the same local groups, colours, notes and AI skills as SQLite. Put metadata next to the selected document: `fjordholm.dump.studio.json` for `fjordholm.dump`, `fjordholm.postgres.studio.json` for `fjordholm.postgres`, or `workspace.pgstudio.studio.json` for `workspace.pgstudio`. Table references must use the exact schema-qualified catalog ID, for example `public.orders`. **Relayout** reloads the sidecar and rebuilds the graph. The selected document appears in **Open Recent**, and its path owns saved queries and layout even when a fresh local copy is restored.
 
 Query history, saved queries and graph layout use a password-free, hashed connection identity. The selected document provides the local metadata/skills directory. Use **AI Skills → Reinstall** to explicitly replace an older installed skill with the current instructions.
 
@@ -124,7 +138,7 @@ Both database types use the same graph engine. For more than 128 tables, it divi
 - Choose a group to move the camera to it while keeping other groups and cross-group connections visible. Expand a table to focus it and arrange its direct neighbours without overlap; the back button returns to the previous view. Groups with more than 48 tables and tables with more than 48 neighbours have previous/next controls.
 - **Graph options (…) → Node size** offers **Uniform**, **Fields**, **Rows**, and **Relations**. Count differences become stronger as you zoom out; detailed cards keep their usual size. A compressed scale uses the full catalog, so filtering does not renormalize the remaining tables. Row sizing uses available counts (catalog estimates until counted); unknown counts have neutral-sized, dashed markers. The choice is remembered across restarts.
 - Hovering a table gently enlarges it and its directly connected tables at every zoom level. In the zoomed-out overview, their names, field counts, and row counts appear inside the existing nodes, using the same header style as detailed cards. Their links are highlighted across groups. Hover never adds floating callouts or moves the layout; text scales with the nodes.
-- The compact graph toolbar keeps search and **Filter** visible. The **Graph options (…)** menu contains display toggles, stories, relayout, and table counts; active filters never add another toolbar row.
+- The compact graph toolbar keeps search and **Filter** visible. The **Graph options (…)** menu contains display toggles, relayout, and table counts; active filters never add another toolbar row.
 - **Filter** limits the graph by inclusive minimum/maximum field, row, and relation counts. Empty bounds are unlimited. Relations count incoming and outgoing foreign-key constraints in the full schema; composite and self-referencing keys each count once, and zero finds unconnected tables. Row filters count matching tables and views afresh, including empty tables; Reset restores the complete graph. Unknown row counts are shown as **— rows** until counted.
 - PostgreSQL labels omit the default `public.` schema prefix. Other schema names remain visible, and all queries, relationship IDs and sidecar references retain the exact qualified names.
 - Zoomed-out overviews draw inexpensive table marks and group relationships. Zoom in or select a table for details. Detailed card views are capped at 160; remaining visible tables stay represented by marks, including when a large selection is active.

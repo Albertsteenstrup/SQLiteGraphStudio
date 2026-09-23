@@ -1,0 +1,33 @@
+---
+name: database-explore
+description: Investigate a SQLite or PostgreSQL data model and show a live, agent-directed explanation in SQLite Graph Studio through local MCP. Use for model overviews, process tables, keys, records, queries, or a selected graph item.
+---
+
+# Explore a database with Graph Studio
+
+Answer the user's question using schema, relevant application code or documentation, and bounded row reads when the answer depends on data. Choose the clearest visual treatment: one view may be enough, or a few short points can guide the user. The agent chooses the subject, view actions, and sequence; Graph Studio handles visual readiness, speaking, viewing time, and playback controls.
+
+## Connect and choose the source
+
+Use `studio_status` to check the local bridge. An explicit request to show something authorizes `studio_launch` if the app is closed. For an ordinary coding question where visualization would merely help, offer it. Call `studio_connect_context` once for this coding task. Keep its returned `context_id`, `client_task_id`, and secret `resume_token` in this task's own session state; never copy another task's capability or treat the task label as authentication. Include the exact `context_id` on every later app-bound call. If the MCP stdio connection reconnects while Graph Studio remains open, call `studio_connect_context` with the previous `context_id` as `resume_context_id`, plus the exact `client_task_id` and current `resume_token`. Save the rotated token from the response. A disconnected context is retained for up to 24 hours, with a cap of 128 detached contexts and 4,096 request receipts. The token is in-memory and does not survive Graph Studio restarting. Check `recovery_status`: if it says `ownership_released`, the user transferred the old tab; do not take it back implicitly. Resolve the source from an explicit file or connection, the current selected object, or an established task binding. When several workspaces are open, bind this task to the exact `workspace_id`; ask only if more than one plausible source remains. Check `studio_list_workspaces` and `studio_get_view` before changing an active explanation.
+
+If MCP is unavailable, use the existing read-only database and repository tools to answer what you can. Preview and diff files have separate workflows in the sibling skills. Do not describe a view as shown unless the app confirms it is visible.
+
+## Find evidence, then choose what to show
+
+- Use `studio_search_schema`, `studio_describe_schema`, and `studio_find_relations` to identify exact table, field, and declared key IDs. Read relevant code and docs for application behavior. Label code-derived relationships as application behavior or inference.
+- Declared foreign keys may appear as graph edges. Tables related only by application logic can be displayed close together and explained in words; never add a visual relationship edge for them.
+- Start with a small useful set of core and supporting tables when that helps. The user may ask for all connected tables; then cover the requested scope, possibly in several views, and disclose traversal limits. You may also show a subset, return to an earlier group, or expand farther when it makes the explanation clearer.
+- Use `studio_show_tables`, `studio_select_objects`, `studio_expand_tables`, `studio_focus_keys`, `studio_arrange_tables`, and `studio_set_camera` as needed. Moving disconnected tables together changes layout only. Preserve a path back to the full view.
+- For row questions, use `studio_open_table`, `studio_configure_table`, `studio_fetch_rows`, `studio_inspect_value`, `studio_follow_record`, or a read-only query. `studio_inspect_value` defaults to a data-only database-side slice of one exact cell; use `value_offset` to page through long text or binary data, and check its type, byte/character counts, `complete`, `truncated`, and `has_more` fields. Binary slices are base64. Set `display_intent=show` only when the user wants the selected slice visible in Graph Studio; the inspector labels partial values and does not imply other fields or the record key were loaded. Return only relevant bounded values to the agent. Make the filter, sort, and SQL inspectable in the app. A displayed result is not necessarily a complete result set.
+- Use `studio_annotate_view` for temporary human-language notes. When the user asks to keep an explanation, note, table description, or graph grouping across sessions, first call `studio_get_annotations`, then save with `studio_update_annotations` and its returned `metadata_revision` as `expected_metadata_revision`. On `METADATA_CONFLICT`, read again and merge the intended edits before retrying with a new `request_id`. Saved notes can describe an application-level association without creating a relationship edge.
+
+Speak in ordinary language. Display exact identifiers and values when referring to them; pronounce code identifiers naturally. Keep schema facts, observed row values, code-confirmed behavior, and interpretation distinct. Tailor technical depth using `studio_get_preferences`. On first use, ask the user the questions returned by `studio_get_preferences` and save their answers through `studio_update_preferences`. Explicit feedback can also update preferences unless the user says it applies only this time.
+
+## Live explanation and correction
+
+Use an immediate view action for one useful display. Use `studio_start_presentation` for a guided explanation with short captions, optional narration, typed view actions, and enough viewing time. Append or revise points with `studio_update_presentation` as you learn more. Choose how many points to prepare and their order based on the user's question; there is no required sequence or number of points.
+
+Wait for `studio_get_presentation` or `studio_wait_events` to confirm visible rendering and playback state before claiming the user has seen or heard a point. The app may pause after manual dragging or zooming. Respect that new view and continue only when appropriate. When the user corrects a premise, replace obsolete pending points and audio; when they ask a clarification, answer it and resume only if still relevant. Pause, Back, Next, End, and Return are available through `studio_control_presentation` and the app UI.
+
+Do not write to the actual database through MCP. The coding agent may implement requested changes using its normal development tools, then call `studio_refresh_source` and use the sibling `database-preview` or `database-diff` skill to show proposed or actual schema effects. Save descriptions, notes, groups, or explanation packages only when requested; ordinary highlights remain temporary.

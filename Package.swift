@@ -19,6 +19,10 @@ let package = Package(
             name: "SampleBuilder",
             targets: ["SampleBuilder"]
         ),
+        .executable(
+            name: "StudioMCP",
+            targets: ["StudioMCPCommand"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
@@ -39,7 +43,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "SQLiteGraphStudio",
-            dependencies: ["StudioCore"],
+            dependencies: ["StudioCore", "StudioMCP"],
             path: "Sources/SQLiteGraphStudio",
             exclude: ["App/Info.plist"],
             resources: [
@@ -51,6 +55,18 @@ let package = Package(
             dependencies: ["StudioCore"],
             path: "Tools/SampleBuilder"
         ),
+        .target(
+            name: "StudioMCP",
+            path: "Sources/StudioMCP",
+            resources: [
+                .copy("Resources"),
+            ]
+        ),
+        .executableTarget(
+            name: "StudioMCPCommand",
+            dependencies: ["StudioMCP"],
+            path: "Sources/StudioMCPCommand"
+        ),
         .testTarget(
             name: "SQLiteGraphStudioTests",
             dependencies: [
@@ -58,6 +74,16 @@ let package = Package(
                 .product(name: "PostgresNIO", package: "postgres-nio"),
             ],
             path: "Tests/SQLiteGraphStudioTests"
+        ),
+        .testTarget(
+            name: "StudioMCPTests",
+            dependencies: ["StudioMCP"],
+            path: "Tests/StudioMCPTests"
+        ),
+        .testTarget(
+            name: "StudioAutomationTests",
+            dependencies: ["SQLiteGraphStudio", "StudioCore"],
+            path: "Tests/StudioAutomationTests"
         ),
     ],
     swiftLanguageModes: [.v6]

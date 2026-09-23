@@ -66,7 +66,105 @@ public final class TableTabModel: Identifiable {
 
     public func displayedValue(row: Int, column: Int) -> String {
         guard let tableRow = self.row(at: row), tableRow.values.indices.contains(column) else { return "…" }
+        if tableRow.omittedColumnIndices.contains(column) { return "Large value — inspect in slices" }
         return tableRow.values[column].displayText
+    }
+
+    public func isValueOmitted(row: Int, column: Int) -> Bool {
+        self.row(at: row)?.omittedColumnIndices.contains(column) ?? false
+    }
+
+    public func canReadOmittedCell(row absoluteRow: Int, columnName: String) -> Bool {
+        guard let tableRow = row(at: absoluteRow),
+              let columnIndex = descriptor.columns.firstIndex(where: { $0.name == columnName }),
+              tableRow.omittedColumnIndices.contains(columnIndex),
+              let loadedQuery else { return false }
+        return loadedQuery.searchText == queryState.searchText
+            && loadedQuery.sanitizedFilters == queryState.sanitizedFilters
+            && loadedQuery.sort == queryState.sort
+            && loadedQuery.offset == queryState.offset
+            && loadedQuery.after == queryState.after
+    }
+
+    /// Reads a small database-side slice for a cell omitted from the table grid.
+    /// The absolute row index keeps this correct after cursor-based page navigation;
+    /// the bounded projection ensures the full cell never enters the app process.
+    /// Its loaded primary key or rowid is checked in the same query to reject an
+    /// external insert or delete that shifted this offset after the grid loaded.
+    public func readOmittedCell(row absoluteRow: Int, columnName: String, offset: Int = 0,
+                                length: Int = 4_096) async throws -> BoundedCellRead? {
+        guard canReadOmittedCell(row: absoluteRow, columnName: columnName) else {
+            guard let tableRow = row(at: absoluteRow),
+                  let columnIndex = descriptor.columns.firstIndex(where: { $0.name == columnName }),
+                  tableRow.omittedColumnIndices.contains(columnIndex) else {
+                throw DatabaseUserError(kind: .invalidInput, message: "Only large values omitted from the grid can be inspected in slices.")
+            }
+            throw DatabaseUserError(kind: .invalidInput, message: "The table query is changing. Wait for the rows to finish loading, then inspect the cell again.")
+        }
+        guard let loadedQuery else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The table query is changing. Wait for the rows to finish loading, then inspect the cell again.")
+        }
+        guard let expectedRowIdentity = row(at: absoluteRow)?.identity else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The selected cell is no longer available.")
+        }
+
+        var boundedQuery = loadedQuery
+        boundedQuery.offset = absoluteRow
+        boundedQuery.after = nil
+        boundedQuery.requestExactCount = false
+        boundedQuery.cachedExactCount = nil
+        return try await databaseService.readBoundedCell(
+            query: boundedQuery,
+            descriptor: descriptor,
+            columnName: columnName,
+            offset: offset,
+            length: length,
+            expectedRowIdentity: expectedRowIdentity
+        )
+    }
+
+    /// Runs a multi-slice cell action against one database snapshot, using the
+    /// exact query and row identity that produced the currently visible grid row.
+    public func withOmittedCellReadSnapshot<T: Sendable>(
+        row absoluteRow: Int,
+        columnName: String,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T {
+        guard canReadOmittedCell(row: absoluteRow, columnName: columnName) else {
+            guard let tableRow = row(at: absoluteRow),
+                  let columnIndex = descriptor.columns.firstIndex(where: { $0.name == columnName }),
+                  tableRow.omittedColumnIndices.contains(columnIndex) else {
+                throw DatabaseUserError(kind: .invalidInput, message: "Only large values omitted from the grid can be inspected in slices.")
+            }
+            throw DatabaseUserError(kind: .invalidInput, message: "The table query is changing. Wait for the rows to finish loading, then inspect the cell again.")
+        }
+        guard let loadedQuery else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The table query is changing. Wait for the rows to finish loading, then inspect the cell again.")
+        }
+        guard let expectedRowIdentity = row(at: absoluteRow)?.identity else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The selected row is no longer available.")
+        }
+
+        var boundedQuery = loadedQuery
+        boundedQuery.offset = absoluteRow
+        boundedQuery.after = nil
+        boundedQuery.requestExactCount = false
+        boundedQuery.cachedExactCount = nil
+        return try await databaseService.withBoundedCellReadSnapshot(
+            query: boundedQuery,
+            descriptor: descriptor,
+            columnName: columnName,
+            expectedRowIdentity: expectedRowIdentity,
+            operation: operation
+        )
+    }
+
+    public func canEditCell(row: Int, column: Int) -> Bool {
+        guard isEditable,
+              descriptor.columns.indices.contains(column),
+              descriptor.columns[column].isEditable,
+              let tableRow = self.row(at: row) else { return false }
+        return !tableRow.omittedColumnIndices.contains(column)
     }
 
     public func reload(centeringRow targetRow: Int? = nil, moveViewport: Bool = false) async {
@@ -89,14 +187,19 @@ public final class TableTabModel: Identifiable {
         pendingOffset = nextOffset
         latestRequestID += 1
         let requestID = latestRequestID
+        defer {
+            if requestID == latestRequestID { isLoading = false }
+        }
 
         isLoading = true
         inlineErrorMessage = nil
 
         let requestedQuery = queryState
+        var fetchQuery = requestedQuery
+        fetchQuery.omitOversizedCells = true
         do {
-            let result = try await databaseService.fetchChunk(query: requestedQuery, descriptor: descriptor)
-            guard requestID == latestRequestID else { return }
+            let result = try await databaseService.fetchChunk(query: fetchQuery, descriptor: descriptor)
+            guard !Task.isCancelled, requestID == latestRequestID else { return }
             chunk = result
             loadedQuery = requestedQuery
             if queryState == requestedQuery, case .exact(let count) = result.countState { queryState.cachedExactCount = count }
@@ -104,15 +207,12 @@ public final class TableTabModel: Identifiable {
             pendingOffset = nil
             revision &+= 1
         } catch {
-            guard requestID == latestRequestID else { return }
+            guard !Task.isCancelled, requestID == latestRequestID else { return }
             let userError = SQLiteUserError.from(error)
             inlineErrorMessage = userError.message
             revision &+= 1
         }
 
-        if requestID == latestRequestID {
-            isLoading = false
-        }
     }
 
     public func ensureVisible(row: Int) {
@@ -187,13 +287,19 @@ public final class TableTabModel: Identifiable {
     }
 
     public func commitEdit(row absoluteRow: Int, columnName: String, rawValue: String) {
-        guard isEditable,
-              descriptor.columns.contains(where: { $0.name == columnName && $0.isEditable })
-        else {
+        guard let row = row(at: absoluteRow) else { return }
+        guard let columnIndex = descriptor.columns.firstIndex(where: { $0.name == columnName }) else {
             inlineErrorMessage = "This table is read-only."
             return
         }
-        guard let row = row(at: absoluteRow) else { return }
+        guard !row.omittedColumnIndices.contains(columnIndex) else {
+            inlineErrorMessage = "Large values are read-only in the grid. Inspect them in slices."
+            return
+        }
+        guard canEditCell(row: absoluteRow, column: columnIndex) else {
+            inlineErrorMessage = "This table is read-only."
+            return
+        }
         let change = CellEditChange(
             descriptor: descriptor,
             rowIdentity: row.identity,
@@ -275,6 +381,10 @@ public final class TableTabModel: Identifiable {
             return
         }
         guard let row = row(at: absoluteRow) else { return }
+        guard row.omittedColumnIndices.isEmpty else {
+            inlineErrorMessage = "This row contains large values omitted from the grid and cannot be cloned from this page."
+            return
+        }
         Task {
             do {
                 try await databaseService.insertClonedRow(from: row, into: descriptor)

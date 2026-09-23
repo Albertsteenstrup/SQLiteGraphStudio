@@ -24,7 +24,6 @@ public enum PreferenceDomainMigration {
             "SQLiteGraphStudio.saved-queries.",
             "SQLiteGraphStudio.query-history.",
             "SQLiteGraphStudio.graph-layout.v2.",
-            "SQLiteGraphStudio.story-graph-layout.",
         ]
         for (key, value) in legacy where destination[key] == nil {
             if key == "SQLiteGraphStudio.recent-databases" || compatiblePrefixes.contains(where: key.hasPrefix) {

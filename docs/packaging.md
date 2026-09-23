@@ -8,13 +8,13 @@
 bash script/build_and_run.sh --build-only
 ```
 
-This builds a debug app in `dist/SQLiteGraphStudio.app`, including SwiftPM resources, without stopping or launching an app. Omit `--build-only` to build and launch during normal development. `swift run` remains available but does not have a packaged bundle identity.
+This builds a debug app in `dist/SQLiteGraphStudio.app`, including SwiftPM resources and the `StudioMCP` local helper at `Contents/MacOS/StudioMCP`, without stopping or launching an app. Omit `--build-only` to build and launch during normal development. `swift run` remains available but does not have a packaged bundle identity.
 
 ```bash
 bash script/build_app.sh
 ```
 
-This builds a universal arm64/x86_64 release app and local DMG in `dist`. Without signing configuration the outputs are for local testing, with no claim of Gatekeeper acceptance. Neither build command installs or publishes anything.
+This builds a universal arm64/x86_64 release app, universal local MCP helper, and local DMG in `dist`. Without signing configuration the outputs are for local testing, with no claim of Gatekeeper acceptance. Neither build command installs or publishes anything.
 
 ## Optional PostgreSQL runtime for dump opening
 
@@ -52,9 +52,34 @@ An ordinary Homebrew prefix or Cellar binary tree is **not assumed to be relocat
 
 When the variable is unset or empty, neither build script includes PostgreSQL or searches for an installation to bundle. The app retains installed PostgreSQL 17/18 runtime discovery. Consequently, a build without the runtime is **not a self-contained dump opener**: dump opening requires a compatible installed runtime and the required extensions; it reports a missing-runtime/dependency error when they are unavailable. Rebuilding without the variable also removes any runtime from the previous assembled app. Existing connection-document and SQLite functionality do not require bundling this runtime.
 
+## Optional Pocket TTS runtime
+
+The repository pins Pocket TTS 3.1.0 and its Python dependencies in `script/pocket-tts-runtime/uv.lock` and the hash-bearing `requirements.lock`. The build script uses the official Astral CPython 3.12.13 arm64 archive and verifies its SHA-256 before installing only the pinned PyPI wheels. It retains the Python and package license metadata, records the archive and lock hashes in `runtime-manifest.json`, and includes the lock in the packaged runtime. Model weights remain a separate user-triggered download, pinned to the public Kyutai Hugging Face repository; no gated voice-cloning files are included.
+
+Build the arm64 artifact on an Apple Silicon Mac with uv 0.11.31 installed:
+
+```bash
+script/pocket-tts-runtime/build_runtime.sh --architecture arm64 \
+  '/absolute/path/to/prepared-PocketTTSRuntime/arm64'
+
+SGS_POCKET_TTS_RUNTIME_REQUIRED=1 \
+SGS_POCKET_TTS_RUNTIME='/absolute/path/to/prepared-PocketTTSRuntime' \
+bash script/build_and_run.sh --build-only
+
+SGS_POCKET_TTS_RUNTIME_REQUIRED=1 \
+SGS_POCKET_TTS_RUNTIME='/absolute/path/to/prepared-PocketTTSRuntime' \
+bash script/build_app.sh
+```
+
+The current official PyTorch wheel release required by the lock has no macOS x86_64 wheel. The runtime builder fails immediately with that reason on Intel. A universal app may contain the arm64 runtime in `PocketTTSRuntime/arm64`; an Intel launch finds no x86_64 runtime and uses the built-in macOS speech provider. `SGS_POCKET_TTS_RUNTIME_REQUIRED=1` makes either build script fail before building when the runtime path is absent; a supplied but invalid or incomplete artifact also fails validation. Leave the flag unset for a build that intentionally omits Pocket TTS.
+
+The packaged worker stays offline and loads only the pinned, nongated English 2026-09 Alba preset. Its four user-installed files (config, model, paired SentencePiece tokenizer, and voice) total **225,285,245 bytes** (about 215 MiB); the app offers the download only after an explicit install action and verifies each file's exact size and SHA-256. The downloaded Hugging Face tokenizer JSON is not used: Pocket TTS 3.1.0 reads SentencePiece, and the model repository's pinned `.model` file has the same 4,000-piece order and scores. The app rewrites only the local config asset paths before loading, so model startup does not contact Hugging Face.
+
+On this arm64 Mac, the staged Python runtime occupied about **841 MiB** on disk. A fresh worker process completed its ready handshake in **23.23 seconds**; then it emitted the first audio frame **46 ms** after a synthesis request, streamed 3.12 seconds of speech in 0.79 seconds, and exited successfully. The worker's maximum resident set size was **906 MiB** for that run. These are one-machine smoke measurements, not a performance guarantee; validate launch time and memory on release hardware, including an 8 GB device, before shipping. The locked PyTorch dependency currently prevents a usable Intel build. Software and model terms are recorded in `script/pocket-tts-runtime/THIRD_PARTY_NOTICES.md`; Kyutai code is MIT, and the model and Alba voice are CC BY 4.0.
+
 ## Preserving preferences
 
-The previous development launcher used `com.albertsteenstrup.sqlite-graph-studio`. Before the packaged app creates its session, a one-time migration copies missing app-owned preferences from that domain: recent documents, saved queries, query history, version-2 graph layouts, and story layouts. Existing canonical values always win, including empty values. Opaque values are copied as whole values; saved query lists from the two domains are not combined. The old domain is left intact. The migration marker prevents subsequently deleted values from being imported again. Unbundled command-line and test processes do not run the automatic migration.
+The previous development launcher used `com.albertsteenstrup.sqlite-graph-studio`. Before the packaged app creates its session, a one-time migration copies missing app-owned preferences from that domain: recent documents, saved queries, query history, and version-2 graph layouts. Removed story layouts are not imported. Existing canonical values always win, including empty values. Opaque values are copied as whole values; saved query lists from the two domains are not combined. The old domain is left intact. The migration marker prevents subsequently deleted values from being imported again. Unbundled command-line and test processes do not run the automatic migration.
 
 ## Signed and notarized distribution
 
@@ -70,7 +95,7 @@ bash script/build_app.sh
 
 This command builds both architectures, signs the app with hardened runtime and a secure timestamp, verifies its signature, creates and signs the DMG, and **uploads that DMG to Apple's notarization service**. It then waits for processing, staples and validates the ticket, and assesses the DMG locally. A failure stops the pipeline. The script never publishes a release, installs the app, or launches it.
 
-`SIGNING_IDENTITY` alone signs the app and DMG without notarizing. `NOTARYTOOL_PROFILE` requires a `Developer ID Application:` identity. When PostgreSQL is supplied, the release script signs every nested Mach-O file in that runtime with the same identity, hardened runtime, and timestamp **before signing the app**. It then verifies the app deeply and strictly; any signing failure stops the pipeline. Debug bundles remain unsigned by the packaging script. This runtime layout supports ordinary executables and libraries; adding nested app/framework/XPC bundles or native code elsewhere requires explicit inside-out signing updates.
+`SIGNING_IDENTITY` alone signs the app and DMG without notarizing. `NOTARYTOOL_PROFILE` requires a `Developer ID Application:` identity. The release script signs `StudioMCP` with the same identity, hardened runtime, and timestamp **before signing the app**. When PostgreSQL is supplied, it also signs every nested Mach-O file in that runtime first. It then verifies the app deeply and strictly; any signing failure stops the pipeline. Debug bundles remain unsigned by the packaging script. This runtime layout supports ordinary executables and libraries; adding nested app/framework/XPC bundles or native code elsewhere requires explicit inside-out signing updates.
 
 To repackage an already prepared app, run:
 
@@ -94,4 +119,4 @@ To verify packaging without invoking Swift or taking a build lock:
 python3 Tests/Packaging/test_packaging.py
 ```
 
-The Python suite also exercises optional runtime copying, preserved licenses and symlinks, missing components, native binary requirements, per-architecture dependency inspection, external/unresolved dependencies, architecture mismatches, nested signing order, and unchanged builds without a runtime. Its `swift`, `lipo`, `otool`, and signing invocations are command doubles in disposable directories, not real builds or runtime execution.
+The Python suite also exercises optional runtime copying, preserved licenses and symlinks, missing components, native binary requirements, per-architecture dependency inspection, external/unresolved dependencies, architecture mismatches, nested signing order, Pocket TTS runtime manifest/lock checks, and unchanged builds without a runtime. Its `swift`, `lipo`, `otool`, and signing invocations are command doubles in disposable directories, not real builds or runtime execution.

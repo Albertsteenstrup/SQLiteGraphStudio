@@ -43,6 +43,12 @@
             <key>LSHandlerRank</key><string>Owner</string>
         </dict>
         <dict>
+            <key>CFBundleTypeExtensions</key><array><string>sgexplanation</string></array>
+            <key>CFBundleTypeName</key><string>Historical Database Explanation</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+        </dict>
+        <dict>
             <key>CFBundleTypeExtensions</key>
             <array>
                 <string>sqlite</string>

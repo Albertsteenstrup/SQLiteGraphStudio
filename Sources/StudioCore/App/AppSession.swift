@@ -13,134 +13,47 @@ public struct RefreshToast: Identifiable, Sendable, Equatable {
     }
 }
 
-public enum StoryReadAloudStatus: Sendable, Equatable {
-    case idle
-    case installRequired
-    case installing(String)
-    case preparing(String)
-    case generating
-    case speaking
-    case failed(String)
-
-    public var displayText: String? {
-        switch self {
-        case .idle:
-            return nil
-        case .installRequired:
-            return "Install Kokoro"
-        case .installing(let message):
-            return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Installing Kokoro" : message
-        case .preparing(let message):
-            return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Preparing audio" : message
-        case .generating:
-            return "Preparing voice"
-        case .speaking:
-            return "Reading"
-        case .failed(let message):
-            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.count > 96 else { return trimmed }
-            return "\(trimmed.prefix(93))..."
-        }
-    }
-
-    public var isBusy: Bool {
-        switch self {
-        case .installing, .preparing, .generating:
-            return true
-        case .idle, .installRequired, .speaking, .failed:
-            return false
-        }
-    }
-
-    public var requiresInstall: Bool {
-        if case .installRequired = self {
-            return true
-        }
-        return false
-    }
-}
-
-public struct StoryPlaybackOverlayState: Sendable, Equatable {
-    public let title: String
-    public let clusterLabel: String?
-    public let clusterColorHex: String?
-    public let userStoryText: String?
-    public let actor: String?
-    public let goal: String?
-    public let benefit: String?
-    public let conversation: [String]
-    public let acceptanceCriteria: [String]
-    public let displayedText: String
-    public let acceptanceText: String?
-    public let index: Int
-    public let playbackCount: Int
-    public let isPaused: Bool
-    public let isReadAloudEnabled: Bool
-    public let readAloudStatus: StoryReadAloudStatus
-    public let isReadAloudBusy: Bool
-    public let canGoBackward: Bool
-    public let canGoForward: Bool
+/// One app-automation request to focus a table, optionally scoped to a declared relation.
+public struct AutomationGraphFocusCommand: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let tableID: String
+    public let sourceColumn: String?
+    public let targetColumn: String?
+    public let relationID: String?
 
     public init(
-        title: String,
-        clusterLabel: String? = nil,
-        clusterColorHex: String? = nil,
-        userStoryText: String?,
-        actor: String? = nil,
-        goal: String? = nil,
-        benefit: String? = nil,
-        conversation: [String] = [],
-        acceptanceCriteria: [String] = [],
-        displayedText: String,
-        acceptanceText: String?,
-        index: Int,
-        playbackCount: Int,
-        isPaused: Bool,
-        isReadAloudEnabled: Bool = false,
-        readAloudStatus: StoryReadAloudStatus = .idle,
-        isReadAloudBusy: Bool = false,
-        canGoBackward: Bool,
-        canGoForward: Bool
+        id: UUID = UUID(),
+        tableID: String,
+        sourceColumn: String? = nil,
+        targetColumn: String? = nil,
+        relationID: String? = nil
     ) {
-        self.title = title
-        self.clusterLabel = clusterLabel
-        self.clusterColorHex = clusterColorHex
-        self.userStoryText = userStoryText
-        self.actor = actor
-        self.goal = goal
-        self.benefit = benefit
-        self.conversation = conversation
-        self.acceptanceCriteria = acceptanceCriteria
-        self.displayedText = displayedText
-        self.acceptanceText = acceptanceText
-        self.index = index
-        self.playbackCount = playbackCount
-        self.isPaused = isPaused
-        self.isReadAloudEnabled = isReadAloudEnabled
-        self.readAloudStatus = readAloudStatus
-        self.isReadAloudBusy = isReadAloudBusy
-        self.canGoBackward = canGoBackward
-        self.canGoForward = canGoForward
+        self.id = id
+        self.tableID = tableID
+        self.sourceColumn = sourceColumn
+        self.targetColumn = targetColumn
+        self.relationID = relationID
     }
 }
 
-public struct StoryPlaybackCommand: Identifiable, Sendable, Equatable {
-    public enum Kind: Sendable, Equatable {
-        case previous
-        case togglePause
-        case toggleReadAloud
-        case installReadAloud
-        case next
-        case stop
-    }
+enum GridCellSliceDirection {
+    case previous
+    case next
+}
 
-    public let id: UUID
-    public let kind: Kind
+struct GridCellSliceNavigationState: Equatable {
+    let canReadPrevious: Bool
+    let canReadNext: Bool
+    let isLoading: Bool
+}
 
-    public init(id: UUID = UUID(), kind: Kind) {
-        self.id = id
-        self.kind = kind
-    }
+private struct GridCellSliceContext: Equatable, Sendable {
+    let tabID: UUID
+    let row: Int
+    let columnName: String
+    let revision: Int
+    let length: Int
+    let recordID: String
 }
 
 @MainActor
@@ -152,6 +65,17 @@ public final class AppSession {
     /// and database operations use `databaseTarget`, independently of this local URL.
     public var databaseURL: URL?
     public private(set) var schemaReview: SchemaReviewDocument?
+    public private(set) var historicalExplanationArtifact: HistoricalExplanationArtifact?
+    /// The currently displayed point while replaying a saved explanation. Its table
+    /// and query panes are resolved only from the portable artifact snapshot.
+    public private(set) var historicalReplayPointID: String?
+    public var historicalReplayView: HistoricalExplanationArtifact.CapturedReplayView? {
+        guard let historicalReplayPointID else { return nil }
+        return historicalExplanationArtifact?.capturedView(forPointID: historicalReplayPointID)
+    }
+    /// Local container file used to restore an explicitly opened historical explanation tab.
+    /// This path is session restoration metadata; it is never serialized into the artifact.
+    public private(set) var historicalExplanationURL: URL?
     public private(set) var schemaReviewChanges: [String: SchemaTableChange] = [:]
     public private(set) var schemaReviewEdgeChanges: [String: SchemaChangeKind] = [:]
     private var schemaComparisonTask: Task<Void, Never>?
@@ -177,26 +101,28 @@ public final class AppSession {
         didSet { graphGroupingRevision &+= 1 }
     }
     private(set) var graphGroupingRevision = 0
+    public private(set) var automationGroupHints: [SchemaSidecar.ClusterHint]?
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
     public var activePaneSide: WorkspacePaneSide = .right
     public var maximizedPaneSide: WorkspacePaneSide?
+    public var workspaceSplitFraction: CGFloat = 0.6
     public var selectedGraphNodeID: String?
     public var selectedGraphNodeIDs: Set<String> = []
     public var expandedGraphNodeIDs: Set<String> = []
     public var floatingDetailsCardTableID: String?
     public var floatingDetailsCardPosition: CGPoint?
+    public var automationFocusCommand: AutomationGraphFocusCommand?
+    /// Invoked for user-originated graph changes so a presentation can pause progression.
+    @ObservationIgnored public var onManualGraphInteraction: (@MainActor () -> Void)?
     public var graphNodeSizeMetric: GraphNodeSizeMetric = .uniform {
         didSet {
-            userDefaults.set(graphNodeSizeMetric.rawValue, forKey: Self.graphNodeSizeMetricKey)
             rebuildGraphNodeSizeProfile()
         }
     }
     private(set) var graphNodeSizeProfile: GraphNodeSizeProfile = .uniform
     public var showAllGraphTableCards = false
     public var showClusterHalos = true
-    public var showStoryCardsInGraph = false
-    public var showOnlyStoryCardsInGraph = false
     public var openTabs: [TableTabModel] = []
     public var activeTabID: UUID?
     public var isRefreshing = false
@@ -205,14 +131,6 @@ public final class AppSession {
     public var isAlterTablePresented = false
     public var isSkillsPresented = false
     public var refreshToast: RefreshToast?
-    public var storyPlaybackOverlay: StoryPlaybackOverlayState?
-    /// Beat narration shown on the playback card; updated during typing without rebuilding overlay state.
-    public var storyPlaybackDisplayedText: String = ""
-    public var isStoryReadAloudEnabled = false
-    public var storyReadAloudStatus: StoryReadAloudStatus = .idle
-    public var isStoryReadAloudBusy = false
-    public var storyPlaybackCardOffset: CGSize = .zero
-    public var storyPlaybackCommand: StoryPlaybackCommand?
     // Graph viewport state — shared so the minimap can be rendered outside the pane clip boundary
     public var graphZoom: CGFloat = 1.0
     public var graphPan: CGSize = .zero
@@ -221,6 +139,9 @@ public final class AppSession {
     public var presentedError: SQLiteUserError?
 
     public let records: RecordWorkspace
+    private var gridCellSliceContext: GridCellSliceContext?
+    @ObservationIgnored private var gridCellSliceRequestID = UUID()
+    public private(set) var isLoadingGridCellSlice = false
 
     public let graphLayout = GraphLayoutModel()
     public var queryWorkspace: QueryWorkspaceModel
@@ -231,6 +152,22 @@ public final class AppSession {
     public private(set) var documentOpenProgress: String?
     private var pendingDatabaseClose: Task<Void, Never>?
     public private(set) var graphTableFilter = GraphTableFilter()
+    /// Optional table scope requested by app automation. `nil` leaves the full graph visible.
+    public var automationVisibleTableIDs: Set<String>? {
+        didSet {
+            guard oldValue != automationVisibleTableIDs else { return }
+            automationViewRevision &+= 1
+            automationRenderedViewRevision = nil
+            automationRenderedTableIDs = []
+            setGraphSelection(selectedGraphNodeIDs.intersection(graphVisibleTableIDs))
+        }
+    }
+    /// Revision of the latest automation-driven graph presentation.
+    public private(set) var automationViewRevision = 0
+    /// Revision acknowledged by the rendered graph canvas, or `nil` until it paints.
+    public private(set) var automationRenderedViewRevision: Int?
+    /// Tables included in the last rendered acknowledgement.
+    public private(set) var automationRenderedTableIDs: Set<String> = []
     public private(set) var graphRowCounts: [String: Int] = [:] {
         didSet { rebuildGraphNodeSizeProfile() }
     }
@@ -241,10 +178,76 @@ public final class AppSession {
     private var graphFilterGeneration = UUID()
 
     public var graphVisibleTableIDs: Set<String> {
-        Set(tables.filter {
+        let nodeIDs = Set(graph.nodes.map(\.id))
+        let filtered = Set(tables.filter {
             graphTableFilter.matches(fields: $0.columnCount, rows: graphRowCounts[$0.id] ?? $0.rowCount,
                                      relations: graphRelationCounts[$0.id, default: 0])
-        }.map(\.id))
+        }.map(\.id)).intersection(nodeIDs)
+        guard let automationVisibleTableIDs else { return filtered }
+        return filtered.intersection(automationVisibleTableIDs)
+    }
+
+    /// Applies an automation table scope; `nil` restores the full graph subject to the user's filter.
+    public func setAutomationVisibleTableIDs(_ ids: Set<String>?) {
+        automationVisibleTableIDs = ids
+    }
+
+    /// Advances the render acknowledgement after a camera, selection, expansion, or layout action.
+    public func markAutomationViewChanged() {
+        automationViewRevision &+= 1
+        automationRenderedViewRevision = nil
+        automationRenderedTableIDs = []
+    }
+
+    /// Restores the saved positions and exact pin set, including removal of temporary pins.
+    public func restoreAutomationGraphLayout(_ snapshot: GraphLayoutSnapshot) {
+        graphLayout.restore(
+            snapshot, for: graph,
+            presentation: showAllGraphTableCards ? .allCards : .compact,
+            descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] }
+        )
+        markAutomationViewChanged()
+    }
+
+    /// Requests native graph focus through the same table/relation layout used by the UI.
+    public func setAutomationFocusCommand(_ command: AutomationGraphFocusCommand?) {
+        automationFocusCommand = command
+    }
+
+    /// Applies temporary, per-session graph groups without changing the authored sidecar.
+    public func setAutomationGroups(_ hints: [SchemaSidecar.ClusterHint]?) {
+        guard automationGroupHints != hints else { return }
+        automationGroupHints = hints
+        updateGraphGrouping()
+        guard !graph.nodes.isEmpty else { return }
+        let nodesByID = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0) })
+        let isShowingAllCards = showAllGraphTableCards
+        let expandedIDs = expandedGraphNodeIDs
+        graphLayout.stabilize(
+            graph: graph,
+            presentation: showAllGraphTableCards ? .allCards : .compact,
+            descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] },
+            nodeSizeLookup: { [tableDescriptors, nodesByID] id in
+                let title = nodesByID[id]?.title ?? id
+                let style: GraphNodeCardStyle = isShowingAllCards || expandedIDs.contains(id) ? .expanded : .collapsed
+                return GraphCardLayout.nodeSize(title: title, descriptor: tableDescriptors[id], style: style)
+            },
+            maxIterations: graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 0 : 140
+        )
+    }
+
+    public func notifyManualGraphInteraction() {
+        onManualGraphInteraction?()
+    }
+
+    /// Called after the canvas has drawn the requested graph revision.
+    public func acknowledgeAutomationViewRendered(revision: Int, displayedTableIDs: Set<String>) {
+        guard revision == automationViewRevision else { return }
+        let visibleIDs = graphVisibleTableIDs
+        let acknowledgedIDs = displayedTableIDs.intersection(visibleIDs)
+        guard automationRenderedViewRevision != revision || automationRenderedTableIDs != acknowledgedIDs else { return }
+        automationRenderedTableIDs = acknowledgedIDs
+        automationRenderedViewRevision = revision
     }
 
     private func rebuildGraphNodeSizeProfile() {
@@ -261,6 +264,15 @@ public final class AppSession {
     public func clearGraphFilter() {
         cancelGraphFilter()
         graphTableFilter = GraphTableFilter()
+    }
+
+    /// Restores a saved graph filter without querying the database. Row-bound
+    /// filters use catalog estimates until the user asks for a fresh count.
+    public func restoreGraphFilterWithoutCounting(_ filter: GraphTableFilter) {
+        guard filter.isValid else { return }
+        cancelGraphFilter()
+        graphTableFilter = filter
+        setGraphSelection(selectedGraphNodeIDs.intersection(graphVisibleTableIDs))
     }
 
     /// Row bounds use fresh counts, not PostgreSQL's missing or stale estimates.
@@ -297,8 +309,20 @@ public final class AppSession {
     private let databaseService: DatabaseService
     private let userDefaults: UserDefaults
     private var tableDescriptors: [String: EditableTableDescriptor] = [:]
-    private var pinnedStoryGraphPositionsByMode: [String: [String: CGPoint]] = [:]
     private static let graphNodeSizeMetricKey = "SQLiteGraphStudio.graph-node-size-metric"
+
+    /// User choices are saved for the current database. Agent presentation choices
+    /// can use the same method with persist=false and remain temporary.
+    public func setGraphNodeSizeMetric(_ metric: GraphNodeSizeMetric, persist: Bool) {
+        graphNodeSizeMetric = metric
+        if persist, let target = databaseTarget {
+            userDefaults.set(metric.rawValue, forKey: graphNodeSizeStorageKey(for: target))
+        }
+    }
+
+    private func graphNodeSizeStorageKey(for target: DatabaseTarget) -> String {
+        Self.graphNodeSizeMetricKey + "." + target.stableStorageKey
+    }
     private static let postgresBookmarksKey = "SQLiteGraphStudio.postgres-file-bookmarks"
     private static let recentDatabaseStorageKey = "SQLiteGraphStudio.recent-databases"
     private static let graphLayoutStorageVersion = 2
@@ -343,6 +367,14 @@ public final class AppSession {
 
     public func inspectRecord(in tab: TableTabModel, row: Int) {
         guard let loaded = tab.row(at: row) else { return }
+        guard loaded.omittedColumnIndices.isEmpty else {
+            presentedError = SQLiteUserError(
+                kind: .invalidInput,
+                message: "This row contains large values omitted from the grid. Inspect those values in slices before treating the row as complete."
+            )
+            return
+        }
+        invalidateGridCellSlice()
         do {
             let record = try RecordAccess.snapshot(
                 descriptor: tab.descriptor,
@@ -354,9 +386,301 @@ public final class AppSession {
         } catch { presentedError = SQLiteUserError.from(error) }
     }
 
+    /// Opens the first bounded database-side slice for an omitted table-grid cell.
+    /// The partial snapshot intentionally has no row identity or other field values.
+    @discardableResult
+    public func inspectCellSlice(in tab: TableTabModel, row: Int, columnName: String) -> Task<Void, Never> {
+        guard openTabs.contains(where: { $0.id == tab.id }),
+              let loaded = tab.row(at: row),
+              let columnIndex = tab.descriptor.columns.firstIndex(where: { $0.name == columnName }),
+              loaded.omittedColumnIndices.contains(columnIndex) else {
+            return Task {}
+        }
+        let tabID = tab.id
+        let revision = tab.revision
+        let column = tab.descriptor.columns[columnIndex]
+        let tableName = tab.title
+        let previousRecordID = records.current?.id
+        let previousInspectorPresentation = records.isPresented
+        invalidateGridCellSlice()
+        let requestID = UUID()
+        gridCellSliceRequestID = requestID
+        isLoadingGridCellSlice = true
+        return Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.gridCellSliceRequestID == requestID { self.isLoadingGridCellSlice = false }
+            }
+            do {
+                let read = try await tab.readOmittedCell(row: row, columnName: columnName)
+                guard !Task.isCancelled,
+                      self.gridCellSliceRequestID == requestID,
+                      self.records.current?.id == previousRecordID,
+                      self.records.isPresented == previousInspectorPresentation,
+                      self.openTabs.contains(where: { $0.id == tabID }),
+                      tab.revision == revision,
+                      tab.isValueOmitted(row: row, column: columnIndex),
+                      tab.canReadOmittedCell(row: row, columnName: columnName) else { return }
+                guard let read else {
+                    self.presentedError = DatabaseUserError(kind: .notFound, message: "The selected cell is no longer available.")
+                    return
+                }
+                let snapshot = RecordSnapshot(
+                    descriptor: tab.descriptor,
+                    columns: [QueryResultColumn(name: columnName, typeLabel: column.typeLabel)],
+                    values: [read.value],
+                    identity: nil,
+                    label: columnName,
+                    partialCellRead: read
+                )
+                self.records.open(snapshot)
+                self.records.originLabel = "\(tableName) · row \(row + 1) · \(columnName)"
+                self.gridCellSliceContext = GridCellSliceContext(
+                    tabID: tabID, row: row, columnName: columnName, revision: revision,
+                    length: 4_096, recordID: snapshot.id
+                )
+            } catch {
+                guard !Task.isCancelled,
+                      self.gridCellSliceRequestID == requestID,
+                      self.records.current?.id == previousRecordID,
+                      self.records.isPresented == previousInspectorPresentation,
+                      self.openTabs.contains(where: { $0.id == tabID }),
+                      tab.revision == revision,
+                      tab.canReadOmittedCell(row: row, columnName: columnName) else { return }
+                self.presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    func gridCellSliceNavigation(for record: RecordSnapshot) -> GridCellSliceNavigationState? {
+        guard validGridCellSliceContext(for: record) != nil,
+              let read = record.partialCellRead else { return nil }
+        return GridCellSliceNavigationState(
+            canReadPrevious: read.offset > 0,
+            canReadNext: read.hasMore,
+            isLoading: isLoadingGridCellSlice
+        )
+    }
+
+    /// Reads another bounded slice for a native grid cell without changing the
+    /// inspector. The stable row identity is checked by the same database query
+    /// that returns the slice, and the presentation context is revalidated after
+    /// the await so a caller cannot apply stale search results to a new selection.
+    public func readGridCellSlice(for record: RecordSnapshot, offset: Int, length: Int = 4_096) async throws -> BoundedCellRead {
+        guard !isLoadingGridCellSlice,
+              let context = validGridCellSliceContext(for: record),
+              let tab = openTabs.first(where: { $0.id == context.tabID }) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The selected cell view has changed. Reopen the large value before reading it.")
+        }
+        let requestID = gridCellSliceRequestID
+        guard offset >= 0, offset < Int.max, (1...4_096).contains(length) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Native cell slices require a nonnegative offset and a length from 1 to 4096.")
+        }
+        func ensureCurrentContext() throws {
+            guard !Task.isCancelled,
+                  gridCellSliceRequestID == requestID,
+                  gridCellSliceContext == context,
+                  records.current?.id == record.id,
+                  records.isPresented,
+                  openTabs.contains(where: { $0.id == context.tabID }),
+                  tab.revision == context.revision,
+                  tab.canReadOmittedCell(row: context.row, columnName: context.columnName) else {
+                throw DatabaseUserError(kind: .invalidInput, message: "The selected cell view changed before the slice finished reading.")
+            }
+        }
+        let read: BoundedCellRead?
+        do {
+            read = try await tab.readOmittedCell(
+                row: context.row,
+                columnName: context.columnName,
+                offset: offset,
+                length: length
+            )
+        } catch {
+            try ensureCurrentContext()
+            throw error
+        }
+        try ensureCurrentContext()
+        guard let read else {
+            throw DatabaseUserError(kind: .notFound, message: "The selected cell is no longer available.")
+        }
+        return read
+    }
+
+    /// Runs a full-value action through a database snapshot while checking the
+    /// inspector selection before and after every database slice.
+    public func withGridCellReadSnapshot<T: Sendable>(
+        for record: RecordSnapshot,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T {
+        guard !isLoadingGridCellSlice,
+              let context = validGridCellSliceContext(for: record),
+              let tab = openTabs.first(where: { $0.id == context.tabID }) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The selected cell view has changed. Reopen the large value before starting a full-value action.")
+        }
+        let requestID = gridCellSliceRequestID
+        try ensureCurrentGridCellReadContext(for: record, context: context, requestID: requestID)
+        return try await tab.withOmittedCellReadSnapshot(row: context.row, columnName: context.columnName) { snapshotReader in
+            let guardedReader = BoundedCellSnapshotReader { offset, length in
+                try self.ensureCurrentGridCellReadContext(for: record, context: context, requestID: requestID)
+                guard let slice = try await snapshotReader.read(offset: offset, length: length) else {
+                    throw DatabaseUserError(kind: .notFound, message: "The selected cell is no longer available in this snapshot.")
+                }
+                try self.ensureCurrentGridCellReadContext(for: record, context: context, requestID: requestID)
+                return slice
+            }
+            let result = try await operation(guardedReader)
+            try self.ensureCurrentGridCellReadContext(for: record, context: context, requestID: requestID)
+            return result
+        }
+    }
+
+    @discardableResult
+    func navigateGridCellSlice(for record: RecordSnapshot, direction: GridCellSliceDirection) -> Task<Void, Never> {
+        guard !isLoadingGridCellSlice,
+              let context = validGridCellSliceContext(for: record),
+              let currentRead = record.partialCellRead else { return Task {} }
+        let offset: Int
+        switch direction {
+        case .previous:
+            guard currentRead.offset > 0 else { return Task {} }
+            offset = max(0, currentRead.offset - context.length)
+        case .next:
+            guard currentRead.hasMore else { return Task {} }
+            let (nextOffset, overflow) = currentRead.offset.addingReportingOverflow(currentRead.returnedLength)
+            guard !overflow, nextOffset < Int.max else { return Task {} }
+            offset = nextOffset
+        }
+        return showGridCellSlice(for: record, offset: offset)
+    }
+
+    @discardableResult
+    func showGridCellSlice(for record: RecordSnapshot, offset: Int) -> Task<Void, Never> {
+        guard !isLoadingGridCellSlice,
+              offset >= 0, offset < Int.max,
+              let context = validGridCellSliceContext(for: record) else { return Task {} }
+        guard let tab = openTabs.first(where: { $0.id == context.tabID }) else { return Task {} }
+        let column = tab.descriptor.columns.first { $0.name == context.columnName }
+        guard let column else { return Task {} }
+
+        let requestID = UUID()
+        gridCellSliceRequestID = requestID
+        isLoadingGridCellSlice = true
+        return Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.gridCellSliceRequestID == requestID { self.isLoadingGridCellSlice = false }
+            }
+            do {
+                let read = try await tab.readOmittedCell(
+                    row: context.row,
+                    columnName: context.columnName,
+                    offset: offset,
+                    length: context.length
+                )
+                guard !Task.isCancelled,
+                      self.gridCellSliceRequestID == requestID,
+                      self.gridCellSliceContext == context,
+                      self.records.current?.id == record.id,
+                      self.records.isPresented,
+                      self.openTabs.contains(where: { $0.id == context.tabID }),
+                      tab.revision == context.revision,
+                      tab.canReadOmittedCell(row: context.row, columnName: context.columnName) else { return }
+                guard let read else {
+                    self.gridCellSliceContext = nil
+                    self.presentedError = DatabaseUserError(kind: .notFound, message: "The selected cell is no longer available.")
+                    return
+                }
+                let snapshot = RecordSnapshot(
+                    descriptor: tab.descriptor,
+                    columns: [QueryResultColumn(name: context.columnName, typeLabel: column.typeLabel)],
+                    values: [read.value],
+                    identity: nil,
+                    label: context.columnName,
+                    partialCellRead: read
+                )
+                self.records.open(snapshot)
+                self.records.originLabel = "\(tab.title) · row \(context.row + 1) · \(context.columnName)"
+                self.gridCellSliceContext = GridCellSliceContext(
+                    tabID: context.tabID, row: context.row, columnName: context.columnName,
+                    revision: context.revision, length: context.length, recordID: snapshot.id
+                )
+            } catch {
+                guard !Task.isCancelled,
+                      self.gridCellSliceRequestID == requestID,
+                      self.gridCellSliceContext == context,
+                      self.records.current?.id == record.id,
+                      self.records.isPresented,
+                      tab.revision == context.revision,
+                      tab.canReadOmittedCell(row: context.row, columnName: context.columnName) else { return }
+                self.presentedError = SQLiteUserError.from(error)
+            }
+        }
+    }
+
+    /// Displays a slice already read during a consistent full-cell operation,
+    /// such as Find. Reusing that result avoids a new database read after the
+    /// snapshot closes.
+    func showGridCellSlice(for record: RecordSnapshot, read: BoundedCellRead) {
+        guard !isLoadingGridCellSlice,
+              let context = validGridCellSliceContext(for: record),
+              let tab = openTabs.first(where: { $0.id == context.tabID }),
+              let column = tab.descriptor.columns.first(where: { $0.name == context.columnName }) else { return }
+        let snapshot = RecordSnapshot(
+            descriptor: tab.descriptor,
+            columns: [QueryResultColumn(name: context.columnName, typeLabel: column.typeLabel)],
+            values: [read.value],
+            identity: nil,
+            label: context.columnName,
+            partialCellRead: read
+        )
+        gridCellSliceRequestID = UUID()
+        records.open(snapshot)
+        records.originLabel = "\(tab.title) · row \(context.row + 1) · \(context.columnName)"
+        gridCellSliceContext = GridCellSliceContext(
+            tabID: context.tabID, row: context.row, columnName: context.columnName,
+            revision: context.revision, length: context.length, recordID: snapshot.id
+        )
+    }
+
+    private func validGridCellSliceContext(for record: RecordSnapshot) -> GridCellSliceContext? {
+        guard let context = gridCellSliceContext,
+              let tab = openTabs.first(where: { $0.id == context.tabID }),
+              records.isPresented,
+              records.current?.id == record.id,
+              context.recordID == record.id,
+              record.partialCellRead != nil,
+              record.values.count == 1,
+              record.columns.map(\.name) == [context.columnName],
+              record.descriptor == tab.descriptor,
+              tab.revision == context.revision,
+              tab.canReadOmittedCell(row: context.row, columnName: context.columnName) else { return nil }
+        return context
+    }
+
+    private func ensureCurrentGridCellReadContext(
+        for record: RecordSnapshot,
+        context: GridCellSliceContext,
+        requestID: UUID
+    ) throws {
+        guard !Task.isCancelled,
+              gridCellSliceRequestID == requestID,
+              gridCellSliceContext == context,
+              validGridCellSliceContext(for: record) == context else {
+            throw DatabaseUserError(kind: .invalidInput, message: "The selected cell view changed before the full-value action finished.")
+        }
+    }
+
+    private func invalidateGridCellSlice() {
+        gridCellSliceContext = nil
+        gridCellSliceRequestID = UUID()
+        isLoadingGridCellSlice = false
+    }
+
     public func inspectQueryRecord(result: QueryResult, row: QueryResultRow, executedSQL: String? = nil) {
         do {
             let descriptor = RecordQueryOrigin.descriptor(executedSQL: executedSQL, result: result, catalog: records.catalog)
+            invalidateGridCellSlice()
             records.open(try RecordAccess.snapshot(descriptor: descriptor, columns: result.columns, values: row.values))
             records.originLabel = "Query result · row \(row.id + 1)"
         } catch { presentedError = SQLiteUserError.from(error) }
@@ -447,7 +771,14 @@ public final class AppSession {
     }
 
     public func openDocument(url: URL) async {
-        if ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) {
+        if url.pathExtension.lowercased() == "sgexplanation" {
+            do {
+                let artifact = try HistoricalExplanationStore.load(url)
+                openHistoricalExplanation(artifact, from: url)
+            } catch {
+                presentedError = SQLiteUserError.from(error)
+            }
+        } else if ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) {
             await openSchemaReview(url: url)
         } else if DatabaseDocument.isArchive(url) {
             await openPostgreSQLDump(url: url)
@@ -595,6 +926,9 @@ public final class AppSession {
         schemaPreviewReloadError = nil
         schemaPreviewFileStamp = nil
         schemaReview = nil
+        historicalExplanationArtifact = nil
+        historicalReplayPointID = nil
+        historicalExplanationURL = nil
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
         clearGraphFilter()
@@ -625,6 +959,9 @@ public final class AppSession {
         graph = .empty
         schemaSidecar = .empty
         graphGrouping = .empty
+        automationGroupHints = nil
+        automationFocusCommand = nil
+        automationVisibleTableIDs = nil
         schemaMetadataState = SchemaMetadataState()
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
@@ -636,17 +973,15 @@ public final class AppSession {
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
         showAllGraphTableCards = false
-        showStoryCardsInGraph = false
-        showOnlyStoryCardsInGraph = false
         openTabs = []
 
         activeTabID = nil
         tableDescriptors = [:]
         graphLayout.setClusterHints([:])
         graphLayout.reset(for: .empty)
-        pinnedStoryGraphPositionsByMode = [:]
         queryWorkspace.reset()
         refreshToast = nil
+        markAutomationViewChanged()
     }
 
     /// Re-reads `<document>.studio.json` from disk and updates sidecar descriptions and
@@ -670,13 +1005,6 @@ public final class AppSession {
     public func clearPersistedGraphLayout() {
         guard let target = databaseTarget else { return }
         userDefaults.removeObject(forKey: graphLayoutStorageKey(for: target))
-    }
-
-    /// Removes cached story-card positions so the next layout pass recomputes cluster placement.
-    public func clearPersistedStoryGraphLayout() {
-        guard let target = databaseTarget else { return }
-        userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: target))
-        pinnedStoryGraphPositionsByMode = [:]
     }
 
     public func tableDescription(for tableName: String) -> String? {
@@ -740,12 +1068,6 @@ public final class AppSession {
         }
     }
 
-    public var stories: [SchemaSidecar.Story] {
-        schemaSidecar.stories.sorted { lhs, rhs in
-            lhs.createdAt.localizedStandardCompare(rhs.createdAt) == .orderedDescending
-        }
-    }
-
     public func clusterLabel(for tableName: String) -> String? {
         graphGrouping.group(for: tableName)?.label
     }
@@ -764,7 +1086,6 @@ public final class AppSession {
             sidecar: schemaSidecar
         )
         persistCurrentGraphLayout()
-        persistStoryGraphLayout()
         switch target {
         case .sqlite(let databaseURL):
             Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
@@ -989,69 +1310,12 @@ public final class AppSession {
         expandedGraphNodeIDs.removeAll()
     }
 
-    public func deleteStory(id storyID: String) {
-        guard hasOpenDatabase, let databaseURL else { return }
-        guard schemaSidecar.stories.contains(where: { $0.id == storyID }) else { return }
-        if case .failed(let error) = schemaMetadataState.status {
-            presentedError = DatabaseUserError(kind: .invalidInput, message: error.localizedDescription + " Reload valid metadata before changing stories.")
-            return
-        }
-
-        let before = schemaSidecar
-        var next = schemaSidecar
-        next.stories.removeAll { $0.id == storyID }
-
-        do {
-            try SchemaSidecarStore.save(next, for: databaseURL)
-            schemaSidecar = next
-            schemaMetadataState.reload(for: databaseURL, descriptors: Array(tableDescriptors.values))
-            refreshToast = Self.sidecarSummary(before: before, after: next)
-                .map { RefreshToast(message: $0) }
-        } catch {
-            presentedError = SQLiteUserError(
-                kind: .generic,
-                message: "Could not update the sidecar file: \(error.localizedDescription)"
-            )
-        }
-    }
-
     public func persistCurrentGraphLayout() {
         guard let target = databaseTarget, !graph.nodes.isEmpty else { return }
         let snapshot = graphLayout.snapshot(for: graph)
         let persistedLayout = PersistedGraphLayout(snapshot: snapshot)
         guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
         userDefaults.set(data, forKey: graphLayoutStorageKey(for: target))
-    }
-
-    public func pinnedStoryGraphPosition(for storyID: String) -> CGPoint? {
-        pinnedStoryGraphPosition(for: storyID, mode: StoryGraphPlacement.layoutMode(for: self))
-    }
-
-    public func pinnedStoryGraphPosition(for storyID: String, mode: StoryGraphLayoutMode) -> CGPoint? {
-        pinnedStoryGraphPositionsByMode[mode.persistenceKey]?[storyID]
-    }
-
-    public func pinStoryGraphPosition(_ storyID: String, at point: CGPoint) {
-        pinStoryGraphPosition(storyID, at: point, mode: StoryGraphPlacement.layoutMode(for: self))
-    }
-
-    public func pinStoryGraphPosition(_ storyID: String, at point: CGPoint, mode: StoryGraphLayoutMode) {
-        let key = mode.persistenceKey
-        var positions = pinnedStoryGraphPositionsByMode[key, default: [:]]
-        positions[storyID] = point
-        pinnedStoryGraphPositionsByMode[key] = positions
-    }
-
-    public func persistStoryGraphLayout() {
-        guard let target = databaseTarget else { return }
-        guard !pinnedStoryGraphPositionsByMode.isEmpty else {
-            userDefaults.removeObject(forKey: storyGraphLayoutStorageKey(for: target))
-            return
-        }
-
-        let persistedLayout = PersistedStoryGraphLayout(positionsByMode: pinnedStoryGraphPositionsByMode)
-        guard let data = try? JSONEncoder().encode(persistedLayout) else { return }
-        userDefaults.set(data, forKey: storyGraphLayoutStorageKey(for: target))
     }
 
     public func restoreCompactGraphLayoutForCurrentDatabase() {
@@ -1201,11 +1465,18 @@ public final class AppSession {
 
     public func exportActiveTableRows(format: DataTransferFormat, scope: TableExportScope = .loadedRows) {
         guard !isRefreshing, let target = databaseTarget, let activeTab, exportTask == nil else { return }
+        let loaded = scope == .loadedRows
+        if loaded, activeTab.chunk.rows.contains(where: { !$0.omittedColumnIndices.isEmpty }) {
+            presentedError = SQLiteUserError(
+                kind: .invalidInput,
+                message: "Loaded rows contain large values omitted from the grid. Choose All matching rows to export the full values."
+            )
+            return
+        }
         let generation = openGeneration
         let descriptor = activeTab.descriptor
         let rows = activeTab.chunk.rows.map(\.values)
         let query = activeTab.queryState
-        let loaded = scope == .loadedRows
         let label = loaded ? "Loaded rows: \(rows.count) · \(activeTab.title)" : "All matching rows · \(activeTab.title) · total determined during export"
         let suffix = loaded ? "loaded-\(rows.count)" : "all-matching"
         presentExportPanel(defaultName: "\(activeTab.title)-\(suffix)", format: format,
@@ -1433,6 +1704,9 @@ public final class AppSession {
 
     func apply(snapshot: CatalogSnapshot, target: DatabaseTarget, documentURL: URL? = nil) {
         schemaReview = nil
+        historicalExplanationArtifact = nil
+        historicalReplayPointID = nil
+        historicalExplanationURL = nil
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
         records.reset()
@@ -1448,8 +1722,18 @@ public final class AppSession {
         let localURL = (documentURL ?? target.fileURL)?.standardizedFileURL
         let isSameDocument = databaseTarget == target && databaseURL == localURL
         if !isSameDocument { initializedGraphViewportDocument = nil }
+        if !isSameDocument {
+            automationGroupHints = nil
+            automationFocusCommand = nil
+            automationVisibleTableIDs = nil
+        }
         databaseTarget = target
         databaseURL = localURL
+        if !isSameDocument {
+            graphNodeSizeMetric = GraphNodeSizeMetric(rawValue:
+                userDefaults.string(forKey: graphNodeSizeStorageKey(for: target)) ??
+                userDefaults.string(forKey: Self.graphNodeSizeMetricKey) ?? "") ?? .uniform
+        }
         databaseCapabilities = target.isPostgres ? .postgresReadOnly : .sqlite
         tableDescriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })
         tables = snapshot.descriptors.map(\.summary)
@@ -1466,17 +1750,13 @@ public final class AppSession {
         configureRecordMappings(schemaSidecar)
         updateGraphGrouping()
         graphLayout.reset(for: snapshot.graph)
-        pinnedStoryGraphPositionsByMode = [:]
         restorePersistedGraphLayoutIfAvailable(for: target, graph: snapshot.graph)
-        restorePersistedStoryGraphLayoutIfAvailable(for: target)
         activePaneSide = .right
         selectedGraphNodeID = nil
         expandedGraphNodeIDs = []
         floatingDetailsCardTableID = nil
         floatingDetailsCardPosition = nil
         showAllGraphTableCards = false
-        showStoryCardsInGraph = false
-        showOnlyStoryCardsInGraph = false
         queryWorkspace.loadSavedQueries(for: target)
         if !isSameDocument {
             selectedGraphNodeIDs = []
@@ -1497,10 +1777,15 @@ public final class AppSession {
         }
         activeTabID = openTabs.last?.id
         if let localURL { rememberRecentDatabase(localURL) }
+        if !isSameDocument { markAutomationViewChanged() }
     }
 
     private func updateGraphGrouping() {
-        graphGrouping = GraphGrouping.resolve(graph: graph, descriptors: tableDescriptors, sidecar: schemaSidecar)
+        var groupingSidecar = schemaSidecar
+        if let automationGroupHints {
+            groupingSidecar.clusters = automationGroupHints + schemaSidecar.clusters
+        }
+        graphGrouping = GraphGrouping.resolve(graph: graph, descriptors: tableDescriptors, sidecar: groupingSidecar)
         graphLayout.setClusterHints(graphGrouping.nodeToGroup)
     }
 
@@ -1518,10 +1803,55 @@ public final class AppSession {
         } catch { presentedError = SQLiteUserError.from(error) }
     }
 
+    /// Opens only the schema and explicitly captured values in a saved explanation.
+    /// This workspace has no live database target and cannot run a query.
+    public func openHistoricalExplanation(_ artifact: HistoricalExplanationArtifact, from url: URL? = nil) {
+        do {
+            try artifact.validate()
+            closeDatabase()
+            let captured = artifact.capturedAt.formatted(.iso8601)
+            let review = SchemaReviewDocument(
+                title: artifact.title,
+                baseRef: "Historical capture",
+                headRef: captured,
+                before: artifact.schema,
+                after: artifact.schema,
+                notes: ["historical-explanation", "Captured at \(captured). Row values appear only when they were explicitly included in the saved explanation."]
+            )
+            applySchemaReview(review, preservingContext: false)
+            historicalExplanationArtifact = artifact
+            historicalReplayPointID = nil
+            historicalExplanationURL = url?.standardizedFileURL
+            if let firstTable = artifact.schema.tables.first { selectGraphNode(firstTable.id) }
+            databaseURL = nil
+            databaseTarget = nil
+            databaseCapabilities = .none
+        } catch {
+            presentedError = SQLiteUserError.from(error)
+        }
+    }
+
+    /// Changes the captured pane contents when offline historical replay advances.
+    /// Unknown IDs clear the frame so stale evidence is never shown for another point.
+    public func selectHistoricalExplanationPoint(externalPointID: String?) {
+        guard let externalPointID else {
+            historicalReplayPointID = nil
+            return
+        }
+        guard historicalExplanationArtifact?.points.contains(where: { $0.id == externalPointID }) == true else {
+            historicalReplayPointID = nil
+            return
+        }
+        historicalReplayPointID = externalPointID
+    }
+
     private func applySchemaReview(_ review: SchemaReviewDocument, preservingContext: Bool) {
         let previousLayout = preservingContext ? graphLayout.snapshot(for: graph) : nil
         let changes = review.changes, relations = review.relationChanges
         schemaReview = review
+        historicalExplanationArtifact = nil
+        historicalReplayPointID = nil
+        historicalExplanationURL = nil
         schemaReviewChanges = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0) })
         schemaReviewEdgeChanges = Dictionary(uniqueKeysWithValues: relations.flatMap { change in
             change.relation.sourceColumns.indices.map { (change.graphID + ":\($0)", change.kind) }
@@ -1638,30 +1968,8 @@ public final class AppSession {
         graphLayoutStorageKey(for: .sqlite(url))
     }
 
-    private func storyGraphLayoutStorageKey(for url: URL) -> String {
-        storyGraphLayoutStorageKey(for: .sqlite(url))
-    }
-
     private func graphLayoutStorageKey(for target: DatabaseTarget) -> String {
         "SQLiteGraphStudio.graph-layout.v\(Self.graphLayoutStorageVersion).\(target.stableStorageKey)"
-    }
-
-    private func storyGraphLayoutStorageKey(for target: DatabaseTarget) -> String {
-        "SQLiteGraphStudio.story-graph-layout.\(target.stableStorageKey)"
-    }
-
-    private func restorePersistedStoryGraphLayoutIfAvailable(for url: URL) {
-        restorePersistedStoryGraphLayoutIfAvailable(for: .sqlite(url))
-    }
-
-    private func restorePersistedStoryGraphLayoutIfAvailable(for target: DatabaseTarget) {
-        guard let data = userDefaults.data(forKey: storyGraphLayoutStorageKey(for: target)),
-              let persistedLayout = try? JSONDecoder().decode(PersistedStoryGraphLayout.self, from: data)
-        else {
-            return
-        }
-
-        pinnedStoryGraphPositionsByMode = persistedLayout.cgPointsByMode
     }
 
     private func restorePersistedGraphLayoutIfAvailable(for url: URL, graph: SchemaGraph) {
@@ -1740,14 +2048,6 @@ public final class AppSession {
             return "\(clusterDelta) \(pluralized("cluster", count: abs(clusterDelta)))"
         }
 
-        let storyDelta = after.stories.count - before.stories.count
-        if storyDelta > 0 {
-            return "+\(storyDelta) \(pluralized("story", count: storyDelta))"
-        }
-        if storyDelta < 0 {
-            return "\(storyDelta) \(pluralized("story", count: abs(storyDelta)))"
-        }
-
         return "notes changed"
     }
 
@@ -1805,22 +2105,6 @@ private struct PersistedGraphLayout: Codable {
             positions: positions.mapValues(\.cgPoint),
             pinnedPositions: pinnedPositions.mapValues(\.cgPoint)
         )
-    }
-}
-
-private struct PersistedStoryGraphLayout: Codable {
-    let positionsByMode: [String: [String: PersistedPoint]]
-
-    init(positionsByMode: [String: [String: CGPoint]]) {
-        self.positionsByMode = positionsByMode.mapValues { modePositions in
-            modePositions.mapValues(PersistedPoint.init)
-        }
-    }
-
-    var cgPointsByMode: [String: [String: CGPoint]] {
-        positionsByMode.mapValues { modePositions in
-            modePositions.mapValues(\.cgPoint)
-        }
     }
 }
 

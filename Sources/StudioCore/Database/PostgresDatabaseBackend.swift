@@ -374,6 +374,58 @@ public enum PostgresCatalogMapper {
     }
 }
 
+/// Bounds values retained by a table page or read-only query result. Measure
+/// PostgreSQL's encoded cell length before `PostgresValueMapper` creates Swift
+/// strings, arrays, or copied `Data` values.
+struct PostgresResultReadBudget {
+    private(set) var usedBytes = 0
+
+    static func validateColumnCount(_ count: Int) throws {
+        guard count <= DatabaseReadBudget.maxColumns else {
+            throw DatabaseUserError(
+                kind: .invalidInput,
+                message: "The result has too many columns. Select at most \(DatabaseReadBudget.maxColumns) columns."
+            )
+        }
+    }
+
+    @discardableResult
+    mutating func charge(_ cells: [PostgresData], omittingOversizedCellsAt omittableIndices: Set<Int> = []) throws -> Set<Int> {
+        try Self.validateColumnCount(cells.count)
+
+        var rowBytes = 0
+        var omittedIndices: Set<Int> = []
+        for (index, cell) in cells.enumerated() {
+            let rawBytes = cell.value?.readableBytes ?? 0
+            let isOmitted = rawBytes > DatabaseReadBudget.maxCellBytes && omittableIndices.contains(index)
+            if rawBytes > DatabaseReadBudget.maxCellBytes {
+                guard isOmitted else {
+                    throw DatabaseUserError(
+                        kind: .invalidInput,
+                        message: "A result value exceeds the \(DatabaseReadBudget.maxCellBytes)-byte page limit. Select fewer fields or inspect that cell in bounded slices."
+                    )
+                }
+                omittedIndices.insert(index)
+            }
+
+            // Include a small allowance for the value and array entry itself,
+            // matching SQLite's accounting for fixed-size and NULL values.
+            let (charged, overflow) = max(isOmitted ? 0 : rawBytes, 8).addingReportingOverflow(32)
+            guard !overflow, usedBytes <= DatabaseReadBudget.maxResultBytes,
+                  rowBytes <= DatabaseReadBudget.maxResultBytes - usedBytes,
+                  charged <= DatabaseReadBudget.maxResultBytes - usedBytes - rowBytes else {
+                throw DatabaseUserError(
+                    kind: .invalidInput,
+                    message: "The result exceeds the \(DatabaseReadBudget.maxResultBytes)-byte page limit. Select fewer columns or rows."
+                )
+            }
+            rowBytes += charged
+        }
+        usedBytes += rowBytes
+        return omittedIndices
+    }
+}
+
 public enum PostgresValueMapper {
     // Money's binary Int64 contains minor units; its decimal scale comes from
     // lc_monetary on the leased connection, never from a client locale assumption.
@@ -870,6 +922,7 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         var page = query
         page.limit = min(query.limit, 10_000) + 1
         let plan = try PostgresTableQueryBuilder.makePlan(query: page, descriptor: descriptor)
+        try PostgresResultReadBudget.validateColumnCount(plan.projectedColumns.count)
         do {
             return try await withReadOnlyTransaction { connection in
                 var exactCount = query.cachedExactCount
@@ -877,37 +930,166 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     let count = try await Self.query(PostgresQuery(unsafeSQL: plan.countSQL, binds: try Self.bindings(Array(plan.countParameters))), on: connection)
                     exactCount = count.rows.first?.first.flatMap(Self.integerValue)
                 }
+                let visibleColumns = query.projectedColumns ?? descriptor.columns.map(\.name)
+                let protectedIdentityColumns = descriptor.primaryKeyColumns.isEmpty
+                    ? (query.projectedColumns == nil ? Set(descriptor.fallbackSortColumns) : Set(visibleColumns))
+                    : Set(descriptor.primaryKeyColumns)
+                let omittableColumnIndexMap: [Int: Int] = query.omitOversizedCells
+                    ? Dictionary(uniqueKeysWithValues: visibleColumns.enumerated().compactMap { visibleIndex, name in
+                        guard !protectedIdentityColumns.contains(name), let rawIndex = plan.projectedColumns.firstIndex(of: name) else { return nil }
+                        return (rawIndex, visibleIndex)
+                    })
+                    : [:]
                 let rows = try await Self.query(
                     PostgresQuery(
                         unsafeSQL: plan.selectSQL,
                         binds: try Self.bindings(plan.parameters)
                     ),
-                    on: connection
+                    on: connection,
+                    enforceReadBudget: true,
+                    omittableColumnIndexMap: omittableColumnIndexMap,
+                    materializedRowLimit: min(query.limit, 10_000)
                 )
                 let limit = min(query.limit, 10_000)
-                let countState = TableCountState.forPage(query: query, rowCount: min(rows.rows.count, limit), hasMore: rows.rows.count > limit, exactCount: exactCount)
-                let tableRows = rows.rows.prefix(limit).map { values in
+                let countState = TableCountState.forPage(query: query, rowCount: rows.rows.count, hasMore: rows.isTruncated, exactCount: exactCount)
+                let columnIndexes = Dictionary(uniqueKeysWithValues: plan.projectedColumns.enumerated().map { ($0.element, $0.offset) })
+                let valueColumnCount = visibleColumns.count
+                let tableRows = rows.rows.prefix(limit).enumerated().map { rowIndex, values in
                     let identityValues = descriptor.primaryKeyColumns.compactMap { columnName -> IdentityComponent? in
-                        guard let index = descriptor.columns.firstIndex(where: { $0.name == columnName }), values.indices.contains(index) else {
+                        guard let index = columnIndexes[columnName], values.indices.contains(index) else {
                             return nil
                         }
                         return IdentityComponent(columnName: columnName, value: values[index])
                     }
+                    let fallbackIdentityColumns = query.projectedColumns == nil ? descriptor.fallbackSortColumns : plan.projectedColumns.prefix(valueColumnCount).map { $0 }
                     let identity = TableRowIdentity.primaryKey(
                         identityValues.isEmpty
-                            ? descriptor.fallbackSortColumns.enumerated().compactMap { _, columnName in
-                                guard let index = descriptor.columns.firstIndex(where: { $0.name == columnName }), values.indices.contains(index) else { return nil }
+                            ? fallbackIdentityColumns.compactMap { columnName in
+                                guard let index = columnIndexes[columnName], values.indices.contains(index) else { return nil }
                                 return IdentityComponent(columnName: columnName, value: values[index])
                             }
                             : identityValues
                     )
-                    return TableRow(identity: identity, values: values)
+                    let omittedColumnIndices = rows.omittedColumnIndicesByRow.indices.contains(rowIndex)
+                        ? rows.omittedColumnIndicesByRow[rowIndex]
+                        : []
+                    return TableRow(identity: identity, values: Array(values.prefix(valueColumnCount)),
+                                    omittedColumnIndices: omittedColumnIndices)
                 }
-                return TableChunk(rows: tableRows, totalRowCount: max(countState.navigationCount, query.offset + min(rows.rows.count, limit) + (rows.rows.count > limit ? 1 : 0)), offset: query.offset, limit: limit, countState: countState, hasMore: rows.rows.count > limit)
+                return TableChunk(rows: tableRows, totalRowCount: max(countState.navigationCount, query.offset + rows.rows.count + (rows.isTruncated ? 1 : 0)), offset: query.offset, limit: limit, countState: countState, hasMore: rows.isTruncated)
             }
         } catch {
             throw Self.mapError(error)
         }
+    }
+
+    public func readBoundedCell(query: TableQueryState, descriptor: TableDescriptor, columnName: String,
+                                offset: Int, length: Int, expectedRowIdentity: TableRowIdentity?) async throws -> BoundedCellRead? {
+        try Self.validateBoundedCellRequest(query: query, offset: offset, length: length)
+        do {
+            return try await withReadOnlyTransaction { connection in
+                try await Self.readBoundedCellSlice(query: query, descriptor: descriptor, columnName: columnName,
+                                                    offset: offset, length: length,
+                                                    expectedRowIdentity: expectedRowIdentity, on: connection)
+            }
+        } catch {
+            if error is CancellationError { throw error }
+            throw Self.mapError(error)
+        }
+    }
+
+    public func withBoundedCellReadSnapshot<T: Sendable>(
+        query: TableQueryState,
+        descriptor: TableDescriptor,
+        columnName: String,
+        expectedRowIdentity: TableRowIdentity?,
+        operation: @escaping @MainActor @Sendable (BoundedCellSnapshotReader) async throws -> T
+    ) async throws -> T {
+        try Self.validateBoundedCellRequest(query: query, offset: 0, length: 4_096)
+        do {
+            // Full-value actions can stream large cells to disk. Keep one
+            // read-only repeatable-read transaction for the whole callback,
+            // with an explicit one-hour ceiling and cancellation cleanup.
+            return try await withReadOnlyTransaction(timeoutSeconds: 3_600) { connection in
+                let reader = BoundedCellSnapshotReader { offset, length in
+                    try Task.checkCancellation()
+                    try Self.validateBoundedCellRequest(query: query, offset: offset, length: length)
+                    return try await Self.readBoundedCellSlice(
+                        query: query,
+                        descriptor: descriptor,
+                        columnName: columnName,
+                        offset: offset,
+                        length: length,
+                        expectedRowIdentity: expectedRowIdentity,
+                        on: connection
+                    )
+                }
+                return try await operation(reader)
+            }
+        } catch {
+            if error is CancellationError { throw error }
+            throw Self.mapError(error)
+        }
+    }
+
+    private static func validateBoundedCellRequest(query: TableQueryState, offset: Int, length: Int) throws {
+        guard offset >= 0, offset < Int.max, (1...65_536).contains(length) else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Cell slices require a nonnegative offset and a length from 1 to 65536.")
+        }
+        guard query.offset >= 0, query.offset <= Int.max - 10_001 else {
+            throw DatabaseUserError(kind: .invalidInput, message: "Invalid row offset.")
+        }
+    }
+
+    private static func readBoundedCellSlice(
+        query: TableQueryState,
+        descriptor: TableDescriptor,
+        columnName: String,
+        offset: Int,
+        length: Int,
+        expectedRowIdentity: TableRowIdentity?,
+        on connection: PostgresConnection
+    ) async throws -> BoundedCellRead? {
+        try Task.checkCancellation()
+        var oneRow = query
+        oneRow.limit = 1
+        oneRow.requestExactCount = false
+        oneRow.cachedExactCount = nil
+        oneRow.after = nil
+        let boundedCell = BoundedCellProjection(columnName: columnName, offset: offset, length: length,
+                                                expectedRowIdentity: expectedRowIdentity)
+        let plan = try PostgresTableQueryBuilder.makePlan(query: oneRow, descriptor: descriptor, boundedCell: boundedCell)
+        let result = try await Self.query(
+            PostgresQuery(unsafeSQL: plan.selectSQL, binds: try Self.bindings(plan.parameters)),
+            on: connection,
+            rowLimit: 1
+        )
+        guard let row = result.rows.first, row.count >= (expectedRowIdentity == nil ? 5 : 6) else { return nil }
+        if expectedRowIdentity != nil, row[5] != .boolean(true) { return nil }
+        let storageType: String
+        if case .text(let type) = row[0] { storageType = type }
+        else { storageType = "unknown" }
+        let byteCount = Self.integerValue(row[1])
+        let characterCount = Self.integerValue(row[2])
+        let value: SQLiteValue
+        if storageType.lowercased() == "bytea" {
+            if case .blob(let data) = row[4] { value = .blob(data) }
+            else if byteCount != nil { value = .blob(Data()) }
+            else { value = .null }
+        } else if case .text(let text) = row[3] {
+            value = .text(text)
+        } else {
+            value = .null
+        }
+        let returnedLength: Int
+        switch value {
+        case .blob(let data): returnedLength = data.count
+        case .text(let text): returnedLength = text.unicodeScalars.count
+        default: returnedLength = 0
+        }
+        try Task.checkCancellation()
+        return BoundedCellRead(storageType: storageType, value: value, byteCount: byteCount,
+                               characterCount: characterCount, offset: offset, returnedLength: returnedLength)
     }
 
     public func fetchRecords(descriptor: TableDescriptor, predicates: [IdentityComponent], offset: Int = 0, limit: Int = 50) async throws -> RecordPage {
@@ -939,9 +1121,15 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                     default: binds.append(value.editorText)
                     }
                 }
-                let result = try await Self.query(PostgresQuery(unsafeSQL: plan.sql, binds: binds), on: connection, rowLimit: plan.limit + 1)
+                let result = try await Self.query(
+                    PostgresQuery(unsafeSQL: plan.sql, binds: binds),
+                    on: connection,
+                    enforceReadBudget: true,
+                    materializedRowLimit: plan.limit
+                )
                 try Task.checkCancellation()
-                return try RecordAccess.page(values: result.rows, plan: plan, missingReference: missingReference)
+                let rows = result.isTruncated ? result.rows + [[]] : result.rows
+                return try RecordAccess.page(values: rows, plan: plan, missingReference: missingReference)
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -961,13 +1149,23 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 discardConnectionAfterBody: isUtilityResponse
             ) { connection in
                 if isUtilityResponse {
-                    return try await Self.query(PostgresQuery(unsafeSQL: sql), on: connection, rowLimit: boundedLimit)
+                    return try await Self.query(
+                        PostgresQuery(unsafeSQL: sql),
+                        on: connection,
+                        rowLimit: boundedLimit,
+                        enforceReadBudget: true
+                    )
                 }
                 // PostgreSQL parses the original statement as a cursor query.
                 // FETCH bounds server execution and transfer without rewriting SQL.
                 try await Self.drain(Self.command("DECLARE sgs_query_cursor NO SCROLL CURSOR FOR \(sql)"), on: connection, logger: Logger(label: "SQLiteGraphStudio.PostgreSQL"))
-                let fetched = try await Self.query(Self.command("FETCH FORWARD \(boundedLimit + 1) FROM sgs_query_cursor"), on: connection)
-                return RawPostgresResult(columns: fetched.columns, rows: fetched.rows, isTruncated: fetched.rows.count > boundedLimit)
+                let fetched = try await Self.query(
+                    Self.command("FETCH FORWARD \(boundedLimit + 1) FROM sgs_query_cursor"),
+                    on: connection,
+                    enforceReadBudget: true,
+                    materializedRowLimit: boundedLimit
+                )
+                return fetched
             }
             let rows = rawResult.rows.prefix(boundedLimit).enumerated().map { index, values in
                 QueryResultRow(id: index, values: values)
@@ -1074,6 +1272,11 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                             // Keep literal parsing identical to the client policy,
                             // including when a pooled session's defaults changed.
                             try await Self.drain(Self.command("SET LOCAL standard_conforming_strings = on"), on: connection, logger: logger)
+                            // An explicitly late pg_catalog in a role's search_path
+                            // can let user functions shadow built-ins accepted by
+                            // the MCP SQL gate. Keep existing table search paths,
+                            // but resolve built-in functions in pg_catalog first.
+                            try await Self.drain(Self.command("SELECT pg_catalog.set_config('search_path', 'pg_catalog, ' || pg_catalog.current_setting('search_path'), true)"), on: connection, logger: logger)
                             // Detect a cancelled client's closed socket during server work.
                             try await Self.drain(Self.command("SET LOCAL client_connection_check_interval = '100ms'"), on: connection, logger: logger)
                             // Decode money using this transaction's server-side precision.
@@ -1179,14 +1382,27 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
         _ query: PostgresQuery,
         on connection: PostgresConnection,
         logger: Logger = Logger(label: "SQLiteGraphStudio.PostgreSQL"),
-        rowLimit: Int? = nil
+        rowLimit: Int? = nil,
+        enforceReadBudget: Bool = false,
+        omittableColumnIndexMap: [Int: Int] = [:],
+        materializedRowLimit: Int? = nil
     ) async throws -> RawPostgresResult {
         let sequence = try await querySequence(query, on: connection, logger: logger)
+        if enforceReadBudget {
+            do {
+                try PostgresResultReadBudget.validateColumnCount(sequence.columns.count)
+            } catch {
+                _ = try? await connection.close()
+                throw error
+            }
+        }
         let columns = sequence.columns.map {
             QueryResultColumn(name: $0.name, typeLabel: $0.dataType.knownSQLName ?? "OID \($0.dataType.rawValue)")
         }
         var rows: [[PostgresValue]] = []
+        var omittedColumnIndicesByRow: [Set<Int>] = []
         var isTruncated = false
+        var readBudget = PostgresResultReadBudget()
         for try await row in sequence {
             if let rowLimit, rows.count >= rowLimit {
                 isTruncated = true
@@ -1195,10 +1411,37 @@ public actor PostgresDatabaseBackend: DatabaseBackend {
                 try await connection.close()
                 break
             }
+            if let materializedRowLimit, rows.count >= materializedRowLimit {
+                isTruncated = true
+                // The SQL caller requested one extra row only as a pagination
+                // sentinel. Consume it for truncation state without retaining or
+                // decoding any of its cells, and leave the transaction reusable.
+                break
+            }
             let random = row.makeRandomAccess()
-            rows.append((0..<random.count).map { PostgresValueMapper.map(random[data: $0]) })
+            if enforceReadBudget {
+                let cells = (0..<random.count).map { random[data: $0] }
+                let omittedCellIndices: Set<Int>
+                do {
+                    omittedCellIndices = try readBudget.charge(
+                        cells,
+                        omittingOversizedCellsAt: Set(omittableColumnIndexMap.keys)
+                    )
+                } catch {
+                    _ = try? await connection.close()
+                    throw error
+                }
+                rows.append(cells.enumerated().map { index, cell in
+                    omittedCellIndices.contains(index) ? .null : PostgresValueMapper.map(cell)
+                })
+                omittedColumnIndicesByRow.append(Set(omittedCellIndices.compactMap { omittableColumnIndexMap[$0] }))
+            } else {
+                rows.append((0..<random.count).map { PostgresValueMapper.map(random[data: $0]) })
+                omittedColumnIndicesByRow.append([])
+            }
         }
-        return RawPostgresResult(columns: columns, rows: rows, isTruncated: isTruncated)
+        return RawPostgresResult(columns: columns, rows: rows, isTruncated: isTruncated,
+                                 omittedColumnIndicesByRow: omittedColumnIndicesByRow)
     }
 
     static func bindings(_ parameters: [PostgresQueryParameter]) throws -> PostgresBindings {
@@ -1375,6 +1618,15 @@ private struct RawPostgresResult: Sendable {
     let columns: [QueryResultColumn]
     let rows: [[PostgresValue]]
     let isTruncated: Bool
+    let omittedColumnIndicesByRow: [Set<Int>]
+
+    init(columns: [QueryResultColumn], rows: [[PostgresValue]], isTruncated: Bool,
+         omittedColumnIndicesByRow: [Set<Int>] = []) {
+        self.columns = columns
+        self.rows = rows
+        self.isTruncated = isTruncated
+        self.omittedColumnIndicesByRow = omittedColumnIndicesByRow
+    }
 
     func index(of name: String) -> Int? {
         columns.firstIndex { $0.name == name }

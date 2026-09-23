@@ -190,6 +190,146 @@ struct PostgreSQLIntegrationTests {
         } catch { await backend.close(); throw error }
     }
 
+    @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to verify PostgreSQL result memory limits"))
+    func readOnlyQueryRejectsOversizedCellsWideRowsAndAggregateResults() async throws {
+        let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)
+        let backend = PostgresDatabaseBackend(configuration: config.connection, password: config.password)
+        try await backend.open()
+        do {
+            try await Self.expectReadBudgetError(
+                backend,
+                sql: "SELECT pg_catalog.repeat('x', \(DatabaseReadBudget.maxCellBytes + 1)) AS oversized",
+                messageFragment: "result value exceeds"
+            )
+            try await Self.expectReadBudgetError(
+                backend,
+                sql: "SELECT pg_catalog.repeat('x', \(DatabaseReadBudget.maxCellBytes - 1)) AS payload FROM pg_catalog.generate_series(1, 32)",
+                messageFragment: "result exceeds"
+            )
+            let wideSelect = (0...DatabaseReadBudget.maxColumns)
+                .map { "\($0) AS c\($0)" }
+                .joined(separator: ", ")
+            try await Self.expectReadBudgetError(
+                backend,
+                sql: "SELECT \(wideSelect)",
+                messageFragment: "too many columns"
+            )
+
+            let recovered = try await backend.executeReadOnlyQuery(sql: "SELECT 42 AS answer")
+            #expect(recovered.rows.first?.values == [.integer(42)])
+            await backend.close()
+        } catch { await backend.close(); throw error }
+    }
+
+    @Test(.enabled(if: PostgreSQLTestConfiguration.isEnabled, "Set SGS_POSTGRES_TESTS=1 to verify bounded PostgreSQL table reads"))
+    func tablePageCanOmitOversizedNonIdentityCellsAndReadThemInSlices() async throws {
+        let config = try PostgreSQLTestConfiguration.parse(ProcessInfo.processInfo.environment)
+        let backend = PostgresDatabaseBackend(configuration: config.connection, password: config.password)
+        try await backend.open()
+        do {
+            let descriptor = try await backend.fetchDescriptor(named: "public.sgs_pg_read_budget_probe")
+
+            let firstPage = try await backend.fetchChunk(query: TableQueryState(limit: 1), descriptor: descriptor)
+            #expect(firstPage.rows.first?.values == [.integer(1), .text("small")])
+            #expect(firstPage.hasMore)
+
+            let cursorPage = try await backend.executeReadOnlyQuery(
+                sql: "SELECT id, payload FROM public.sgs_pg_read_budget_probe ORDER BY id",
+                rowLimit: 1
+            )
+            #expect(cursorPage.rows.first?.values == [.integer(1), .text("small")])
+            #expect(cursorPage.isTruncated)
+
+            let firstRecordPage = try await backend.fetchRecords(descriptor: descriptor, predicates: [], limit: 1)
+            #expect(firstRecordPage.records.count == 1)
+            #expect(firstRecordPage.hasMore)
+
+            var gridQuery = TableQueryState(limit: 1)
+            gridQuery.offset = 1
+            gridQuery.omitOversizedCells = true
+            let page = try await backend.fetchChunk(query: gridQuery, descriptor: descriptor)
+            let row = try #require(page.rows.first)
+            #expect(row.values.count == 2)
+            #expect(row.values[0] == .integer(2))
+            #expect(row.values[1] == .null)
+            #expect(row.omittedColumnIndices == [1])
+
+            do {
+                _ = try await backend.fetchChunk(query: TableQueryState(offset: 1, limit: 1), descriptor: descriptor)
+                Issue.record("Default table reads must reject oversized cells")
+            } catch let error as DatabaseUserError {
+                #expect(error.kind == .invalidInput)
+                #expect(error.message.contains("result value exceeds"))
+            }
+
+            let slice = try await backend.readBoundedCell(query: TableQueryState(offset: 1, limit: 1), descriptor: descriptor,
+                                                          columnName: "payload", offset: 0, length: 32)
+            #expect(slice?.value == .text(String(repeating: "x", count: 32)))
+
+            let lengths = try await backend.executeReadOnlyQuery(
+                sql: "SELECT char_length(payload) AS characters, octet_length(payload) AS bytes FROM public.sgs_pg_read_budget_probe WHERE id = 2"
+            )
+            let expectedCharacters = try #require(Int(lengths.rows.first?.values.first?.displayText ?? ""))
+            let expectedBytes = try #require(Int(lengths.rows.first?.values.dropFirst().first?.displayText ?? ""))
+            let fullText = try await backend.withBoundedCellReadSnapshot(
+                query: gridQuery,
+                descriptor: descriptor,
+                columnName: "payload",
+                expectedRowIdentity: row.identity
+            ) { reader in
+                try await BoundedCellOperations.collectForClipboard { offset, length in
+                    try await reader.read(offset: offset, length: length)
+                }
+            }
+            if case .text(let value) = fullText {
+                #expect(value == String(repeating: "x", count: expectedCharacters))
+                #expect(value.utf8.count == expectedBytes)
+            } else {
+                Issue.record("Expected the PostgreSQL large text cell to remain text during the full-value read.")
+            }
+
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let destination = folder.appendingPathComponent("payload.txt")
+            let savedBytes = try await backend.withBoundedCellReadSnapshot(
+                query: gridQuery,
+                descriptor: descriptor,
+                columnName: "payload",
+                expectedRowIdentity: row.identity
+            ) { reader in
+                try await BoundedCellOperations.saveToFile(at: destination) { offset, length in
+                    try await reader.read(offset: offset, length: length)
+                }
+            }
+            #expect(savedBytes == expectedBytes)
+            #expect(try String(contentsOf: destination, encoding: .utf8) == String(repeating: "x", count: expectedCharacters))
+
+            do {
+                _ = try await backend.fetchRecords(descriptor: descriptor, predicates: [], offset: 1, limit: 1)
+                Issue.record("Record reads must reject oversized cells")
+            } catch let error as DatabaseUserError {
+                #expect(error.kind == .invalidInput)
+                #expect(error.message.contains("result value exceeds"))
+            }
+            await backend.close()
+        } catch { await backend.close(); throw error }
+    }
+
+    private static func expectReadBudgetError(
+        _ backend: PostgresDatabaseBackend,
+        sql: String,
+        messageFragment: String
+    ) async throws {
+        do {
+            _ = try await backend.executeReadOnlyQuery(sql: sql)
+            Issue.record("Expected PostgreSQL read-budget rejection containing: \(messageFragment)")
+        } catch let error as DatabaseUserError {
+            #expect(error.kind == .invalidInput)
+            #expect(error.message.localizedCaseInsensitiveContains(messageFragment))
+        }
+    }
+
     @MainActor
     private static func verifySharedExploration(snapshot: CatalogSnapshot) {
         let descriptors = Dictionary(uniqueKeysWithValues: snapshot.descriptors.map { ($0.name, $0) })

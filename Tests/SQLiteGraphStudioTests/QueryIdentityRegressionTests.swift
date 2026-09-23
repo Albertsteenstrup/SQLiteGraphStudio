@@ -3,6 +3,22 @@ import Testing
 @testable import StudioCore
 
 struct QueryIdentityRegressionTests {
+    @Test func separateReadOnlySQLiteConnectionDisablesTrustedSchema() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-reader-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let writer = DatabaseService()
+        try await writer.open(url: url)
+        await writer.close()
+
+        let reader = DatabaseService()
+        try await reader.open(url: url, readOnly: true)
+        let trusted = try await reader.executeReadOnlyQuery(sql: "PRAGMA trusted_schema")
+        let queryOnly = try await reader.executeReadOnlyQuery(sql: "PRAGMA query_only")
+        #expect(trusted.rows.first?.values.first == .integer(0))
+        #expect(queryOnly.rows.first?.values.first == .integer(1))
+        await reader.close()
+    }
+
     @Test func sqliteDuplicateAliasesKeepPositionalValues() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("duplicate-\(UUID().uuidString).sqlite")
         let service = DatabaseService()
