@@ -154,6 +154,40 @@ struct LivePresentationControllerTests {
         #expect(controller.currentPoint?.id == second.id)
         #expect(controller.status == .preparing(pointID: second.id))
     }
+
+    @Test @MainActor
+    func changedGraphMustRenderAgainBeforeCaptionOrNarrationCanResume() {
+        let point = LivePresentationController.Point(
+            caption: "This relation is in focus",
+            minimumVisibleTime: .zero,
+            advancePolicy: .manual
+        )
+        let controller = LivePresentationController()
+        controller.append(point)
+        controller.markApplied(pointID: point.id)
+        controller.markVisible(pointID: point.id)
+        #expect(controller.hasVisibleCurrentPoint)
+
+        controller.pauseForChangedView()
+        controller.pauseForChangedView()
+        #expect(controller.status == .paused(pointID: point.id))
+        #expect(controller.needsViewReplay)
+        #expect(!controller.hasVisibleCurrentPoint)
+
+        controller.resume()
+        #expect(controller.currentPoint?.id == point.id)
+        #expect(controller.status == .preparing(pointID: point.id))
+        #expect(!controller.needsViewReplay)
+        #expect(!controller.hasVisibleCurrentPoint)
+        controller.markVisible(pointID: point.id)
+        #expect(!controller.hasVisibleCurrentPoint)
+
+        controller.markApplied(pointID: point.id)
+        #expect(!controller.hasVisibleCurrentPoint)
+        controller.markVisible(pointID: point.id)
+        #expect(controller.hasVisibleCurrentPoint)
+        #expect(controller.status == .waitingForNext(pointID: point.id))
+    }
 }
 
 @MainActor

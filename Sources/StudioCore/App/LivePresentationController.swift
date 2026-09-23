@@ -61,6 +61,7 @@ public final class LivePresentationController {
     public private(set) var status: Status = .idle
     public private(set) var pendingPoints: [Point] = []
     public private(set) var displayedHistory: [Point] = []
+    public private(set) var needsViewReplay = false
 
     @ObservationIgnored private let narrator: StudioSpeechNarrator?
     @ObservationIgnored private let narrationPlayback: NarrationPlayback?
@@ -106,7 +107,7 @@ public final class LivePresentationController {
     }
 
     /// Keep the next caption out of view while the graph is still moving into place.
-    public var hasVisibleCurrentPoint: Bool { hasBecomeVisible }
+    public var hasVisibleCurrentPoint: Bool { hasBecomeVisible && !needsViewReplay }
 
     public func append(_ point: Point) {
         append([point])
@@ -202,8 +203,24 @@ public final class LivePresentationController {
         status = .paused(pointID: currentPoint?.id)
     }
 
+    /// A graph gesture can invalidate the camera or key focus described by the current point.
+    /// Keep its caption and speech hidden until its actions are rendered again.
+    public func pauseForChangedView() {
+        guard currentPoint != nil else { return }
+        switch status {
+        case .completed, .interrupted, .failed: return
+        default: break
+        }
+        pause()
+        needsViewReplay = true
+    }
+
     public func resume() {
         guard isPaused else { return }
+        if needsViewReplay {
+            reapplyCurrentView()
+            return
+        }
         pauseAtPointEnd = false
         isPaused = false
         status = statusBeforePause ?? currentPoint.map { .visible(pointID: $0.id) } ?? .idle
@@ -250,6 +267,7 @@ public final class LivePresentationController {
         inputFinished = true
         isPaused = false
         statusBeforePause = nil
+        needsViewReplay = false
         publish(.interrupted)
     }
 
@@ -287,6 +305,10 @@ public final class LivePresentationController {
     /// Reissues actions for an unapplied point, or retries only its narration after it was visible.
     public func retryCurrent() {
         guard let currentPoint else { return }
+        if needsViewReplay {
+            reapplyCurrentView()
+            return
+        }
         pauseAtPointEnd = false
         isPaused = false
         statusBeforePause = nil
@@ -303,6 +325,17 @@ public final class LivePresentationController {
             hasApplied = false
             publish(.preparing(pointID: currentPoint.id))
         }
+    }
+
+    private func reapplyCurrentView() {
+        guard let currentPoint else { return }
+        cancelVisibleWork(stopNarrator: true)
+        pauseAtPointEnd = false
+        isPaused = false
+        statusBeforePause = nil
+        currentRunID = UUID()
+        resetActivationState()
+        publish(.preparing(pointID: currentPoint.id))
     }
 
     /// A direct graph gesture leaves the current short point audible and visible, but
@@ -371,6 +404,7 @@ public final class LivePresentationController {
     }
 
     private func resetActivationState() {
+        needsViewReplay = false
         hasApplied = false
         hasBecomeVisible = false
         didStartNarration = false

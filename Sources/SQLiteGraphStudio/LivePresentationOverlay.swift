@@ -19,7 +19,9 @@ struct LivePresentationOverlay: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(presentation.hasVisibleCurrentPoint ? point.caption : "Updating the view…")
+                Text(presentation.needsViewReplay
+                     ? "View changed. Continue to replay this point."
+                     : presentation.hasVisibleCurrentPoint ? point.caption : "Updating the view…")
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -309,7 +309,7 @@ final class StudioAutomationCoordinator {
                 default:
                     // The camera now belongs to the user; stop speech immediately
                     // so it cannot describe a view they have moved away from.
-                    state.controller.pause()
+                    state.controller.pauseForChangedView()
                 }
                 state.revision += 1
             }
