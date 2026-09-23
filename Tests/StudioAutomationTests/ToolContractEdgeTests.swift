@@ -44,8 +44,10 @@ struct ToolContractEdgeTests {
         for (tool, arguments) in [
             ("studio_set_camera", ["pan_x": 127] as [String: Any]),
             ("studio_set_camera", ["pan_x": 1e308, "pan_y": 0] as [String: Any]),
+            ("studio_set_camera", ["mode": "fit_visible", "zoom": 1] as [String: Any]),
             ("studio_set_layout", ["left_pane": "not-a-pane"] as [String: Any]),
             ("studio_arrange_tables", ["operation": "compact", "table_ids": []] as [String: Any]),
+            ("studio_arrange_tables", ["operation": "compact", "table_ids": ["posts", "posts"]] as [String: Any]),
             ("studio_arrange_tables", ["operation": "position", "table_ids": ["posts", "authors"], "x": 1, "y": 2] as [String: Any]),
             ("studio_arrange_tables", ["operation": "position", "table_ids": ["posts"], "x": 1e308, "y": 0] as [String: Any]),
             ("studio_update_workspace", ["changes": ["title": "ignored"]] as [String: Any]),
@@ -64,6 +66,212 @@ struct ToolContractEdgeTests {
             "wait_ms": 1,
         ], context: context)
         #expect(errorCode(unsupportedWait) == "TOOL_UNAVAILABLE")
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
+    func graphToolsRevealTheirTargetAndReportActualFilteredVisibility() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-graph-view-contract-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let connected = await invoke(coordinator, "studio_connect_context", ["client_task_id": "graph-view-contract"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let opened = await invoke(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+        ], context: context)
+        let workspace = try #require(payload(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+
+        let scoped = await invoke(coordinator, "studio_show_tables", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "operation": "replace", "table_ids": ["authors"],
+        ], context: context)
+        #expect(payload(scoped)["visible_table_ids"] as? [String] == ["authors"])
+        #expect(tab.session.automationViewportCommand?.fitVisibleTables == true)
+
+        let table = await invoke(coordinator, "studio_open_table", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "table_id": "posts",
+        ], context: context)
+        #expect(table["isError"] as? Bool == false)
+        #expect(tab.session.graphVisibleTableIDs.contains("posts"))
+        #expect(tab.session.selectedGraphNodeIDs == ["posts"])
+
+        tab.session.maximizedPaneSide = .right
+        let revealed = await invoke(coordinator, "studio_show_tables", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "operation": "replace", "table_ids": ["posts"],
+        ], context: context)
+        #expect(revealed["isError"] as? Bool == false)
+        #expect(tab.session.maximizedPaneSide == nil)
+        #expect(tab.session.side(containing: .schema) == .left)
+
+        tab.session.updateWorkspaceWidth(100)
+        tab.session.setActivePaneSide(.right)
+        let compactCamera = await invoke(coordinator, "studio_set_camera", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "mode": "fit_visible",
+        ], context: context)
+        #expect(compactCamera["isError"] as? Bool == false)
+        #expect(tab.session.compactVisibleSide == .left)
+        tab.session.updateWorkspaceWidth(2000)
+
+        tab.session.maximizedPaneSide = .left
+        let reopened = await invoke(coordinator, "studio_open_table", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "table_id": "authors",
+        ], context: context)
+        #expect(reopened["isError"] as? Bool == false)
+        #expect(tab.session.maximizedPaneSide == nil)
+        #expect(tab.session.paneState(for: tab.session.activePaneSide).kind == .tables)
+
+        tab.session.maximizedPaneSide = .left
+        let query = await invoke(coordinator, "studio_prepare_query", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "sql": "SELECT id FROM authors",
+        ], context: context)
+        #expect(query["isError"] as? Bool == false)
+        #expect(tab.session.maximizedPaneSide == nil)
+        #expect(tab.session.paneState(for: tab.session.activePaneSide).kind == .query)
+
+        tab.session.maximizedPaneSide = .left
+        let configured = await invoke(coordinator, "studio_configure_table", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "table_id": "authors", "sort": [["column_name": "id", "direction": "descending"]],
+        ], context: context)
+        #expect(configured["isError"] as? Bool == false)
+        #expect(tab.session.maximizedPaneSide == nil)
+        #expect(tab.session.paneState(for: tab.session.activePaneSide).kind == .tables)
+
+        tab.session.showAllGraphTableCards = true
+        let tableFromGraphCards = await invoke(coordinator, "studio_open_table", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "table_id": "posts",
+        ], context: context)
+        #expect(tableFromGraphCards["isError"] as? Bool == false)
+        #expect(tab.session.showAllGraphTableCards == false)
+
+        tab.session.restoreGraphFilterWithoutCounting(GraphTableFilter(minimumFields: 10_000))
+        let hidden = await invoke(coordinator, "studio_show_tables", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "operation": "replace", "table_ids": ["authors"],
+        ], context: context)
+        #expect(payload(hidden)["visible_table_ids"] as? [String] == [])
+
+        tab.session.clearGraphFilter()
+        let camera = await invoke(coordinator, "studio_set_camera", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "mode": "fit_visible",
+        ], context: context)
+        #expect(camera["isError"] as? Bool == false)
+        #expect(tab.session.automationViewportCommand?.fitVisibleTables == true)
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
+    func presentationReturnRestoresTheTableAndPreviouslyActiveWorkspace() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-presentation-return-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let originalWorkspace = try #require(tabs.activeTabID)
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let connected = await invoke(coordinator, "studio_connect_context", ["client_task_id": "presentation-return"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let opened = await invoke(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+            "activate": false,
+        ], context: context)
+        let workspace = try #require(payload(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+        #expect(tabs.activeTabID == originalWorkspace)
+
+        let authors = await invoke(coordinator, "studio_open_table", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "table_id": "authors",
+        ], context: context)
+        #expect(authors["isError"] as? Bool == false)
+        let originalTableTabID = tab.session.activeTabID
+        tab.session.showAllGraphTableCards = true
+
+        let started = await invoke(coordinator, "studio_start_presentation", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "narration_mode": "disabled", "activation_intent": "foreground",
+            "points": [["caption": "Look at posts", "actions": [["type": "open_table", "table_id": "posts"]],
+                        "timing": ["advance": "manual"]]],
+        ], context: context)
+        let presentationID = try #require(payload(started)["presentation_id"] as? String)
+        #expect(tabs.activeTabID == tab.id)
+        for _ in 0..<100 where tab.session.activeTab?.descriptor.name != "posts" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tab.session.activeTab?.descriptor.name == "posts")
+        #expect(tab.session.showAllGraphTableCards == false)
+
+        let returned = await invoke(coordinator, "studio_control_presentation", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "presentation_id": presentationID, "control": "return",
+        ], context: context)
+        #expect(returned["isError"] as? Bool == false)
+        #expect(tab.session.activeTabID == originalTableTabID)
+        #expect(tab.session.showAllGraphTableCards == true)
+        #expect(tabs.activeTabID == originalWorkspace)
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
+    func presentationReturnClosesTheTableOpenedIntoAnEmptyPane() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-presentation-empty-return-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let connected = await invoke(coordinator, "studio_connect_context", ["client_task_id": "presentation-empty-return"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let opened = await invoke(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+        ], context: context)
+        let workspace = try #require(payload(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+        #expect(tab.session.openTabs.isEmpty)
+        tab.session.updateWorkspaceWidth(100)
+        #expect(tab.session.compactVisibleSide == tab.session.side(containing: .schema))
+
+        let started = await invoke(coordinator, "studio_start_presentation", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "narration_mode": "disabled", "activation_intent": "foreground",
+            "points": [["caption": "Look at authors", "actions": [["type": "open_table", "table_id": "authors"]],
+                        "timing": ["advance": "manual"]]],
+        ], context: context)
+        let presentationID = try #require(payload(started)["presentation_id"] as? String)
+        for _ in 0..<100 where tab.session.activeTab?.descriptor.name != "authors" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tab.session.activeTab?.descriptor.name == "authors")
+        #expect(tab.session.compactVisibleSide == tab.session.side(containing: .tables))
+
+        let returned = await invoke(coordinator, "studio_control_presentation", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "presentation_id": presentationID, "control": "return",
+        ], context: context)
+        #expect(returned["isError"] as? Bool == false)
+        #expect(tab.session.openTabs.isEmpty)
+        #expect(tab.session.activeTab == nil)
+        #expect(tab.session.compactVisibleSide == tab.session.side(containing: .schema))
 
         await coordinator.close()
         await tabs.closeAllAndWait()

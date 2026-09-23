@@ -225,9 +225,17 @@ public struct SchemaGraphView: View {
                 if let command = session.automationFocusCommand {
                     applyAutomationFocus(command, in: geometry.size)
                 }
+                if let command = session.automationViewportCommand {
+                    applyAutomationViewport(command, in: geometry.size)
+                }
             }
             .onChange(of: geometry.size) { _, newSize in
                 viewportSize = newSize
+                if let command = session.automationViewportCommand,
+                   newSize.width > 0, newSize.height > 0 {
+                    applyAutomationViewport(command, in: newSize)
+                    return
+                }
                 if initialViewport.viewportChanged() {
                     scheduleInitialViewportFit()
                     return
@@ -249,6 +257,10 @@ public struct SchemaGraphView: View {
             .onChange(of: session.automationFocusCommand?.id) { _, _ in
                 guard let command = session.automationFocusCommand else { return }
                 applyAutomationFocus(command, in: geometry.size)
+            }
+            .onChange(of: session.automationViewportCommand?.id) { _, _ in
+                guard let command = session.automationViewportCommand else { return }
+                applyAutomationViewport(command, in: geometry.size)
             }
             .onChange(of: session.graphRevision) { _, _ in
                 if session.schemaReview?.proposal != nil, initialViewportDocumentKey == session.initializedGraphViewportDocument {
@@ -433,7 +445,7 @@ public struct SchemaGraphView: View {
                     nodeContext.scaleBy(x: frame.width / summary.size.width, y: frame.height / summary.size.height)
                     nodeContext.draw(summary, at: .zero, anchor: .topLeading)
                 }
-                if isGraphViewVisible,
+                if isGraphViewVisible, session.automationViewportCommand == nil,
                    session.automationRenderedViewRevision != session.automationViewRevision {
                     let revision = session.automationViewRevision
                     Task { @MainActor in
@@ -678,6 +690,22 @@ public struct SchemaGraphView: View {
         clearGraphFocusSession(animated: false, restoreViewport: false)
         session.clearGraphSelection()
         fitGraph(in: size)
+    }
+
+    private func applyAutomationViewport(_ command: AutomationGraphViewportCommand, in size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        initialViewportTask?.cancel()
+        initialViewportTask = nil
+        initialViewport.cancel()
+        viewportPublisher.cancel()
+        if command.fitVisibleTables {
+            fitGraph(in: size)
+        } else {
+            setViewport(GraphViewportTransform(zoom: session.graphZoom, pan: session.graphPan), animated: false)
+        }
+        flushViewportSessionSync()
+        session.initializedGraphViewportDocument = initialViewportDocumentKey
+        session.clearAutomationViewportCommand(id: command.id)
     }
 
     private func applyAutomationFocus(_ command: AutomationGraphFocusCommand, in size: CGSize) {

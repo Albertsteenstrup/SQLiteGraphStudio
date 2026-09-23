@@ -245,7 +245,9 @@ struct WorkspaceRestorationTests {
         let tab = try #require(controller.activeTab)
         tab.session.graphZoom = 1.4
 
-        try await Task.sleep(for: .milliseconds(650))
+        for _ in 0..<40 where store.load()?.tabs.first?.session.graphZoom != 1.4 {
+            try await Task.sleep(for: .milliseconds(100))
+        }
         #expect(store.load()?.tabs.first?.session.graphZoom == 1.4)
 
         controller.stopAutomaticRestoration()

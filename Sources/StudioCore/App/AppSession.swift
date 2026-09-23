@@ -36,6 +36,18 @@ public struct AutomationGraphFocusCommand: Identifiable, Sendable, Equatable {
     }
 }
 
+/// A one-shot viewport request from local automation. The graph view owns the
+/// actual camera, so changing its saved session values alone cannot move it.
+public struct AutomationGraphViewportCommand: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let fitVisibleTables: Bool
+
+    public init(id: UUID = UUID(), fitVisibleTables: Bool) {
+        self.id = id
+        self.fitVisibleTables = fitVisibleTables
+    }
+}
+
 enum GridCellSliceDirection {
     case previous
     case next
@@ -116,6 +128,7 @@ public final class AppSession {
     public var floatingDetailsCardTableID: String?
     public var floatingDetailsCardPosition: CGPoint?
     public var automationFocusCommand: AutomationGraphFocusCommand?
+    public var automationViewportCommand: AutomationGraphViewportCommand?
     /// Invoked for user-originated graph changes so a presentation can pause progression.
     @ObservationIgnored public var onManualGraphInteraction: (@MainActor () -> Void)?
     public var graphNodeSizeMetric: GraphNodeSizeMetric = .uniform {
@@ -243,6 +256,15 @@ public final class AppSession {
     /// Requests native graph focus through the same table/relation layout used by the UI.
     public func setAutomationFocusCommand(_ command: AutomationGraphFocusCommand?) {
         automationFocusCommand = command
+    }
+
+    public func requestAutomationViewport(fitVisibleTables: Bool) {
+        automationViewportCommand = AutomationGraphViewportCommand(fitVisibleTables: fitVisibleTables)
+    }
+
+    public func clearAutomationViewportCommand(id: UUID) {
+        guard automationViewportCommand?.id == id else { return }
+        automationViewportCommand = nil
     }
 
     /// Applies temporary, per-session graph groups without changing the authored sidecar.
@@ -1257,6 +1279,7 @@ public final class AppSession {
         graphGrouping = .empty
         automationGroupHints = nil
         automationFocusCommand = nil
+        automationViewportCommand = nil
         automationVisibleTableIDs = nil
         schemaMetadataState = SchemaMetadataState()
         leftPane = WorkspacePaneState(kind: .schema)
@@ -1925,6 +1948,31 @@ public final class AppSession {
         setPaneContent(kind, for: preferredSide)
     }
 
+    /// A visual automation action must expose its target even when another
+    /// pane was maximized or the workspace is too narrow for two panes.
+    public func revealPaneForAutomation(_ kind: PaneContentKind, preferredSide: WorkspacePaneSide = .right) {
+        ensurePaneVisible(kind, preferredSide: preferredSide)
+        guard let targetSide = side(containing: kind) else { return }
+        if kind != .schema && showAllGraphTableCards {
+            showAllGraphTableCards = false
+        }
+        if let maximizedPaneSide, maximizedPaneSide != targetSide {
+            self.maximizedPaneSide = nil
+        }
+        activePaneSide = targetSide
+    }
+
+    public func revealSchemaForAutomation() {
+        revealPaneForAutomation(.schema, preferredSide: .left)
+    }
+
+    public var isSchemaPaneVisiblyDisplayed: Bool {
+        guard let schemaSide = side(containing: .schema) else { return false }
+        if let maximizedPaneSide { return maximizedPaneSide == schemaSide }
+        if showAllGraphTableCards { return true }
+        return !isWorkspaceCompact || activePaneSide == schemaSide
+    }
+
     public func setActivePaneSide(_ side: WorkspacePaneSide) {
         activePaneSide = side
     }
@@ -2059,6 +2107,7 @@ public final class AppSession {
         if !isSameDocument {
             automationGroupHints = nil
             automationFocusCommand = nil
+            automationViewportCommand = nil
             automationVisibleTableIDs = nil
         }
         databaseTarget = target

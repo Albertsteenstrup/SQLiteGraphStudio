@@ -322,7 +322,7 @@
   {
     "name": "studio_get_view",
     "title": "Get View",
-    "description": "Read the current workspace panes, graph selection and visibility, camera, active table/query and rendered state. This tool returns the current view snapshot; it does not fetch arbitrary cell values.",
+    "description": "Read the current workspace panes, graph selection and visibility, camera, active table/query and rendered state. Check graph_visible and visible_pane when a pane is maximized or the window is narrow. visual_state acknowledges the graph canvas only: rendered_in_foreground means its latest graph revision was drawn, graph_not_visible means another pane owns the window. This tool does not fetch arbitrary cell values.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -637,7 +637,7 @@
   {
     "name": "studio_show_tables",
     "title": "Show Tables",
-    "description": "Show, add, hide or restore all named tables in the schema graph. This changes graph visibility and ensures the schema pane is available; camera fitting is controlled separately.",
+    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -840,12 +840,16 @@
   {
     "name": "studio_set_camera",
     "title": "Set Camera",
-    "description": "Set graph zoom (clamped to 0.2–4) and/or explicit pan coordinates in the selected workspace. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000; invalid coordinates fail without changing the view. Fit-to-selection and animated camera modes are unsupported.",
+    "description": "Move the visible schema graph camera. Use mode=fit_visible to fit all currently visible tables, or set zoom (clamped to 0.2–4) and/or explicit pan_x and pan_y coordinates. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000. Do not combine fit_visible with coordinates. This makes the schema pane visible.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "workspace_id": {
           "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["absolute", "fit_visible"]
         },
         "zoom": {
           "type": "number"
@@ -875,6 +879,10 @@
       ],
       "anyOf": [
         {
+          "properties": {"mode": {"const": "fit_visible"}},
+          "required": ["mode"]
+        },
+        {
           "required": [
             "zoom"
           ]
@@ -902,7 +910,7 @@
   {
     "name": "studio_arrange_tables",
     "title": "Arrange Tables",
-    "description": "Compact named tables around optional x/y, place exactly one table at explicit x/y with operation=position, or relayout the current graph. Coordinates must be between -1,000,000 and 1,000,000. The app returns resulting positions; arbitrary multi-table position batches are unsupported.",
+    "description": "Compact distinct named tables around optional x/y and fit the visible graph, place exactly one table at explicit x/y with operation=position, or relayout the current graph. Coordinates must be between -1,000,000 and 1,000,000. The app returns resulting positions; arbitrary multi-table position batches are unsupported.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1261,7 +1269,7 @@
   {
     "name": "studio_open_table",
     "title": "Open Table",
-    "description": "Open a table or view in the current workspace and coordinate its graph selection. For a database source, load the first bounded row page; the native grid marks oversized cells as omitted, and studio_inspect_value can read a bounded slice. For a schema-only migration model, show column definitions without loading rows. This app build does not accept a record or filter context in the open request.",
+    "description": "Open a table or view in the current workspace and select it in the graph. If automation had hidden that table, reveal it and fit the visible graph; the user's own graph filter still applies. For a database source, load the first bounded row page; the native grid marks oversized cells as omitted, and studio_inspect_value can read a bounded slice. For a schema-only migration model, show column definitions without loading rows. This app build does not accept a record or filter context in the open request.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1293,7 +1301,7 @@
   {
     "name": "studio_configure_table",
     "title": "Configure Table",
-    "description": "Apply a text search, typed filters, one sort column and page size to a table grid. Multi-column sorting is rejected with TOOL_UNAVAILABLE; the view remains in the current workspace.",
+    "description": "Apply a text search, typed filters, one sort column and page size to a table grid, and bring that grid onscreen even if another pane was maximized. Multi-column sorting is rejected with TOOL_UNAVAILABLE. If the relevant columns are clipped, use studio_set_layout to give the grid more width.",
     "inputSchema": {
       "type": "object",
       "properties": {

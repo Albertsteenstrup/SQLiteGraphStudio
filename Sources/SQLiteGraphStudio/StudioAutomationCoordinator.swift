@@ -75,6 +75,11 @@ final class StudioAutomationCoordinator {
         let positions: GraphLayoutSnapshot
         let leftPane: PaneContentKind
         let rightPane: PaneContentKind
+        let activePaneSide: WorkspacePaneSide
+        let activeTableTabID: UUID?
+        let openTableTabIDs: Set<UUID>
+        let activeQueryID: UUID?
+        let showsAllGraphTableCards: Bool
         let splitFraction: CGFloat
         let maximizedPane: WorkspacePaneSide?
         let annotations: [LiveViewAnnotation]
@@ -411,7 +416,8 @@ final class StudioAutomationCoordinator {
             if let checkpointID = state.returnCheckpointID,
                let tab = workspaces.tabs.first(where: { $0.id == state.workspaceID }) {
                 try? restoreView(checkpointID, in: tab)
-            } else if let priorWorkspace = state.returnWorkspaceID {
+            }
+            if let priorWorkspace = state.returnWorkspaceID {
                 workspaces.activate(priorWorkspace)
             }
         default: return
@@ -1001,15 +1007,17 @@ final class StudioAutomationCoordinator {
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "operation must be replace, add, remove, or all.")
             }
             session.setAutomationVisibleTableIDs(next)
-            session.ensurePaneVisible(.schema, preferredSide: .left)
+            session.revealSchemaForAutomation()
+            session.requestAutomationViewport(fitVisibleTables: true)
             session.markAutomationViewChanged()
-            return ["workspace_id": tab.id.uuidString, "visible_table_ids": (next ?? valid).sorted(), "view_revision": viewRevision(tab),
+            return ["workspace_id": tab.id.uuidString, "visible_table_ids": session.graphVisibleTableIDs.sorted(), "view_revision": viewRevision(tab),
                     "visual_state": visualState(tab)]
         case "studio_select_objects":
             let tab = try workspace(args, context: context)
             let ids = Set(strings(args, "table_ids") ?? strings(args, "object_ids") ?? [])
             guard ids.isSubset(of: Set(tab.session.graph.nodes.map(\.id))) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "One or more selected table IDs do not exist.") }
             tab.session.setGraphSelection(ids)
+            tab.session.revealSchemaForAutomation()
             tab.session.markAutomationViewChanged()
             return viewPayload(tab)
         case "studio_expand_tables":
@@ -1024,6 +1032,7 @@ final class StudioAutomationCoordinator {
             case "collapse_all": tab.session.expandedGraphNodeIDs.removeAll()
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "Invalid table expansion operation.")
             }
+            tab.session.revealSchemaForAutomation()
             tab.session.markAutomationViewChanged()
             return viewPayload(tab)
         case "studio_focus_keys":
@@ -1077,15 +1086,22 @@ final class StudioAutomationCoordinator {
             } else if let tableID = chosen.sorted().first {
                 session.setAutomationFocusCommand(AutomationGraphFocusCommand(tableID: tableID))
             }
-            session.ensurePaneVisible(.schema, preferredSide: .left)
+            session.revealSchemaForAutomation()
             session.markAutomationViewChanged()
             return ["workspace_id": tab.id.uuidString, "visible_table_ids": chosen.sorted(),
                     "declared_relationships": graph.edges.filter { chosen.contains($0.sourceID) && chosen.contains($0.targetID) }.map { edgePayload($0, recordRelationships: tab.session.records.relationships) },
                     "view_revision": viewRevision(tab), "visual_state": visualState(tab)]
         case "studio_set_camera":
             let tab = try workspace(args, context: context)
-            guard args["zoom"] != nil || args["pan_x"] != nil || args["pan_y"] != nil else {
-                throw Failure(code: "INVALID_ARGUMENT", detail: "Specify zoom or both pan_x and pan_y.")
+            let mode = string(args, "mode") ?? "absolute"
+            guard ["absolute", "fit_visible"].contains(mode) else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "mode must be absolute or fit_visible.")
+            }
+            guard mode == "fit_visible" || args["zoom"] != nil || args["pan_x"] != nil || args["pan_y"] != nil else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "Specify zoom or both pan_x and pan_y, or mode=fit_visible.")
+            }
+            guard mode != "fit_visible" || (args["zoom"] == nil && args["pan_x"] == nil && args["pan_y"] == nil) else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "fit_visible cannot be combined with explicit camera coordinates.")
             }
             guard (args["pan_x"] == nil) == (args["pan_y"] == nil) else {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "pan_x and pan_y must be supplied together.")
@@ -1100,6 +1116,8 @@ final class StudioAutomationCoordinator {
             }
             if let zoom = number(args, "zoom") { tab.session.graphZoom = min(4, max(0.2, zoom)) }
             if let x = number(args, "pan_x"), let y = number(args, "pan_y") { tab.session.graphPan = CGSize(width: x, height: y) }
+            tab.session.revealSchemaForAutomation()
+            tab.session.requestAutomationViewport(fitVisibleTables: mode == "fit_visible")
             tab.session.markAutomationViewChanged()
             return viewPayload(tab)
         case "studio_arrange_tables":
@@ -1116,6 +1134,9 @@ final class StudioAutomationCoordinator {
                 guard !ids.isEmpty else {
                     throw Failure(code: "INVALID_ARGUMENT", detail: "Compact needs at least one table ID.")
                 }
+                guard Set(ids).count == ids.count else {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "Compact table IDs must be unique.")
+                }
                 let midpoint = CGPoint(x: number(args, "x") ?? 0, y: number(args, "y") ?? 0)
                 for (index, id) in ids.enumerated() {
                     tab.session.graphLayout.pin(nodeID: id, at: CGPoint(x: midpoint.x + CGFloat(index % 3) * 320,
@@ -1129,6 +1150,8 @@ final class StudioAutomationCoordinator {
             } else {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "Use compact, position, or relayout with the required table IDs and coordinates.")
             }
+            tab.session.revealSchemaForAutomation()
+            if mode == "compact" { tab.session.requestAutomationViewport(fitVisibleTables: true) }
             tab.session.markAutomationViewChanged()
             return ["workspace_id": tab.id.uuidString, "positions": positionPayload(tab, ids: ids), "view_revision": viewRevision(tab)]
         case "studio_set_node_sizing":
@@ -1137,6 +1160,7 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "Provide metric: uniform, fields, rows, or relations.")
             }
             tab.session.setGraphNodeSizeMetric(metric, persist: bool(args, "persist") == true)
+            tab.session.revealSchemaForAutomation()
             tab.session.markAutomationViewChanged()
             return ["workspace_id": tab.id.uuidString, "metric": metric.rawValue, "view_revision": viewRevision(tab)]
         case "studio_set_groups":
@@ -1162,6 +1186,7 @@ final class StudioAutomationCoordinator {
                 default: throw Failure(code: "INVALID_ARGUMENT", detail: "Group operation must be replace or merge.")
                 }
             }
+            session.revealSchemaForAutomation()
             session.markAutomationViewChanged()
             return ["workspace_id": tab.id.uuidString, "temporary": session.automationGroupHints != nil,
                     "groups": groupPayload(session), "view_revision": viewRevision(tab), "visual_state": visualState(tab)]
@@ -1227,7 +1252,14 @@ final class StudioAutomationCoordinator {
             guard let table = tab.session.openTable(named: name, autoLoad: false) else {
                 throw Failure(code: "OBJECT_NOT_FOUND", detail: "That table or view was not found in the selected source.")
             }
+            tab.session.revealSchemaForAutomation()
+            tab.session.revealPaneForAutomation(.tables)
+            if let visible = tab.session.automationVisibleTableIDs, !visible.contains(name) {
+                tab.session.setAutomationVisibleTableIDs(visible.union([name]))
+                tab.session.requestAutomationViewport(fitVisibleTables: true)
+            }
             tab.session.selectGraphNode(name)
+            tab.session.markAutomationViewChanged()
             if tab.session.databaseCapabilities.canBrowseRows { await table.reload() }
             return tablePayload(table, workspace: tab)
         case "studio_configure_table":
@@ -1235,6 +1267,7 @@ final class StudioAutomationCoordinator {
             try requireRows(in: tab)
             let name = try requiredString(args, "table_id", alternative: "table_name")
             guard let table = tab.session.openTable(named: name, autoLoad: false) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "Table not found.") }
+            tab.session.revealPaneForAutomation(.tables)
             var state = table.queryState
             if let search = string(args, "search_text") { state.searchText = search }
             if let page = args["page_size"] as? Int { state.limit = min(500, max(1, page)) }
@@ -1368,7 +1401,7 @@ final class StudioAutomationCoordinator {
                     "character_count": nullable(cellRead.characterCount), "byte_count": nullable(cellRead.byteCount),
                     "has_more": cellRead.hasMore, "truncated": !cellRead.isComplete,
                     "complete": cellRead.isComplete, "display_intent": displayIntent,
-                    "inspector_visible": displayIntent == "show" && workspaces.activeTabID == tab.id,
+                    "inspector_visible": displayIntent == "show" && workspaces.activeTabID == tab.id && hasVisibleAppWindow,
                     "warning": "The row offset uses the open table's current filters and sort. Row offsets can change after source edits or a view change; reopen the row before relying on this value."]
 
         case "studio_follow_record":
@@ -1544,13 +1577,14 @@ final class StudioAutomationCoordinator {
                     "expanded_relation_directions": expanded, "failures": failures,
                     "omitted_relation_count": max(0, relationIDs.count - 8),
                     "record_count": records.recordGraph.records.count,
-                    "visual_state": workspaces.activeTabID == tab.id && records.isPresented ? "record_graph_visible" : "prepared_in_background"]
+                    "visual_state": workspaces.activeTabID == tab.id && records.isPresented && hasVisibleAppWindow ? "record_graph_visible" : "prepared_in_background"]
         case "studio_prepare_query":
             let tab = try sourceWorkspace(args, context: context)
             try requireQueries(in: tab)
             let sql = try requiredString(args, "sql")
             try validateAutomationSQL(sql)
             tab.session.openQuery(title: string(args, "title"), sqlText: sql)
+            tab.session.revealPaneForAutomation(.query)
             return ["workspace_id": tab.id.uuidString, "query_id": nullable(tab.session.queryWorkspace.activeQueryID?.uuidString),
                     "status": "prepared_not_executed"]
         case "studio_run_query":
@@ -1598,6 +1632,7 @@ final class StudioAutomationCoordinator {
                            offset, limit, saved.ownerClientID, saved.ownerContextID)
             if name == "studio_show_query_results" {
                 tab.session.openQuery(title: string(args, "title"), sqlText: saved.sql)
+                tab.session.revealPaneForAutomation(.query)
                 if let index = tab.session.queryWorkspace.queries.firstIndex(where: { $0.id == tab.session.queryWorkspace.activeQueryID }) {
                     tab.session.queryWorkspace.queries[index].result = saved.result
                     tab.session.queryWorkspace.queries[index].executedSQL = saved.sql
@@ -2146,6 +2181,10 @@ final class StudioAutomationCoordinator {
                                           workspaceID: tab.id, title: string(args, "title") ?? "Explore the data model",
                                           narrator: narration ? localNarrator : nil)
             state.returnCheckpointID = captureView(tab)
+            if (string(args, "activation_intent") == "foreground" || bool(args, "activate") == true),
+               let activeWorkspace = workspaces.activeTabID, activeWorkspace != tab.id {
+                state.returnWorkspaceID = activeWorkspace
+            }
             let points = try rawPoints.map { try makePoint($0, state: state, narration: narration) }
             for active in Array(presentations.values) where active.workspaceID == tab.id {
                 active.controller.end()
@@ -2209,15 +2248,17 @@ final class StudioAutomationCoordinator {
                 state.controller.end()
                 presentationTasks.removeValue(forKey: state.id)?.cancel()
                 clearHistoricalReplaySelection(for: state)
-                if let checkpointID = state.returnCheckpointID,
-                   let tab = workspaces.tabs.first(where: { $0.id == state.workspaceID }) {
-                    try restoreView(checkpointID, in: tab)
-                } else if let priorWorkspace = state.returnWorkspaceID,
-                          workspaces.tabs.contains(where: { $0.id == priorWorkspace }) {
-                    workspaces.activate(priorWorkspace)
-                } else {
+                let returnTab = workspaces.tabs.first(where: { $0.id == state.workspaceID })
+                let canReturnWorkspace = state.returnWorkspaceID.flatMap { prior in
+                    workspaces.tabs.contains(where: { $0.id == prior }) ? prior : nil
+                }
+                guard (state.returnCheckpointID != nil && returnTab != nil) || canReturnWorkspace != nil else {
                     throw Failure(code: "OBJECT_NOT_FOUND", detail: "The view before this presentation is unavailable.")
                 }
+                if let checkpointID = state.returnCheckpointID, let returnTab {
+                    try restoreView(checkpointID, in: returnTab)
+                }
+                if let canReturnWorkspace { workspaces.activate(canReturnWorkspace) }
             case "set_speed":
                 throw Failure(code: "TOOL_UNAVAILABLE", detail: "Live narration speed changes are not available in this speech provider build.")
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "Unknown presentation control.")
@@ -3063,6 +3104,11 @@ final class StudioAutomationCoordinator {
             positions: session.graphLayout.snapshot(for: session.graph),
             leftPane: session.paneState(for: .left).kind,
             rightPane: session.paneState(for: .right).kind,
+            activePaneSide: session.activePaneSide,
+            activeTableTabID: session.activeTabID,
+            openTableTabIDs: Set(session.openTabs.map(\.id)),
+            activeQueryID: session.queryWorkspace.activeQueryID,
+            showsAllGraphTableCards: session.showAllGraphTableCards,
             splitFraction: session.workspaceSplitFraction,
             maximizedPane: session.maximizedPaneSide,
             annotations: viewAnnotations.annotations(in: tab.id)
@@ -3084,9 +3130,26 @@ final class StudioAutomationCoordinator {
         session.expandedGraphNodeIDs = point.expanded.intersection(valid)
         session.graphZoom = point.zoom
         session.graphPan = point.pan
+        session.requestAutomationViewport(fitVisibleTables: false)
+        session.showAllGraphTableCards = point.showsAllGraphTableCards
         session.restoreAutomationGraphLayout(point.positions)
         session.setPaneContent(point.leftPane, for: .left)
         session.setPaneContent(point.rightPane, for: .right)
+        session.setActivePaneSide(point.activePaneSide)
+        for openedTab in session.openTabs where !point.openTableTabIDs.contains(openedTab.id) {
+            session.closeTab(id: openedTab.id)
+        }
+        if let activeTableTabID = point.activeTableTabID,
+           session.openTabs.contains(where: { $0.id == activeTableTabID }) {
+            session.selectTab(id: activeTableTabID)
+        } else if point.activeTableTabID == nil {
+            session.activeTabID = nil
+        }
+        if let activeQueryID = point.activeQueryID {
+            session.queryWorkspace.selectQuery(id: activeQueryID)
+        } else {
+            session.queryWorkspace.activeQueryID = nil
+        }
         session.workspaceSplitFraction = point.splitFraction
         session.maximizedPaneSide = point.maximizedPane
         viewAnnotations.replace(point.annotations, in: tab.id)
@@ -3195,7 +3258,7 @@ final class StudioAutomationCoordinator {
         case "show_tables": fields = ["type", "table_ids", "mode"]
         case "select_objects", "expand_tables": fields = ["type", "table_ids"]
         case "focus_keys": fields = ["type", "table_id", "table_ids", "source_column", "target_column", "relation_id"]
-        case "set_camera": fields = ["type", "zoom", "pan_x", "pan_y"]
+        case "set_camera": fields = ["type", "mode", "zoom", "pan_x", "pan_y"]
         case "arrange_tables": fields = ["type", "table_ids", "x", "y"]
         case "set_node_sizing": fields = ["type", "metric"]
         case "set_layout": fields = ["type", "split_fraction", "left_pane", "right_pane"]
@@ -3616,11 +3679,44 @@ final class StudioAutomationCoordinator {
                         throw Failure(code: "OBJECT_NOT_FOUND", detail: "The focused relation is not a declared database edge.")
                     }
                 }
+                if type == "set_camera" {
+                    let mode = string(action, "mode") ?? "absolute"
+                    guard ["absolute", "fit_visible"].contains(mode),
+                          mode != "fit_visible" || (action["zoom"] == nil && action["pan_x"] == nil && action["pan_y"] == nil),
+                          (action["pan_x"] == nil) == (action["pan_y"] == nil),
+                          mode == "fit_visible" || action["zoom"] != nil || action["pan_x"] != nil else {
+                        throw Failure(code: "INVALID_ARGUMENT", detail: "A point camera needs fit_visible or bounded zoom/pan coordinates.")
+                    }
+                    for key in ["zoom", "pan_x", "pan_y"] where action[key] != nil {
+                        guard let value = number(action, key), value.isFinite,
+                              key == "zoom" || abs(value) <= 1_000_000 else {
+                            throw Failure(code: "INVALID_ARGUMENT", detail: "A point camera coordinate is outside the usable range.")
+                        }
+                    }
+                }
+                if type == "arrange_tables" {
+                    let ids = strings(action, "table_ids") ?? []
+                    guard !ids.isEmpty, Set(ids).count == ids.count else {
+                        throw Failure(code: "INVALID_ARGUMENT", detail: "A point arrangement needs distinct table IDs.")
+                    }
+                    for key in ["x", "y"] where action[key] != nil {
+                        guard let value = number(action, key), value.isFinite, abs(value) <= 1_000_000 else {
+                            throw Failure(code: "INVALID_ARGUMENT", detail: "A point arrangement coordinate is outside the usable range.")
+                        }
+                    }
+                }
             }
             var needsGraphRender = false
+            var lastVisualIntent: PaneContentKind = .schema
             for action in actions {
                 guard isCurrentPoint(state, id: pointID) else { return }
-                switch string(action, "type")! {
+                let actionType = string(action, "type")!
+                if actionType == "open_table" {
+                    lastVisualIntent = .tables
+                } else if actionType != "set_layout" {
+                    lastVisualIntent = .schema
+                }
+                switch actionType {
                 case "show_tables":
                     let ids = Set(strings(action, "table_ids") ?? [])
                     let all = Set(session.graph.nodes.map(\.id))
@@ -3632,6 +3728,7 @@ final class StudioAutomationCoordinator {
                     case "all": session.setAutomationVisibleTableIDs(nil)
                     default: throw Failure(code: "INVALID_ARGUMENT", detail: "Invalid show_tables mode.")
                     }
+                    session.requestAutomationViewport(fitVisibleTables: true)
                     needsGraphRender = true
                 case "select_objects":
                     session.setGraphSelection(Set(strings(action, "table_ids") ?? []))
@@ -3648,8 +3745,15 @@ final class StudioAutomationCoordinator {
                         relationID: string(action, "relation_id")))
                     needsGraphRender = true
                 case "set_camera":
-                    if let zoom = number(action, "zoom") { session.graphZoom = min(4, max(0.2, zoom)) }
-                    if let x = number(action, "pan_x"), let y = number(action, "pan_y") { session.graphPan = CGSize(width: x, height: y) }
+                    let cameraMode = string(action, "mode") ?? "absolute"
+                    guard ["absolute", "fit_visible"].contains(cameraMode) else {
+                        throw Failure(code: "INVALID_ARGUMENT", detail: "Camera mode must be absolute or fit_visible.")
+                    }
+                    if cameraMode == "absolute" {
+                        if let zoom = number(action, "zoom") { session.graphZoom = min(4, max(0.2, zoom)) }
+                        if let x = number(action, "pan_x"), let y = number(action, "pan_y") { session.graphPan = CGSize(width: x, height: y) }
+                    }
+                    session.requestAutomationViewport(fitVisibleTables: cameraMode == "fit_visible")
                     needsGraphRender = true
                 case "arrange_tables":
                     let ids = strings(action, "table_ids") ?? []
@@ -3658,6 +3762,7 @@ final class StudioAutomationCoordinator {
                         session.graphLayout.pin(nodeID: id, at: CGPoint(x: origin.x + CGFloat(index % 3) * 320,
                                                                            y: origin.y + CGFloat(index / 3) * 230))
                     }
+                    session.requestAutomationViewport(fitVisibleTables: true)
                     needsGraphRender = true
                 case "set_node_sizing":
                     guard let metric = string(action, "metric").flatMap(GraphNodeSizeMetric.init(rawValue:)) else {
@@ -3669,7 +3774,8 @@ final class StudioAutomationCoordinator {
                     if let fraction = number(action, "split_fraction") { session.workspaceSplitFraction = min(0.85, max(0.15, fraction)) }
                     if let left = string(action, "left_pane").flatMap(PaneContentKind.init(rawValue:)) { session.setPaneContent(left, for: .left) }
                     if let right = string(action, "right_pane").flatMap(PaneContentKind.init(rawValue:)) { session.setPaneContent(right, for: .right) }
-                    if session.side(containing: .schema) != nil { needsGraphRender = true }
+                    lastVisualIntent = session.paneState(for: session.activePaneSide).kind
+                    needsGraphRender = true
                 case "open_table":
                     let id = try requiredString(action, "table_id")
                     if session.historicalExplanationArtifact != nil {
@@ -3681,6 +3787,12 @@ final class StudioAutomationCoordinator {
                         continue
                     }
                     guard let table = session.openTable(named: id, autoLoad: false) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "Table \(id) could not be opened.") }
+                    session.revealSchemaForAutomation()
+                    session.revealPaneForAutomation(.tables)
+                    if let visible = session.automationVisibleTableIDs, !visible.contains(id) {
+                        session.setAutomationVisibleTableIDs(visible.union([id]))
+                        session.requestAutomationViewport(fitVisibleTables: true)
+                    }
                     session.selectGraphNode(id)
                     await table.reload()
                     guard isCurrentPoint(state, id: pointID) else { return }
@@ -3700,9 +3812,13 @@ final class StudioAutomationCoordinator {
                 needsGraphRender = true
             }
             if needsGraphRender {
-                if !isHistoricalReplay { session.ensurePaneVisible(.schema, preferredSide: .left) }
+                if !isHistoricalReplay {
+                    session.revealPaneForAutomation(lastVisualIntent, preferredSide: lastVisualIntent == .schema ? .left : .right)
+                }
                 session.markAutomationViewChanged()
-                state.requiredRenderRevision[pointID] = session.automationViewRevision
+                if session.isSchemaPaneVisiblyDisplayed {
+                    state.requiredRenderRevision[pointID] = session.automationViewRevision
+                }
             }
             guard isCurrentPoint(state, id: pointID) else { return }
             state.controller.markApplied(pointID: pointID)
@@ -3806,6 +3922,7 @@ final class StudioAutomationCoordinator {
         let session = tab.session
         return fingerprint([tab.id.uuidString, sourceID(tab), session.leftPane.kind.rawValue, session.rightPane.kind.rawValue,
                             String(Double(session.workspaceSplitFraction)), session.maximizedPaneSide?.rawValue ?? "split",
+                            session.activePaneSide.rawValue,
                             session.selectedGraphNodeIDs.sorted().joined(separator: ","),
                             session.expandedGraphNodeIDs.sorted().joined(separator: ","),
                             (session.automationVisibleTableIDs ?? []).sorted().joined(separator: ","),
@@ -3860,8 +3977,12 @@ final class StudioAutomationCoordinator {
 
     private func viewPayload(_ tab: WorkspaceTab) -> [String: Any] {
         let session = tab.session
+        let isForeground = workspaces.activeTabID == tab.id && hasVisibleAppWindow
+        let singlePaneSide = session.maximizedPaneSide ?? session.compactVisibleSide
         return ["workspace_id": tab.id.uuidString, "source_id": sourceID(tab), "source_revision": sourceRevision(tab),
                 "view_revision": viewRevision(tab), "active": workspaces.activeTabID == tab.id,
+                "window_visible": isForeground, "graph_visible": isForeground && session.isSchemaPaneVisiblyDisplayed,
+                "visible_pane": singlePaneSide.map { session.paneState(for: $0).kind.rawValue } ?? "split",
                 "left_pane": session.leftPane.kind.rawValue, "right_pane": session.rightPane.kind.rawValue,
                 "split_fraction": Double(session.workspaceSplitFraction), "maximized_pane": nullable(session.maximizedPaneSide?.rawValue),
                 "selected_table_ids": session.selectedGraphNodeIDs.sorted(), "expanded_table_ids": session.expandedGraphNodeIDs.sorted(),
@@ -3875,7 +3996,8 @@ final class StudioAutomationCoordinator {
     }
 
     private func visualState(_ tab: WorkspaceTab) -> String {
-        guard workspaces.activeTabID == tab.id else { return "applied_in_background" }
+        guard workspaces.activeTabID == tab.id, hasVisibleAppWindow else { return "applied_in_background" }
+        guard tab.session.isSchemaPaneVisiblyDisplayed else { return "graph_not_visible" }
         return tab.session.automationRenderedViewRevision == tab.session.automationViewRevision ? "rendered_in_foreground" : "applied_waiting_for_render"
     }
 
