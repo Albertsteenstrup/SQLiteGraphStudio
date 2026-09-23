@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 
 /// App-managed Pocket TTS 3.1.0 provider. A single worker keeps the model and preset voice warm
@@ -132,7 +133,7 @@ private enum PocketTTSWorkerError: LocalizedError {
 
 /// Process and line-framing state live outside the main actor. The stdout reader blocks while it
 /// pushes into a two-chunk stream queue, propagating backpressure all the way to the worker pipe.
-private final class PocketTTSWorkerSession: @unchecked Sendable {
+final class PocketTTSWorkerSession: @unchecked Sendable {
     private enum Startup {
         case starting
         case ready(sampleRate: Double)
@@ -195,15 +196,19 @@ private final class PocketTTSWorkerSession: @unchecked Sendable {
     func startAndWaitUntilReady() async throws {
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             guard let self else { return }
-            do {
-                let data = try handle.read(upToCount: 64 * 1024) ?? Data()
-                if data.isEmpty {
-                    self.workerDidStop()
-                } else {
-                    self.receive(data)
-                }
-            } catch {
-                self.fail(error)
+            // FileHandle.read(upToCount:) may wait for the entire requested count. The
+            // worker's short ready line then remains unread while it waits for a command.
+            // A POSIX read on the readable descriptor returns the bytes available now.
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count)
+            }
+            if count > 0 {
+                self.receive(Data(buffer.prefix(count)))
+            } else if count == 0 {
+                self.workerDidStop()
+            } else if errno != EINTR && errno != EAGAIN {
+                self.fail(NSError(domain: NSPOSIXErrorDomain, code: Int(errno)))
             }
         }
         process.terminationHandler = { [weak self] _ in

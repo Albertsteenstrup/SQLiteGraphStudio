@@ -3048,7 +3048,7 @@
   {
     "name": "studio_configure_speech",
     "title": "Configure Speech",
-    "description": "Enable or disable Graph Studio narration with settings.enabled (boolean) or settings.narration (enabled/disabled). Scope may be general, source, or temporary; durable=false also makes the choice temporary. General and source choices apply to future presentations using narration_mode=app_default. A temporary choice returns narration_mode_for_next_presentation for the agent to pass explicitly. This build uses streamed macOS speech and returns TOOL_UNAVAILABLE for voice, provider, or speed selection; no model download or microphone capture occurs.",
+    "description": "Enable or disable Graph Studio narration with settings.enabled (boolean) or settings.narration (enabled/disabled). Scope may be general, source, or temporary; durable=false also makes the choice temporary. General and source choices apply to future presentations using narration_mode=app_default. A temporary choice returns narration_mode_for_next_presentation for the agent to pass explicitly. This build uses streamed macOS speech immediately and prefers verified Pocket TTS after its assets and worker are ready. Voice, provider, and speed selection return TOOL_UNAVAILABLE; this tool does not download a model or capture a microphone.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3092,7 +3092,7 @@
   {
     "name": "studio_manage_speech_assets",
     "title": "Manage Speech Assets",
-    "description": "Offer, explicitly install, cancel, or retry the one pinned nongated Pocket TTS English 2026-09 Alba asset package. Call action=offer first to explain whether this build contains the managed runtime and to show the exact 225,470,926-byte preset size; offer never starts a transfer. Call action=install only after the user wants the download. Installation verifies each pinned file's size and SHA-256, writes resumable partials, and returns a job_id immediately; inspect it with studio_get_job. Use action=cancel with that job_id, or action=retry after a failed or paused transfer (optionally pass the prior job_id). If the runtime is not packaged, return status=unavailable without downloading. Only package_id pocket-tts-english-2026-09-alba is accepted; no arbitrary URLs or gated assets.",
+    "description": "Offer, explicitly install, cancel, or retry the one pinned nongated Pocket TTS English 2026-09 Alba asset package. Call action=offer first to explain whether this build contains the managed runtime and to show the exact 225,285,245-byte preset size; offer never starts a transfer. Call action=install only after the user wants the download. Installation verifies each pinned file's size and SHA-256, writes resumable partials, and returns a job_id immediately; inspect it with studio_get_job. A completed install verifies files, not model startup: call studio_test_speech with voice_id=alba in a visible workspace to warm and verify the worker, then read studio_get_speech. Use action=cancel with that job_id, or action=retry after a failed or paused transfer (optionally pass the prior job_id). If the runtime is not packaged, return status=unavailable without downloading. Only package_id pocket-tts-english-2026-09-alba is accepted; no arbitrary URLs or gated assets.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3104,7 +3104,7 @@
         },
         "action": {
           "type": "string",
-          "description": "offer is read-only; install starts the user-requested transfer; cancel and retry require a job_id.",
+          "description": "offer is read-only; install starts the user-requested transfer; cancel requires a job_id and retry may identify a prior failed or paused job.",
           "enum": [
             "offer",
             "install",
