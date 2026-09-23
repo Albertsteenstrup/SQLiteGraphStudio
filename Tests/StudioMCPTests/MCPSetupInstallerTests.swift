@@ -166,8 +166,8 @@ final class MCPSetupInstallerTests: XCTestCase {
             runner: runner,
             helperDiagnoser: FakeHelperDiagnoser(result: MCPSetupVerification(
                 succeeded: true,
-                discoveredToolCount: 61,
-                statusSummary: "MCP handshake, 61-tool discovery, and studio_status succeeded. Graph Studio is closed."
+                discoveredToolCount: 62,
+                statusSummary: "MCP handshake, 62-tool discovery, and studio_status succeeded. Graph Studio is closed."
             ))
         )
 
@@ -301,8 +301,8 @@ final class MCPSetupInstallerTests: XCTestCase {
         let runner = FakeCommandRunner(responses: [])
         let diagnostician = FakeHelperDiagnoser(result: MCPSetupVerification(
             succeeded: true,
-            discoveredToolCount: 61,
-            statusSummary: "MCP handshake, 61-tool discovery, and studio_status succeeded. Graph Studio is closed.",
+            discoveredToolCount: 62,
+            statusSummary: "MCP handshake, 62-tool discovery, and studio_status succeeded. Graph Studio is closed.",
             appRunning: false,
             bridgeConnected: false
         ))
@@ -321,7 +321,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         XCTAssertEqual(report.scope, .project)
         XCTAssertEqual(report.projectDirectoryPath, project.standardizedFileURL.path)
         XCTAssertEqual(report.clients.first?.state, .installed)
-        XCTAssertEqual(report.clients.first?.verification?.discoveredToolCount, 61)
+        XCTAssertEqual(report.clients.first?.verification?.discoveredToolCount, 62)
         XCTAssertFalse(report.hasFailures)
         let updated = try String(contentsOf: config, encoding: .utf8)
         XCTAssertEqual(String(updated.prefix(original.count)), original)
@@ -463,8 +463,8 @@ final class MCPSetupInstallerTests: XCTestCase {
         }
         let diagnostician = FakeHelperDiagnoser(result: MCPSetupVerification(
             succeeded: true,
-            discoveredToolCount: 61,
-            statusSummary: "MCP handshake, 61-tool discovery, and studio_status succeeded. Graph Studio is running."
+            discoveredToolCount: 62,
+            statusSummary: "MCP handshake, 62-tool discovery, and studio_status succeeded. Graph Studio is running."
         ))
 
         let report = MCPSetupInstaller.setup(

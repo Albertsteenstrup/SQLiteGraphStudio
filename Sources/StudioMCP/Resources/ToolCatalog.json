@@ -81,9 +81,43 @@
     }
   },
   {
+    "name": "studio_scan_project",
+    "title": "Scan Project Folder",
+    "description": "Find exact database, PostgreSQL connection or backup, migration-set, and schema-script candidates in a local project folder without opening one. Use when the user names a repository or project rather than an exact source. The scan honors project ignores, skips dependency/build folders and symlinks, and is bounded to 50,000 entries; if reached_scan_limit is true, narrow the folder. Page candidates with candidate_offset and candidate_limit. Choose the relevant candidate using the user's question and code context, then pass its exact source_path to studio_open_source. Never silently assume the first candidate is the right data model.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project_path": {
+          "type": "string",
+          "description": "Absolute path to an existing project directory."
+        },
+        "candidate_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Candidate page start, default 0."
+        },
+        "candidate_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum candidates per response, default 25."
+        }
+      },
+      "additionalProperties": true,
+      "required": ["project_path"]
+    },
+    "annotations": {
+      "title": "Scan Project Folder",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "studio_open_source",
     "title": "Open Source",
-    "description": "Open the local database or supported schema artifact at source_path in Graph Studio. The app uses its existing document and restore flows; it does not infer a path from the recent-file list. Set activate only when this workspace should become foreground.",
+    "description": "Open one exact local database, supported schema artifact, migration-set folder, or SQL schema script at source_path in a new Graph Studio workspace. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows, queries, and editing do not. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -92,6 +126,10 @@
         },
         "activate": {
           "type": "boolean"
+        },
+        "migration_version": {
+          "type": "string",
+          "description": "Exact version within a migration set. Omit to open the latest version; valid only for a migration-set directory or SQL script."
         },
         "request_id": {
           "type": "string",
@@ -1057,7 +1095,7 @@
   {
     "name": "studio_open_table",
     "title": "Open Table",
-    "description": "Open a table or view in the current workspace and load its first bounded page. The native grid marks oversized cells as omitted while leaving other fields visible; use studio_inspect_value for a bounded slice. This app build does not accept a record or filter context in the open request.",
+    "description": "Open a table or view in the current workspace and coordinate its graph selection. For a database source, load the first bounded row page; the native grid marks oversized cells as omitted, and studio_inspect_value can read a bounded slice. For a schema-only migration model, show column definitions without loading rows. This app build does not accept a record or filter context in the open request.",
     "inputSchema": {
       "type": "object",
       "properties": {

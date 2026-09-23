@@ -1,6 +1,6 @@
 # Delivery and validation plan
 
-This plan covers the full [agreed design](agent-exploration-design.md) and the current [61-tool MCP catalog](agent-exploration-mcp-tools.md). Stages establish working dependencies; they do not silently move accepted features out of scope. This remains an acceptance plan; the [implementation status](agent-exploration-implementation-status.md) records what has actually been built and tested.
+This plan covers the full [agreed design](agent-exploration-design.md) and the current [62-tool MCP catalog](agent-exploration-mcp-tools.md). Stages establish working dependencies; they do not silently move accepted features out of scope. This remains an acceptance plan; the [implementation status](agent-exploration-implementation-status.md) records what has actually been built and tested.
 
 ## Stages and exit evidence
 

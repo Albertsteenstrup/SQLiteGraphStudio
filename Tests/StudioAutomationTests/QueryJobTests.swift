@@ -144,6 +144,48 @@ struct QueryJobTests {
         await tabs.closeAllAndWait()
     }
 
+    @Test @MainActor
+    func capturedQueryResultCannotBeExportedAfterTheWorkspaceChangesSource() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-stale-query-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = folder.appendingPathComponent("first.sqlite")
+        let second = folder.appendingPathComponent("second.sqlite")
+        try SampleFixtureBuilder.buildFixture(at: first)
+        try SampleFixtureBuilder.buildFixture(at: second)
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let contextID = try await connect(coordinator, client: "stale-export-client", task: "stale-export-task")
+        let opened = try await call(coordinator, "studio_open_source", [
+            "context_id": contextID, "request_id": UUID().uuidString, "source_path": first.path,
+        ], client: "stale-export-client", context: contextID)
+        let workspaceID = try #require(content(opened)["workspace_id"] as? String)
+        let query = try await call(coordinator, "studio_run_query", [
+            "context_id": contextID, "request_id": UUID().uuidString, "sql": "SELECT 7 AS answer",
+        ], client: "stale-export-client", context: contextID)
+        let jobID = try #require(content(query)["job_id"] as? String)
+        let completed = try await waitForTerminalJob(coordinator, jobID: jobID,
+                                                       client: "stale-export-client", context: contextID)
+        #expect(completed["status"] as? String == "completed")
+        let resultID = try #require(completed["result_id"] as? String)
+        let workspace = try #require(tabs.tabs.first { $0.id.uuidString == workspaceID })
+        await workspace.session.openDocument(url: second)
+
+        let destination = folder.appendingPathComponent("stale.csv")
+        let exported = try await call(coordinator, "studio_export", [
+            "context_id": contextID, "request_id": UUID().uuidString,
+            "object_type": "query_result", "format": "csv", "destination": destination.path,
+            "scope": ["kind": "captured", "result_id": resultID],
+        ], client: "stale-export-client", context: contextID)
+        #expect(errorCode(exported) == "STALE_SOURCE")
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
     @MainActor
     private func connect(_ coordinator: StudioAutomationCoordinator, client: String, task: String) async throws -> String {
         let connected = try await call(coordinator, "studio_connect_context", ["client_task_id": task], client: client)

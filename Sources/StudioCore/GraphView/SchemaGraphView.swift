@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct SchemaGraphView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var controlActiveState
     @Bindable private var session: AppSession
     @State private var zoom: CGFloat = 1.0
     @State private var baseZoom: CGFloat = 1.0
@@ -27,7 +28,6 @@ public struct SchemaGraphView: View {
     @State private var selectionRectStart: CGPoint?
     @State private var selectionRectCurrent: CGPoint?
     @State private var isShiftPressed = false
-    @State private var showCardinals = true
     @State private var clusterTitleCache = ClusterTitleCache()
     @State private var descriptionHover: DescriptionHover? = nil
     @State private var cardScrollOffsets: [String: CGFloat] = [:]
@@ -54,7 +54,24 @@ public struct SchemaGraphView: View {
     @State private var scenePreparation = GraphScenePreparationCache()
     @State private var isGraphViewVisible = false
 
-    private var isLargeGraph: Bool { session.graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
+    /// Whether a graph decoration is switched on in View ▸ Graph Visuals.
+    private func shows(_ visual: GraphVisual) -> Bool {
+        session.graphVisuals.isEnabled(visual)
+    }
+
+    /// Relation signals redraw every frame, so on top of the reader's own preference they
+    /// stop for anyone who asked the system to reduce motion and for windows the user has
+    /// left — a background graph has no reader to inform and no reason to hold the display
+    /// link awake.
+    ///
+    /// They also stay out of a schema review, which spends colour and symbols directing the
+    /// eye to what changed; ambient motion there competes with the one thing being read.
+    private var animatesRelationPulses: Bool {
+        shows(.relationPulses) && session.schemaReview == nil
+            && !reduceMotion && controlActiveState != .inactive
+    }
+
+    private var isLargeGraph: Bool { renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
     private var usesOverviewMarks: Bool { (isLargeGraph || session.graphNodeSizeMetric != .uniform) && zoom < GraphExploration.detailZoom }
 
     public init(session: AppSession) {
@@ -78,7 +95,10 @@ public struct SchemaGraphView: View {
     }
 
     private var renderedGraphRevision: Int {
-        session.graphRevision &* 31 &+ layoutRevision &* 7 &+ session.automationViewRevision
+        session.graphRevision &* 31
+            &+ layoutRevision &* 7
+            &+ session.automationViewRevision
+            &+ session.graphVisibleTableIDs.hashValue
     }
 
     private var initialViewportDocumentKey: String? {
@@ -327,10 +347,10 @@ public struct SchemaGraphView: View {
         let hoverNeighbors = draggedNodeID == nil
             ? (hoveredNodeID.map { graph.neighbors(of: $0) } ?? [])
             : []
-        let hoverSummaryIDs = GraphHoverPresentation.summaryIDs(
+        let hoverSummaryIDs = shows(.hoverPreviews) ? GraphHoverPresentation.summaryIDs(
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil, connectedIDs: hoverNeighbors,
-            markerFrames: geometry.markerFrames, viewport: CGRect(origin: .zero, size: size)
-        )
+            markerFrames: geometry.markerFrames, viewport: viewport
+        ) : []
         let hoverSummaryNodes = graph.nodes.filter { hoverSummaryIDs.contains($0.id) }
         let renderPlan = geometry.renderPlan
         let edgeLookup = topologyCache.index(for: graph, graphRevision: renderedGraphRevision)
@@ -390,52 +410,75 @@ public struct SchemaGraphView: View {
             }
             .allowsHitTesting(false)
 
+            let isOverviewOnly = usesOverviewMarks && focusPlan == nil
+            let hoverHighlight = isOverviewOnly ? hoveredNodeID.map {
+                GraphRelationHighlight(graph: graph, focusNodeID: $0, edgeLookup: edgeLookup)
+            } : nil
+            let edgePlan = edgeLayerPlan(isOverviewOnly: isOverviewOnly, focusPlan: focusPlan,
+                                         relationHighlight: relationHighlight, hoverHighlight: hoverHighlight)
+
             Canvas { context, _ in
-                    if usesOverviewMarks, focusPlan == nil, session.schemaReview == nil {
-                        drawGroupConnections(in: &context, size: size)
-                        if let hoveredNodeID {
-                            let hoverHighlight = GraphRelationHighlight(graph: graph, focusNodeID: hoveredNodeID, edgeLookup: edgeLookup)
-                            drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: hoverHighlight, onlyHighlighted: true)
-                        }
-                    } else {
-                        drawEdges(in: &context, anchorMap: anchorMap, relationHighlight: relationHighlight, focusPlan: focusPlan)
-                    }
-                    drawOverviewMarks(in: &context, frames: geometry.markerFrames, connectedIDs: hoverNeighbors)
-                    for id in hoverSummaryIDs {
-                        guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
-                        let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
-                        var nodeContext = context
-                        nodeContext.translateBy(x: frame.minX, y: frame.minY)
-                        nodeContext.scaleBy(x: frame.width / summary.size.width, y: frame.height / summary.size.height)
-                        nodeContext.draw(summary, at: .zero, anchor: .topLeading)
-                    }
-                    if isGraphViewVisible,
-                       session.automationRenderedViewRevision != session.automationViewRevision {
-                        let revision = session.automationViewRevision
-                        Task { @MainActor in
-                            await Task.yield()
-                            guard isGraphViewVisible else { return }
-                            session.acknowledgeAutomationViewRendered(
-                                revision: revision,
-                                displayedTableIDs: displayedTableIDs
-                            )
-                        }
-                    }
-                } symbols: {
-                    ForEach(hoverSummaryNodes) { node in
-                        GraphNodeSummary(
-                            title: node.title,
-                            fieldCount: session.descriptor(named: node.id)?.columns.count ?? 0,
-                            rowCount: session.graphRowCounts[node.id] ?? session.descriptor(named: node.id)?.rowCount,
-                            schemaChange: session.schemaReviewChanges[node.id]
+                if isOverviewOnly, session.schemaReview == nil, shows(.overviewGroupLinks) {
+                    drawGroupConnections(in: &context, size: size)
+                }
+                if let edgePlan {
+                    drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan)
+                }
+                drawOverviewMarks(in: &context, frames: geometry.markerFrames, connectedIDs: hoverNeighbors)
+                for id in hoverSummaryIDs {
+                    guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
+                    let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
+                    var nodeContext = context
+                    nodeContext.translateBy(x: frame.minX, y: frame.minY)
+                    nodeContext.scaleBy(x: frame.width / summary.size.width, y: frame.height / summary.size.height)
+                    nodeContext.draw(summary, at: .zero, anchor: .topLeading)
+                }
+                if isGraphViewVisible,
+                   session.automationRenderedViewRevision != session.automationViewRevision {
+                    let revision = session.automationViewRevision
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard isGraphViewVisible else { return }
+                        session.acknowledgeAutomationViewRendered(
+                            revision: revision,
+                            displayedTableIDs: displayedTableIDs
                         )
-                        .padding(.horizontal, GraphCardLayout.horizontalInset)
-                        .frame(width: GraphCardLayout.collapsedWidth(title: node.title, hovered: false),
-                               height: GraphCardLayout.collapsedHeight)
-                        .tag(node.id)
                     }
                 }
+            } symbols: {
+                ForEach(hoverSummaryNodes) { node in
+                    GraphNodeSummary(
+                        title: node.title,
+                        fieldCount: session.descriptor(named: node.id)?.columns.count ?? 0,
+                        rowCount: session.graphRowCounts[node.id] ?? session.descriptor(named: node.id)?.rowCount,
+                        schemaChange: session.schemaReviewChanges[node.id]
+                    )
+                    .padding(.horizontal, GraphCardLayout.horizontalInset)
+                    .frame(width: GraphCardLayout.collapsedWidth(title: node.title, hovered: false),
+                           height: GraphCardLayout.collapsedHeight)
+                    .tag(node.id)
+                }
+            }
             .allowsHitTesting(false)
+
+            // Signals follow exactly the relations the layer above painted, so the
+            // pulse layer stays idle — and unbuilt — whenever no line is drawn.
+            let pulseTracks = animatesRelationPulses ? (edgePlan.map {
+                cachedEdgePulseTracks(anchorMap: anchorMap, plan: $0, geometryRevision: geometry.revision)
+            } ?? []) : []
+
+            if !pulseTracks.isEmpty {
+                TimelineView(.animation) { timeline in
+                    Canvas { context, _ in
+                        GraphEdgePulseRenderer.draw(
+                            in: &context,
+                            tracks: pulseTracks,
+                            time: timeline.date.timeIntervalSinceReferenceDate
+                        )
+                    }
+                }
+                .allowsHitTesting(false)
+            }
 
             ForEach(renderedNodes) { node in
                 let descriptor = session.descriptor(named: node.id)
@@ -514,8 +557,10 @@ public struct SchemaGraphView: View {
                 .position(screenCenter(for: node.id, in: size))
                 .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
                 .shadow(
-                    color: StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8),
-                    radius: shadowRadius(for: node.id),
+                    color: shows(.cardShadows)
+                        ? StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8)
+                        : .clear,
+                    radius: shows(.cardShadows) ? shadowRadius(for: node.id) : 0,
                     y: session.showAllGraphTableCards ? 5 : (draggedNodeID == node.id ? 16 : 10)
                 )
                 .zIndex(zIndex(for: node.id))
@@ -768,12 +813,17 @@ public struct SchemaGraphView: View {
                                         groupingRevision: session.graphGroupingRevision, layoutRevision: layoutRevision)
         if scenePreparation.groupGeometryKey != key {
             var centers: [String: CGPoint] = [:]
+            let renderedNodeIDs = Set(renderedGraph.nodes.map(\.id))
             for group in session.graphGrouping.groups where !group.nodeIDs.isEmpty {
-                let sum = group.nodeIDs.reduce(CGPoint.zero) { sum, id in
+                let memberIDs = GraphVisibleGroupMembers.intersection(
+                    group.nodeIDs, renderedNodeIDs: renderedNodeIDs
+                )
+                guard !memberIDs.isEmpty else { continue }
+                let sum = memberIDs.reduce(CGPoint.zero) { sum, id in
                     let point = session.graphLayout.position(for: id)
                     return CGPoint(x: sum.x + point.x, y: sum.y + point.y)
                 }
-                centers[group.id] = CGPoint(x: sum.x / CGFloat(group.nodeIDs.count), y: sum.y / CGFloat(group.nodeIDs.count))
+                centers[group.id] = CGPoint(x: sum.x / CGFloat(memberIDs.count), y: sum.y / CGFloat(memberIDs.count))
             }
             scenePreparation.groupGeometryKey = key
             scenePreparation.groupCenters = centers
@@ -794,7 +844,7 @@ public struct SchemaGraphView: View {
 
     private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
         let focusPlan = effectiveFocusPlan
-        guard session.showClusterHalos || focusPlan != nil else { return }
+        guard shows(.groupTitles), session.showClusterHalos || focusPlan != nil else { return }
 
         let titleStyle = (fontSize: CGFloat(15), padding: CGFloat(22))
         let cacheKey = clusterTitleCacheToken(focusPlan: focusPlan)
@@ -847,7 +897,10 @@ public struct SchemaGraphView: View {
             let resolved = context.resolve(
                 Text(displayLabel.uppercased())
                     .font(.system(size: labelFontSize, weight: .bold, design: .rounded))
-                    .foregroundStyle(entry.color.opacity(inFocusLayout ? 0.96 : 0.85))
+                    // A group's own tint, unless the reader switched group colour off — in
+                    // which case the name still belongs on screen, just in plain ink.
+                    .foregroundStyle((shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
+                        .opacity(inFocusLayout ? 0.96 : 0.85))
             )
             if isOverview {
                 let measured = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
@@ -862,10 +915,14 @@ public struct SchemaGraphView: View {
     }
 
     private func tableClusterTitleEntries(padding pad: CGFloat, focusPlan: GraphFocusPlan? = nil) -> [ClusterTitleCache.Entry] {
-        let schemas = Set(session.tables.compactMap(\.schemaName))
+        let renderedNodeIDs = Set(renderedGraph.nodes.map(\.id))
+        let schemas = Set(session.tables.filter { renderedNodeIDs.contains($0.id) }.compactMap(\.schemaName))
         return session.graphGrouping.groups.compactMap { group in
             guard let color = Color(studioHex: group.colorHex) else { return nil }
-            let frames = group.nodeIDs.compactMap { name -> CGRect? in
+            let memberIDs = GraphVisibleGroupMembers.intersection(
+                group.nodeIDs, renderedNodeIDs: renderedNodeIDs
+            )
+            let frames = memberIDs.compactMap { name -> CGRect? in
                 if let focusPlan, focusPlan.tierForTable(name) == .hidden { return nil }
                 let point = graphNodePoint(for: name)
                 let size = nodeSize(for: name)
@@ -878,19 +935,22 @@ public struct SchemaGraphView: View {
                label.hasPrefix(schema + " · ") {
                 label = String(label.dropFirst(schema.count + 3))
             }
-            return makeFocusClusterTitleEntry(color: color, label: "\(label) · \(group.nodeIDs.count)",
+            return makeFocusClusterTitleEntry(color: color, label: "\(label) · \(frames.count)",
                                               frames: frames, padding: pad, labelGap: 30)
         }
     }
 
     private func focusClusterTitleEntries(focusPlan: GraphFocusPlan, padding pad: CGFloat) -> [ClusterTitleCache.Entry] {
         var entries: [ClusterTitleCache.Entry] = []
+        let renderedNodeIDs = Set(renderedGraph.nodes.map(\.id))
         let labelGap: CGFloat = 30
 
         for cluster in session.graphGrouping.groups {
             guard let color = Color(studioHex: cluster.colorHex) else { continue }
-            let frames = cluster.nodeIDs.compactMap { name -> CGRect? in
-                guard session.graph.contains(nodeID: name) else { return nil }
+            let memberIDs = GraphVisibleGroupMembers.intersection(
+                cluster.nodeIDs, renderedNodeIDs: renderedNodeIDs
+            )
+            let frames = memberIDs.compactMap { name -> CGRect? in
                 guard focusPlan.tierForTable(name) != .hidden else { return nil }
                 let center = graphNodePoint(for: name)
                 let size = nodeSize(for: name)
@@ -991,36 +1051,94 @@ public struct SchemaGraphView: View {
 
 
 
-    private func drawEdges(
-        in context: inout GraphicsContext,
-        anchorMap: GraphAnchorMap,
+    /// Builds the plan for the relation layer, or `nil` when it paints nothing.
+    ///
+    /// One plan serves both the static lines and the pulses, so a signal can never travel
+    /// along a relation whose line is hidden.
+    private func edgeLayerPlan(
+        isOverviewOnly: Bool,
+        focusPlan: GraphFocusPlan?,
         relationHighlight: GraphRelationHighlight,
-        focusPlan: GraphFocusPlan? = nil,
-        onlyHighlighted: Bool = false
-    ) {
-        for edge in renderedGraph.edges {
-            if onlyHighlighted && !relationHighlight.highlightedEdgeIDs.contains(edge.id) { continue }
-            if let focusPlan {
+        hoverHighlight: GraphRelationHighlight?
+    ) -> GraphEdgeLayerPlan? {
+        let mode = GraphEdgeLayerPlan.mode(isOverview: isOverviewOnly,
+                                           isSchemaReview: session.schemaReview != nil,
+                                           showsOverviewRelations: shows(.overviewRelations),
+                                           hasHover: hoverHighlight != nil)
+        switch mode {
+        case nil:
+            return nil
+        case .detail:
+            return GraphEdgeLayerPlan(highlight: relationHighlight, focusPlan: focusPlan,
+                                      onlyHighlighted: false, sampleLimit: nil, inkScale: 1)
+        case .overviewSample:
+            return GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
+                                      onlyHighlighted: false,
+                                      sampleLimit: GraphEdgeLayerPlan.overviewRelationLimit,
+                                      inkScale: GraphEdgeLayerPlan.overviewInkScale)
+        case .overviewHoverOnly:
+            return GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
+                                      onlyHighlighted: true, sampleLimit: nil, inkScale: 1)
+        }
+    }
+
+    /// Resolves the relations a plan paints: graph order, screen anchors, the curve the
+    /// static layer strokes, and whether the reader is focused on each one.
+    private func visibleEdgeRenders(anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) -> [GraphEdgeRender] {
+        let highlighted = plan.highlight.highlightedEdgeIDs
+        // Sampling the filtered edge list before resolving anchors bounds the work and
+        // prevents filtered tables from resurfacing in the overview.
+        let candidates = plan.sampleLimit.map { limit in
+            GraphEdgeSampling.evenSample(renderedGraph.edges, limit: limit) { highlighted.contains($0.id) }
+        } ?? renderedGraph.edges
+
+        let viewport = CGRect(origin: .zero, size: viewportSize)
+        var renders: [GraphEdgeRender] = []
+        renders.reserveCapacity(min(candidates.count, 512))
+        for edge in candidates {
+            if plan.onlyHighlighted && !highlighted.contains(edge.id) { continue }
+            if let focusPlan = plan.focusPlan {
                 let sourceVisible = focusPlan.tierForTable(edge.sourceID) != .hidden
                 let targetVisible = focusPlan.tierForTable(edge.targetID) != .hidden
                 guard sourceVisible, targetVisible else { continue }
             }
             guard let anchors = anchorMap.edgeAnchors(for: edge) else { continue }
 
-            let isHighlighted = relationHighlight.highlightedEdgeIDs.contains(edge.id)
-            let change = session.schemaReviewEdgeChanges[edge.id] ?? .unchanged
             var (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
             // Both versions of an edited FK remain visible even with equal endpoints.
             if session.schemaReview != nil {
                 if edge.id.hasPrefix("before:") { control1.x -= 18; control2.x -= 18 }
                 if edge.id.hasPrefix("after:") { control1.x += 18; control2.x += 18 }
             }
-            var path = Path(); path.move(to: anchors.source)
+            var path = Path()
+            path.move(to: anchors.source)
             path.addCurve(to: anchors.target, control1: control1, control2: control2)
-            guard path.boundingRect.insetBy(dx: -8, dy: -8).intersects(CGRect(origin: .zero, size: viewportSize)) else { continue }
+            guard path.boundingRect.insetBy(dx: -8, dy: -8).intersects(viewport) else { continue }
+            renders.append(GraphEdgeRender(
+                edge: edge,
+                anchors: anchors,
+                control1: control1,
+                control2: control2,
+                path: path,
+                isHighlighted: highlighted.contains(edge.id)
+            ))
+        }
+        return renders
+    }
+
+    private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) {
+        let baseOpacity = (session.showAllGraphTableCards ? 0.48 : 0.34) * plan.inkScale
+        let baseWidth = (session.showAllGraphTableCards ? 1.25 : 1.05) * plan.inkScale
+
+        for render in visibleEdgeRenders(anchorMap: anchorMap, plan: plan) {
+            let edge = render.edge
+            let anchors = render.anchors
+            let isHighlighted = render.isHighlighted
+            let path = render.path
+            let change = session.schemaReviewEdgeChanges[edge.id] ?? .unchanged
             let strokeColor = change != .unchanged ? change.tint : isHighlighted
                 ? StudioPalette.edgeHighlight
-                : StudioPalette.edgeNeutral.opacity(session.showAllGraphTableCards ? 0.48 : 0.34)
+                : StudioPalette.edgeNeutral.opacity(baseOpacity)
 
             if isHighlighted {
                 context.stroke(
@@ -1034,25 +1152,28 @@ public struct SchemaGraphView: View {
                 context.stroke(path, with: .color(.white.opacity(0.95)), lineWidth: 5)
             }
             context.stroke(
-                    path,
-                    with: .color(strokeColor),
-                    style: StrokeStyle(
-                    lineWidth: change != .unchanged ? 2.5 : isHighlighted ? 1.85 : (session.showAllGraphTableCards ? 1.25 : 1.05),
+                path,
+                with: .color(strokeColor),
+                style: StrokeStyle(
+                    lineWidth: change != .unchanged ? 2.5 : (isHighlighted ? 1.85 : baseWidth),
                     lineCap: .round,
                     lineJoin: .round,
                     dash: change == .removed ? [6, 4] : []
                 )
             )
             if change != .unchanged {
-                let midpoint = bezierPoint(start: anchors.source, control1: control1, control2: control2, end: anchors.target, t: change == .removed ? 0.43 : 0.57)
+                let midpoint = bezierPoint(start: anchors.source, control1: render.control1,
+                                           control2: render.control2, end: anchors.target,
+                                           t: change == .removed ? 0.43 : 0.57)
                 context.draw(Text(change.symbol).font(.system(size: 16, weight: .heavy)).foregroundStyle(change.tint), at: midpoint)
             }
-            
+
             if isHighlighted {
-                let (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
-                drawDirectionMarker(in: &context, from: anchors.source, control1: control1, control2: control2, to: anchors.target, color: StudioPalette.edgeHighlight)
-                if showCardinals {
-                    drawCardinalityLabels(in: &context, edge: edge, start: anchors.source, control1: control1, control2: control2, end: anchors.target)
+                drawDirectionMarker(in: &context, from: anchors.source, control1: render.control1,
+                                    control2: render.control2, to: anchors.target, color: StudioPalette.edgeHighlight)
+                if shows(.relationshipLabels) {
+                    drawCardinalityLabels(in: &context, edge: edge, start: anchors.source,
+                                          control1: render.control1, control2: render.control2, end: anchors.target)
                 }
             }
         }
@@ -1237,6 +1358,13 @@ public struct SchemaGraphView: View {
         }
     }
 
+    /// The same toggles the menu bar offers, so the canvas menu and View ▸ Graph Visuals
+    /// can never drift apart.
+    @ViewBuilder
+    private var graphVisualToggles: some View {
+        GraphVisualToggles(session: session)
+    }
+
     private func graphOptionsMenu(in size: CGSize) -> some View {
         Menu {
             Text(session.graphTableFilter.isActive
@@ -1261,9 +1389,8 @@ public struct SchemaGraphView: View {
                 get: { session.showAllGraphTableCards },
                 set: { session.setShowAllGraphTableCards($0) }
             ))
-            Toggle("Relationship labels", isOn: $showCardinals)
-            if !session.graphGrouping.groups.isEmpty {
-                Toggle("Group colors", isOn: $session.showClusterHalos)
+            Menu("Graph visuals") {
+                graphVisualToggles
             }
             Divider()
             Button("Relayout") {
@@ -1836,7 +1963,7 @@ public struct SchemaGraphView: View {
     }
 
     private func clusterBorderColor(for nodeID: String) -> Color? {
-        guard session.showClusterHalos, let hex = session.clusterColorHex(for: nodeID) else { return nil }
+        guard shows(.groupColors), let hex = session.clusterColorHex(for: nodeID) else { return nil }
         if let color = scenePreparation.colors[hex] { return color }
         let color = Color(studioHex: hex)
         scenePreparation.colors[hex] = color
@@ -1886,6 +2013,45 @@ public struct SchemaGraphView: View {
             nodeSizing: session.graphNodeSizeProfile,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
+    }
+
+    /// Prepares the bounded set of relations that carry a travelling signal.
+    ///
+    /// Track geometry only moves when the scene does, so it is cached against the same
+    /// inputs that decide which edges are drawn. The animation itself needs no cache
+    /// invalidation: each frame asks `GraphEdgePulseField` where a track's signal is at
+    /// that instant.
+    private func cachedEdgePulseTracks(
+        anchorMap: GraphAnchorMap,
+        plan: GraphEdgeLayerPlan,
+        geometryRevision: Int
+    ) -> [GraphEdgePulseTrack] {
+        let key = GraphEdgePulseKey(
+            geometryRevision: geometryRevision,
+            graphRevision: renderedGraphRevision,
+            viewport: viewportSize,
+            onlyHighlighted: plan.onlyHighlighted,
+            sampleLimit: plan.sampleLimit,
+            highlightedEdgeIDs: plan.highlight.highlightedEdgeIDs,
+            focusPlan: plan.focusPlan,
+            showsAllCards: session.showAllGraphTableCards
+        )
+        if scenePreparation.pulseKey == key { return scenePreparation.pulseTracks }
+
+        let candidates = visibleEdgeRenders(anchorMap: anchorMap, plan: plan).map { render in
+            GraphEdgePulseTrack(
+                edgeID: render.edge.id,
+                start: render.anchors.source,
+                control1: render.control1,
+                control2: render.control2,
+                end: render.anchors.target,
+                isHighlighted: render.isHighlighted
+            )
+        }
+        let tracks = GraphEdgePulseField.select(from: candidates)
+        scenePreparation.pulseKey = key
+        scenePreparation.pulseTracks = tracks
+        return tracks
     }
 
     private func cachedRelationHighlight(focusNodeID: String?, hoverTarget: GraphRelationHoverTarget?,
@@ -2021,12 +2187,13 @@ public struct SchemaGraphView: View {
     }
 
     private func clusterTitleCacheToken(focusPlan: GraphFocusPlan?) -> Int {
-        ClusterTitleCacheToken.make(
+        let token = ClusterTitleCacheToken.make(
             layoutRevision: layoutRevision,
             sidecarRevision: clusterTitleCacheKey &+ session.schemaSidecarRevision,
             hasFocusPlan: focusPlan != nil,
-            showClusterHalos: session.showClusterHalos
+            showClusterHalos: shows(.groupTitles)
         )
+        return token &* 31 &+ renderedGraphRevision
     }
 
     private func invalidateClusterTitleCache() {
@@ -3033,6 +3200,34 @@ private struct GraphSceneHighlightKey: Equatable {
     let target: GraphRelationHoverTarget?
 }
 
+/// One relation resolved for the current scene: screen anchors, the Bézier controls the
+/// curve is built from, and that curve.
+///
+/// Carrying the controls rather than recomputing them keeps every consumer on one curve —
+/// the stroke, the direction marker, the schema-review change symbol and the travelling
+/// pulse. That matters during a schema review, where the two versions of an edited foreign
+/// key are deliberately nudged apart.
+private struct GraphEdgeRender {
+    let edge: GraphEdge
+    let anchors: GraphEdgeAnchors
+    let control1: CGPoint
+    let control2: CGPoint
+    let path: Path
+    let isHighlighted: Bool
+}
+
+private struct GraphEdgePulseKey: Equatable {
+    let geometryRevision: Int
+    let graphRevision: Int
+    let viewport: CGSize
+    let onlyHighlighted: Bool
+    let sampleLimit: Int?
+    let highlightedEdgeIDs: Set<String>
+    let focusPlan: GraphFocusPlan?
+    let showsAllCards: Bool
+}
+
+
 private struct GraphGroupGeometryKey: Equatable {
     let graphRevision: Int
     let groupingRevision: Int
@@ -3055,6 +3250,8 @@ private final class GraphScenePreparationCache {
     var highlight: GraphRelationHighlight?
     var relatedKey: GraphSceneHighlightKey?
     var relatedIDs: [String] = []
+    var pulseKey: GraphEdgePulseKey?
+    var pulseTracks: [GraphEdgePulseTrack] = []
 }
 
 private extension GraphEdge {
@@ -3392,7 +3589,16 @@ struct GraphMinimapView: View {
     let pan: CGSize
     let onViewportTap: (CGPoint) -> Void
 
-    private var visibleIDs: Set<String> { session.graphVisibleTableIDs }
+    /// Build the inset from the same filtered topology as the canvas so hidden
+    /// tables cannot remain visible through their incident relations.
+    private var visibleGraph: SchemaGraph {
+        let visibleIDs = session.graphVisibleTableIDs
+        let nodes = session.graph.nodes.filter { visibleIDs.contains($0.id) }
+        let edges = session.graph.edges.filter {
+            visibleIDs.contains($0.sourceID) && visibleIDs.contains($0.targetID)
+        }
+        return SchemaGraph(nodes: nodes, edges: edges)
+    }
 
 
     
@@ -3444,9 +3650,9 @@ struct GraphMinimapView: View {
         size: CGSize,
         minimapTransform: GraphViewportTransform
     ) {
-        let visibleIDs = self.visibleIDs
+        let graph = visibleGraph
         var edgePath = Path()
-        for edge in session.graph.edges where visibleIDs.contains(edge.sourceID) && visibleIDs.contains(edge.targetID) {
+        for edge in graph.edges {
             let sourcePos = session.graphLayout.position(for: edge.sourceID)
             let targetPos = session.graphLayout.position(for: edge.targetID)
             let minimapSource = minimapTransform.point(for: sourcePos, in: size)
@@ -3462,7 +3668,7 @@ struct GraphMinimapView: View {
         )
 
         var nodePath = Path()
-        for node in session.graph.nodes where visibleIDs.contains(node.id) {
+        for node in graph.nodes {
             let nodePos = session.graphLayout.position(for: node.id)
             let minimapPos = minimapTransform.point(for: nodePos, in: size)
             let nodeRect = CGRect(
@@ -3480,8 +3686,7 @@ struct GraphMinimapView: View {
     private func graphContentBounds() -> CGRect {
         let padding: CGFloat = 100
 
-        let visibleIDs = self.visibleIDs
-        let visibleNodes = session.graph.nodes.filter { visibleIDs.contains($0.id) }
+        let visibleNodes = visibleGraph.nodes
         guard !visibleNodes.isEmpty else { return .zero }
 
         var minX = Double.infinity
@@ -3566,4 +3771,16 @@ private final class RelationPreviewCache {
     var target: GraphRelationHoverTarget?
     var expandedNodeID: String?
     var previews: [String: GraphNodeRelationPreview] = [:]
+}
+
+/// Group decorations follow the graph the reader can currently see, while
+/// preserving the grouping's stable member order.
+enum GraphVisibleGroupMembers {
+    static func intersection(_ groupNodeIDs: [String], renderedNodeIDs: Set<String>) -> [String] {
+        groupNodeIDs.filter { renderedNodeIDs.contains($0) }
+    }
+
+    static func intersection(_ groupNodeIDs: [String], renderedGraph: SchemaGraph) -> [String] {
+        intersection(groupNodeIDs, renderedNodeIDs: Set(renderedGraph.nodes.map(\.id)))
+    }
 }

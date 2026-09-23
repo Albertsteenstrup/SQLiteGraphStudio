@@ -85,12 +85,15 @@ public actor DatabaseService {
     private enum Backend: Sendable {
         case sqlite(SQLiteDatabaseBackend)
         case postgres(PostgresDatabaseBackend)
+        case migrations(MigrationSchemaBackend)
 
         var value: any DatabaseBackend {
             switch self {
             case .sqlite(let backend):
                 return backend
             case .postgres(let backend):
+                return backend
+            case .migrations(let backend):
                 return backend
             }
         }
@@ -112,6 +115,19 @@ public actor DatabaseService {
     public var isPostgreSQL: Bool {
         if case .postgres = backend { return true }
         return false
+    }
+
+    public var isMigrationModel: Bool {
+        if case .migrations = backend { return true }
+        return false
+    }
+
+    /// Replay statistics and unparsed-statement diagnostics for an open migration model.
+    public var migrationModel: MigrationSchemaModel? {
+        get async {
+            guard case .migrations(let backend) = backend else { return nil }
+            return await backend.schemaModel
+        }
     }
 
     public func open(url: URL, readOnly: Bool = false, includeRowCounts: Bool = true) async throws {
@@ -141,6 +157,30 @@ public actor DatabaseService {
             try await open(postgres: configuration)
         case .postgresDump(let url):
             try await open(dump: url)
+        case .migrations(let url):
+            try await open(migrations: ProjectScanner.migrationSet(at: url), through: nil, sourceURL: url)
+        }
+    }
+
+    /// Replays `set` up to and including `version` (its latest when nil). The
+    /// target keeps the chosen `sourceURL` so layout, saved queries and notes
+    /// stay with the migration set rather than with one revision of it.
+    public func open(
+        migrations set: MigrationSet,
+        through version: String?,
+        sourceURL: URL,
+        progress: @escaping @Sendable (String) async -> Void = { _ in }
+    ) async throws {
+        let generation = try await beginOpen()
+        let migrations = MigrationSchemaBackend()
+        do {
+            try await migrations.open(set: set, through: version, progress: progress)
+            guard openGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+            backend = .migrations(migrations)
+            currentTarget = .migrations(sourceURL.standardizedFileURL)
+        } catch {
+            await migrations.close()
+            throw error
         }
     }
 

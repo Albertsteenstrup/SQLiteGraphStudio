@@ -59,6 +59,8 @@ public struct WorkspaceSessionRestorationState: Codable, Sendable, Equatable {
     public var activeTableName: String?
     public var unsavedQueryDrafts: [WorkspaceQueryDraft]
     public var activeQueryID: UUID?
+    /// The selected migration step for a schema-only source. Older snapshots omit it.
+    public var selectedMigrationVersion: String?
 
     public init(
         leftPane: PaneContentKind = .schema,
@@ -77,7 +79,8 @@ public struct WorkspaceSessionRestorationState: Codable, Sendable, Equatable {
         openTables: [WorkspaceTableRestorationState] = [],
         activeTableName: String? = nil,
         unsavedQueryDrafts: [WorkspaceQueryDraft] = [],
-        activeQueryID: UUID? = nil
+        activeQueryID: UUID? = nil,
+        selectedMigrationVersion: String? = nil
     ) {
         self.leftPane = leftPane
         self.rightPane = rightPane
@@ -96,6 +99,7 @@ public struct WorkspaceSessionRestorationState: Codable, Sendable, Equatable {
         self.activeTableName = activeTableName
         self.unsavedQueryDrafts = unsavedQueryDrafts
         self.activeQueryID = activeQueryID
+        self.selectedMigrationVersion = selectedMigrationVersion
     }
 }
 

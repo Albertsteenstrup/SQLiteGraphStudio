@@ -730,17 +730,85 @@ final class StudioAutomationCoordinator {
         case "studio_list_workspaces":
             return ["workspaces": availableWorkspaces(for: context.id).map(workspacePayload),
                     "active_workspace_id": visibleActiveWorkspaceID(for: context.id)]
+        case "studio_scan_project":
+            let path = try requiredString(args, "project_path")
+            let root = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw Failure(code: "SOURCE_NOT_FOUND", detail: "project_path must name an existing local folder.")
+            }
+            let result = try await BackgroundWork.run {
+                try ProjectScanner.scan(root: root, limits: ProjectScanLimits(maximumDepth: 14,
+                                                                            maximumEntries: 50_000,
+                                                                            honorsGitIgnore: true))
+            }
+            let offset = args["candidate_offset"] as? Int ?? 0
+            guard offset >= 0, offset <= result.candidates.count else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "candidate_offset must be within the scan result.")
+            }
+            let limit = bounded(args, "candidate_limit", default: 25, maximum: 50)
+            let page = result.candidates.dropFirst(offset).prefix(limit)
+            let candidates: [[String: Any]] = page.map { candidate in
+                var item: [String: Any] = [
+                    "candidate_id": candidate.id,
+                    "kind": candidate.kind.rawValue,
+                    "source_path": candidate.url.path,
+                    "title": candidate.title,
+                    "relative_path": candidate.relativePath,
+                    "detail": candidate.detail,
+                ]
+                item["migration_count"] = candidate.migrationSet?.files.count as Any? ?? NSNull()
+                item["latest_migration_version"] = candidate.migrationSet?.latest?.version as Any? ?? NSNull()
+                return item
+            }
+            let response: [String: Any] = [
+                "project_path": root.path,
+                "candidates": candidates,
+                "candidate_offset": offset,
+                "candidate_count": result.candidates.count,
+                "has_more_candidates": offset + page.count < result.candidates.count,
+                "reached_scan_limit": result.reachedLimit,
+                "directories_visited": result.directoriesVisited,
+                "files_inspected": result.filesInspected,
+                "skipped_directory_count": result.skippedDirectoryCount,
+            ]
+            return response
         case "studio_open_source":
             guard let path = string(args, "source_path") else { throw Failure(code: "INVALID_ARGUMENT", detail: "Provide source_path for a local database or workspace file.") }
             let url = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath).standardizedFileURL
-            guard FileManager.default.fileExists(atPath: url.path) else { throw Failure(code: "SOURCE_NOT_FOUND", detail: "The requested source file does not exist: \(url.path)") }
-            guard DatabaseDocument.supportedExtensions.contains(url.pathExtension.lowercased()) else {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+                throw Failure(code: "SOURCE_NOT_FOUND", detail: "The requested source file does not exist: \(url.path)")
+            }
+            let migrationSource = isDirectory.boolValue || url.pathExtension.lowercased() == "sql"
+            if migrationSource {
+                let set: MigrationSet
+                do {
+                    set = try await BackgroundWork.run { try ProjectScanner.migrationSet(at: url) }
+                } catch {
+                    if isDirectory.boolValue {
+                        throw Failure(code: "PROJECT_SELECTION_REQUIRED", detail: "This folder is not one migration set. Call studio_scan_project for exact candidate source_path values, then open the intended candidate with a new request_id.")
+                    }
+                    throw Failure(code: "SOURCE_OPEN_FAILED", detail: error.localizedDescription)
+                }
+                if let version = string(args, "migration_version"), set.index(ofVersion: version) == nil {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "migration_version must match a version in the selected migration set.")
+                }
+            } else if !DatabaseDocument.supportedExtensions.contains(url.pathExtension.lowercased()),
+                      url.pathExtension.lowercased() != "sql" {
                 throw Failure(code: "UNSUPPORTED_SOURCE", detail: "Graph Studio does not support this source file type.")
+            }
+            if !migrationSource, string(args, "migration_version") != nil {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "migration_version applies only to a migration set or SQL schema script.")
             }
             let tab = workspaces.createTab(kind: inferredWorkspaceKind(for: url),
                                            activate: bool(args, "activate") ?? false)
             try claimWorkspace(tab.id, for: context.id)
-            await openDocument(tab.session, url)
+            if migrationSource {
+                await tab.session.openMigrations(at: url, version: string(args, "migration_version"))
+            } else {
+                await openDocument(tab.session, url)
+            }
             guard workspaces.tabs.contains(where: { $0 === tab }) else {
                 await tab.session.closeAndWait()
                 throw Failure(code: "STALE_VIEW", detail: "The source tab closed while its document was opening.")
@@ -763,6 +831,8 @@ final class StudioAutomationCoordinator {
             }
             let activate = string(args, "activation_intent") == "foreground" || bool(args, "activate") == true
             var sourceURL: URL?
+            var migrationVersion: String?
+            var sourceIsMigration = false
             if let requestedSource = string(args, "source_id") {
                 guard let boundID = context.workspaceID,
                       let source = workspaces.tabs.first(where: { $0.id == boundID }),
@@ -771,11 +841,19 @@ final class StudioAutomationCoordinator {
                     throw Failure(code: "STALE_SOURCE", detail: "source_id must identify the live source in this coding task's bound workspace.")
                 }
                 sourceURL = url
+                if case .migrations? = source.session.databaseTarget {
+                    sourceIsMigration = true
+                    migrationVersion = source.session.selectedMigrationVersion
+                }
             }
             let tab = workspaces.createTab(kind: kind, title: string(args, "title"), activate: activate)
             try claimWorkspace(tab.id, for: context.id)
             if let url = sourceURL {
-                await openDocument(tab.session, url)
+                if sourceIsMigration {
+                    await tab.session.openMigrations(at: url, version: migrationVersion)
+                } else {
+                    await openDocument(tab.session, url)
+                }
                 guard workspaces.tabs.contains(where: { $0 === tab }) else {
                     await tab.session.closeAndWait()
                     throw Failure(code: "STALE_VIEW", detail: "The new workspace closed while its source was opening.")
@@ -1107,10 +1185,11 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "OBJECT_NOT_FOUND", detail: "That table or view was not found in the selected source.")
             }
             tab.session.selectGraphNode(name)
-            await table.reload()
+            if tab.session.databaseCapabilities.canBrowseRows { await table.reload() }
             return tablePayload(table, workspace: tab)
         case "studio_configure_table":
             let tab = try sourceWorkspace(args, context: context)
+            try requireRows(in: tab)
             let name = try requiredString(args, "table_id", alternative: "table_name")
             guard let table = tab.session.openTable(named: name, autoLoad: false) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "Table not found.") }
             var state = table.queryState
@@ -1425,6 +1504,7 @@ final class StudioAutomationCoordinator {
                     "visual_state": workspaces.activeTabID == tab.id && records.isPresented ? "record_graph_visible" : "prepared_in_background"]
         case "studio_prepare_query":
             let tab = try sourceWorkspace(args, context: context)
+            try requireQueries(in: tab)
             let sql = try requiredString(args, "sql")
             try validateAutomationSQL(sql)
             tab.session.openQuery(title: string(args, "title"), sqlText: sql)
@@ -1432,6 +1512,7 @@ final class StudioAutomationCoordinator {
                     "status": "prepared_not_executed"]
         case "studio_run_query":
             let tab = try sourceWorkspace(args, context: context)
+            try requireQueries(in: tab)
             let sql = try requiredString(args, "sql")
             try validateAutomationSQL(sql)
             let limit = bounded(args, "row_limit", default: 100, maximum: 500)
@@ -2176,6 +2257,7 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "TOOL_UNAVAILABLE", detail: "For table rows, choose displayed for the currently loaded page or all_matching for every row matching the table's current filters and sort.")
             }
             let sourceTab = try sourceWorkspace(args, context: context)
+            try requireRows(in: sourceTab)
             let tableID = try requiredString(args, "object_id")
             guard let table = sourceTab.session.openTabs.first(where: { $0.descriptor.id == tableID || $0.descriptor.name == tableID }) else {
                 if scopeKind == "displayed" {
@@ -2211,6 +2293,9 @@ final class StudioAutomationCoordinator {
             guard let saved = results[resultID], saved.workspace == tab.id,
                   saved.ownerContextID == context.id else {
                 throw Failure(code: "OBJECT_NOT_FOUND", detail: "That captured query result does not belong to this workspace or is no longer available.")
+            }
+            guard saved.sourceID == sourceID(tab), saved.sourceRevision == sourceRevision(tab) else {
+                throw Failure(code: "STALE_SOURCE", detail: "This query result belongs to an earlier source revision. Run the query again before exporting it.")
             }
             capturedSourceID = saved.sourceID
             capturedSourceRevision = saved.sourceRevision
@@ -2865,6 +2950,7 @@ final class StudioAutomationCoordinator {
 
     private func readOnlyService(for tab: WorkspaceTab) async throws -> DatabaseService {
         guard let target = tab.session.databaseTarget else { throw Failure(code: "SOURCE_REQUIRED", detail: "No database is open.") }
+        try requireRows(in: tab)
         if let reader = readers[tab.id], readerTargets[tab.id] == target.identity { return reader }
         if let previous = readers.removeValue(forKey: tab.id) { await previous.close() }
         let reader = DatabaseService()
@@ -2874,6 +2960,8 @@ final class StudioAutomationCoordinator {
             case .postgres(let configuration): try await reader.open(postgres: configuration)
             case .postgresDump:
                 throw Failure(code: "TOOL_UNAVAILABLE", detail: "Bounded row reads from restored PostgreSQL dumps are unavailable through this bridge build.")
+            case .migrations:
+                throw Failure(code: "SCHEMA_ONLY_SOURCE", detail: "Migration replay provides schema only. Open a database to inspect rows or run queries.")
             }
         } catch {
             await reader.close()
@@ -2894,6 +2982,18 @@ final class StudioAutomationCoordinator {
     }
 
     private func sourceID(_ tab: WorkspaceTab) -> String { tab.session.databaseTarget?.identity ?? "none" }
+
+    private func requireRows(in tab: WorkspaceTab) throws {
+        guard tab.session.databaseCapabilities.canBrowseRows else {
+            throw Failure(code: "SCHEMA_ONLY_SOURCE", detail: "This migration source contains schema only. Open a database to inspect, filter, or export rows.")
+        }
+    }
+
+    private func requireQueries(in tab: WorkspaceTab) throws {
+        guard tab.session.databaseCapabilities.canRunQueries else {
+            throw Failure(code: "SCHEMA_ONLY_SOURCE", detail: "This migration source contains schema only. Open a database to prepare or run queries.")
+        }
+    }
 
     private func verifySource(_ tab: WorkspaceTab, id: String, revision: String, context: Context) throws {
         guard workspaces.tabs.contains(where: { $0 === tab }),
@@ -3634,6 +3734,21 @@ final class StudioAutomationCoordinator {
         var parts = [sourceID(tab), String(session.tables.count), String(session.graph.edges.count)]
         parts.append(contentsOf: session.tables.map { "\($0.id):\($0.columnCount):\($0.objectType.rawValue)" }.sorted())
         parts.append(contentsOf: session.graph.edges.map { "\($0.id):\($0.sourceID):\($0.targetID):\($0.sourceColumn):\($0.targetColumn)" }.sorted())
+        if let set = session.migrationSet {
+            parts.append("migration_version:\(session.selectedMigrationVersion ?? "latest")")
+            // The replayed schema is authoritative for this workspace. Include
+            // its full definitions so an equally sized, timestamp-preserving
+            // edit still produces a new revision after the model is refreshed.
+            parts.append(contentsOf: session.tables.compactMap { session.descriptor(named: $0.id) }
+                .map { String(reflecting: $0) }.sorted())
+            parts.append(contentsOf: session.migrationDiagnostics.map { String(reflecting: $0) }.sorted())
+            for file in set.files(through: session.selectedMigrationVersion) {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: file.url.path)
+                let modified = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                parts.append("\(file.url.path):\(modified):\(size)")
+            }
+        }
         if let url = session.databaseURL, let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) {
             parts.append(String((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0))
             parts.append(String((attrs[.size] as? NSNumber)?.int64Value ?? 0))
@@ -3690,6 +3805,10 @@ final class StudioAutomationCoordinator {
     private func workspacePayload(_ tab: WorkspaceTab) -> [String: Any] {
         ["workspace_id": tab.id.uuidString, "title": tab.title, "kind": tab.kind.rawValue,
          "source_id": nullable(tab.session.databaseTarget?.identity), "source_label": nullable(tab.sourceLabel),
+         "source_revision": sourceRevision(tab),
+         "schema_only": tab.session.databaseTarget != nil && !tab.session.databaseCapabilities.canBrowseRows,
+         "can_browse_rows": tab.session.databaseCapabilities.canBrowseRows,
+         "can_run_queries": tab.session.databaseCapabilities.canRunQueries,
          "active": workspaces.activeTabID == tab.id, "view_revision": viewRevision(tab)]
     }
 
@@ -3915,6 +4034,7 @@ final class StudioAutomationCoordinator {
 
     private func tablePayload(_ table: TableTabModel, workspace: WorkspaceTab) -> [String: Any] {
         ["workspace_id": workspace.id.uuidString, "table_id": table.descriptor.id, "table_tab_id": table.id.uuidString,
+         "schema_only": !workspace.session.databaseCapabilities.canBrowseRows,
          "loaded_rows": table.chunk.rows.count, "offset": table.chunk.offset, "has_more": table.chunk.hasMore,
          "error": nullable(table.inlineErrorMessage), "view_revision": viewRevision(workspace)]
     }
@@ -4032,6 +4152,8 @@ final class StudioAutomationCoordinator {
         case "CONTEXT_IN_USE": "Close the other MCP connection for this task before resuming it."
         case "RESUME_DENIED": "Use the resume_token and client_task_id returned to this task when it connected, or start a new context."
         case "AMBIGUOUS_WORKSPACE": "Call studio_list_workspaces and pass workspace_id."
+        case "PROJECT_SELECTION_REQUIRED": "Call studio_scan_project, choose one exact candidate source_path, and call studio_open_source with a new request_id."
+        case "SCHEMA_ONLY_SOURCE": "Use schema and graph tools for this migration model, or open a database source to inspect rows and run queries."
         case "WORKSPACE_IN_USE": "Use an available tab or ask the user to release the foreground tab from Graph Studio's Coding Agents menu."
         case "STALE_SOURCE": "Call studio_get_view and use its current source_id."
         case "METADATA_CONFLICT": "Call studio_get_annotations again, merge the user's intended changes, and retry with the returned metadata_revision and a new request_id."

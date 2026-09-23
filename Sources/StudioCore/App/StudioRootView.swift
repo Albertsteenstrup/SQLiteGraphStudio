@@ -140,6 +140,16 @@ private struct WorkspaceSessionRootView: View {
         return session.side(containing: .schema) != nil
     }
 
+    /// The minimap stands down once a compact workspace no longer has room for it.
+    private var showsMinimap: Bool {
+        session.hasOpenDatabase
+            && session.schemaReview == nil
+            && !session.graphVisibleTableIDs.isEmpty
+            && !session.isWorkspaceCompact
+            && schemaIsVisible
+            && session.graphVisuals.isEnabled(.minimap)
+    }
+
     var body: some View {
         ZStack {
             rootBackground
@@ -148,18 +158,13 @@ private struct WorkspaceSessionRootView: View {
                 SchemaReviewWorkspaceView(session: session, review: review)
             } else if session.hasOpenDatabase {
                 WorkspaceLayoutView(session: session)
-                    .padding(16)
+                    .padding(WorkspaceCompactLayout.workspaceInset)
             } else {
                 EmptyDatabaseView(session: session, openDocument: openDocument)
                     .padding(24)
             }
 
-            // Minimap — shown whenever the schema graph is visible and has nodes.
-            // Rendered at the root ZStack level so it's never clipped by pane containers
-            // and always appears above the dock nav.
-            if session.hasOpenDatabase
-                && !session.graph.nodes.isEmpty
-                && schemaIsVisible {
+            if showsMinimap {
                 GeometryReader { geo in
                     GraphMinimapView(
                         session: session,
@@ -178,7 +183,9 @@ private struct WorkspaceSessionRootView: View {
         }
         .disabled(session.isRefreshing)
         .overlay {
-            if let progress = session.documentOpenProgress {
+            if let scan = session.projectScan {
+                ProjectScanOverlayView(state: scan) { session.cancelProjectScan() }
+            } else if let progress = session.documentOpenProgress {
                 VStack(spacing: 14) {
                     ProgressView()
                     Text(progress)
@@ -251,16 +258,11 @@ private struct WorkspaceSessionRootView: View {
             .padding(.bottom, 20)
         }
         .overlay(alignment: .top) {
-            if session.isPostgreSQL {
-                Label("PostgreSQL · read-only", systemImage: "lock.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(.thinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(StudioPalette.border, lineWidth: 1))
-                    .padding(.top, 8)
-                    .allowsHitTesting(false)
+            if session.databaseTarget?.isMigrationModel == true {
+                documentBadge(session.migrationReplaySummary ?? "Migrations · schema only",
+                              systemImage: "square.stack.3d.up")
+            } else if session.isPostgreSQL {
+                documentBadge("PostgreSQL · read-only", systemImage: "lock.fill")
             }
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
@@ -345,6 +347,9 @@ private struct WorkspaceSessionRootView: View {
         .sheet(isPresented: $session.isSkillsPresented) {
             SkillsPickerView(session: session)
         }
+        .sheet(item: $session.projectCandidates) { choice in
+            ProjectCandidatePickerView(session: session, choice: choice)
+        }
         .sheet(isPresented: $session.isCreateTablePresented) {
             CreateTableSheetView(session: session)
         }
@@ -373,6 +378,19 @@ private struct WorkspaceSessionRootView: View {
                 }
             }
         )
+    }
+
+    /// The capsule above the workspace naming what kind of document is open.
+    private func documentBadge(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(StudioPalette.primaryText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.thinMaterial, in: Capsule())
+            .overlay(Capsule().stroke(StudioPalette.border, lineWidth: 1))
+            .padding(.top, 8)
+            .allowsHitTesting(false)
     }
 
     private var rootBackground: some View {
@@ -407,6 +425,7 @@ private struct WorkspaceSessionRootView: View {
 /// recreates them when the surrounding layout changes between split and fullscreen.
 private struct WorkspaceLayoutView: View {
     @Bindable var session: AppSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var databaseNameSide: WorkspacePaneSide = .left
 
     private var fullscreenSide: WorkspacePaneSide? {
@@ -416,16 +435,35 @@ private struct WorkspaceLayoutView: View {
         if session.showAllGraphTableCards {
             return session.side(containing: .schema) ?? .left
         }
-        return nil
+        return session.compactVisibleSide
     }
 
     private var isFullscreen: Bool {
         fullscreenSide != nil
     }
 
+    /// Keeps the dock available when a narrow workspace shows one pane.
+    private var isCompactSinglePane: Bool {
+        session.isWorkspaceCompact
+            && session.maximizedPaneSide == nil
+            && !session.showAllGraphTableCards
+    }
+
+    private var visiblePaneKinds: Set<PaneContentKind> {
+        guard let fullscreenSide else {
+            return [session.leftPane.kind, session.rightPane.kind]
+        }
+        return [session.paneState(for: fullscreenSide).kind]
+    }
+
     var body: some View {
         splitLayout
-        .animation(.snappy(duration: 0.32), value: fullscreenSide)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.32), value: fullscreenSide)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                session.updateWorkspaceWidth(width)
+            }
     }
 
     private var splitLayout: some View {
@@ -434,10 +472,14 @@ private struct WorkspaceLayoutView: View {
                 PaneShell(
                     session: session,
                     side: .left,
+                    isCompact: isCompactSinglePane,
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left
                 )
                 .id("workspace-pane-left")
-                .frame(minWidth: minimumPaneWidth(for: .left))
+                .frame(
+                    minWidth: paneWidthBounds(for: .left).minimum,
+                    maxWidth: paneWidthBounds(for: .left).maximum
+                )
                 .background {
                     GeometryReader { geometry in
                         Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.left: geometry.size.width])
@@ -445,14 +487,19 @@ private struct WorkspaceLayoutView: View {
                 }
                 .opacity(paneOpacity(for: .left))
                 .allowsHitTesting(paneIsInteractive(.left))
+                .accessibilityHidden(!paneIsInteractive(.left))
 
                 PaneShell(
                     session: session,
                     side: .right,
+                    isCompact: isCompactSinglePane,
                     showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right
                 )
                 .id("workspace-pane-right")
-                .frame(minWidth: minimumPaneWidth(for: .right))
+                .frame(
+                    minWidth: paneWidthBounds(for: .right).minimum,
+                    maxWidth: paneWidthBounds(for: .right).maximum
+                )
                 .background {
                     GeometryReader { geometry in
                         Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.right: geometry.size.width])
@@ -460,6 +507,7 @@ private struct WorkspaceLayoutView: View {
                 }
                 .opacity(paneOpacity(for: .right))
                 .allowsHitTesting(paneIsInteractive(.right))
+                .accessibilityHidden(!paneIsInteractive(.right))
             }
             .background(SplitViewPositioner(mode: splitMode))
             .onPreferenceChange(WorkspacePaneWidthsKey.self) { widths in
@@ -473,8 +521,8 @@ private struct WorkspaceLayoutView: View {
                 session.workspaceSplitFraction = min(max(left / (left + right), 0.25), 0.75)
             }
 
-            if !isFullscreen {
-                WorkspaceDockView(session: session)
+            if !isFullscreen || isCompactSinglePane {
+                WorkspaceDockView(session: session, visibleKinds: visiblePaneKinds)
                     .padding(.bottom, 18)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -497,9 +545,8 @@ private struct WorkspaceLayoutView: View {
         fullscreenSide == nil || fullscreenSide == side
     }
 
-    private func minimumPaneWidth(for side: WorkspacePaneSide) -> CGFloat {
-        guard let fullscreenSide else { return 320 }
-        return fullscreenSide == side ? 320 : 0
+    private func paneWidthBounds(for side: WorkspacePaneSide) -> (minimum: CGFloat, maximum: CGFloat) {
+        WorkspaceCompactLayout.paneWidthBounds(for: side, fullscreenSide: fullscreenSide)
     }
 }
 
@@ -619,7 +666,10 @@ private struct SplitViewPositioner: NSViewRepresentable {
 
         @MainActor
         private func setDividerPosition(_ position: CGFloat, in splitView: NSSplitView, animated: Bool) {
-            guard animated else {
+            // This slide is what a collapse actually looks like, and a resize can
+            // now trigger it, so it answers to reduce-motion like the SwiftUI
+            // transitions around it.
+            guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
                 splitView.setPosition(position, ofDividerAt: 0)
                 return
             }
@@ -680,6 +730,7 @@ private struct PaneShell: View {
     @Bindable var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let side: WorkspacePaneSide
+    let isCompact: Bool
     let showsDatabaseName: Bool
     @State private var isDropTargeted = false
 
@@ -713,7 +764,7 @@ private struct PaneShell: View {
 
     private var paneHeader: some View {
         HStack(spacing: 12) {
-            if isMaximized {
+            if isMaximized || isCompact {
                 Label(paneState.kind.title, systemImage: paneState.kind.systemImage)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(StudioPalette.primaryText)
@@ -740,10 +791,14 @@ private struct PaneShell: View {
                     .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
                 }
                 .buttonStyle(.plain)
-            } else {
+            } else if !isCompact {
                 PaneHeaderIconButton(systemImage: "arrow.up.left.and.arrow.down.right", title: "Maximize pane") {
                     session.toggleMaximizePane(side)
                 }
+            }
+            if showsDatabaseName, session.migrationSet != nil {
+                MigrationVersionControl(session: session)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
             if showsDatabaseName {
                 Text(session.databaseDisplayName)
@@ -912,13 +967,16 @@ private struct PaneHeaderIconButton: View {
 
 private struct WorkspaceDockView: View {
     @Bindable var session: AppSession
+    /// What is actually on screen. In the narrow single-pane layout both panes
+    /// still hold content, but only one of them is showing.
+    let visibleKinds: Set<PaneContentKind>
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(PaneContentKind.allCases) { kind in
+            ForEach(PaneContentKind.allCases.filter { $0 != .query || session.canShowQueryPane }) { kind in
                 WorkspaceDockPill(
                     kind: kind,
-                    isVisible: session.side(containing: kind) != nil
+                    isVisible: visibleKinds.contains(kind)
                 )
                 .onTapGesture {
                     session.setPaneContent(kind, for: session.activePaneSide)
@@ -1198,23 +1256,34 @@ private struct EmptyDatabaseView: View {
                     Text("Open a database")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(StudioPalette.primaryText)
-                    Text("Browse and edit SQLite databases, or explore PostgreSQL in read-only mode.")
+                    Text("Browse and edit SQLite databases, explore PostgreSQL in read-only mode, or read a data model straight from a project's migration files.")
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                 }
 
                 VStack(spacing: 10) {
-                    Button {
-                        openDocument()
-                    } label: {
-                        Label("Choose Database File", systemImage: "folder")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StudioPalette.accent)
-                    .controlSize(.large)
+                    HStack(spacing: 10) {
+                        Button {
+                            openDocument()
+                        } label: {
+                            Label("Choose Database File", systemImage: "folder")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(StudioPalette.accent)
+                        .controlSize(.large)
 
-                    Text(DatabaseDocument.supportedFormatsDescription)
+                        Button {
+                            session.presentOpenProjectFolderPanel()
+                        } label: {
+                            Label("Search Project Folder", systemImage: "magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
+
+                    Text(DatabaseDocument.supportedFormatsDescription
+                         + "\nMigrations: a folder of versioned .sql files")
                         .font(.caption)
                         .foregroundStyle(StudioPalette.secondaryText)
                         .multilineTextAlignment(.center)
@@ -1425,20 +1494,29 @@ private struct CreateTableSheetView: View {
                     .tint(StudioPalette.accent)
                 }
 
-                ForEach($draft.columns) { $column in
-                    HStack(spacing: 8) {
-                        TextField("Name", text: $column.name)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("Type", text: $column.type)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 110)
-                        Toggle("PK", isOn: $column.isPrimaryKey)
-                        Toggle("NN", isOn: $column.isNotNull)
-                        TextField("Default SQL", text: $column.defaultValueSQL)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 130)
+                // Columns are unbounded, so they scroll rather than pushing the
+                // SQL preview and the action buttons past the bottom of a short
+                // window.
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach($draft.columns) { $column in
+                            HStack(spacing: 8) {
+                                TextField("Name", text: $column.name)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Type", text: $column.type)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 110)
+                                Toggle("PK", isOn: $column.isPrimaryKey)
+                                Toggle("NN", isOn: $column.isNotNull)
+                                TextField("Default SQL", text: $column.defaultValueSQL)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 130)
+                            }
+                        }
                     }
+                    .padding(.trailing, 2)
                 }
+                .frame(minHeight: 96, maxHeight: 200)
             }
 
             TextEditor(text: .constant(session.createTableSQLPreview(for: draft)))

@@ -30,6 +30,11 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
+            Button("Open Project Folder…") {
+                session.presentOpenProjectFolderPanel()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+
             Button("Compare Database Schemas…") { session.presentSchemaComparison() }
 
             Menu("Open Recent") {
@@ -53,6 +58,16 @@ public struct StudioCommands: Commands {
             .keyboardShortcut("w")
         }
 
+        // `.sidebar` places this in the View menu, which is where macOS readers look for
+        // switches that change how a document is drawn rather than what it contains. It
+        // sits above AppKit's own window-tabbing items rather than replacing them.
+        CommandGroup(after: .sidebar) {
+            Menu("Graph Visuals") {
+                GraphVisualToggles(session: session)
+            }
+            Divider()
+        }
+
         CommandMenu("Database") {
             Button("Refresh Schema") {
                 session.refreshSchema()
@@ -65,6 +80,13 @@ public struct StudioCommands: Commands {
             }
             .keyboardShortcut("t")
             .disabled(session.tables.isEmpty)
+
+            if let set = session.migrationSet, set.files.count > 1 {
+                Menu("Replay Migrations Through") {
+                    MigrationVersionMenuContent(set: set) { session.selectMigrationVersion($0) }
+                }
+                .disabled(session.isRefreshing)
+            }
 
             if session.databaseCapabilities.canCreateTable {
                 Button("Create Table…") { session.showCreateTable() }

@@ -4,6 +4,22 @@ import Testing
 
 @MainActor
 struct WorkspaceRestorationTests {
+    private func makeIsolatedDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "SQLiteGraphStudioTests.workspace-restoration.\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    private func makeMigrationDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workspace-migrations-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "create table customers (id bigint primary key, name text not null);"
+            .write(to: directory.appendingPathComponent("0001_create_customers.sql"), atomically: true, encoding: .utf8)
+        try "alter table customers add column email text;"
+            .write(to: directory.appendingPathComponent("0002_add_email.sql"), atomically: true, encoding: .utf8)
+        return directory
+    }
+
     @Test
     func restorationSnapshotReopensTabsAndBrowsingStateWithoutReplayingQueries() async throws {
         let url = try TestSupport.createFixture(named: "workspace-restore")
@@ -83,6 +99,74 @@ struct WorkspaceRestorationTests {
         #expect(restoredDraft.selectedOutput == .plan)
         #expect(!restoredDraft.isRunning)
         #expect(restoredDraft.result == .empty)
+
+        await restoredController.closeAllAndWait()
+        await originalController.closeAllAndWait()
+    }
+
+    @Test
+    func migrationFolderRestorationReopensAtTheSavedVersion() async throws {
+        let directory = try makeMigrationDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let originalSession = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
+        let originalController = WorkspaceTabController(initialSession: originalSession)
+        await originalSession.openMigrations(at: directory, version: "0001")
+
+        let snapshot = originalController.makeRestorationSnapshot()
+        #expect(snapshot.tabs.first?.sourceDocumentPath == directory.standardizedFileURL.path)
+        #expect(snapshot.tabs.first?.session.selectedMigrationVersion == "0001")
+
+        let restoredController = WorkspaceTabController(
+            initialSession: AppSession(databaseService: DatabaseService(), userDefaults: defaults),
+            sessionFactory: { AppSession(databaseService: DatabaseService(), userDefaults: defaults) }
+        )
+        await restoredController.restoreWorkspace(from: snapshot)
+
+        let restoredSession = try #require(restoredController.activeTab?.session)
+        #expect(restoredSession.databaseTarget == .migrations(directory.standardizedFileURL))
+        #expect(restoredSession.selectedMigrationVersion == "0001")
+        #expect(restoredSession.migrationReplaySummary?.contains("1 of 2 migrations") == true)
+        let customers = try #require(restoredSession.openTable(named: "public.customers", autoLoad: false))
+        #expect(customers.descriptor.columns.map(\.name) == ["id", "name"])
+
+        await restoredController.closeAllAndWait()
+        await originalController.closeAllAndWait()
+    }
+
+    @Test
+    func singleSQLSourceIsRestoredAsASchemaModel() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workspace-schema-script-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("schema.sql")
+        try "create table jobs (id bigint primary key, title text not null);"
+            .write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let originalSession = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
+        let originalController = WorkspaceTabController(initialSession: originalSession)
+        await originalSession.openDocument(url: sourceURL)
+
+        let snapshot = originalController.makeRestorationSnapshot()
+        #expect(snapshot.tabs.first?.sourceDocumentPath == sourceURL.standardizedFileURL.path)
+        #expect(snapshot.tabs.first?.session.selectedMigrationVersion == "schema")
+
+        let restoredController = WorkspaceTabController(
+            initialSession: AppSession(databaseService: DatabaseService(), userDefaults: defaults),
+            sessionFactory: { AppSession(databaseService: DatabaseService(), userDefaults: defaults) }
+        )
+        await restoredController.restoreWorkspace(from: snapshot)
+
+        let restoredSession = try #require(restoredController.activeTab?.session)
+        #expect(restoredSession.databaseTarget == .migrations(sourceURL.standardizedFileURL))
+        #expect(restoredSession.selectedMigrationVersion == "schema")
+        let jobs = try #require(restoredSession.openTable(named: "public.jobs", autoLoad: false))
+        #expect(jobs.descriptor.columns.map(\.name) == ["id", "title"])
 
         await restoredController.closeAllAndWait()
         await originalController.closeAllAndWait()

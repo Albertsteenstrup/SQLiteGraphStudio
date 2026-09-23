@@ -14,10 +14,14 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 
 ## Features
 
-- Interactive schema graph showing foreign-key relationships and cardinality
+- Pick a project folder and let Graph Studio find what it can open — databases, PostgreSQL backups and connection documents, and folders of SQL migrations
+- Read a data model straight from a project's migration files, with no database or server involved, at any point in its history
+- Interactive schema graph showing foreign-key relationships and cardinality, with faint signals drifting along each relation in the direction its foreign key points
+- **View ▸ Graph Visuals** switches any graph decoration off and remembers the choice — relation pulses, zoomed-out relations, relationship labels, group colours and titles, zoomed-out group links, card shadows, hover previews and the minimap
 - Inline row editing with right-click row actions (add, clone, delete)
 - Typed equality, comparison, range and NULL filters, explicit text search, key-based next pages, and on-demand exact counts
 - SQL query runner with Stop, timeouts, bounded fetching, duplicate-column-safe results and explain plan
+- Narrow-window layout — the workspace fits a Split View or Stage Manager tile, and once there is no longer room for two panes it shows one and keeps the schema graph on screen; the dock stays available to switch which pane that is
 - Explicit loaded-row and all-matching exports, with snapshot consistency, progress, cancellation and atomic file publication
 - User-selected PostgreSQL connection documents with schema-qualified catalog browsing, paging, search, filtering, sorting, exports, query history, and non-executing EXPLAIN
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
@@ -92,9 +96,44 @@ bound to its baseline fingerprint; refresh that baseline explicitly when the
 source schema changes. A preview neither proves migration validity nor satisfies
 the real schema-review hook.
 
+## Opening a project folder
+
+Choose **Open Project Folder…** from the File menu (⇧⌘O), or **Search Project Folder** on the welcome screen, and pick a repository. Graph Studio walks it and its subfolders and reports everything it can open: SQLite databases, PostgreSQL custom-format backups, `.postgres`/`.pgstudio` connection documents, folders of versioned SQL migrations, and standalone `schema.sql`/`structure.sql` scripts. A progress panel shows folders and files searched while it runs, and Cancel stops it at any point.
+
+Finding one match opens it. Finding several shows a picker grouped by kind, with each match's location inside the project and a short description (`407 migrations · PostgreSQL · 0001 → 0485`, `6.3 MB`, `db.example.test:5432/catalog`).
+
+Candidate files are checked by content, not by name: a `.db` file without the SQLite header, a `.dump` that is not a `PGDMP` archive, and a `.postgres` file that is not a connection document are all left out.
+
+### What the search skips
+
+Two rules apply together, because neither is sufficient alone:
+
+- **A built-in list of dependency, environment and build directories** — `node_modules`, `.venv`/`venv`, `vendor`, `site-packages`, `__pycache__`, `.tox`, `build`, `dist`, `target`, `.build`, `DerivedData`, `Pods`, `.gradle`, `.next`, `.turbo`, `.terraform`, caches and coverage output, and every `.egg-info`. Hidden directories and anything containing a `pyvenv.cfg` are skipped too, so a virtual environment is recognised whatever it is called. This list is short and stable because it only needs to name conventions, not packages.
+- **The project's own `.gitignore` files** — comments, negation (`!`), anchoring, directory-only patterns, `*`, `?`, `**` and character classes are all honoured, and a nested `.gitignore` overrides the one above it. This covers whatever is specific to the project without anyone maintaining a list.
+
+Symbolic links are never followed, so a link cannot lead the search out of the chosen folder or into a cycle. Depth and total entries are bounded; reaching a limit is reported rather than hidden. Cancel stops the walk itself, not just the panel. Searching a repository the size of a medium backend takes well under a second, and a monorepo with a `.gitignore` in every package is no slower — ignore rules apply to the branch they belong to rather than accumulating across the tree. Patterns are matched by a linear scanner, so a wildcard-heavy `.gitignore` cannot stall the search.
+
+Handing the app a folder — dropping it on the icon, passing it as a launch argument, or choosing it from **Open Recent** — searches it the same way, unless the folder is itself a set of versioned SQL migrations, which opens directly.
+
+## Migration data models
+
+A folder of versioned SQL files opens as a data model with no database, server or credentials involved. Graph Studio replays the DDL in order and shows the schema those migrations produce: tables, columns and types, primary keys, foreign-key edges with cardinality, unique and check constraints, indexes, triggers, and views.
+
+Files are recognised by a leading version — `0001_init.sql`, `001-init.sql`, `20240115093000_init.sql`, Flyway's `V1_2__init.sql`, and golang-migrate's `000001_init.up.sql`. Rollback files (`.down.sql`, `_rollback.sql`, `.undo.sql`) are excluded so a set only ever moves forward. Versions sort by numeric value, so `2` comes before `10`. PostgreSQL and SQLite are both supported; the dialect is inferred from the folder path and the text of the files, and decides schema qualification and identifier case folding.
+
+**The newest migration is the default.** The picker offers any other version before opening, and once open, a control in the pane header steps through the history — arrows for one migration at a time, a menu for any point in it, and **Database → Replay Migrations Through** for the same choice from the menu bar. Graph layout, notes, and groups belong to the migration set, not to one revision of it, so they survive stepping between versions.
+
+`COMMENT ON TABLE` and `COMMENT ON COLUMN` become hover descriptions, in the same place the `schema-descriptions` skill writes them. A hand-written sidecar always wins over a comment from the SQL.
+
+Opening a migration folder directly replays every versioned `.sql` file in it. That is deliberately more inclusive than the search, which also applies the project's ignore rules — so a migration folder that is gitignored never appears in a search but still opens when chosen by hand.
+
+This model is **structure only**: there are no rows to browse, the SQL runner is unavailable, and every editing action is refused with an explanation. Notes, cluster hints, and schema-exploration skills still work through the `<folder>.studio.json` sidecar next to the migration folder.
+
+A migration set is replayed, not executed, so what a parser cannot interpret is reported rather than silently dropped. Statements that build DDL dynamically — a PL/pgSQL loop over `pg_constraint` that runs `execute format(...)`, or `CREATE TABLE … AS SELECT` — appear in the metadata diagnostics panel naming the file and the statement. Idempotency guards around static DDL (`do $$ begin if not exists (…) then alter table … end if; end $$`) are replayed normally. Temporary tables a migration creates for its own use are not part of the model. On a 407-file PostgreSQL history the replay reads 5,700 statements in under three seconds and reports about a dozen statements it could not interpret.
+
 ## PostgreSQL connections
 
-Choose **Open Database File…** from the File menu (⌘O), or **Choose Database File** on the welcome screen. One picker accepts SQLite files (`.db`, `.sqlite`, `.sqlite-db`, `.sqlite3`, `.sqlitedb`), PostgreSQL custom-format backups (`.dump`, `.backup`), and connection documents (`.postgres`, `.pgstudio`); the app selects the appropriate backend automatically. All supported extensions appear below the welcome button and in the picker. These files also work through Finder, launch arguments and Open Recent. SQL scripts, directory archives and other database engines are not supported by this picker.
+Choose **Open Database File…** from the File menu (⌘O), or **Choose Database File** on the welcome screen. One picker accepts SQLite files (`.db`, `.sqlite`, `.sqlite-db`, `.sqlite3`, `.sqlitedb`), PostgreSQL custom-format backups (`.dump`, `.backup`), and connection documents (`.postgres`, `.pgstudio`); the app selects the appropriate backend automatically. All supported extensions appear below the welcome button and in the picker. These files also work through Finder, launch arguments and Open Recent. SQL scripts, directory archives and other database engines are not supported by this picker; a folder of SQL migrations opens through [Open Project Folder…](#opening-a-project-folder) instead.
 
 A backup opens without connection details or a login. Graph Studio copies it into a private temporary workspace, restores it using local PostgreSQL, and opens the schema, rows, record explorer and SQL editor in read-only mode. Progress and Cancel are shown during preparation. The source backup is never modified. Closing the workspace or quitting stops its server and removes the temporary copy; reopening restores a fresh copy. A private Unix socket is used, with no TCP listener. Restore tools and the server run under a filesystem/network sandbox. Restoration is the only write phase and only affects the private copy; browsing uses a separate reader with existing read-only query restrictions.
 
@@ -138,10 +177,10 @@ Both database types use the same graph engine. For more than 128 tables, it divi
 - Choose a group to move the camera to it while keeping other groups and cross-group connections visible. Expand a table to focus it and arrange its direct neighbours without overlap; the back button returns to the previous view. Groups with more than 48 tables and tables with more than 48 neighbours have previous/next controls.
 - **Graph options (…) → Node size** offers **Uniform**, **Fields**, **Rows**, and **Relations**. Count differences become stronger as you zoom out; detailed cards keep their usual size. A compressed scale uses the full catalog, so filtering does not renormalize the remaining tables. Row sizing uses available counts (catalog estimates until counted); unknown counts have neutral-sized, dashed markers. The choice is remembered across restarts.
 - Hovering a table gently enlarges it and its directly connected tables at every zoom level. In the zoomed-out overview, their names, field counts, and row counts appear inside the existing nodes, using the same header style as detailed cards. Their links are highlighted across groups. Hover never adds floating callouts or moves the layout; text scales with the nodes.
-- The compact graph toolbar keeps search and **Filter** visible. The **Graph options (…)** menu contains display toggles, relayout, and table counts; active filters never add another toolbar row.
+- The compact graph toolbar keeps search and **Filter** visible. The **Graph options (…)** menu contains **Graph visuals** (the same switches as **View ▸ Graph Visuals**), node size, relayout, and table counts; active filters never add another toolbar row.
 - **Filter** limits the graph by inclusive minimum/maximum field, row, and relation counts. Empty bounds are unlimited. Relations count incoming and outgoing foreign-key constraints in the full schema; composite and self-referencing keys each count once, and zero finds unconnected tables. Row filters count matching tables and views afresh, including empty tables; Reset restores the complete graph. Unknown row counts are shown as **— rows** until counted.
 - PostgreSQL labels omit the default `public.` schema prefix. Other schema names remain visible, and all queries, relationship IDs and sidecar references retain the exact qualified names.
-- Zoomed-out overviews draw inexpensive table marks and group relationships. Zoom in or select a table for details. Detailed card views are capped at 160; remaining visible tables stay represented by marks, including when a large selection is active.
+- Zoomed-out overviews draw inexpensive table marks, group relationships, and a bounded even-stride sample of up to 1200 individual relations at reduced contrast — enough to keep relation pulses readable without drawing every edge, since nothing is off screen at that zoom for culling to discard. Below that many relations, all of them are drawn. Switch it off with **Relations While Zoomed Out**. Zoom in or select a table for details. Detailed card views are capped at 160; remaining visible tables stay represented by marks, including when a large selection is active.
 - **Graph options (…) → Expand all tables** uses the same size-aware layout and refits large views. Return to all groups to recover the overview; ordinary panning and hovering do not rerun layout.
 
 Canvas interaction reuses relationship indexes, group connections and table sizes while the camera moves. Only visible detailed cards prepare column rows; overview marks use a spatial hit index. Camera updates keep the minimap moving during continuous gestures, and the active drag stays mounted at the viewport edge. The minimap batches its table and relationship drawing. These limits apply equally to PostgreSQL and SQLite.

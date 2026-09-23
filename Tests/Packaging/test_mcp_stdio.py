@@ -42,7 +42,7 @@ class MCPInteractiveStdioTests(unittest.TestCase):
             }) + "\n")
             process.stdin.flush()
             discovered = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-            self.assertEqual(len(discovered["result"]["tools"]), 61)
+            self.assertEqual(len(discovered["result"]["tools"]), 62)
         finally:
             process.stdin.close()
             try:

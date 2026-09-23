@@ -247,7 +247,10 @@ public final class WorkspaceTabController {
         for (tab, savedTab) in zip(restoredTabs, snapshot.tabs.prefix(restoredTabs.count)) {
             if let path = savedTab.sourceDocumentPath, !path.isEmpty {
                 let sourceURL = URL(fileURLWithPath: path).standardizedFileURL
-                guard DatabaseDocument.supportedExtensions.contains(sourceURL.pathExtension.lowercased()) else {
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
+                let isMigrationSource = isDirectory.boolValue || sourceURL.pathExtension.lowercased() == "sql"
+                guard DatabaseDocument.supportedExtensions.contains(sourceURL.pathExtension.lowercased()) || isMigrationSource else {
                     tab.session.presentedError = SQLiteUserError(
                         kind: .invalidInput,
                         message: "This saved tab points to an unsupported document.",
@@ -256,7 +259,7 @@ public final class WorkspaceTabController {
                     await restore(savedTab.session, in: tab.session)
                     continue
                 }
-                guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                guard exists else {
                     tab.session.presentedError = SQLiteUserError(
                         kind: .notFound,
                         message: "The saved source \(sourceURL.lastPathComponent) is unavailable.",
@@ -265,7 +268,11 @@ public final class WorkspaceTabController {
                     await restore(savedTab.session, in: tab.session)
                     continue
                 }
-                await tab.session.openDocument(url: sourceURL)
+                if isMigrationSource {
+                    await tab.session.openMigrations(at: sourceURL, version: savedTab.session.selectedMigrationVersion)
+                } else {
+                    await tab.session.openDocument(url: sourceURL)
+                }
             }
             await restore(savedTab.session, in: tab.session)
         }
@@ -340,8 +347,9 @@ public final class WorkspaceTabController {
     }
 
     private func restorationDocumentPath(for session: AppSession) -> String? {
-        guard let url = (session.historicalExplanationURL ?? session.databaseURL)?.standardizedFileURL,
-              DatabaseDocument.supportedExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+        guard let url = (session.historicalExplanationURL ?? session.databaseTarget?.fileURL ?? session.databaseURL)?.standardizedFileURL else { return nil }
+        if case .migrations? = session.databaseTarget { return url.path }
+        guard DatabaseDocument.supportedExtensions.contains(url.pathExtension.lowercased()) else { return nil }
         return url.path
     }
 
@@ -394,7 +402,8 @@ public final class WorkspaceTabController {
             openTables: openTables,
             activeTableName: session.activeTab?.descriptor.name,
             unsavedQueryDrafts: queryDrafts,
-            activeQueryID: session.queryWorkspace.activeQueryID
+            activeQueryID: session.queryWorkspace.activeQueryID,
+            selectedMigrationVersion: session.selectedMigrationVersion
         )
     }
 
