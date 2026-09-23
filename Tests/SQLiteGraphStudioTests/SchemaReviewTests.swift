@@ -157,9 +157,24 @@ import Testing
         try JSONSerialization.data(withJSONObject: legacy).write(to: url)
         #expect(try SchemaReviewDocument.load(url).author == nil)
 
-        var forged = SchemaReviewDocument(title: "t", baseRef: "a", headRef: "b", before: empty, after: empty, author: author)
-        forged.author?.session = "line\nbreak"
-        #expect(throws: SchemaReviewError.self) { try forged.validate() }
+        var named = SchemaReviewDocument(title: "t", baseRef: "a", headRef: "b", before: empty, after: empty, author: author)
+        // Emoji are built with joiners, which are format characters but harmless.
+        named.author?.session = "👩‍💻 pairing"
+        try named.validate()
+        for unsafe in ["line\nbreak", "tab\there", "\u{202E}desrever", "a\u{2028}b"] {
+            named.author?.session = unsafe
+            #expect(throws: SchemaReviewError.self) { try named.validate() }
+        }
+    }
+
+    @Test func reviewCommandAuthorFlagsNeedATool() throws {
+        #expect(try SchemaReviewCommand.author([:]) == nil)
+        let author = try #require(try SchemaReviewCommand.author(["--agent": ["codex"], "--session": ["Migration check"]]))
+        #expect(author.summary == "Codex · Migration check")
+        // The last value wins, as for every other repeated option.
+        #expect(try SchemaReviewCommand.author(["--agent": ["claude", "opencode"]])?.agent == .opencode)
+        #expect(throws: SchemaReviewError.self) { try SchemaReviewCommand.author(["--session": ["orphan"]]) }
+        #expect(throws: SchemaReviewError.self) { try SchemaReviewCommand.author(["--agent": ["  "]]) }
     }
 
     @Test func missingSourceIsNotCreatedByCapture() async throws {

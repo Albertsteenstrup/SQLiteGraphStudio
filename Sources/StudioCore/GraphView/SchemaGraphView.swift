@@ -406,9 +406,7 @@ public struct SchemaGraphView: View {
                             // A review is read in place: choosing a table narrows the view
                             // to its changes and fills the details panel. Pulling its
                             // neighbours into a ring would rearrange the layout being compared.
-                            clearGraphFocusSession()
-                            selectedStoryID = nil
-                            session.selectGraphNode(card.tableID)
+                            chooseReviewTable(card.tableID)
                         } else {
                             revealTable(card.tableID, in: size)
                         }
@@ -570,6 +568,10 @@ public struct SchemaGraphView: View {
                     keepsTextReadableWhenZoomed: focusPlan != nil || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
                     schemaChange: session.schemaReviewChanges[node.id],
                     selectNode: {
+                        if session.schemaReview != nil {
+                            chooseReviewTable(node.id)
+                            return
+                        }
                         clearGraphFocusSession()
                         selectedStoryID = nil
                         withAnimation(.snappy(duration: 0.16)) {
@@ -827,6 +829,20 @@ public struct SchemaGraphView: View {
         openExpandedNode(nodeID, in: size)
     }
 
+    /// Choosing a table in a review isolates its changes; choosing it again returns to
+    /// every change, the same as in the review's table list.
+    private func chooseReviewTable(_ nodeID: String) {
+        clearGraphFocusSession()
+        selectedStoryID = nil
+        withAnimation(.snappy(duration: 0.16)) {
+            if session.selectedGraphNodeIDs == [nodeID] {
+                session.clearGraphSelection()
+            } else {
+                session.selectGraphNode(nodeID)
+            }
+        }
+    }
+
     /// Brings a table chosen outside the canvas — from a review's table list — into view,
     /// together with the far ends of its changed relations, moving the camera as little as
     /// possible. The layout itself never moves: the reader is comparing it.
@@ -875,15 +891,15 @@ public struct SchemaGraphView: View {
             let connected = connectedIDs.contains(id)
             let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
             if let reviewLens {
-                drawReviewMark(in: &context, id: id, mark: mark, path: path, color: color,
+                drawReviewMark(in: &context, id: id, path: path, color: color,
                                lens: reviewLens, isPointed: isHovered || connected)
-                continue
-            }
-            let emphasis = isHovered || connected ? 0.78 : 0.62
-            let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
-            context.fill(path, with: .color(color.opacity(isUnknown ? emphasis * 0.45 : emphasis)))
-            if isUnknown {
-                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+            } else {
+                let emphasis = isHovered || connected ? 0.78 : 0.62
+                let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
+                context.fill(path, with: .color(color.opacity(isUnknown ? emphasis * 0.45 : emphasis)))
+                if isUnknown {
+                    context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                }
             }
             if session.selectedGraphNodeIDs.contains(id) {
                 context.stroke(path, with: .color(StudioPalette.primaryText), lineWidth: 1.5)
@@ -896,7 +912,7 @@ public struct SchemaGraphView: View {
     ///
     /// A review never uses the dashed "size unknown" outline: it has no row data, so the
     /// row metric would dash every table, and dashes already mean "removed" here.
-    private func drawReviewMark(in context: inout GraphicsContext, id: String, mark: CGRect, path: Path,
+    private func drawReviewMark(in context: inout GraphicsContext, id: String, path: Path,
                                 color: Color, lens: SchemaReviewLens, isPointed: Bool) {
         let kind = lens.kind(forTable: id)
         let emphasis = lens.emphasis(forTable: id)
@@ -915,12 +931,6 @@ public struct SchemaGraphView: View {
             context.stroke(path, with: .color(kind.tint.opacity(0.4)), style: StrokeStyle(lineWidth: 1.25, dash: dash))
         case .context:
             break
-        }
-        if session.selectedGraphNodeIDs.contains(id) {
-            // Outside the change outline, so the chosen table keeps its change colour.
-            let ring = mark.insetBy(dx: -3.5, dy: -3.5)
-            context.stroke(Path(roundedRect: ring, cornerRadius: min(6, ring.height / 2)),
-                           with: .color(StudioPalette.primaryText), lineWidth: 1.5)
         }
     }
 

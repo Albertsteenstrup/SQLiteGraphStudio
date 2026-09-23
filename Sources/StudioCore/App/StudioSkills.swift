@@ -110,8 +110,9 @@ public enum StudioSkills {
     When your instructions allow you to name yourself, pass `--agent` (`claude`,
     `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
     current chat or session's human-readable name) so the preview header shows where
-    it came from. Never invent either. They sit outside the plan, so they never change
-    its fingerprint.
+    it came from. Never invent either, and leave the session out when its name should
+    not travel with the file. They sit outside the plan, so they never change its
+    fingerprint.
 
     `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
     to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than
@@ -249,8 +250,9 @@ public enum StudioSkills {
     `--session` takes the human-readable name of the current chat or session. The
     review header then leads with the tool's mark, for example `Claude · Table diff
     visualization clarity`. Omit `--session` when you don't know the session's name,
-    and omit both when you may not disclose them; never invent either. This records
-    where the review came from, not an approval.
+    and omit both when you may not disclose them; never invent either. The session
+    name travels with the review file, so leave it out when it holds anything that
+    should not be shared. This records where the review came from, not an approval.
 
     Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
     custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection

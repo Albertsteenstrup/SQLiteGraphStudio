@@ -50,8 +50,9 @@ Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`
 `--session` takes the human-readable name of the current chat or session. The
 review header then leads with the tool's mark, for example `Claude · Table diff
 visualization clarity`. Omit `--session` when you don't know the session's name,
-and omit both when you may not disclose them; never invent either. This records
-where the review came from, not an approval.
+and omit both when you may not disclose them; never invent either. The session
+name travels with the review file, so leave it out when it holds anything that
+should not be shared. This records where the review came from, not an approval.
 
 Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
 custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection

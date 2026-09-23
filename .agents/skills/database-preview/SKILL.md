@@ -43,8 +43,9 @@ open -n -a "$bundle" changes.sgpreview
 When your instructions allow you to name yourself, pass `--agent` (`claude`,
 `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
 current chat or session's human-readable name) so the preview header shows where
-it came from. Never invent either. They sit outside the plan, so they never change
-its fingerprint.
+it came from. Never invent either, and leave the session out when its name should
+not travel with the file. They sit outside the plan, so they never change its
+fingerprint.
 
 `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
 to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than

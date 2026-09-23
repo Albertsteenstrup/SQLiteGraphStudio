@@ -185,12 +185,18 @@ public struct SchemaReviewDocument: Codable, Sendable {
         /// `Claude · Table diff visualization clarity`
         public var summary: String { ([toolName] + [session].compactMap { $0 }).joined(separator: " · ") }
 
+        /// Line breaks and text-direction overrides could make a header misrepresent its
+        /// author. Other format characters stay allowed: the joiners inside emoji are one.
+        private static let disallowedScalars = CharacterSet(charactersIn: "\u{2028}\u{2029}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}")
+
         func validate() throws {
             func isPlainLine(_ value: String, limit: Int) -> Bool {
-                !value.isEmpty && value.count <= limit && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+                !value.isEmpty && value.count <= limit && !value.unicodeScalars.contains {
+                    $0.properties.generalCategory == .control || Self.disallowedScalars.contains($0)
+                }
             }
             guard isPlainLine(tool, limit: 64), session.map({ isPlainLine($0, limit: 200) }) ?? true else {
-                throw SchemaReviewError.invalid("The author must be a single-line tool name (64 characters) and session name (200 characters).")
+                throw SchemaReviewError.invalid("The author needs one line each: a tool name of up to 64 characters and a session name of up to 200, without control or text-direction characters.")
             }
         }
     }

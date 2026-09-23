@@ -191,7 +191,7 @@ public enum SchemaReviewCommand {
             return 2
         }
     }
-    private static func author(_ options: [String: [String]]) throws -> SchemaReviewDocument.Author? {
+    static func author(_ options: [String: [String]]) throws -> SchemaReviewDocument.Author? {
         guard let tool = options["--agent"]?.last else {
             guard options["--session"] == nil else { throw SchemaReviewError.invalid("--session names the agent's session; pass --agent with it.") }
             return nil

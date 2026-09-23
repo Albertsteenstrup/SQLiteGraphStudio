@@ -56,16 +56,34 @@ struct SchemaReviewWorkspaceView: View {
     /// for the code that reads them; edits follow, then everything unchanged.
     private static let kindOrder: [SchemaChangeKind] = [.removed, .added, .modified, .unchanged]
 
-    private var orderedChanges: [SchemaTableChange] {
-        session.schemaReviewChanges.values.sorted { lhs, rhs in
-            let lhsRank = Self.kindOrder.firstIndex(of: lhs.kind) ?? 0, rhsRank = Self.kindOrder.firstIndex(of: rhs.kind) ?? 0
-            return lhsRank == rhsRank ? lhs.id < rhs.id : lhsRank < rhsRank
+    /// The review's tables in reading order, built once per update.
+    ///
+    /// `SchemaTableChange.kind` compares whole before/after tables, so it is computed once
+    /// per table here rather than inside a sort comparator or in each part of the panel;
+    /// a catalog of thousands of tables would otherwise stall every step and keystroke.
+    private struct TableOrder {
+        let all: [SchemaTableChange]
+        let changed: [SchemaTableChange]
+        let kinds: [String: SchemaChangeKind]
+
+        init(_ changes: [String: SchemaTableChange]) {
+            let kinds = changes.mapValues(\.kind)
+            let rank = { (id: String) in kindOrder.firstIndex(of: kinds[id] ?? .unchanged) ?? 0 }
+            all = changes.values.sorted { lhs, rhs in
+                let lhsRank = rank(lhs.id), rhsRank = rank(rhs.id)
+                return lhsRank == rhsRank ? lhs.id < rhs.id : lhsRank < rhsRank
+            }
+            changed = all.filter { kinds[$0.id] != .unchanged }
+            self.kinds = kinds
         }
+
+        func kind(_ change: SchemaTableChange) -> SchemaChangeKind { kinds[change.id] ?? .unchanged }
     }
-    private var changedTables: [SchemaTableChange] { orderedChanges.filter { $0.kind != .unchanged } }
+
     private var selected: SchemaTableChange? { session.selectedGraphNodeID.flatMap { session.schemaReviewChanges[$0] } }
 
     var body: some View {
+        let order = TableOrder(session.schemaReviewChanges)
         VStack(spacing: 10) {
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -88,7 +106,7 @@ struct SchemaReviewWorkspaceView: View {
                     Text("\(review.baseRef) → \(review.headRef)").font(.caption.monospaced()).lineLimit(1).textSelection(.enabled)
                 }
                 Spacer()
-                changeSummary.font(.callout)
+                changeSummary(order).font(.callout)
                 Label("Added / changed", systemImage: "plus.square").foregroundStyle(.blue)
                 Label("Removed", systemImage: "minus.square").foregroundStyle(.red)
             }
@@ -105,13 +123,13 @@ struct SchemaReviewWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack { Text("Tables").font(.headline); Spacer(); Toggle("Changes only", isOn: $onlyChanges).toggleStyle(.checkbox) }
                     TextField("Find a table", text: $search).textFieldStyle(.roundedBorder)
-                    tableList.frame(minHeight: 100, idealHeight: 170, maxHeight: 220)
+                    tableList(order).frame(minHeight: 100, idealHeight: 170, maxHeight: 220)
                     Divider()
                     if let selected {
-                        focusBar(for: selected)
+                        focusBar(for: selected, changed: order.changed)
                         SchemaReviewTableDetail(change: selected, relations: review.relationChanges, isPreview: review.proposal != nil)
                     } else {
-                        allChangesSummary
+                        allChangesSummary(order.changed)
                     }
                 }
                 .padding(16)
@@ -145,8 +163,8 @@ struct SchemaReviewWorkspaceView: View {
     }
 
     @ViewBuilder
-    private var changeSummary: some View {
-        let counts = Dictionary(grouping: changedTables, by: \.kind).mapValues(\.count)
+    private func changeSummary(_ order: TableOrder) -> some View {
+        let counts = Dictionary(grouping: order.changed, by: order.kind).mapValues(\.count)
         if counts.isEmpty {
             Text("No changed tables")
         } else {
@@ -159,20 +177,19 @@ struct SchemaReviewWorkspaceView: View {
         }
     }
 
-    private var tableList: some View {
-        let visible = orderedChanges.filter { (!onlyChanges || $0.kind != .unchanged) && (search.isEmpty || $0.id.localizedCaseInsensitiveContains(search)) }
-        let sections = Self.kindOrder.compactMap { kind -> (kind: SchemaChangeKind, rows: [SchemaTableChange])? in
-            let rows = visible.filter { $0.kind == kind }
-            return rows.isEmpty ? nil : (kind, rows)
-        }
+    private func tableList(_ order: TableOrder) -> some View {
+        let visible = (onlyChanges ? order.changed : order.all).filter { search.isEmpty || $0.id.localizedCaseInsensitiveContains(search) }
+        let sections = Dictionary(grouping: visible, by: order.kind)
+        let kinds = Self.kindOrder.filter { sections[$0] != nil }
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
-                    ForEach(sections, id: \.kind) { section in
+                    ForEach(kinds, id: \.self) { kind in
+                        let rows = sections[kind] ?? []
                         Section {
-                            ForEach(section.rows) { change in row(for: change) }
+                            ForEach(rows) { change in row(for: change, kind: kind) }
                         } header: {
-                            Text("\(section.kind.label) · \(section.rows.count)")
+                            Text("\(kind.label) · \(rows.count)")
                                 .font(.caption.bold()).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8).padding(.vertical, 3)
@@ -189,7 +206,7 @@ struct SchemaReviewWorkspaceView: View {
         }
     }
 
-    private func row(for change: SchemaTableChange) -> some View {
+    private func row(for change: SchemaTableChange, kind: SchemaChangeKind) -> some View {
         let isSelected = selected?.id == change.id
         return Button {
             // Choosing the table already in focus again returns to every change.
@@ -201,9 +218,9 @@ struct SchemaReviewWorkspaceView: View {
                 SchemaChangeBadge(change: change)
             }
             .padding(8)
-            .background(isSelected ? Color.accentColor.opacity(0.12) : change.kind == .unchanged ? .clear : change.kind.tint.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            .background(isSelected ? Color.accentColor.opacity(0.12) : kind == .unchanged ? .clear : kind.tint.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(change.kind == .removed ? 0.7 : 1)
+            .opacity(kind == .removed ? 0.7 : 1)
         }
         .buttonStyle(.plain)
         .id(change.id)
@@ -211,10 +228,10 @@ struct SchemaReviewWorkspaceView: View {
     }
 
     /// Stepping through changes one at a time, the way a code diff is read hunk by hunk.
-    private func focusBar(for selected: SchemaTableChange) -> some View {
-        let index = changedTables.firstIndex { $0.id == selected.id }
-        let previous = index.flatMap { $0 > 0 ? changedTables[$0 - 1] : nil }
-        let next = index.map { $0 + 1 < changedTables.count ? changedTables[$0 + 1] : nil } ?? changedTables.first
+    private func focusBar(for selected: SchemaTableChange, changed: [SchemaTableChange]) -> some View {
+        let index = changed.firstIndex { $0.id == selected.id }
+        let previous = index.flatMap { $0 > 0 ? changed[$0 - 1] : nil }
+        let next = index.map { $0 + 1 < changed.count ? changed[$0 + 1] : nil } ?? changed.first
         return HStack(spacing: 6) {
             Button { previous.map { session.revealGraphNode($0.id) } } label: { Image(systemName: "chevron.up") }
                 .disabled(previous == nil)
@@ -224,7 +241,7 @@ struct SchemaReviewWorkspaceView: View {
                 .disabled(next == nil)
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .help("Next change (⌥⌘↓)")
-            Text(index.map { "Change \($0 + 1) of \(changedTables.count)" } ?? "Unchanged table")
+            Text(index.map { "Change \($0 + 1) of \(changed.count)" } ?? "Unchanged table")
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             Spacer()
             Button("Show All Changes") { session.clearGraphSelection() }
@@ -233,10 +250,10 @@ struct SchemaReviewWorkspaceView: View {
     }
 
     @ViewBuilder
-    private var allChangesSummary: some View {
-        if let first = changedTables.first {
+    private func allChangesSummary(_ changed: [SchemaTableChange]) -> some View {
+        if let first = changed.first {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Showing all \(changedTables.count) changed \(changedTables.count == 1 ? "table" : "tables")").font(.headline)
+                Text("Showing all \(changed.count) changed \(changed.count == 1 ? "table" : "tables")").font(.headline)
                 Text("Choose a table to see only its changes in the graph and compare its fields here.")
                     .foregroundStyle(.secondary)
                 Button("Review First Change") { session.revealGraphNode(first.id) }
