@@ -53,6 +53,9 @@ public struct SchemaGraphView: View {
     @State private var interactionGeometryCache = GraphInteractionGeometryCache()
     @State private var scenePreparation = GraphScenePreparationCache()
     @State private var isGraphViewVisible = false
+    @State private var pendingAutomationFocusID: UUID?
+    @State private var pendingAutomationFocusTransitionID: UUID?
+    @State private var pendingAutomationViewportTransitionID: UUID?
 
     /// Whether a graph decoration is switched on in View ▸ Graph Visuals.
     private func shows(_ visual: GraphVisual) -> Bool {
@@ -173,6 +176,8 @@ public struct SchemaGraphView: View {
                     emptyState
                     Canvas { _, _ in
                         guard isGraphViewVisible,
+                              session.automationViewportCommand == nil,
+                              pendingAutomationFocusID == nil,
                               session.automationRenderedViewRevision != automationRevision else { return }
                         Task { @MainActor in
                             await Task.yield()
@@ -236,6 +241,11 @@ public struct SchemaGraphView: View {
                     applyAutomationViewport(command, in: newSize)
                     return
                 }
+                if pendingAutomationFocusID != nil, let command = session.automationFocusCommand,
+                   newSize.width > 0, newSize.height > 0 {
+                    applyAutomationFocus(command, in: newSize)
+                    return
+                }
                 if initialViewport.viewportChanged() {
                     scheduleInitialViewportFit()
                     return
@@ -254,12 +264,27 @@ public struct SchemaGraphView: View {
                 layoutRevision &+= 1
                 fitGraph(in: geometry.size)
             }
+            .onChange(of: session.automationVisibleTableIDs) { _, _ in
+                let visible = session.graphVisibleTableIDs
+                if let focusRoot = graphFocusTableRelation?.tableID ?? tableFocusNodeID,
+                   !visible.contains(focusRoot) {
+                    clearGraphFocusSession(animated: false, restoreViewport: false)
+                    layoutRevision &+= 1
+                }
+            }
             .onChange(of: session.automationFocusCommand?.id) { _, _ in
-                guard let command = session.automationFocusCommand else { return }
+                guard let command = session.automationFocusCommand else {
+                    pendingAutomationFocusID = nil
+                    pendingAutomationFocusTransitionID = nil
+                    return
+                }
                 applyAutomationFocus(command, in: geometry.size)
             }
             .onChange(of: session.automationViewportCommand?.id) { _, _ in
-                guard let command = session.automationViewportCommand else { return }
+                guard let command = session.automationViewportCommand else {
+                    pendingAutomationViewportTransitionID = nil
+                    return
+                }
                 applyAutomationViewport(command, in: geometry.size)
             }
             .onChange(of: session.graphRevision) { _, _ in
@@ -314,6 +339,9 @@ public struct SchemaGraphView: View {
             }
             .onDisappear {
                 isGraphViewVisible = false
+                pendingAutomationFocusID = nil
+                pendingAutomationFocusTransitionID = nil
+                pendingAutomationViewportTransitionID = nil
                 initialViewportTask?.cancel()
                 initialViewportTask = nil
                 initialViewport.cancel()
@@ -446,6 +474,7 @@ public struct SchemaGraphView: View {
                     nodeContext.draw(summary, at: .zero, anchor: .topLeading)
                 }
                 if isGraphViewVisible, session.automationViewportCommand == nil,
+                   pendingAutomationFocusID == nil,
                    session.automationRenderedViewRevision != session.automationViewRevision {
                     let revision = session.automationViewRevision
                     Task { @MainActor in
@@ -698,46 +727,70 @@ public struct SchemaGraphView: View {
         initialViewportTask = nil
         initialViewport.cancel()
         viewportPublisher.cancel()
-        if command.fitVisibleTables {
-            fitGraph(in: size)
-        } else {
-            setViewport(GraphViewportTransform(zoom: session.graphZoom, pan: session.graphPan), animated: false)
+        let transitionID = UUID()
+        pendingAutomationViewportTransitionID = transitionID
+        let finish = {
+            guard isGraphViewVisible, pendingAutomationViewportTransitionID == transitionID,
+                  session.automationViewportCommand?.id == command.id else { return }
+            pendingAutomationViewportTransitionID = nil
+            flushViewportSessionSync()
+            session.clearAutomationViewportCommand(id: command.id)
         }
-        flushViewportSessionSync()
+        let animated = command.transitionMilliseconds > 0 && !reduceMotion
+        let transition: Animation = .easeInOut(duration: Double(command.transitionMilliseconds) / 1_000)
+        if command.fitVisibleTables {
+            fitGraph(in: size, animated: animated, animation: transition, completion: finish)
+        } else {
+            setViewport(GraphViewportTransform(zoom: session.graphZoom, pan: session.graphPan),
+                        animated: animated, animation: transition, completion: finish)
+        }
         session.initializedGraphViewportDocument = initialViewportDocumentKey
-        session.clearAutomationViewportCommand(id: command.id)
     }
 
     private func applyAutomationFocus(_ command: AutomationGraphFocusCommand, in size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
         let graph = renderedGraph
         guard graph.contains(nodeID: command.tableID) else { return }
-        session.selectGraphNode(command.tableID)
-        prepareTableNavigation()
-
+        initialViewportTask?.cancel()
+        initialViewportTask = nil
+        initialViewport.cancel()
+        viewportPublisher.cancel()
         let relationWasRequested = command.relationID != nil
             || command.sourceColumn != nil || command.targetColumn != nil
-        guard relationWasRequested else {
-            focusTableConnections(command.tableID)
-            return
-        }
-
         let edge = graph.edges.first { edge in
             if let relationID = command.relationID, edge.id != relationID { return false }
             if let sourceColumn = command.sourceColumn, edge.sourceColumn != sourceColumn { return false }
             if let targetColumn = command.targetColumn, edge.targetColumn != targetColumn { return false }
             return edge.sourceID == command.tableID || edge.targetID == command.tableID
         }
-        guard let edge else { return }
-        let columnName: String
-        if edge.sourceID == command.tableID {
-            columnName = command.sourceColumn ?? edge.sourceColumn
-        } else {
-            columnName = command.targetColumn ?? edge.targetColumn
+        guard !relationWasRequested || edge != nil else { return }
+        pendingAutomationFocusID = command.id
+        let transitionID = UUID()
+        pendingAutomationFocusTransitionID = transitionID
+        withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.84),
+                      completionCriteria: .logicallyComplete) {
+            session.selectGraphNode(command.tableID)
+            prepareTableNavigation()
+            if let edge, relationWasRequested {
+                let columnName = edge.sourceID == command.tableID
+                    ? (command.sourceColumn ?? edge.sourceColumn)
+                    : (command.targetColumn ?? edge.targetColumn)
+                pullConnectedNodesIntoView(
+                    for: GraphRelationHoverTarget(tableID: command.tableID, columnName: columnName, endpointKind: .column),
+                    animated: false
+                )
+                if size != .zero { fitGraphFocusViewport(in: size, animated: false) }
+            } else {
+                focusTableConnections(command.tableID, animated: false)
+            }
+        } completion: {
+            guard isGraphViewVisible, pendingAutomationFocusID == command.id,
+                  pendingAutomationFocusTransitionID == transitionID else { return }
+            pendingAutomationFocusID = nil
+            pendingAutomationFocusTransitionID = nil
+            flushViewportSessionSync()
         }
-        pullConnectedNodesIntoView(
-            for: GraphRelationHoverTarget(tableID: command.tableID, columnName: columnName, endpointKind: .column)
-        )
-        if size != .zero { fitGraphFocusViewport(in: size) }
+        session.initializedGraphViewportDocument = initialViewportDocumentKey
     }
 
     private func focusGroup(_ groupID: String, pageIndex: Int = 0, in size: CGSize) {
@@ -1867,9 +1920,12 @@ public struct SchemaGraphView: View {
         let plan = graphFocusPlan
         guard session.graphTableFilter.isActive || session.automationVisibleTableIDs != nil else { return plan }
         let allowed = session.graphVisibleTableIDs
+        guard let plan, !plan.activeTableIDs.isDisjoint(with: allowed) else {
+            return GraphFocusPlan(activeTableIDs: allowed, relatedTableIDs: [])
+        }
         return GraphFocusPlan(
-            activeTableIDs: (plan?.activeTableIDs ?? allowed).intersection(allowed),
-            relatedTableIDs: (plan?.relatedTableIDs ?? []).intersection(allowed)
+            activeTableIDs: plan.activeTableIDs.intersection(allowed),
+            relatedTableIDs: plan.relatedTableIDs.intersection(allowed)
         )
     }
 
@@ -1907,7 +1963,8 @@ public struct SchemaGraphView: View {
         }
     }
 
-    private func fitGraphFocusViewport(in size: CGSize) {
+    private func fitGraphFocusViewport(in size: CGSize, animated: Bool = true,
+                                       animation: Animation? = nil, completion: (() -> Void)? = nil) {
         guard let plan = effectiveFocusPlan, size != .zero else { return }
         var bounds = CGRect.null
         for tableID in plan.visibleTableIDs() {
@@ -1917,7 +1974,10 @@ public struct SchemaGraphView: View {
                                width: nodeSize.width, height: nodeSize.height)
             bounds = bounds.isNull ? frame : bounds.union(frame)
         }
-        guard !bounds.isNull else { return }
+        guard !bounds.isNull else {
+            completion?()
+            return
+        }
         let topInset = min(graphControlsHeight + 30, size.height * 0.4)
         let bottomInset: CGFloat = 70
         var transform = GraphViewportTransform.fit(
@@ -1928,7 +1988,7 @@ public struct SchemaGraphView: View {
             maxZoom: 1.05
         )
         transform.pan.height += (topInset - bottomInset) / 2
-        setViewport(transform, animated: true)
+        setViewport(transform, animated: animated, animation: animation, completion: completion)
     }
 
     private func graphFocusSummary(focusPlan: GraphFocusPlan) -> String {
@@ -2117,14 +2177,18 @@ public struct SchemaGraphView: View {
         return GraphAnchorMap(nodeCards: nodeCards)
     }
 
-    private func fitGraph(in size: CGSize) {
-        if effectiveFocusPlan != nil { fitGraphFocusViewport(in: size); return }
+    private func fitGraph(in size: CGSize, animated: Bool = true,
+                          animation: Animation? = nil, completion: (() -> Void)? = nil) {
+        if effectiveFocusPlan != nil {
+            fitGraphFocusViewport(in: size, animated: animated, animation: animation, completion: completion)
+            return
+        }
         let bounds = graphContentBoundsForFit()
         let transform: GraphViewportTransform
         let fitMinimumZoom: CGFloat = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 0.005 : 0.45
         let fitPadding: CGFloat = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 72 : 120
         transform = GraphViewportTransform.fit(contentBounds: bounds, in: size, padding: fitPadding, minZoom: fitMinimumZoom)
-        setViewport(transform, animated: true)
+        setViewport(transform, animated: animated, animation: animation, completion: completion)
     }
 
     private func graphContentBoundsForFit() -> CGRect {
@@ -2529,7 +2593,8 @@ public struct SchemaGraphView: View {
     // MARK: - Graph focus layout
 
     /// Enters table-relation focus: hides unrelated cards, lays out FK/PK neighbors without overlap, and zooms to fit.
-    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget, pageIndex: Int = 0) {
+    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget, pageIndex: Int = 0,
+                                            animated: Bool = true) {
         guard draggedNodeID == nil else { return }
 
         let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: pageIndex)
@@ -2560,10 +2625,12 @@ public struct SchemaGraphView: View {
         )
 
         layout[target.tableID] = hubCenter
-        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+        if animated {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { pulledGraphPositions = layout }
+        } else {
             pulledGraphPositions = layout
         }
-        fitGraphFocusViewport(in: viewportSize)
+        fitGraphFocusViewport(in: viewportSize, animated: animated)
     }
 
     private func relatedNodeIDs(for target: GraphRelationHoverTarget) -> [String] {
@@ -2608,7 +2675,7 @@ public struct SchemaGraphView: View {
         return GraphExploration.page(Array(allowed), index: relationPageIndex)
     }
 
-    private func focusTableConnections(_ nodeID: String, pageIndex: Int = 0) {
+    private func focusTableConnections(_ nodeID: String, pageIndex: Int = 0, animated: Bool = true) {
         enterGraphFocusSession()
         relationPageIndex = pageIndex
         tableFocusNodeID = nodeID
@@ -2620,7 +2687,7 @@ public struct SchemaGraphView: View {
         let items = tableConnectionPage(nodeID).ids.map { GraphFocusRingLayout.Item(id: $0, size: nodeSize(for: $0)) }
         pulledGraphPositions = GraphFocusRingLayout.graphPositions(hubCenter: hubCenter, hubSize: nodeSize(for: nodeID), items: items)
         layoutRevision &+= 1
-        fitGraphFocusViewport(in: viewportSize)
+        fitGraphFocusViewport(in: viewportSize, animated: animated)
     }
 
     private func collapseExpandedNode(_ nodeID: String, in size: CGSize) {
@@ -2642,7 +2709,8 @@ public struct SchemaGraphView: View {
         )
     }
 
-    private func setViewport(_ transform: GraphViewportTransform, animated: Bool) {
+    private func setViewport(_ transform: GraphViewportTransform, animated: Bool,
+                             animation: Animation? = nil, completion: (() -> Void)? = nil) {
         let updates = {
             zoom = transform.zoom
             baseZoom = transform.zoom
@@ -2650,12 +2718,16 @@ public struct SchemaGraphView: View {
             panStart = transform.pan
         }
 
-        if animated {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                updates()
+        if animated && !reduceMotion {
+            let transition = animation ?? .spring(response: 0.36, dampingFraction: 0.84)
+            if let completion {
+                withAnimation(transition, completionCriteria: .logicallyComplete, updates, completion: completion)
+            } else {
+                withAnimation(transition) { updates() }
             }
         } else {
             updates()
+            completion?()
         }
     }
 

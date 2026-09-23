@@ -41,10 +41,12 @@ public struct AutomationGraphFocusCommand: Identifiable, Sendable, Equatable {
 public struct AutomationGraphViewportCommand: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let fitVisibleTables: Bool
+    public let transitionMilliseconds: Int
 
-    public init(id: UUID = UUID(), fitVisibleTables: Bool) {
+    public init(id: UUID = UUID(), fitVisibleTables: Bool, transitionMilliseconds: Int = 420) {
         self.id = id
         self.fitVisibleTables = fitVisibleTables
+        self.transitionMilliseconds = transitionMilliseconds
     }
 }
 
@@ -258,8 +260,10 @@ public final class AppSession {
         automationFocusCommand = command
     }
 
-    public func requestAutomationViewport(fitVisibleTables: Bool) {
-        automationViewportCommand = AutomationGraphViewportCommand(fitVisibleTables: fitVisibleTables)
+    public func requestAutomationViewport(fitVisibleTables: Bool, transitionMilliseconds: Int = 420) {
+        automationViewportCommand = AutomationGraphViewportCommand(
+            fitVisibleTables: fitVisibleTables, transitionMilliseconds: transitionMilliseconds
+        )
     }
 
     public func clearAutomationViewportCommand(id: UUID) {
@@ -290,6 +294,10 @@ public final class AppSession {
     }
 
     public func notifyManualGraphInteraction() {
+        // A user gesture supersedes in-flight agent camera/focus instructions.
+        // Their animation completions must not claim the user's new view.
+        automationViewportCommand = nil
+        automationFocusCommand = nil
         onManualGraphInteraction?()
     }
 

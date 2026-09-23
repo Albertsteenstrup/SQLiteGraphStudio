@@ -45,6 +45,9 @@ struct ToolContractEdgeTests {
             ("studio_set_camera", ["pan_x": 127] as [String: Any]),
             ("studio_set_camera", ["pan_x": 1e308, "pan_y": 0] as [String: Any]),
             ("studio_set_camera", ["mode": "fit_visible", "zoom": 1] as [String: Any]),
+            ("studio_set_camera", ["zoom": 1, "transition_ms": -1] as [String: Any]),
+            ("studio_set_camera", ["zoom": 1, "transition_ms": 1201] as [String: Any]),
+            ("studio_set_camera", ["zoom": 1, "transition_ms": 0.5] as [String: Any]),
             ("studio_set_layout", ["left_pane": "not-a-pane"] as [String: Any]),
             ("studio_arrange_tables", ["operation": "compact", "table_ids": []] as [String: Any]),
             ("studio_arrange_tables", ["operation": "compact", "table_ids": ["posts", "posts"]] as [String: Any]),
@@ -167,10 +170,50 @@ struct ToolContractEdgeTests {
         tab.session.clearGraphFilter()
         let camera = await invoke(coordinator, "studio_set_camera", [
             "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
-            "mode": "fit_visible",
+            "mode": "fit_visible", "transition_ms": 900,
         ], context: context)
         #expect(camera["isError"] as? Bool == false)
         #expect(tab.session.automationViewportCommand?.fitVisibleTables == true)
+        #expect(tab.session.automationViewportCommand?.transitionMilliseconds == 900)
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
+    func presentationKeyFocusIncludesItsTableAndDeclaredNeighbor() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-presentation-focus-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let connected = await invoke(coordinator, "studio_connect_context", ["client_task_id": "presentation-key-focus"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let opened = await invoke(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+        ], context: context)
+        let workspace = try #require(payload(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+        let edge = try #require(tab.session.graph.edges.first {
+            $0.sourceID == "posts" && $0.targetID == "authors"
+        })
+        tab.session.setAutomationVisibleTableIDs(["authors"])
+
+        let started = await invoke(coordinator, "studio_start_presentation", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "narration_mode": "disabled", "activation_intent": "foreground",
+            "points": [["caption": "A post names its author", "actions": [[
+                "type": "focus_keys", "table_id": "posts", "relation_id": edge.id,
+            ]], "timing": ["advance": "manual"]]],
+        ], context: context)
+        #expect(started["isError"] as? Bool == false)
+        for _ in 0..<100 where tab.session.automationFocusCommand?.relationID != edge.id {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tab.session.automationFocusCommand?.relationID == edge.id)
+        #expect(tab.session.graphVisibleTableIDs.isSuperset(of: ["authors", "posts"]))
 
         await coordinator.close()
         await tabs.closeAllAndWait()

@@ -307,7 +307,9 @@ final class StudioAutomationCoordinator {
                     state.controller.markFailed(pointID: pointID,
                         message: "The view changed while this point was being prepared. Retry or revise the explanation from the current view.")
                 default:
-                    state.controller.pauseAfterCurrentPoint()
+                    // The camera now belongs to the user; stop speech immediately
+                    // so it cannot describe a view they have moved away from.
+                    state.controller.pause()
                 }
                 state.revision += 1
             }
@@ -1093,6 +1095,7 @@ final class StudioAutomationCoordinator {
                     "view_revision": viewRevision(tab), "visual_state": visualState(tab)]
         case "studio_set_camera":
             let tab = try workspace(args, context: context)
+            let transitionMilliseconds = try cameraTransitionMilliseconds(args)
             let mode = string(args, "mode") ?? "absolute"
             guard ["absolute", "fit_visible"].contains(mode) else {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "mode must be absolute or fit_visible.")
@@ -1117,7 +1120,8 @@ final class StudioAutomationCoordinator {
             if let zoom = number(args, "zoom") { tab.session.graphZoom = min(4, max(0.2, zoom)) }
             if let x = number(args, "pan_x"), let y = number(args, "pan_y") { tab.session.graphPan = CGSize(width: x, height: y) }
             tab.session.revealSchemaForAutomation()
-            tab.session.requestAutomationViewport(fitVisibleTables: mode == "fit_visible")
+            tab.session.requestAutomationViewport(fitVisibleTables: mode == "fit_visible",
+                                                  transitionMilliseconds: transitionMilliseconds)
             tab.session.markAutomationViewChanged()
             return viewPayload(tab)
         case "studio_arrange_tables":
@@ -3130,7 +3134,7 @@ final class StudioAutomationCoordinator {
         session.expandedGraphNodeIDs = point.expanded.intersection(valid)
         session.graphZoom = point.zoom
         session.graphPan = point.pan
-        session.requestAutomationViewport(fitVisibleTables: false)
+        session.requestAutomationViewport(fitVisibleTables: false, transitionMilliseconds: 0)
         session.showAllGraphTableCards = point.showsAllGraphTableCards
         session.restoreAutomationGraphLayout(point.positions)
         session.setPaneContent(point.leftPane, for: .left)
@@ -3674,12 +3678,25 @@ final class StudioAutomationCoordinator {
                 guard allowed.contains(type) else { throw Failure(code: "INVALID_ARGUMENT", detail: "Unsupported point action \(type). Use a dedicated MCP tool before this point.") }
                 let ids = Set(strings(action, "table_ids") ?? (string(action, "table_id").map { [$0] } ?? []))
                 guard ids.isSubset(of: validIDs) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "A point names a table that is not in this source.") }
-                if type == "focus_keys", let relationID = string(action, "relation_id") {
-                    guard session.graph.edges.contains(where: { $0.id == relationID }) else {
-                        throw Failure(code: "OBJECT_NOT_FOUND", detail: "The focused relation is not a declared database edge.")
+                if type == "focus_keys" {
+                    guard let tableID = string(action, "table_id") ?? strings(action, "table_ids")?.first,
+                          validIDs.contains(tableID) else {
+                        throw Failure(code: "OBJECT_NOT_FOUND", detail: "The focused table must exist in this source.")
+                    }
+                    if action["relation_id"] != nil || action["source_column"] != nil || action["target_column"] != nil {
+                        guard session.graph.edges.contains(where: { edge in
+                            guard edge.sourceID == tableID || edge.targetID == tableID else { return false }
+                            if let relationID = string(action, "relation_id"), edge.id != relationID { return false }
+                            if let sourceColumn = string(action, "source_column"), edge.sourceColumn != sourceColumn { return false }
+                            if let targetColumn = string(action, "target_column"), edge.targetColumn != targetColumn { return false }
+                            return true
+                        }) else {
+                            throw Failure(code: "OBJECT_NOT_FOUND", detail: "The focused key or relation must be a declared edge of the selected table.")
+                        }
                     }
                 }
                 if type == "set_camera" {
+                    _ = try cameraTransitionMilliseconds(action)
                     let mode = string(action, "mode") ?? "absolute"
                     guard ["absolute", "fit_visible"].contains(mode),
                           mode != "fit_visible" || (action["zoom"] == nil && action["pan_x"] == nil && action["pan_y"] == nil),
@@ -3740,12 +3757,23 @@ final class StudioAutomationCoordinator {
                     guard let tableID = string(action, "table_id") ?? strings(action, "table_ids")?.first else {
                         throw Failure(code: "INVALID_ARGUMENT", detail: "focus_keys needs a table_id.")
                     }
+                    let matchingEdges = session.graph.edges.filter { edge in
+                        guard edge.sourceID == tableID || edge.targetID == tableID else { return false }
+                        if let relationID = string(action, "relation_id"), edge.id != relationID { return false }
+                        if let sourceColumn = string(action, "source_column"), edge.sourceColumn != sourceColumn { return false }
+                        if let targetColumn = string(action, "target_column"), edge.targetColumn != targetColumn { return false }
+                        return true
+                    }
+                    let focusedIDs = Set([tableID]).union(matchingEdges.flatMap { [$0.sourceID, $0.targetID] })
+                    let currentIDs = session.automationVisibleTableIDs ?? Set(session.graph.nodes.map(\.id))
+                    session.setAutomationVisibleTableIDs(currentIDs.union(focusedIDs))
                     session.setAutomationFocusCommand(AutomationGraphFocusCommand(tableID: tableID,
                         sourceColumn: string(action, "source_column"), targetColumn: string(action, "target_column"),
                         relationID: string(action, "relation_id")))
                     needsGraphRender = true
                 case "set_camera":
                     let cameraMode = string(action, "mode") ?? "absolute"
+                    let transitionMilliseconds = try cameraTransitionMilliseconds(action)
                     guard ["absolute", "fit_visible"].contains(cameraMode) else {
                         throw Failure(code: "INVALID_ARGUMENT", detail: "Camera mode must be absolute or fit_visible.")
                     }
@@ -3753,7 +3781,8 @@ final class StudioAutomationCoordinator {
                         if let zoom = number(action, "zoom") { session.graphZoom = min(4, max(0.2, zoom)) }
                         if let x = number(action, "pan_x"), let y = number(action, "pan_y") { session.graphPan = CGSize(width: x, height: y) }
                     }
-                    session.requestAutomationViewport(fitVisibleTables: cameraMode == "fit_visible")
+                    session.requestAutomationViewport(fitVisibleTables: cameraMode == "fit_visible",
+                                                      transitionMilliseconds: transitionMilliseconds)
                     needsGraphRender = true
                 case "arrange_tables":
                     let ids = strings(action, "table_ids") ?? []
@@ -4311,6 +4340,15 @@ final class StudioAutomationCoordinator {
     private func requiredString(_ args: [String: Any], _ key: String, alternative: String? = nil) throws -> String {
         if let value = string(args, key) ?? alternative.flatMap({ string(args, $0) }), !value.isEmpty { return value }
         throw Failure(code: "INVALID_ARGUMENT", detail: "Provide \(key).")
+    }
+
+    private func cameraTransitionMilliseconds(_ args: [String: Any]) throws -> Int {
+        guard args["transition_ms"] != nil else { return 420 }
+        guard let value = number(args, "transition_ms"), value.isFinite,
+              value.rounded(.towardZero) == value, (0...1_200).contains(value) else {
+            throw Failure(code: "INVALID_ARGUMENT", detail: "transition_ms must be a whole number from 0 to 1200.")
+        }
+        return Int(value)
     }
 
     private func string(_ args: [String: Any], _ key: String) -> String? { args[key] as? String }

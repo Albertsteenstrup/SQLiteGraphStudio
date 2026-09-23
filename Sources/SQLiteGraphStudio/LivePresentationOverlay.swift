@@ -19,7 +19,7 @@ struct LivePresentationOverlay: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(point.caption)
+                Text(presentation.hasVisibleCurrentPoint ? point.caption : "Updating the view…")
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -61,8 +61,8 @@ struct LivePresentationOverlay: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .shadow(radius: 8)
             .task(id: point.id) {
-                // Yield once so SwiftUI can install this point before we report
-                // its caption as displayed. Graph visibility is checked separately.
+                // Yield once so SwiftUI can install the point controls before
+                // the graph's own render acknowledgement permits the caption.
                 await Task.yield()
                 coordinator.captionRendered(pointID: point.id)
             }

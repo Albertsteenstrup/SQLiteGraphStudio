@@ -105,6 +105,9 @@ public final class LivePresentationController {
         !forwardHistory.isEmpty || !pendingPoints.isEmpty
     }
 
+    /// Keep the next caption out of view while the graph is still moving into place.
+    public var hasVisibleCurrentPoint: Bool { hasBecomeVisible }
+
     public func append(_ point: Point) {
         append([point])
     }

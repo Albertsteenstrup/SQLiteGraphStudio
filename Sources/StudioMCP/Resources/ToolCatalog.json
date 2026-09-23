@@ -840,7 +840,7 @@
   {
     "name": "studio_set_camera",
     "title": "Set Camera",
-    "description": "Move the visible schema graph camera. Use mode=fit_visible to fit all currently visible tables, or set zoom (clamped to 0.2–4) and/or explicit pan_x and pan_y coordinates. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000. Do not combine fit_visible with coordinates. This makes the schema pane visible.",
+    "description": "Move the visible schema graph camera. Use mode=fit_visible to fit all currently visible tables, or set zoom (clamped to 0.2–4) and/or explicit pan_x and pan_y coordinates. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000. Do not combine fit_visible with coordinates. The camera eases to its destination by default; set transition_ms from 0 (instant) to 1200 for the intended viewing pace. Reduced Motion makes it instant. This makes the schema pane visible. Read studio_get_view until visual_state is rendered_in_foreground before describing the destination.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -863,6 +863,12 @@
           "type": "number",
           "minimum": -1000000,
           "maximum": 1000000
+        },
+        "transition_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1200,
+          "description": "Camera travel time in milliseconds; defaults to 420. Use 0 for an intentional cut, and allow the destination to render before speaking about it."
         },
         "expected_view_revision": {
           "type": "string"
@@ -1994,7 +2000,7 @@
   {
     "name": "studio_start_presentation",
     "title": "Start Presentation",
-    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state.",
+    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. Each point applies its actions and completes graph camera/focus motion before revealing its caption, starting narration, or counting viewing time. Match each caption to the tables, keys, or rows its actions actually show; use short points and fit/compact related tables when necessary. set_camera actions accept transition_ms from 0 to 1200 (default 420). A manual graph gesture supersedes pending motion and immediately pauses speech on a visible point; a gesture during preparation leaves the point failed for retry or revision. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state.",
     "inputSchema": {
       "type": "object",
       "properties": {
