@@ -318,6 +318,10 @@ public struct SchemaGraphView: View {
             .onChange(of: pan) { _, newPan in
                 scheduleViewportSessionSync(zoom: zoom, pan: newPan)
             }
+            .onChange(of: session.graphRevealRequest?.id) { _, _ in
+                guard let request = session.graphRevealRequest else { return }
+                revealChosenTable(request.tableID, in: geometry.size)
+            }
             .onChange(of: session.storyPlaybackCommand?.id) { _, _ in
                 guard let command = session.storyPlaybackCommand else { return }
                 handleStoryPlaybackCommand(command.kind)
@@ -364,10 +368,13 @@ public struct SchemaGraphView: View {
     @ViewBuilder
     private func graphScene(size: CGSize) -> some View {
         let focusPlan = effectiveFocusPlan
+        let reviewLens = cachedReviewLens()
         let geometry = interactionGeometry(in: size, focusPlan: focusPlan)
         let anchorMap = geometry.anchorMap
-        let hoverNeighbors = draggedNodeID == nil ? (hoveredNodeID.map { session.graph.neighbors(of: $0) } ?? []) : []
-        let hoverSummaryIDs = shows(.hoverPreviews) ? GraphHoverPresentation.summaryIDs(
+        let hoverNeighbors = hoverNeighborIDs(reviewLens: reviewLens)
+        // A review names tables with its own readable labels; a summary shrunk into a
+        // few-point overview node cannot be read at the zoom a review is read at.
+        let hoverSummaryIDs = shows(.hoverPreviews) && reviewLens == nil ? GraphHoverPresentation.summaryIDs(
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil, connectedIDs: hoverNeighbors,
             markerFrames: geometry.markerFrames, viewport: CGRect(origin: .zero, size: size)
         ) : []
@@ -395,7 +402,16 @@ public struct SchemaGraphView: View {
                     if !isStoryOnlyMode,
                        let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup),
                        renderPlan.markerIDs.contains(card.tableID) {
-                        revealTable(card.tableID, in: size)
+                        if session.schemaReview != nil {
+                            // A review is read in place: choosing a table narrows the view
+                            // to its changes and fills the details panel. Pulling its
+                            // neighbours into a ring would rearrange the layout being compared.
+                            clearGraphFocusSession()
+                            selectedStoryID = nil
+                            session.selectGraphNode(card.tableID)
+                        } else {
+                            revealTable(card.tableID, in: size)
+                        }
                         return
                     }
                     if storyPopupStoryID != nil {
@@ -448,7 +464,8 @@ public struct SchemaGraphView: View {
                     GraphRelationHighlight(graph: session.graph, focusNodeID: $0, edgeLookup: edgeLookup)
                 } : nil
                 let edgePlan = edgeLayerPlan(isOverviewOnly: isOverviewOnly, focusPlan: focusPlan,
-                                             relationHighlight: relationHighlight, hoverHighlight: hoverHighlight)
+                                             relationHighlight: relationHighlight, hoverHighlight: hoverHighlight,
+                                             reviewLens: reviewLens)
 
                 Canvas { context, _ in
                     if isOverviewOnly, session.schemaReview == nil, shows(.overviewGroupLinks) {
@@ -458,7 +475,8 @@ public struct SchemaGraphView: View {
                     if let edgePlan {
                         drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan)
                     }
-                    drawOverviewMarks(in: &context, frames: geometry.markerFrames, connectedIDs: hoverNeighbors)
+                    drawOverviewMarks(in: &context, frames: geometry.markerFrames, connectedIDs: hoverNeighbors,
+                                      reviewLens: reviewLens)
                     for id in hoverSummaryIDs {
                         guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                         let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -590,6 +608,7 @@ public struct SchemaGraphView: View {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredNodeID)
                 .position(screenCenter(for: node.id, in: size))
                 .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
+                .opacity(reviewCardOpacity(for: node.id, lens: reviewLens))
                 .shadow(
                     color: shows(.cardShadows)
                         ? StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8)
@@ -598,6 +617,14 @@ public struct SchemaGraphView: View {
                     y: session.showAllGraphTableCards ? 5 : (draggedNodeID == node.id ? 16 : 10)
                 )
                 .zIndex(zIndex(for: node.id))
+            }
+
+            if let reviewLens, !isStoryOnlyMode, zoom < GraphExploration.detailZoom {
+                Canvas { context, _ in
+                    drawReviewNameLabels(in: &context, geometry: geometry, lens: reviewLens, viewport: CGRect(origin: .zero, size: size))
+                }
+                .allowsHitTesting(false)
+                .zIndex(8)
             }
 
             ForEach(visibleStoryCards) { card in
@@ -800,6 +827,19 @@ public struct SchemaGraphView: View {
         openExpandedNode(nodeID, in: size)
     }
 
+    /// Brings a table chosen outside the canvas — from a review's table list — into view,
+    /// together with the far ends of its changed relations, moving the camera as little as
+    /// possible. The layout itself never moves: the reader is comparing it.
+    private func revealChosenTable(_ nodeID: String, in size: CGSize) {
+        guard session.graph.contains(nodeID: nodeID) else { return }
+        if graphFocusPlan != nil { clearGraphFocusSession(animated: false, restoreViewport: false) }
+        let ids = [nodeID] + (cachedReviewLens()?.changedNeighbors(of: nodeID).sorted() ?? [])
+        let bounds = ids.compactMap { graphFrame(for: $0) }.reduce(CGRect.null) { $0.union($1) }
+        guard let transform = GraphViewportTransform.reveal(contentBounds: bounds, in: size,
+                                                            from: GraphViewportTransform(zoom: zoom, pan: pan)) else { return }
+        setViewport(transform, animated: !reduceMotion)
+    }
+
     private func fitTable(_ nodeID: String, in size: CGSize) {
         let point = graphNodePoint(for: nodeID)
         let cardSize = nodeSize(for: nodeID)
@@ -827,20 +867,21 @@ public struct SchemaGraphView: View {
         storyPopupStoryID = nil
     }
 
-    private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect], connectedIDs: Set<String>) {
+    private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect], connectedIDs: Set<String>,
+                                   reviewLens: SchemaReviewLens?) {
         for (id, mark) in frames {
             let color = clusterBorderColor(for: id) ?? StudioPalette.accent
             let isHovered = hoveredNodeID == id
             let connected = connectedIDs.contains(id)
-            let emphasis = isHovered || connected ? 0.78 : 0.62
-            let opacity = emphasis * (session.schemaReviewChanges[id]?.kind == .removed ? 0.6 : 1)
             let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
-            let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
-            context.fill(path, with: .color(color.opacity(isUnknown ? opacity * 0.45 : opacity)))
-            if let change = session.schemaReviewChanges[id], change.kind != .unchanged {
-                context.stroke(path, with: .color(.white), lineWidth: 4)
-                context.stroke(path, with: .color(change.kind.tint), style: StrokeStyle(lineWidth: 2, dash: change.kind == .removed ? [3, 2] : []))
+            if let reviewLens {
+                drawReviewMark(in: &context, id: id, mark: mark, path: path, color: color,
+                               lens: reviewLens, isPointed: isHovered || connected)
+                continue
             }
+            let emphasis = isHovered || connected ? 0.78 : 0.62
+            let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
+            context.fill(path, with: .color(color.opacity(isUnknown ? emphasis * 0.45 : emphasis)))
             if isUnknown {
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             }
@@ -848,6 +889,106 @@ public struct SchemaGraphView: View {
                 context.stroke(path, with: .color(StudioPalette.primaryText), lineWidth: 1.5)
             }
         }
+    }
+
+    /// Unchanged tables recede to a faint group-coloured outline of the catalog so the
+    /// changes read first.
+    ///
+    /// A review never uses the dashed "size unknown" outline: it has no row data, so the
+    /// row metric would dash every table, and dashes already mean "removed" here.
+    private func drawReviewMark(in context: inout GraphicsContext, id: String, mark: CGRect, path: Path,
+                                color: Color, lens: SchemaReviewLens, isPointed: Bool) {
+        let kind = lens.kind(forTable: id)
+        let emphasis = lens.emphasis(forTable: id)
+        let fill: Double = switch emphasis {
+        case .subject: 0.8
+        case .faded: isPointed ? 0.6 : 0.34
+        case .context: isPointed ? 0.62 : 0.26
+        }
+        context.fill(path, with: .color(color.opacity(fill * (kind == .removed ? 0.6 : 1))))
+        let dash: [CGFloat] = kind == .removed ? [3, 2] : []
+        switch emphasis {
+        case .subject:
+            context.stroke(path, with: .color(.white), lineWidth: 4)
+            context.stroke(path, with: .color(kind.tint), style: StrokeStyle(lineWidth: 2, dash: dash))
+        case .faded:
+            context.stroke(path, with: .color(kind.tint.opacity(0.4)), style: StrokeStyle(lineWidth: 1.25, dash: dash))
+        case .context:
+            break
+        }
+        if session.selectedGraphNodeIDs.contains(id) {
+            // Outside the change outline, so the chosen table keeps its change colour.
+            let ring = mark.insetBy(dx: -3.5, dy: -3.5)
+            context.stroke(Path(roundedRect: ring, cornerRadius: min(6, ring.height / 2)),
+                           with: .color(StudioPalette.primaryText), lineWidth: 1.5)
+        }
+    }
+
+    /// Detail cards follow the same weighting as overview marks, more gently: they are
+    /// on screen because the reader zoomed in to read them.
+    private func reviewCardOpacity(for id: String, lens: SchemaReviewLens?) -> Double {
+        guard let lens, hoveredNodeID != id, !session.selectedGraphNodeIDs.contains(id) else { return 1 }
+        switch lens.emphasis(forTable: id) {
+        case .subject: return 1
+        case .faded: return 0.5
+        case .context: return lens.isFocused ? 0.5 : 0.72
+        }
+    }
+
+    /// Names the tables a review is about at one readable size, whatever the zoom.
+    ///
+    /// The table under the pointer and the chosen table are always named. The rest are
+    /// the changes in view — the pointer's changed neighbours first, then additions and
+    /// removals, then edits — each dropped when it would collide with a name already placed.
+    private func drawReviewNameLabels(in context: inout GraphicsContext, geometry: GraphInteractionGeometry,
+                                      lens: SchemaReviewLens, viewport: CGRect) {
+        let hovered = draggedNodeID == nil && shows(.hoverPreviews) ? hoveredNodeID : nil
+        var entries: [String: GraphNameLabelCache.Entry] = [:]
+        var candidates: [GraphNameLabelLayout.Candidate] = []
+        func add(_ id: String, pinned: Bool) {
+            // Far more names than a viewport can hold would only be placed to be dropped.
+            guard pinned || candidates.count < GraphNameLabelLayout.candidateLimit else { return }
+            guard entries[id] == nil, let anchor = reviewLabelAnchor(for: id, geometry: geometry),
+                  anchor.intersects(viewport), let node = session.graph.node(id: id) else { return }
+            let entry = scenePreparation.nameLabels.entry(title: node.title, symbol: lens.kind(forTable: id).symbol)
+            entries[id] = entry
+            candidates.append(.init(id: id, anchor: anchor, size: entry.size, isPinned: pinned))
+        }
+        if let hovered { add(hovered, pinned: true) }
+        session.selectedGraphNodeIDs.sorted().forEach { add($0, pinned: true) }
+        hovered.map { lens.changedNeighbors(of: $0).sorted() }?.forEach { add($0, pinned: false) }
+        lens.labelOrder.forEach { add($0, pinned: false) }
+
+        let font = Font.system(size: GraphNameLabelLayout.fontSize, weight: .semibold)
+        for placement in GraphNameLabelLayout.place(candidates, in: viewport.insetBy(dx: 4, dy: 4)) {
+            guard let entry = entries[placement.id] else { continue }
+            let kind = lens.kind(forTable: placement.id)
+            let isChosen = placement.id == hovered || session.selectedGraphNodeIDs.contains(placement.id)
+            let frame = placement.frame
+            let shape = Path(roundedRect: frame, cornerRadius: 5)
+            let border = kind == .unchanged ? StudioPalette.borderStrong
+                : kind.tint.opacity(lens.emphasis(forTable: placement.id) == .subject || isChosen ? 0.9 : 0.45)
+            context.fill(shape, with: .color(StudioPalette.cardSurfaceTop.opacity(0.96)))
+            context.stroke(shape, with: .color(border),
+                           style: StrokeStyle(lineWidth: isChosen ? 1.5 : 1, dash: kind == .removed ? [3, 2] : []))
+            var x = frame.minX + GraphNameLabelLayout.horizontalPadding
+            if !entry.symbol.isEmpty {
+                context.draw(Text(entry.symbol).font(font).foregroundStyle(kind.tint),
+                             at: CGPoint(x: x, y: frame.midY), anchor: .leading)
+                x += entry.symbolWidth + GraphNameLabelLayout.symbolSpacing
+            }
+            context.draw(Text(entry.title).font(font)
+                            .foregroundStyle(kind == .removed ? StudioPalette.secondaryText : StudioPalette.primaryText),
+                         at: CGPoint(x: x, y: frame.midY), anchor: .leading)
+        }
+    }
+
+    /// Overview marks are named over the mark itself; a detail card, over its header.
+    private func reviewLabelAnchor(for id: String, geometry: GraphInteractionGeometry) -> CGRect? {
+        if let mark = geometry.markerFrames[id] { return mark }
+        guard let frame = geometry.frames[id] else { return nil }
+        return CGRect(x: frame.minX, y: frame.minY, width: frame.width,
+                      height: min(frame.height, GraphCardLayout.collapsedHeight * zoom))
     }
 
     private func drawGroupConnections(in context: inout GraphicsContext, size: CGSize) {
@@ -1322,27 +1463,32 @@ public struct SchemaGraphView: View {
         isOverviewOnly: Bool,
         focusPlan: GraphFocusPlan?,
         relationHighlight: GraphRelationHighlight,
-        hoverHighlight: GraphRelationHighlight?
+        hoverHighlight: GraphRelationHighlight?,
+        reviewLens: SchemaReviewLens?
     ) -> GraphEdgeLayerPlan? {
         let mode = GraphEdgeLayerPlan.mode(isOverview: isOverviewOnly,
-                                           isSchemaReview: session.schemaReview != nil,
+                                           isSchemaReview: reviewLens != nil,
                                            showsOverviewRelations: shows(.overviewRelations),
                                            hasHover: hoverHighlight != nil)
+        var plan: GraphEdgeLayerPlan
         switch mode {
         case nil:
             return nil
         case .detail:
-            return GraphEdgeLayerPlan(highlight: relationHighlight, focusPlan: focusPlan,
+            plan = GraphEdgeLayerPlan(highlight: relationHighlight, focusPlan: focusPlan,
                                       onlyHighlighted: false, sampleLimit: nil, inkScale: 1)
         case .overviewSample:
-            return GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
+            plan = GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
                                       onlyHighlighted: false,
                                       sampleLimit: GraphEdgeLayerPlan.overviewRelationLimit,
                                       inkScale: GraphEdgeLayerPlan.overviewInkScale)
         case .overviewHoverOnly:
-            return GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
+            plan = GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
                                       onlyHighlighted: true, sampleLimit: nil, inkScale: 1)
         }
+        plan.reviewLens = reviewLens
+        plan.hidesUnchangedRelations = reviewLens != nil && zoom < GraphExploration.detailZoom
+        return plan
     }
 
     /// Resolves the relations a plan paints: graph order, screen anchors, the curve the
@@ -1360,6 +1506,8 @@ public struct SchemaGraphView: View {
         renders.reserveCapacity(min(candidates.count, 512))
         for edge in candidates {
             if plan.onlyHighlighted && !highlighted.contains(edge.id) { continue }
+            let reviewEmphasis = plan.reviewLens?.emphasis(for: edge)
+            if plan.hidesUnchangedRelations, reviewEmphasis == .context { continue }
             if let focusPlan = plan.focusPlan {
                 let sourceVisible = focusPlan.tierForTable(edge.sourceID) != .hidden
                 let targetVisible = focusPlan.tierForTable(edge.targetID) != .hidden
@@ -1383,27 +1531,48 @@ public struct SchemaGraphView: View {
                 control1: control1,
                 control2: control2,
                 path: path,
-                isHighlighted: highlighted.contains(edge.id)
+                // A review highlights a table's changes, never its unchanged relations.
+                isHighlighted: highlighted.contains(edge.id) && reviewEmphasis != .context
             ))
         }
         return renders
     }
 
+    private func reviewEmphasis(of render: GraphEdgeRender, lens: SchemaReviewLens) -> SchemaReviewLens.Emphasis {
+        render.isHighlighted ? .subject : lens.emphasis(for: render.edge)
+    }
+
     private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) {
-        let baseOpacity = (session.showAllGraphTableCards ? 0.48 : 0.34) * plan.inkScale
+        // Unchanged relations in a review are context for the changes, so they sit further back.
+        let baseOpacity = (session.showAllGraphTableCards ? 0.48 : 0.34) * plan.inkScale * (plan.reviewLens == nil ? 1 : 0.7)
         let baseWidth = (session.showAllGraphTableCards ? 1.25 : 1.05) * plan.inkScale
 
-        for render in visibleEdgeRenders(anchorMap: anchorMap, plan: plan) {
+        var renders = visibleEdgeRenders(anchorMap: anchorMap, plan: plan)
+        if let lens = plan.reviewLens {
+            // Changes paint over context, and the changes being read paint over the rest.
+            let ranked = renders.map { (render: $0, emphasis: reviewEmphasis(of: $0, lens: lens)) }
+            renders = [SchemaReviewLens.Emphasis.context, .faded, .subject].flatMap { tier in
+                ranked.filter { $0.emphasis == tier }.map(\.render)
+            }
+        }
+
+        for render in renders {
             let edge = render.edge
             let anchors = render.anchors
             let isHighlighted = render.isHighlighted
             let path = render.path
-            let change = session.schemaReviewEdgeChanges[edge.id] ?? .unchanged
+            let change = plan.reviewLens?.kind(forEdge: edge.id) ?? .unchanged
+            if let lens = plan.reviewLens, change != .unchanged, reviewEmphasis(of: render, lens: lens) == .faded {
+                // A change outside the reader's focus stays findable without competing with it.
+                context.stroke(path, with: .color(change.tint.opacity(0.22)),
+                               style: StrokeStyle(lineWidth: 1.25, lineCap: .round, dash: change == .removed ? [6, 4] : []))
+                continue
+            }
             let strokeColor = change != .unchanged ? change.tint : isHighlighted
                 ? StudioPalette.edgeHighlight
                 : StudioPalette.edgeNeutral.opacity(baseOpacity)
 
-            if isHighlighted {
+            if isHighlighted, change == .unchanged {
                 context.stroke(
                     path,
                     with: .color(StudioPalette.edgeHighlight.opacity(0.12)),
@@ -1418,7 +1587,7 @@ public struct SchemaGraphView: View {
                 path,
                 with: .color(strokeColor),
                 style: StrokeStyle(
-                    lineWidth: change != .unchanged ? 2.5 : (isHighlighted ? 1.85 : baseWidth),
+                    lineWidth: change != .unchanged ? (isHighlighted ? 3 : 2.5) : (isHighlighted ? 1.85 : baseWidth),
                     lineCap: .round,
                     lineJoin: .round,
                     dash: change == .removed ? [6, 4] : []
@@ -1433,7 +1602,8 @@ public struct SchemaGraphView: View {
 
             if isHighlighted {
                 drawDirectionMarker(in: &context, from: anchors.source, control1: render.control1,
-                                    control2: render.control2, to: anchors.target, color: StudioPalette.edgeHighlight)
+                                    control2: render.control2, to: anchors.target,
+                                    color: change != .unchanged ? change.tint : StudioPalette.edgeHighlight)
                 if shows(.relationshipLabels) {
                     drawCardinalityLabels(in: &context, edge: edge, start: anchors.source,
                                           control1: render.control1, control2: render.control2, end: anchors.target)
@@ -3696,7 +3866,7 @@ public struct SchemaGraphView: View {
             emphasized: session.selectedGraphNodeIDs.union(focusPlan?.visibleTableIDs() ?? []),
             primary: primary, retained: retained, contentRevision: scenePreparation.contentRevision,
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil,
-            connectedIDs: draggedNodeID == nil ? (hoveredNodeID.map { session.graph.neighbors(of: $0) } ?? []) : [],
+            connectedIDs: hoverNeighborIDs(reviewLens: cachedReviewLens()),
             nodeSizing: session.graphNodeSizeProfile,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
@@ -3739,6 +3909,28 @@ public struct SchemaGraphView: View {
         scenePreparation.pulseKey = key
         scenePreparation.pulseTracks = tracks
         return tracks
+    }
+
+    /// Tables that answer the pointer alongside the hovered one. In a review that is only
+    /// the far ends of relations that changed: a hub table's unchanged neighbours would
+    /// otherwise light up the whole catalog.
+    private func hoverNeighborIDs(reviewLens: SchemaReviewLens?) -> Set<String> {
+        guard draggedNodeID == nil, let hoveredNodeID else { return [] }
+        if let reviewLens { return reviewLens.changedNeighbors(of: hoveredNodeID) }
+        return session.graph.neighbors(of: hoveredNodeID)
+    }
+
+    private func cachedReviewLens() -> SchemaReviewLens? {
+        guard session.schemaReview != nil else { return nil }
+        let key = GraphReviewLensKey(graphRevision: session.graphRevision, reviewRevision: session.schemaReviewRevision,
+                                     selection: session.selectedGraphNodeIDs)
+        if scenePreparation.reviewLensKey == key, let lens = scenePreparation.reviewLens { return lens }
+        let lens = SchemaReviewLens(tableKinds: session.schemaReviewChanges.mapValues(\.kind),
+                                    edgeKinds: session.schemaReviewEdgeChanges, edges: session.graph.edges,
+                                    selection: session.selectedGraphNodeIDs)
+        scenePreparation.reviewLensKey = key
+        scenePreparation.reviewLens = lens
+        return lens
     }
 
     private func cachedRelationHighlight(focusNodeID: String?, hoverTarget: GraphRelationHoverTarget?,
@@ -5237,6 +5429,15 @@ private final class GraphScenePreparationCache {
     var relatedIDs: [String] = []
     var pulseKey: GraphEdgePulseKey?
     var pulseTracks: [GraphEdgePulseTrack] = []
+    var reviewLensKey: GraphReviewLensKey?
+    var reviewLens: SchemaReviewLens?
+    let nameLabels = GraphNameLabelCache()
+}
+
+private struct GraphReviewLensKey: Equatable {
+    let graphRevision: Int
+    let reviewRevision: Int
+    let selection: Set<String>
 }
 
 private extension GraphEdge {

@@ -102,9 +102,16 @@ public enum StudioSkills {
     # Read only the fields and incident relations needed for the design.
     "$studio" --schema-review inspect "$baseline" --table public.orders --column status
     # Write plan.json, then project it without SQL, a server, or migration replay.
-    "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview
+    "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview \
+      --agent claude --session "$session_name"
     open -n -a "$bundle" changes.sgpreview
     ```
+
+    When your instructions allow you to name yourself, pass `--agent` (`claude`,
+    `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
+    current chat or session's human-readable name) so the preview header shows where
+    it came from. Never invent either. They sit outside the plan, so they never change
+    its fingerprint.
 
     `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
     to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than
@@ -232,9 +239,18 @@ public enum StudioSkills {
     "$studio" --schema-review snapshot after.sqlite after.json
     "$studio" --schema-review compare before.json after.json change.sgreview \
       --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
-      --note "Exact source revisions; schema only, no row data."
+      --note "Exact source revisions; schema only, no row data." \
+      --agent claude --session "$session_name"
     open -a /path/to/SQLiteGraphStudio.app change.sgreview
     ```
+
+    Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
+    `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
+    `--session` takes the human-readable name of the current chat or session. The
+    review header then leads with the tool's mark, for example `Claude · Table diff
+    visualization clarity`. Omit `--session` when you don't know the session's name,
+    and omit both when you may not disclose them; never invent either. This records
+    where the review came from, not an approval.
 
     Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
     custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection
@@ -262,6 +278,10 @@ public enum StudioSkills {
     preserved. Removed tables remain faded with a Removed badge. Modified relations
     show both their removed and added definitions. Table details show field types,
     nullability, defaults, key membership, and available definition changes.
+    The graph opens on every change at once, names changed tables at a readable size,
+    and hides unchanged relations until zoomed in. Choosing a table in the list or the
+    graph isolates its own changes and the tables they reach, fading the rest; choose
+    it again or click empty canvas to see everything. ⌥⌘↓ and ⌥⌘↑ step through changes.
 
     Report the exact base/head, affected tables, artifact path, and unsupported scope.
     No automatic rename inference is made: a rename appears as removal plus addition.

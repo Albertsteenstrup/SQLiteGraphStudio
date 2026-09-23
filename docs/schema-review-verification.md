@@ -117,3 +117,22 @@ app builds and opens the sample database with the shared headers. Native pointer
 automation returned `noWindowsAvailable`, so live hover was not verified through
 the UI; size limits, text bounds, hit targets and zoom transitions were checked
 by the focused tests. This remains a focused run, not the full XCTest suite.
+
+## Review lens, readable names and review authors
+
+Reviews now open on every change, and choosing a table isolates its own changes
+while fading the rest. Unchanged relations stay off the canvas while zoomed out and
+never light up on hover. Changed tables carry fixed-size, collision-culled name
+labels at overview zoom instead of enlarging nodes. The table list is grouped by
+kind, reveals the chosen table with minimal camera movement, and steps through
+changes with ⌥⌘↓/⌥⌘↑. The graph is clipped to its pane. `--agent`/`--session`
+record which agent and session produced a review or preview, shown in the header.
+
+Focused Swift Testing checks cover the lens weighting, label placement and
+truncation, the reveal camera, review opening without a pre-selected table, author
+normalisation, validation and legacy decoding. Every Swift Testing suite
+passed (511 tests in 74 suites), run from a scratch package that links the local
+Command Line Tools' Testing framework; the four XCTest files could not be compiled
+there and were excluded. The CLI
+flags were exercised against the built binary on a synthetic 195-table comparison.
+The native review window was not inspected visually in this pass.

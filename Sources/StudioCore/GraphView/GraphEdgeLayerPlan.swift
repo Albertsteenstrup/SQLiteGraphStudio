@@ -30,7 +30,8 @@ struct GraphEdgeLayerPlan {
     /// too large to draw edge by edge.
     ///
     /// A schema review always paints in full, at any zoom. Its whole subject is which
-    /// relations changed, and a bounded sample could drop one of them.
+    /// relations changed, and a bounded sample could drop one of them. It is the review's
+    /// lens, not sampling, that keeps unchanged relations off a zoomed-out canvas.
     static func mode(
         isOverview: Bool,
         isSchemaReview: Bool,
@@ -50,4 +51,10 @@ struct GraphEdgeLayerPlan {
     let sampleLimit: Int?
     /// Multiplier on the resting line's opacity and width.
     let inkScale: Double
+    /// How a schema review weighs each relation; `nil` outside a review.
+    var reviewLens: SchemaReviewLens? = nil
+    /// Leave relations that did not change off the canvas. A review read zoomed out has
+    /// hundreds of them and only a handful that changed; they return, faintly, once the
+    /// reader zooms in far enough to read the cards they join.
+    var hidesUnchangedRelations = false
 }

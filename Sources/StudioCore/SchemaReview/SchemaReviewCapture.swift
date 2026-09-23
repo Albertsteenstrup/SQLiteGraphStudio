@@ -155,11 +155,12 @@ public enum SchemaReviewCommand {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
                 try encoder.encode(snapshot).write(to: URL(fileURLWithPath: arguments[2]), options: .atomic)
             } else if command == "compare", arguments.count >= 4 {
-                let options = try parseOptions(Array(arguments.dropFirst(4)), allowed: ["--base-ref", "--head-ref", "--title", "--note"])
+                let options = try parseOptions(Array(arguments.dropFirst(4)), allowed: ["--base-ref", "--head-ref", "--title", "--note", "--agent", "--session"])
                 let before = try JSONDecoder().decode(SchemaReviewSnapshot.self, from: Data(contentsOf: URL(fileURLWithPath: arguments[1])))
                 let after = try JSONDecoder().decode(SchemaReviewSnapshot.self, from: Data(contentsOf: URL(fileURLWithPath: arguments[2])))
                 let review = SchemaReviewDocument(title: options["--title"]?.last ?? "Database changes", baseRef: options["--base-ref"]?.last ?? "Before",
-                    headRef: options["--head-ref"]?.last ?? "After", before: before, after: after, notes: options["--note"] ?? [])
+                    headRef: options["--head-ref"]?.last ?? "After", before: before, after: after, notes: options["--note"] ?? [],
+                    author: try author(options))
                 try review.write(to: URL(fileURLWithPath: arguments[3]))
             } else if command == "inspect", arguments.count >= 2 {
                 let options = try parseOptions(Array(arguments.dropFirst(2)), allowed: ["--side", "--table", "--column", "--find", "--limit"])
@@ -168,14 +169,16 @@ public enum SchemaReviewCommand {
                 let output = try SchemaPreview.inspect(baseline, tables: options["--table"] ?? [], columns: options["--column"] ?? [], find: options["--find"]?.last, limit: limit)
                 FileHandle.standardOutput.write(output + Data("\n".utf8))
             } else if command == "preview", arguments.count >= 4 {
-                let options = try parseOptions(Array(arguments.dropFirst(4)), allowed: ["--side"])
+                let options = try parseOptions(Array(arguments.dropFirst(4)), allowed: ["--side", "--agent", "--session"])
                 let input = URL(fileURLWithPath: arguments[1]), plan = URL(fileURLWithPath: arguments[2]), output = URL(fileURLWithPath: arguments[3])
                 guard output.pathExtension.lowercased() == "sgpreview",
                       ![input.resolvingSymlinksInPath(), plan.resolvingSymlinksInPath()].contains(output.resolvingSymlinksInPath()) else {
                     throw SchemaReviewError.invalid("Save proposals as a separate .sgpreview file.")
                 }
                 let baseline = try SchemaPreview.loadBaseline(input, side: options["--side"]?.last ?? "after")
-                let review = try SchemaPreview.project(baseline, planData: SchemaPreview.read(plan, limit: 2 * 1024 * 1024))
+                var review = try SchemaPreview.project(baseline, planData: SchemaPreview.read(plan, limit: 2 * 1024 * 1024))
+                // Outside the plan, so naming the author never changes the plan fingerprint.
+                review.author = try author(options)
                 try review.write(to: output)
                 let changed = review.changes.filter { $0.kind != .unchanged }
                 let added = changed.reduce(0) { $0 + $1.added.count }, removed = changed.reduce(0) { $0 + $1.removed.count }
@@ -188,6 +191,16 @@ public enum SchemaReviewCommand {
             return 2
         }
     }
+    private static func author(_ options: [String: [String]]) throws -> SchemaReviewDocument.Author? {
+        guard let tool = options["--agent"]?.last else {
+            guard options["--session"] == nil else { throw SchemaReviewError.invalid("--session names the agent's session; pass --agent with it.") }
+            return nil
+        }
+        guard let author = SchemaReviewDocument.Author(tool: tool, session: options["--session"]?.last) else {
+            throw SchemaReviewError.invalid("--agent needs a tool name.")
+        }
+        return author
+    }
     private static func parseOptions(_ arguments: [String], allowed: Set<String>) throws -> [String: [String]] {
         guard arguments.count.isMultiple(of: 2) else { throw SchemaReviewError.invalid(usage) }
         var result: [String: [String]] = [:]
@@ -197,5 +210,5 @@ public enum SchemaReviewCommand {
         }
         return result
     }
-    private static let usage = "Use --schema-review snapshot INPUT OUTPUT.json [--socket PATH]; compare BEFORE.json AFTER.json OUTPUT.sgreview [--base-ref SHA --head-ref SHA --title TITLE --note TEXT]; inspect BASE.json|REVIEW.sgreview [--side before|after --find TEXT --table ID --column NAME --limit N]; or preview BASE PLAN.json OUTPUT.sgpreview [--side before|after]."
+    private static let usage = "Use --schema-review snapshot INPUT OUTPUT.json [--socket PATH]; compare BEFORE.json AFTER.json OUTPUT.sgreview [--base-ref SHA --head-ref SHA --title TITLE --note TEXT --agent TOOL --session NAME]; inspect BASE.json|REVIEW.sgreview [--side before|after --find TEXT --table ID --column NAME --limit N]; or preview BASE PLAN.json OUTPUT.sgpreview [--side before|after --agent TOOL --session NAME]."
 }

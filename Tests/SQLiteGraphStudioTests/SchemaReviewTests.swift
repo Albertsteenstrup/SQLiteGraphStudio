@@ -134,6 +134,34 @@ import Testing
         #expect(SchemaReviewDocument(title: "", baseRef: "", headRef: "", before: before, after: after).changes.allSatisfy { $0.kind == .unchanged })
     }
 
+    @Test func authorNamesTheAgentAndSessionAndOlderReviewsStillOpen() throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let empty = SchemaReviewSnapshot(engine: "sqlite", tables: [], relations: [])
+        let author = try #require(SchemaReviewDocument.Author(tool: " Claude Code ", session: "Table diff visualization clarity"))
+        #expect(author.tool == "claude" && author.agent == .claude)
+        #expect(author.summary == "Claude · Table diff visualization clarity")
+        #expect(SchemaReviewDocument.Author(tool: "vscode-copilot", session: "  ")?.summary == "Copilot")
+        #expect(SchemaReviewDocument.Author(tool: "OpenAI Codex", session: nil)?.agent == .codex)
+        #expect(SchemaReviewDocument.Author(tool: "opencode", session: nil)?.toolName == "OpenCode")
+        // Another tool keeps its own name, and a missing tool means no author at all.
+        #expect(SchemaReviewDocument.Author(tool: "Aider", session: "x")?.summary == "Aider · x")
+        #expect(SchemaReviewDocument.Author(tool: "  ", session: "x") == nil)
+
+        let url = root.appendingPathComponent("authored.sgreview")
+        try SchemaReviewDocument(title: "t", baseRef: "a", headRef: "b", before: empty, after: empty, author: author).write(to: url)
+        #expect(try SchemaReviewDocument.load(url).author == author)
+
+        // Documents written before authors existed carry no key and still load.
+        var legacy = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        legacy.removeValue(forKey: "author")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: url)
+        #expect(try SchemaReviewDocument.load(url).author == nil)
+
+        var forged = SchemaReviewDocument(title: "t", baseRef: "a", headRef: "b", before: empty, after: empty, author: author)
+        forged.author?.session = "line\nbreak"
+        #expect(throws: SchemaReviewError.self) { try forged.validate() }
+    }
+
     @Test func missingSourceIsNotCreatedByCapture() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("missing.sqlite")

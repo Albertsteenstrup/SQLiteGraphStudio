@@ -124,6 +124,16 @@ public struct StoryPlaybackOverlayState: Sendable, Equatable {
     }
 }
 
+public struct GraphRevealRequest: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let tableID: String
+
+    public init(id: UUID = UUID(), tableID: String) {
+        self.id = id
+        self.tableID = tableID
+    }
+}
+
 public struct StoryPlaybackCommand: Identifiable, Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case previous
@@ -154,6 +164,11 @@ public final class AppSession {
     public private(set) var schemaReview: SchemaReviewDocument?
     public private(set) var schemaReviewChanges: [String: SchemaTableChange] = [:]
     public private(set) var schemaReviewEdgeChanges: [String: SchemaChangeKind] = [:]
+    /// Advances whenever the review's change sets are replaced, including a preview reload
+    /// whose graph topology is unchanged but whose field changes are not.
+    public private(set) var schemaReviewRevision = 0
+    /// The latest request to bring a table into view, from outside the graph itself.
+    public private(set) var graphRevealRequest: GraphRevealRequest?
     private var schemaComparisonTask: Task<Void, Never>?
     private var schemaComparisonID: UUID?
     public private(set) var schemaPreviewReloadError: String?
@@ -893,6 +908,8 @@ public final class AppSession {
         schemaReview = nil
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
+        schemaReviewRevision &+= 1
+        graphRevealRequest = nil
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
@@ -1236,6 +1253,14 @@ public final class AppSession {
     public func clearGraphSelection() {
         selectedGraphNodeID = nil
         selectedGraphNodeIDs = []
+    }
+
+    /// Selects a table and asks the graph to bring it into view — for choices made
+    /// outside the canvas, such as a schema review's table list.
+    public func revealGraphNode(_ nodeID: String) {
+        guard graph.contains(nodeID: nodeID) else { return }
+        selectGraphNode(nodeID)
+        graphRevealRequest = GraphRevealRequest(tableID: nodeID)
     }
 
     public func showFloatingDetails(for tableID: String, preferredPosition: CGPoint? = nil) {
@@ -1769,6 +1794,7 @@ public final class AppSession {
         schemaReview = nil
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
+        schemaReviewRevision &+= 1
         records.reset()
         records.catalog = snapshot
         records.relationships = RecordAccess.relationships(catalog: snapshot)
@@ -1889,6 +1915,7 @@ public final class AppSession {
         schemaReviewEdgeChanges = Dictionary(uniqueKeysWithValues: relations.flatMap { change in
             change.relation.sourceColumns.indices.map { (change.graphID + ":\($0)", change.kind) }
         })
+        schemaReviewRevision &+= 1
         tableDescriptors = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0.unionTable.descriptor) })
         tables = changes.map { $0.unionTable.descriptor.summary }
         let newGraph = review.graph
@@ -1905,9 +1932,10 @@ public final class AppSession {
         let ids = Set(changes.map(\.id))
         expandedGraphNodeIDs.formIntersection(ids)
         selectedGraphNodeIDs.formIntersection(ids)
-        if !preservingContext || (selectedGraphNodeID.map({ !ids.contains($0) }) ?? true) {
-            selectedGraphNodeID = changes.first(where: { $0.kind != .unchanged })?.id
-            selectedGraphNodeIDs = Set([selectedGraphNodeID].compactMap { $0 })
+        // A review opens on every change at once; choosing a table narrows it. A preview
+        // reload keeps the reader's choice while that table still exists.
+        if !preservingContext || (selectedGraphNodeID.map({ !ids.contains($0) }) ?? false) {
+            clearGraphSelection()
         }
         // Row bounds are unavailable; recompute existing field/relation filters.
         if graphTableFilter.isActive { Task { await applyGraphFilter(graphTableFilter) } }

@@ -59,9 +59,18 @@ links. The table list carries the same badges, and table details compare field
 definitions, relations, and available constraints/indexes/triggers. Row data,
 permissions, RLS, routines, and deployment effects still need normal code review.
 
+A comparison opens on every change at once. Changed tables are named at a readable
+size even with the whole catalog in view, and relations that did not change stay
+hidden until you zoom in. Choose a table in the list or the graph to see only its
+changes — the relations it gained or lost and the tables they reach — while the
+rest fade; choose it again, or click empty canvas, to return. ⌥⌘↓ and ⌥⌘↑ step
+through changes and bring each one into view.
+
 The [database-diff skill](Skills/database-diff/SKILL.md) documents command-line
 snapshot and comparison creation for hooks. Bind generated reviews to immutable
-base/head revisions and run them after the existing code-review rounds. Git does
+base/head revisions and run them after the existing code-review rounds. An agent
+may add `--agent` and `--session` so the review header names the tool and session
+that produced it, such as **Claude · Table diff visualization clarity**. Git does
 not run pre-merge-commit on fast-forward merges, so that workflow needs an explicit
 final schema-review step as well.
 

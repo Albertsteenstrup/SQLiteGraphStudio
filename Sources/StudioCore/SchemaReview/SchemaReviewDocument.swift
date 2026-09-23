@@ -85,6 +85,31 @@ public enum SchemaReviewError: Error, LocalizedError {
     public var errorDescription: String? { if case .invalid(let message) = self { return message }; return nil }
 }
 
+/// Agent tools whose reviews carry their own mark in the review header.
+public enum SchemaReviewAgent: String, CaseIterable, Sendable {
+    case claude, codex, opencode, copilot
+
+    public init?(identifier: String) {
+        let key = identifier.lowercased().filter { $0.isLetter }
+        switch key {
+        case "claude", "claudecode", "anthropicclaude": self = .claude
+        case "codex", "openaicodex", "codexcli": self = .codex
+        case "opencode": self = .opencode
+        case "copilot", "githubcopilot", "vscodecopilot", "vscode", "copilotchat": self = .copilot
+        default: return nil
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        case .opencode: "OpenCode"
+        case .copilot: "Copilot"
+        }
+    }
+}
+
 public enum SchemaChangeKind: String, Sendable, Codable {
     case unchanged, added, removed, modified
     public var label: String {
@@ -135,13 +160,48 @@ public struct SchemaReviewDocument: Codable, Sendable {
         public var planFingerprint: String
     }
     public var proposal: Proposal?
+    /// The agent that produced the document, when it is allowed to say. Display only:
+    /// it identifies which tool and session a review came from, never who approved it.
+    public var author: Author?
 
-    public init(title: String, baseRef: String, headRef: String, before: SchemaReviewSnapshot, after: SchemaReviewSnapshot, notes: [String] = [], proposal: Proposal? = nil) {
+    public struct Author: Codable, Sendable, Equatable {
+        /// A known agent's identifier (`claude`, `codex`, `opencode`, `copilot`) or
+        /// another tool's own name.
+        public var tool: String
+        /// The human-readable name of the chat or session that produced the document.
+        public var session: String?
+
+        /// Normalises the spellings agents are likely to pass (`Claude Code`,
+        /// `openai-codex`, `vscode-copilot`) and drops empty values.
+        public init?(tool: String?, session: String?) {
+            guard let tool = tool?.trimmingCharacters(in: .whitespacesAndNewlines), !tool.isEmpty else { return nil }
+            self.tool = SchemaReviewAgent(identifier: tool)?.rawValue ?? tool
+            let session = session?.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.session = session?.isEmpty == false ? session : nil
+        }
+
+        public var agent: SchemaReviewAgent? { SchemaReviewAgent(identifier: tool) }
+        public var toolName: String { agent?.displayName ?? tool }
+        /// `Claude · Table diff visualization clarity`
+        public var summary: String { ([toolName] + [session].compactMap { $0 }).joined(separator: " · ") }
+
+        func validate() throws {
+            func isPlainLine(_ value: String, limit: Int) -> Bool {
+                !value.isEmpty && value.count <= limit && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+            }
+            guard isPlainLine(tool, limit: 64), session.map({ isPlainLine($0, limit: 200) }) ?? true else {
+                throw SchemaReviewError.invalid("The author must be a single-line tool name (64 characters) and session name (200 characters).")
+            }
+        }
+    }
+
+    public init(title: String, baseRef: String, headRef: String, before: SchemaReviewSnapshot, after: SchemaReviewSnapshot, notes: [String] = [], proposal: Proposal? = nil, author: Author? = nil) {
         self.title = title; self.baseRef = baseRef; self.headRef = headRef
-        self.before = before; self.after = after; self.notes = notes; self.proposal = proposal
+        self.before = before; self.after = after; self.notes = notes; self.proposal = proposal; self.author = author
     }
     public func validate() throws {
         guard version == 1, before.engine == after.engine else { throw SchemaReviewError.invalid("Compare snapshots of the same database engine.") }
+        try author?.validate()
         try before.validate(); try after.validate()
         if let proposal {
             guard proposal.baseFingerprint == (try SchemaPreview.fingerprint(before)),

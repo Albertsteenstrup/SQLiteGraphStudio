@@ -84,6 +84,31 @@ struct GraphViewportTransform: Sendable, Equatable {
         )
     }
 
+    /// Brings `contentBounds` into view with as little camera movement as possible.
+    ///
+    /// Returns `nil` when it is already on screen. Otherwise the camera centres on it at
+    /// the reader's zoom, zooming out only as far as needed to fit it — never in, so a
+    /// reader who zoomed out to keep a large catalog in view stays zoomed out.
+    static func reveal(
+        contentBounds: CGRect,
+        in viewportSize: CGSize,
+        from current: GraphViewportTransform,
+        padding: CGFloat = 48,
+        minZoom: CGFloat = 0.02
+    ) -> GraphViewportTransform? {
+        guard !contentBounds.isNull, !contentBounds.isInfinite,
+              viewportSize.width > padding * 2, viewportSize.height > padding * 2 else { return nil }
+        let visible = CGRect(origin: .zero, size: viewportSize).insetBy(dx: padding, dy: padding)
+        if visible.contains(current.rect(for: contentBounds, in: viewportSize)) { return nil }
+
+        let fitZoom = min(visible.width / max(contentBounds.width, 1), visible.height / max(contentBounds.height, 1))
+        let zoom = max(min(minZoom, current.zoom), min(current.zoom, fitZoom))
+        return GraphViewportTransform(
+            zoom: zoom,
+            pan: CGSize(width: -contentBounds.midX * zoom, height: -contentBounds.midY * zoom)
+        )
+    }
+
     static func focus(
         contentBounds: CGRect,
         in viewportSize: CGSize,
