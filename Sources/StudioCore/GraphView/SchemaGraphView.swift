@@ -569,7 +569,9 @@ public struct SchemaGraphView: View {
                     schemaChange: session.schemaReviewChanges[node.id],
                     selectNode: {
                         if session.schemaReview != nil {
-                            chooseReviewTable(node.id)
+                            // Zoomed in, a click inside the chosen card is about its
+                            // content, so only an overview click chooses it again.
+                            chooseReviewTable(node.id, togglesChosenTable: zoom < GraphExploration.detailZoom)
                             return
                         }
                         clearGraphFocusSession()
@@ -831,11 +833,11 @@ public struct SchemaGraphView: View {
 
     /// Choosing a table in a review isolates its changes; choosing it again returns to
     /// every change, the same as in the review's table list.
-    private func chooseReviewTable(_ nodeID: String) {
+    private func chooseReviewTable(_ nodeID: String, togglesChosenTable: Bool = true) {
         clearGraphFocusSession()
         selectedStoryID = nil
         withAnimation(.snappy(duration: 0.16)) {
-            if session.selectedGraphNodeIDs == [nodeID] {
+            if togglesChosenTable, session.selectedGraphNodeIDs == [nodeID] {
                 session.clearGraphSelection()
             } else {
                 session.selectGraphNode(nodeID)
@@ -965,7 +967,10 @@ public struct SchemaGraphView: View {
             candidates.append(.init(id: id, anchor: anchor, size: entry.size, isPinned: pinned))
         }
         if let hovered { add(hovered, pinned: true) }
-        session.selectedGraphNodeIDs.sorted().forEach { add($0, pinned: true) }
+        if let chosen = session.selectedGraphNodeID { add(chosen, pinned: true) }
+        // A rubber-band selection can hold hundreds of tables; pinning them all would stack
+        // an unreadable mat of names, so they take their turn under the cap instead.
+        session.selectedGraphNodeIDs.sorted().forEach { add($0, pinned: false) }
         hovered.map { lens.changedNeighbors(of: $0).sorted() }?.forEach { add($0, pinned: false) }
         lens.labelOrder.forEach { add($0, pinned: false) }
 
