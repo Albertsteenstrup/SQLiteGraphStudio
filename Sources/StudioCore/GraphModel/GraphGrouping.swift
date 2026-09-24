@@ -116,7 +116,10 @@ public struct GraphGrouping: Sendable, Hashable {
         })
         var usedGroupIDs = Set(firstHintByID.keys)
 
-        func appendInferred(_ members: [String], namespace: String, prefix: String? = nil, isNamespace: Bool = false) {
+        func appendInferred(
+            _ members: [String], namespace: String, prefix: String? = nil,
+            includesPrefixBase: Bool = false, isNamespace: Bool = false
+        ) {
             guard !members.isEmpty else { return }
             let partitions = boundedNeighborhoods(members, adjacency: adjacency)
             let memberSet = Set(members)
@@ -131,7 +134,8 @@ public struct GraphGrouping: Sendable, Hashable {
                 baseLabel = displayNamespace.isEmpty ? "Tables" : displayNamespace
             } else if let prefix {
                 kind = "prefix"
-                baseLabel = displayNamespace.isEmpty ? "\(prefix)*" : "\(displayNamespace) · \(prefix)*"
+                let name = includesPrefixBase ? String(prefix.dropLast()) : "\(prefix)*"
+                baseLabel = displayNamespace.isEmpty ? name : "\(displayNamespace) · \(name)"
             } else {
                 kind = "neighborhood"
                 let label = hasRelations ? "Neighborhood" : "Tables"
@@ -170,6 +174,9 @@ public struct GraphGrouping: Sendable, Hashable {
             }
 
             var nodesByPrefix: [String: [String]] = [:]
+            let nodesByObjectName = Dictionary(grouping: namespaceMembers) { nodeID in
+                descriptors[nodeID]?.objectName ?? nodeID
+            }
             for nodeID in namespaceMembers {
                 let name = descriptors[nodeID]?.objectName ?? nodeID
                 guard let prefix = namePrefix(name) else { continue }
@@ -182,8 +189,15 @@ public struct GraphGrouping: Sendable, Hashable {
                 // Two names can coincide accidentally; three repeated literal
                 // prefixes are a useful signal without guessing business domains.
                 guard prefixMembers.count >= 3 else { continue }
-                appendInferred(prefixMembers, namespace: namespace, prefix: prefix)
-                prefixedIDs.formUnion(prefixMembers)
+                // The exact base table is usually the hub of its qualified family.
+                // Match only within this namespace and only after the prefix itself
+                // has met the credibility threshold; never infer from one suffix.
+                let baseMatches = nodesByObjectName[String(prefix.dropLast()), default: []]
+                let base = baseMatches.count == 1 ? baseMatches : []
+                let members = prefixMembers + base
+                appendInferred(members, namespace: namespace, prefix: prefix,
+                               includesPrefixBase: !base.isEmpty)
+                prefixedIDs.formUnion(members)
             }
 
             appendInferred(

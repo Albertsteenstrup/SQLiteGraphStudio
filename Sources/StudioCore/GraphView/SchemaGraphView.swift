@@ -272,6 +272,12 @@ public struct SchemaGraphView: View {
                     layoutRevision &+= 1
                 }
             }
+            .onChange(of: session.automationFocusResetRevision) { _, _ in
+                // A later focus_keys action in the same point takes precedence.
+                guard session.automationFocusCommand == nil else { return }
+                clearGraphFocusSession(animated: false, restoreViewport: false)
+                layoutRevision &+= 1
+            }
             .onChange(of: session.automationFocusCommand?.id) { _, _ in
                 guard let command = session.automationFocusCommand else {
                     pendingAutomationFocusID = nil
@@ -1980,12 +1986,13 @@ public struct SchemaGraphView: View {
         }
         let topInset = min(graphControlsHeight + 30, size.height * 0.4)
         let bottomInset: CGFloat = 70
+        let readableSubset = session.automationVisibleTableIDs != nil && plan.visibleTableIDs().count <= 8
         var transform = GraphViewportTransform.fit(
             contentBounds: bounds,
             in: CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset)),
             padding: 72,
-            minZoom: isLargeGraph ? 0.01 : 0.22,
-            maxZoom: 1.05
+            minZoom: readableSubset ? 0.7 : (isLargeGraph ? 0.01 : 0.22),
+            maxZoom: readableSubset ? 1.3 : 1.05
         )
         transform.pan.height += (topInset - bottomInset) / 2
         setViewport(transform, animated: animated, animation: animation, completion: completion)
@@ -2835,6 +2842,14 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             }
         }
         .clipShape(backgroundShape)
+        .overlay {
+            if isSelected {
+                backgroundShape
+                    .stroke(StudioPalette.accent.opacity(0.88), lineWidth: 2)
+                    .padding(-5)
+                    .allowsHitTesting(false)
+            }
+        }
         .overlay { if let schemaChange { SchemaChangeBorder(change: schemaChange) } }
         .opacity(schemaChange?.kind == .removed ? 0.6 : 1)
         .scaleEffect(isDragging ? 1.012 : 1)
@@ -2855,6 +2870,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             if schemaChange == nil { Button("Show Top 10", action: showTopRows) }
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.84), value: displayStyle)
+        .animation(.easeInOut(duration: 0.18), value: isSelected)
     }
 
     private var header: some View {

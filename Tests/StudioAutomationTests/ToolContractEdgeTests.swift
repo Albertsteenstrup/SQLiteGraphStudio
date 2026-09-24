@@ -6,6 +6,54 @@ import Testing
 @Suite(.serialized)
 struct ToolContractEdgeTests {
     @Test @MainActor
+    func sparseSubsetCompactsAndNarratedPointSelectsItsSubject() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-readable-point-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let connected = await invoke(coordinator, "studio_connect_context", ["client_task_id": "readable-point"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let opened = await invoke(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+        ], context: context)
+        let workspace = try #require(payload(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+        let ids = Array(tab.session.graph.nodes.prefix(3).map(\.id))
+        #expect(ids.count == 3)
+        for (index, id) in ids.enumerated() {
+            tab.session.graphLayout.pin(nodeID: id, at: CGPoint(x: CGFloat(index) * 4_000, y: 0))
+        }
+        let shown = await invoke(coordinator, "studio_show_tables", [
+            "context_id": context, "workspace_id": workspace,
+            "request_id": UUID().uuidString, "table_ids": ids,
+        ], context: context)
+        #expect(shown["isError"] as? Bool == false)
+        let positions = ids.map { tab.session.graphLayout.position(for: $0) }
+        #expect((positions.map(\.x).max() ?? 0) - (positions.map(\.x).min() ?? 0) == 650)
+
+        let target = ids[1]
+        let started = await invoke(coordinator, "studio_start_presentation", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "narration_mode": "enabled", "activation_intent": "foreground",
+            "points": [["caption": "This is the table to inspect", "target_table_id": target,
+                        "timing": ["advance": "manual"]]],
+        ], context: context)
+        #expect(started["isError"] as? Bool == false)
+        #expect(payload(started)["narration_enabled"] as? Bool == true)
+        #expect(payload(started)["current_point_has_audio"] as? Bool == true)
+        for _ in 0..<100 where !tab.session.selectedGraphNodeIDs.contains(target) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tab.session.selectedGraphNodeIDs == [target])
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
     func graphRelationsExposeUsableRecordIDsAndInvalidViewChangesAreAtomic() async throws {
         let fixture = FileManager.default.temporaryDirectory
             .appendingPathComponent("sgs-tool-contract-\(UUID().uuidString).sqlite")
@@ -214,6 +262,16 @@ struct ToolContractEdgeTests {
         }
         #expect(tab.session.automationFocusCommand?.relationID == edge.id)
         #expect(tab.session.graphVisibleTableIDs.isSuperset(of: ["authors", "posts"]))
+
+        // The next scope must dismiss this prior focus even when its root
+        // remains among the visible tables.
+        let scoped = await invoke(coordinator, "studio_show_tables", [
+            "context_id": context, "workspace_id": workspace,
+            "request_id": UUID().uuidString, "table_ids": ["authors", "posts"],
+        ], context: context)
+        #expect(scoped["isError"] as? Bool == false)
+        #expect(tab.session.automationFocusCommand == nil)
+        #expect(tab.session.automationFocusResetRevision > 0)
 
         await coordinator.close()
         await tabs.closeAllAndWait()

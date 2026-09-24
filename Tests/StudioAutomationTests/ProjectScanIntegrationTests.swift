@@ -6,6 +6,40 @@ import Testing
 @Suite(.serialized)
 struct ProjectScanIntegrationTests {
     @Test @MainActor
+    func scanFlagsPostgresAndSQLiteAsAnExplicitSourceChoice() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-mixed-project-\(UUID().uuidString)", isDirectory: true)
+        let postgres = root.appendingPathComponent("backend/postgres/migrations", isDirectory: true)
+        let sqlite = root.appendingPathComponent("backend/sqlite/schema.sql")
+        try FileManager.default.createDirectory(at: postgres, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sqlite.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "CREATE TABLE public.contract (id UUID PRIMARY KEY);".write(
+            to: postgres.appendingPathComponent("0001_contract.sql"), atomically: true, encoding: .utf8)
+        try "CREATE TABLE public.vendor (id UUID PRIMARY KEY);".write(
+            to: postgres.appendingPathComponent("0002_vendor.sql"), atomically: true, encoding: .utf8)
+        try "CREATE TABLE contract (id INTEGER PRIMARY KEY);".write(to: sqlite, atomically: true, encoding: .utf8)
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        defer { Task { @MainActor in await coordinator.close(); await tabs.closeAllAndWait() } }
+        let connected = try await call(coordinator, "studio_connect_context", ["client_task_id": "mixed-source-scan"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let scan = try await call(coordinator, "studio_scan_project", [
+            "context_id": context, "project_path": root.path,
+        ], context: context)
+        let result = payload(scan)
+        #expect(result["source_choice_required"] as? Bool == true)
+        #expect(Set(result["available_engines"] as? [String] ?? []) == ["PostgreSQL", "SQLite"])
+        let candidates = try #require(result["candidates"] as? [[String: Any]])
+        #expect(candidates.contains { $0["engine"] as? String == "PostgreSQL" && $0["supports_rows"] as? Bool == false })
+        #expect(candidates.contains { $0["engine"] as? String == "SQLite" && $0["supports_rows"] as? Bool == false })
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
     func projectScanOpensAnExactMigrationVersionAndRejectsDataTools() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("sgs-agent-project-\(UUID().uuidString)", isDirectory: true)

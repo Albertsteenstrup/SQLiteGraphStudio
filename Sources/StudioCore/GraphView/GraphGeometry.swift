@@ -172,7 +172,7 @@ enum GraphCardLayout {
         let characterWidth: CGFloat = 9.8
         let chromeWidth: CGFloat = 182
         let minWidth: CGFloat = 226
-        let maxWidth: CGFloat = 380
+        let maxWidth: CGFloat = 560
         return min(max(minWidth, CGFloat(title.count) * characterWidth + chromeWidth), maxWidth)
     }
 

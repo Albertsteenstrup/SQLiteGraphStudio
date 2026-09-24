@@ -169,6 +169,51 @@ struct GraphGroupingTests {
     }
 
     @Test
+    func exactBaseTableJoinsItsCrediblePrefixGroup() throws {
+        let ids = ["contract", "contract_system", "contract_vendor", "contract_term", "contractor", "vendor"]
+        let result = GraphGrouping.resolve(graph: graph(ids, edges: [edge("contract_system", "contract")]))
+        let contract = try #require(result.group(for: "contract"))
+
+        #expect(contract.isInferred)
+        #expect(contract.label == "contract")
+        #expect(contract.nodeIDs == ["contract", "contract_system", "contract_term", "contract_vendor"])
+        #expect(result.group(for: "contract_system")?.id == contract.id)
+        #expect(result.group(for: "contractor")?.id != contract.id)
+        let reversed = GraphGrouping.resolve(
+            graph: graph(Array(ids.reversed()), edges: [edge("contract_system", "contract")])
+        )
+        #expect(result == reversed)
+
+        let withAuthoredBase = GraphGrouping.resolve(
+            graph: graph(ids),
+            sidecar: SchemaSidecar(clusters: [.init(id: "chosen", tables: ["contract"])])
+        )
+        #expect(withAuthoredBase.group(for: "contract")?.id == "chosen")
+        #expect(withAuthoredBase.group(for: "contract_system")?.nodeIDs ==
+            ["contract_system", "contract_term", "contract_vendor"])
+    }
+
+    @Test
+    func exactBaseMatchStaysWithinItsPostgresSchema() throws {
+        let publicObjects = ["contract", "contract_system", "contract_vendor", "contract_term"]
+            + (0..<49).map { "other\($0)" }
+        let descriptors = Dictionary(uniqueKeysWithValues:
+            publicObjects.map { name in
+                let id = "public.\(name)"
+                return (id, descriptor(id: id, schema: "public", object: name))
+            } + [
+                ("archive.contract", descriptor(id: "archive.contract", schema: "archive", object: "contract")),
+            ])
+        let result = GraphGrouping.resolve(graph: graph(descriptors.keys.sorted()), descriptors: descriptors)
+        let contract = try #require(result.group(for: "public.contract"))
+
+        #expect(contract.nodeIDs == ["public.contract", "public.contract_system",
+                                     "public.contract_term", "public.contract_vendor"])
+        #expect(contract.label == "contract")
+        #expect(result.group(for: "archive.contract")?.id != contract.id)
+    }
+
+    @Test
     func oversizedNamePrefixStillUsesBoundedNeighborhoods() {
         let ids = (0..<585).map { "record_item_\($0)" }
         let result = GraphGrouping.resolve(graph: graph(ids))

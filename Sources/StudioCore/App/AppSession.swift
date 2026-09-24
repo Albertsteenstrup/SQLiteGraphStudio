@@ -130,6 +130,9 @@ public final class AppSession {
     public var floatingDetailsCardTableID: String?
     public var floatingDetailsCardPosition: CGPoint?
     public var automationFocusCommand: AutomationGraphFocusCommand?
+    /// A new table scope should leave any prior relation focus, even when its
+    /// root table remains in the new subset.
+    public private(set) var automationFocusResetRevision = 0
     public var automationViewportCommand: AutomationGraphViewportCommand?
     /// Invoked for user-originated graph changes so a presentation can pause progression.
     @ObservationIgnored public var onManualGraphInteraction: (@MainActor () -> Void)?
@@ -258,6 +261,11 @@ public final class AppSession {
     /// Requests native graph focus through the same table/relation layout used by the UI.
     public func setAutomationFocusCommand(_ command: AutomationGraphFocusCommand?) {
         automationFocusCommand = command
+    }
+
+    public func requestAutomationFocusReset() {
+        automationFocusCommand = nil
+        automationFocusResetRevision &+= 1
     }
 
     public func requestAutomationViewport(fitVisibleTables: Bool, transitionMilliseconds: Int = 420) {

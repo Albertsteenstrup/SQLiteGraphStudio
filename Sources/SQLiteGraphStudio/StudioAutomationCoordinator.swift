@@ -767,6 +767,9 @@ final class StudioAutomationCoordinator {
                 ]
                 item["migration_count"] = candidate.migrationSet?.files.count as Any? ?? NSNull()
                 item["latest_migration_version"] = candidate.migrationSet?.latest?.version as Any? ?? NSNull()
+                item["engine"] = candidate.migrationSet?.dialect.displayName
+                    ?? (candidate.kind == .sqliteDatabase ? "SQLite" : "PostgreSQL")
+                item["supports_rows"] = candidate.kind == .sqliteDatabase || candidate.kind == .postgresConnection
                 return item
             }
             let response: [String: Any] = [
@@ -774,6 +777,11 @@ final class StudioAutomationCoordinator {
                 "candidates": candidates,
                 "candidate_offset": offset,
                 "candidate_count": result.candidates.count,
+                "available_engines": result.sourceEngines.map(\.displayName),
+                "source_choice_required": result.requiresEngineChoice,
+                "source_choice_reason": result.requiresEngineChoice
+                    ? "Both PostgreSQL and SQLite models were found. Ask which model the user wants before opening a source."
+                    : NSNull(),
                 "has_more_candidates": offset + page.count < result.candidates.count,
                 "reached_scan_limit": result.reachedLimit,
                 "directories_visited": result.directoriesVisited,
@@ -1008,7 +1016,9 @@ final class StudioAutomationCoordinator {
             case "remove": next = prior.subtracting(requested)
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "operation must be replace, add, remove, or all.")
             }
+            session.requestAutomationFocusReset()
             session.setAutomationVisibleTableIDs(next)
+            compactSparseAutomationSubset(session)
             session.revealSchemaForAutomation()
             session.requestAutomationViewport(fitVisibleTables: true)
             session.markAutomationViewChanged()
@@ -1035,6 +1045,7 @@ final class StudioAutomationCoordinator {
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "Invalid table expansion operation.")
             }
             tab.session.revealSchemaForAutomation()
+            tab.session.requestAutomationViewport(fitVisibleTables: true)
             tab.session.markAutomationViewChanged()
             return viewPayload(tab)
         case "studio_focus_keys":
@@ -3609,12 +3620,41 @@ final class StudioAutomationCoordinator {
         }]
     }
 
+    private func compactSparseAutomationSubset(_ session: AppSession) {
+        guard session.automationVisibleTableIDs != nil else { return }
+        let ids = session.graphVisibleTableIDs.sorted()
+        guard (3...8).contains(ids.count) else { return }
+        let points = ids.map { session.graphLayout.position(for: $0) }
+        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else { return }
+        let columns = 2
+        let rows = (ids.count + columns - 1) / columns
+        // Collapsed cards can be up to 560 wide for readable names, while
+        // expanded cards can be 440 x 236. Leave room for either style.
+        let rowSpacing: CGFloat = 280
+        let isSparse = maxX - minX > 720 || maxY - minY > CGFloat(rows) * rowSpacing + 180
+        guard isSparse else { return }
+        for (index, id) in ids.enumerated() {
+            let column = index % columns
+            let row = index / columns
+            session.graphLayout.pin(nodeID: id, at: CGPoint(
+                x: CGFloat(column) * 650 - 325,
+                y: CGFloat(row) * rowSpacing - CGFloat(rows - 1) * rowSpacing / 2
+            ))
+        }
+    }
+
     private func makePoint(_ raw: [String: Any], state: PresentationState, narration: Bool) throws -> LivePresentationController.Point {
         let caption = try requiredString(raw, "caption")
         guard caption.count <= 2_000 else { throw Failure(code: "LIMIT_REACHED", detail: "A presentation point caption must be at most 2,000 characters.") }
-        let spoken = narration ? string(raw, "narration") : nil
+        // A caption-only point should still speak when the user's narration
+        // preference is enabled. An explicit empty narration stays silent.
+        let spoken = narration ? (raw["narration"] == nil ? caption : string(raw, "narration")) : nil
         guard (spoken?.count ?? 0) <= 5_000 else { throw Failure(code: "LIMIT_REACHED", detail: "A narration point must be at most 5,000 characters.") }
-        let actions = raw["actions"] as? [[String: Any]] ?? []
+        var actions = raw["actions"] as? [[String: Any]] ?? []
+        if let target = string(raw, "target_table_id") {
+            actions.append(["type": "select_objects", "table_ids": [target]])
+        }
         guard actions.count <= 12 else { throw Failure(code: "LIMIT_REACHED", detail: "A point can have at most 12 visual actions.") }
         let timing = raw["timing"] as? [String: Any] ?? [:]
         let readingTime = min(15_000, max(2_000, caption.split(whereSeparator: \.isWhitespace).count * 333 + 500))
@@ -3627,7 +3667,7 @@ final class StudioAutomationCoordinator {
         state.actions[point.id] = actions
         state.pointsByID[point.id] = point
         state.externalIDs[point.id] = string(raw, "point_id") ?? point.id.uuidString
-        state.savedNarration[point.id] = string(raw, "narration") ?? ""
+        state.savedNarration[point.id] = spoken ?? ""
         state.savedTiming[point.id] = (minimum, hold, string(timing, "advance") == "manual" ? "manual" : "automatic")
         state.savedEvidence[point.id] = try evidenceReferences(raw["evidence_refs"])
         return point
@@ -3738,6 +3778,7 @@ final class StudioAutomationCoordinator {
                     let ids = Set(strings(action, "table_ids") ?? [])
                     let all = Set(session.graph.nodes.map(\.id))
                     let existing = session.automationVisibleTableIDs ?? all
+                    session.requestAutomationFocusReset()
                     switch string(action, "mode") ?? "replace" {
                     case "replace": session.setAutomationVisibleTableIDs(ids)
                     case "add": session.setAutomationVisibleTableIDs(existing.union(ids))
@@ -3745,6 +3786,7 @@ final class StudioAutomationCoordinator {
                     case "all": session.setAutomationVisibleTableIDs(nil)
                     default: throw Failure(code: "INVALID_ARGUMENT", detail: "Invalid show_tables mode.")
                     }
+                    compactSparseAutomationSubset(session)
                     session.requestAutomationViewport(fitVisibleTables: true)
                     needsGraphRender = true
                 case "select_objects":
@@ -3752,6 +3794,7 @@ final class StudioAutomationCoordinator {
                     needsGraphRender = true
                 case "expand_tables":
                     session.expandedGraphNodeIDs = Set(strings(action, "table_ids") ?? [])
+                    session.requestAutomationViewport(fitVisibleTables: true)
                     needsGraphRender = true
                 case "focus_keys":
                     guard let tableID = string(action, "table_id") ?? strings(action, "table_ids")?.first else {
@@ -3883,6 +3926,8 @@ final class StudioAutomationCoordinator {
                 "title": state.title, "revision": state.revision, "status": statusLabel(state.controller.status),
                 "current_point_id": nullable(current.map { state.externalIDs[$0.id] ?? $0.id.uuidString }),
                 "current_caption": nullable(current?.caption),
+                "narration_enabled": state.narrationEnabled,
+                "current_point_has_audio": current?.narration?.isEmpty == false,
                 "pending_point_ids": state.controller.pendingPoints.map { state.externalIDs[$0.id] ?? $0.id.uuidString },
                 "completed_point_ids": state.controller.displayedHistory.map { state.externalIDs[$0.id] ?? $0.id.uuidString },
                 "visual_state": tab.map(visualState) ?? "workspace_closed"]

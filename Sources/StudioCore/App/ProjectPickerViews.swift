@@ -67,7 +67,7 @@ struct ProjectCandidatePickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var selected: ProjectCandidate? {
-        choice.candidates.first { $0.id == selectedID } ?? choice.candidates.first
+        choice.candidates.first { $0.id == selectedID }
     }
 
     var body: some View {
@@ -129,8 +129,12 @@ struct ProjectCandidatePickerView: View {
         }
         .frame(width: 640, height: 480)
         .onAppear {
-            selectedID = choice.candidates.first?.id
-            version = choice.candidates.first?.migrationSet?.latest?.version
+            // With multiple choices, require an actual selection instead of
+            // making Return silently open the first migration set.
+            if choice.candidates.count == 1 {
+                selectedID = choice.candidates.first?.id
+                version = choice.candidates.first?.migrationSet?.latest?.version
+            }
         }
         .onChange(of: selectedID) { _, _ in
             version = selected?.migrationSet?.latest?.version

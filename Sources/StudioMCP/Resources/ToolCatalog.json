@@ -87,7 +87,7 @@
   {
     "name": "studio_scan_project",
     "title": "Scan Project Folder",
-    "description": "Find exact database, PostgreSQL connection or backup, migration-set, and schema-script candidates in a local project folder without opening one. Use when the user names a repository or project rather than an exact source. The scan honors project ignores, skips dependency/build folders and symlinks, and is bounded to 50,000 entries; if reached_scan_limit is true, narrow the folder. Page candidates with candidate_offset and candidate_limit. Choose the relevant candidate using the user's question and code context, then pass its exact source_path to studio_open_source. Never silently assume the first candidate is the right data model.",
+    "description": "Find exact database, PostgreSQL connection or backup, migration-set, and schema-script candidates in a local project folder without opening one. Use when the user names a repository or project rather than an exact source. The scan honors project ignores, skips dependency/build folders and symlinks, and is bounded to 50,000 entries; if reached_scan_limit is true, narrow the folder. Page candidates with candidate_offset and candidate_limit. Choose the relevant candidate using the user's question and code context, then pass its exact source_path to studio_open_source. Never silently assume the first candidate is the right data model. Each candidate reports engine and supports_rows. If source_choice_required is true, both PostgreSQL and SQLite were found: ask the user which model to use before opening one unless the user already specified an exact source or this task has an established binding. Schema scripts and migration sets cannot show stored row values.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -637,7 +637,7 @@
   {
     "name": "studio_show_tables",
     "title": "Show Tables",
-    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge.",
+    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -685,7 +685,7 @@
   {
     "name": "studio_select_objects",
     "title": "Select Objects",
-    "description": "Select the supplied table/object IDs in the graph. The current app build supports table selection; emphasis styling and selection operations beyond replacement are not available.",
+    "description": "Select the supplied table/object IDs in the graph. The current app build supports table selection; emphasis styling and selection operations beyond replacement are not available. Select just one table when a point concerns that table; selection marks the visual subject without hiding the surrounding context.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -729,7 +729,7 @@
   {
     "name": "studio_expand_tables",
     "title": "Expand Tables",
-    "description": "Expand or collapse the supplied table cards in the current schema graph. This changes graph detail in the selected workspace.",
+    "description": "Expand or collapse the supplied table cards in the current schema graph. This changes graph detail in the selected workspace. Expand only the table whose fields matter to the current explanation, then let the camera refit its larger card.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -849,7 +849,10 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["absolute", "fit_visible"]
+          "enum": [
+            "absolute",
+            "fit_visible"
+          ]
         },
         "zoom": {
           "type": "number"
@@ -885,8 +888,14 @@
       ],
       "anyOf": [
         {
-          "properties": {"mode": {"const": "fit_visible"}},
-          "required": ["mode"]
+          "properties": {
+            "mode": {
+              "const": "fit_visible"
+            }
+          },
+          "required": [
+            "mode"
+          ]
         },
         {
           "required": [
@@ -901,8 +910,12 @@
         }
       ],
       "dependentRequired": {
-        "pan_x": ["pan_y"],
-        "pan_y": ["pan_x"]
+        "pan_x": [
+          "pan_y"
+        ],
+        "pan_y": [
+          "pan_x"
+        ]
       }
     },
     "annotations": {
@@ -2000,7 +2013,7 @@
   {
     "name": "studio_start_presentation",
     "title": "Start Presentation",
-    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. Each point applies its actions and completes graph camera/focus motion before revealing its caption, starting narration, or counting viewing time. Match each caption to the tables, keys, or rows its actions actually show; use short points and fit/compact related tables when necessary. set_camera actions accept transition_ms from 0 to 1200 (default 420). A manual graph gesture supersedes pending motion and immediately pauses speech on a visible point; a gesture during preparation leaves the point failed for retry or revision. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state.",
+    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. Each point applies its actions and completes graph camera/focus motion before revealing its caption, starting narration, or counting viewing time. Match each caption to the tables, keys, or rows its actions actually show; use short points and fit/compact related tables when necessary. set_camera actions accept transition_ms from 0 to 1200 (default 420). A manual graph gesture supersedes pending motion and immediately pauses speech on a visible point; a gesture during preparation leaves the point failed for retry or revision. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state. With narration enabled, caption text is spoken when a point omits narration; pass narration as an empty string only for an intentionally silent point. Set target_table_id on a point that makes a claim about one table, so the app selects it after the other actions. Use show_tables for a small legible scope and open_table for meaningful bounded values when the source contains rows.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2023,7 +2036,8 @@
                 "type": "string"
               },
               "narration": {
-                "type": "string"
+                "type": "string",
+                "description": "Optional spoken wording. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
               },
               "actions": {
                 "type": "array",
@@ -2065,6 +2079,10 @@
                   "additionalProperties": false
                 },
                 "maxItems": 32
+              },
+              "target_table_id": {
+                "type": "string",
+                "description": "Exact table to select as the visual subject after this point's other actions. Keep contextual tables visible if useful."
               }
             }
           }
@@ -2140,7 +2158,8 @@
                 "type": "string"
               },
               "narration": {
-                "type": "string"
+                "type": "string",
+                "description": "Optional spoken wording. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
               },
               "actions": {
                 "type": "array",
@@ -2182,6 +2201,10 @@
                   "additionalProperties": false
                 },
                 "maxItems": 32
+              },
+              "target_table_id": {
+                "type": "string",
+                "description": "Exact table to select as the visual subject after this point's other actions. Keep contextual tables visible if useful."
               }
             }
           }

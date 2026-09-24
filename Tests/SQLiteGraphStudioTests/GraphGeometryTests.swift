@@ -134,6 +134,15 @@ struct GraphGeometryTests {
     }
 
     @Test
+    func longCollapsedTableNamesCanUseMoreThanTheOldCardWidth() {
+        let width = GraphCardLayout.collapsedWidth(
+            title: "proposal_candidate_contribution", hovered: false
+        )
+        #expect(width > 380)
+        #expect(width <= 560)
+    }
+
+    @Test
     func expandedCardsCapVisibleRowsAtSeven() {
         let columns = (0..<12).map { index in
             makeColumn(name: "column_\(index)", type: "TEXT")

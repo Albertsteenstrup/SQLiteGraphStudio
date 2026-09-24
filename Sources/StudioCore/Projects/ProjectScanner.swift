@@ -98,6 +98,20 @@ public struct ProjectScanResult: Sendable {
     public let skippedDirectoryCount: Int
     public let reachedLimit: Bool
 
+    /// Distinct database engines represented by every candidate, including
+    /// schema scripts and migration sets rather than just live connections.
+    public var sourceEngines: [SQLDialect] {
+        Set(candidates.compactMap { candidate -> SQLDialect? in
+            switch candidate.kind {
+            case .migrationSet, .schemaScript: candidate.migrationSet?.dialect
+            case .sqliteDatabase: .sqlite
+            case .postgresBackup, .postgresConnection: .postgreSQL
+            }
+        }).sorted { $0.rawValue < $1.rawValue }
+    }
+
+    public var requiresEngineChoice: Bool { sourceEngines.count > 1 }
+
     public init(root: URL, candidates: [ProjectCandidate], directoriesVisited: Int,
                 filesInspected: Int, skippedDirectoryCount: Int, reachedLimit: Bool) {
         self.root = root
