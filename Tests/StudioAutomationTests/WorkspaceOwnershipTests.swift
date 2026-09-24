@@ -6,6 +6,67 @@ import Testing
 @Suite(.serialized)
 struct WorkspaceOwnershipTests {
     @Test @MainActor
+    func openingTheSameSourceAgainReusesTheBoundWorkspace() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-workspace-reuse-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        defer { Task { @MainActor in await coordinator.close(); await tabs.closeAllAndWait() } }
+        let connected = try await call(coordinator, "studio_connect_context",
+                                       ["client_task_id": "source-reuse"], client: "source-reuse-client")
+        let context = try #require(content(connected)["context_id"] as? String)
+        let first = try await call(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+        ], client: "source-reuse-client", context: context)
+        let second = try await call(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": fixture.path,
+        ], client: "source-reuse-client", context: context)
+
+        #expect(second["isError"] as? Bool == false)
+        #expect(content(second)["workspace_id"] as? String == content(first)["workspace_id"] as? String)
+        #expect(content(second)["reused"] as? Bool == true)
+        #expect(tabs.tabs.count == 2)
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
+    func automationStopsAtWorkspaceLimitAndRecoversAfterClosingATab() async throws {
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        defer { Task { @MainActor in await coordinator.close(); await tabs.closeAllAndWait() } }
+        let connected = try await call(coordinator, "studio_connect_context",
+                                       ["client_task_id": "workspace-limit"], client: "workspace-limit-client")
+        let context = try #require(content(connected)["context_id"] as? String)
+        for _ in 0..<11 {
+            let created = try await call(coordinator, "studio_create_workspace", [
+                "context_id": context, "request_id": UUID().uuidString,
+            ], client: "workspace-limit-client", context: context)
+            #expect(created["isError"] as? Bool == false)
+        }
+        let denied = try await call(coordinator, "studio_create_workspace", [
+            "context_id": context, "request_id": UUID().uuidString,
+        ], client: "workspace-limit-client", context: context)
+        #expect(errorCode(denied) == "WORKSPACE_LIMIT_REACHED")
+        #expect(tabs.tabs.count == 12)
+
+        let closed = try await call(coordinator, "studio_close_workspace", [
+            "context_id": context, "request_id": UUID().uuidString,
+        ], client: "workspace-limit-client", context: context)
+        #expect(closed["isError"] as? Bool == false)
+        let createdAgain = try await call(coordinator, "studio_create_workspace", [
+            "context_id": context, "request_id": UUID().uuidString,
+        ], client: "workspace-limit-client", context: context)
+        #expect(createdAgain["isError"] as? Bool == false)
+        #expect(tabs.tabs.count == 12)
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
     func nativeHandoffDuringSourceOpenIsNotReclaimedByTheOpeningTask() async throws {
         let fixture = FileManager.default.temporaryDirectory
             .appendingPathComponent("sgs-workspace-open-handoff-\(UUID().uuidString).sqlite")

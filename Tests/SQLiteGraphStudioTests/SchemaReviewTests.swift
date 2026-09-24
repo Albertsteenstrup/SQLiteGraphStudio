@@ -134,6 +134,49 @@ import Testing
         #expect(SchemaReviewDocument(title: "", baseRef: "", headRef: "", before: before, after: after).changes.allSatisfy { $0.kind == .unchanged })
     }
 
+    @Test func authorNamesTheAgentAndSessionAndOlderReviewsStillOpen() throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let empty = SchemaReviewSnapshot(engine: "sqlite", tables: [], relations: [])
+        let author = try #require(SchemaReviewDocument.Author(tool: " Claude Code ", session: "Table diff visualization clarity"))
+        #expect(author.tool == "claude" && author.agent == .claude)
+        #expect(author.summary == "Claude · Table diff visualization clarity")
+        #expect(SchemaReviewDocument.Author(tool: "vscode-copilot", session: "  ")?.summary == "Copilot")
+        #expect(SchemaReviewDocument.Author(tool: "OpenAI Codex", session: nil)?.agent == .codex)
+        #expect(SchemaReviewDocument.Author(tool: "opencode", session: nil)?.toolName == "OpenCode")
+        // Another tool keeps its own name, and a missing tool means no author at all.
+        #expect(SchemaReviewDocument.Author(tool: "Aider", session: "x")?.summary == "Aider · x")
+        #expect(SchemaReviewDocument.Author(tool: "  ", session: "x") == nil)
+
+        let url = root.appendingPathComponent("authored.sgreview")
+        try SchemaReviewDocument(title: "t", baseRef: "a", headRef: "b", before: empty, after: empty, author: author).write(to: url)
+        #expect(try SchemaReviewDocument.load(url).author == author)
+
+        // Documents written before authors existed carry no key and still load.
+        var legacy = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        legacy.removeValue(forKey: "author")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: url)
+        #expect(try SchemaReviewDocument.load(url).author == nil)
+
+        var named = SchemaReviewDocument(title: "t", baseRef: "a", headRef: "b", before: empty, after: empty, author: author)
+        // Emoji are built with joiners, which are format characters but harmless.
+        named.author?.session = "👩‍💻 pairing"
+        try named.validate()
+        for unsafe in ["line\nbreak", "tab\there", "\u{202E}desrever", "a\u{2028}b"] {
+            named.author?.session = unsafe
+            #expect(throws: SchemaReviewError.self) { try named.validate() }
+        }
+    }
+
+    @Test func reviewCommandAuthorFlagsNeedATool() throws {
+        #expect(try SchemaReviewCommand.author([:]) == nil)
+        let author = try #require(try SchemaReviewCommand.author(["--agent": ["codex"], "--session": ["Migration check"]]))
+        #expect(author.summary == "Codex · Migration check")
+        // The last value wins, as for every other repeated option.
+        #expect(try SchemaReviewCommand.author(["--agent": ["claude", "opencode"]])?.agent == .opencode)
+        #expect(throws: SchemaReviewError.self) { try SchemaReviewCommand.author(["--session": ["orphan"]]) }
+        #expect(throws: SchemaReviewError.self) { try SchemaReviewCommand.author(["--agent": ["  "]]) }
+    }
+
     @Test func missingSourceIsNotCreatedByCapture() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("missing.sqlite")

@@ -184,7 +184,7 @@ struct SQLiteGraphStudioApp: App {
     @State private var state = StudioApplicationState()
 
     var body: some Scene {
-        WindowGroup("SQLite Graph Studio") {
+        Window("SQLite Graph Studio", id: "main") {
             StudioRootView(session: state.initialSession, workspaceTabs: state.tabs)
                 .frame(
                     minWidth: WorkspaceCompactLayout.windowMinimumWidth,

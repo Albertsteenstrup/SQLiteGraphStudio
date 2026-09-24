@@ -2,6 +2,12 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## One Graph Studio Window for Coding Agents
+
+- The app uses one main window with workspace tabs and prohibits multiple app instances. Launch scripts and bundled skills reuse the running app instead of requesting a new copy.
+- `studio_launch` reuses a paired running app. Reopening the same source in one coding task returns its bound workspace; `studio_refresh_source` reloads it when needed.
+- MCP-created workspaces are bounded to 12 owned tabs and 32 total tabs. At the limit, the tool returns a recoverable error instead of continuing to allocate database sessions and graph canvases.
+
 ## PostgreSQL Read-Only Connections
 
 - Files: Sources/StudioCore/Database/, Sources/StudioCore/App/, Sources/StudioCore/TableWorkspace/
@@ -36,6 +42,23 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - **Ink**: `overviewInkScale` (0.62) on opacity and width, so a dense catalog reads as texture rather than a grey mat while still carrying pulses
 - **Structure**: `GraphEdgeLayerPlan` is the single decision about what the relation layer paints; both the static lines and the pulses are built from one plan, so a signal can never appear on a relation whose line is hidden
 - **Schema reviews are never sampled**: a review always takes the detail path at any zoom. Its whole subject is which relations changed, and a bounded sample could drop one. Pulses also stay out of a review, which spends colour and symbols directing the eye to what changed
+- **Status**: ✅ ACTIVE
+
+### Schema Review Lens
+- **Files**: `Sources/StudioCore/GraphView/SchemaReviewLens.swift`, `Sources/StudioCore/GraphView/GraphNameLabelLayout.swift`, `Sources/StudioCore/GraphView/SchemaGraphView.swift`, `Sources/StudioCore/SchemaReview/SchemaReviewView.swift`
+- **Change**: A review opens on every change at once (no table is pre-selected). Choosing a changed table — in the list or the graph — isolates its own changes: the table, the relations it gained or lost, and the tables at their far ends. Other changes fade (never vanish); choosing the table again, "Show All Changes", or clicking empty canvas returns to everything
+- **Unchanged relations**: hidden while zoomed out (below `GraphExploration.detailZoom`), shown faintly once cards are readable. Hover and selection highlight only changed relations, so a hub table no longer fans out dozens of unchanged lines with `1`/`*` labels
+- **Names**: changed tables carry fixed-size screen labels at overview zoom, placed over the table and culled on collision (additions/removals claim space first). The hovered and chosen tables are always named. Nodes are NOT enlarged on hover: at overview zoom that would cover neighbours and move the hit target, and still name one table at a time
+- **Marks**: unchanged tables recede; a review never draws the dashed "size unknown" outline, because it has no row data and dashes mean "removed" there
+- **Panel**: the list is grouped Removed / New / Changed; choosing a row reveals the table (pans at the current zoom, zooms out only to fit its changed relations, never in); ⌥⌘↓/⌥⌘↑ step through changes. The graph is clipped to its pane so cards cannot paint over the panel
+- **Clicking an overview node in a review selects it** instead of pulling its neighbours into a focus ring, which would rearrange the layout being compared
+- **Status**: ✅ ACTIVE
+
+### Review Author
+- **Files**: `Sources/StudioCore/SchemaReview/SchemaReviewDocument.swift`, `Sources/StudioCore/SchemaReview/SchemaReviewAuthorLabel.swift`, `Sources/StudioCore/SchemaReview/SchemaReviewCapture.swift`, `Skills/database-diff`, `Skills/database-preview`
+- **Change**: `compare` and `preview` accept `--agent TOOL --session NAME`, stored as an optional `author` on the document. The header then leads with the tool's mark and `Claude · Session name`. Known tools (`claude`, `codex`, `opencode`, `copilot`) are normalised from common spellings; any other tool keeps its own name
+- **Marks**: drawn in code — Claude's spark, and plain monogram tiles for the others rather than imitations of their logos. No third-party artwork is bundled
+- **Compatibility**: documents without `author` load unchanged. It is provenance only, never approval, and sits outside a preview's plan so it never changes the plan fingerprint
 - **Status**: ✅ ACTIVE
 
 ### Relation Pulse Animation

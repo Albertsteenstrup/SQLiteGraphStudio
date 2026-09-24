@@ -805,6 +805,7 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "SOURCE_NOT_FOUND", detail: "The requested source file does not exist: \(url.path)")
             }
             let migrationSource = isDirectory.boolValue || url.pathExtension.lowercased() == "sql"
+            var resolvedMigrationVersion: String?
             if migrationSource {
                 let set: MigrationSet
                 do {
@@ -818,6 +819,7 @@ final class StudioAutomationCoordinator {
                 if let version = string(args, "migration_version"), set.index(ofVersion: version) == nil {
                     throw Failure(code: "INVALID_ARGUMENT", detail: "migration_version must match a version in the selected migration set.")
                 }
+                resolvedMigrationVersion = string(args, "migration_version") ?? set.latest?.version
             } else if !DatabaseDocument.supportedExtensions.contains(url.pathExtension.lowercased()),
                       url.pathExtension.lowercased() != "sql" {
                 throw Failure(code: "UNSUPPORTED_SOURCE", detail: "Graph Studio does not support this source file type.")
@@ -825,6 +827,16 @@ final class StudioAutomationCoordinator {
             if !migrationSource, string(args, "migration_version") != nil {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "migration_version applies only to a migration set or SQL schema script.")
             }
+            if let boundID = context.workspaceID,
+               let bound = workspaces.tabs.first(where: { $0.id == boundID }),
+               workspaceOwners[boundID] == context.id,
+               bound.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == url.resolvingSymlinksInPath().standardizedFileURL,
+               (!migrationSource || bound.session.selectedMigrationVersion == resolvedMigrationVersion),
+               bound.session.hasOpenDatabase || bound.session.schemaReview != nil {
+                if bool(args, "activate") == true { workspaces.activate(bound.id) }
+                return workspacePayload(bound).merging(["reused": true]) { _, new in new }
+            }
+            try requireAutomationWorkspaceCapacity()
             let tab = workspaces.createTab(kind: inferredWorkspaceKind(for: url),
                                            activate: bool(args, "activate") ?? false)
             try claimWorkspace(tab.id, for: context.id)
@@ -870,6 +882,7 @@ final class StudioAutomationCoordinator {
                     migrationVersion = source.session.selectedMigrationVersion
                 }
             }
+            try requireAutomationWorkspaceCapacity()
             let tab = workspaces.createTab(kind: kind, title: string(args, "title"), activate: activate)
             try claimWorkspace(tab.id, for: context.id)
             if let url = sourceURL {
@@ -2020,6 +2033,7 @@ final class StudioAutomationCoordinator {
             guard ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) else {
                 throw Failure(code: "UNSUPPORTED_ARTIFACT", detail: "Open a comparison or proposal artifact; a raw snapshot can be inspected or compared first.")
             }
+            try requireAutomationWorkspaceCapacity()
             let tab = workspaces.createTab(kind: inferredWorkspaceKind(for: url),
                                            activate: bool(args, "activate") ?? true)
             try claimWorkspace(tab.id, for: context.id)
@@ -2109,6 +2123,7 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "Historical explanations open in a dedicated offline workspace so they cannot replace or query a live source.")
             }
             let returnWorkspaceID = workspaces.activeTabID
+            try requireAutomationWorkspaceCapacity()
             let tab = workspaces.createTab(kind: .explanation, title: artifact.title, activate: true)
             try claimWorkspace(tab.id, for: context.id)
             tab.session.openHistoricalExplanation(artifact, from: url)
@@ -3029,6 +3044,18 @@ final class StudioAutomationCoordinator {
             throw Failure(code: "WORKSPACE_IN_USE", detail: "This workspace belongs to another coding task. The user can release the foreground tab from Graph Studio's Coding Agents menu, then retry.")
         }
         workspaceOwners[id] = contextID
+    }
+
+    /// Automation can be driven by several coding tasks at once. Bound the tabs it
+    /// creates so repeated source changes cannot restore or keep opening an
+    /// unbounded number of database connections and graph canvases.
+    private func requireAutomationWorkspaceCapacity() throws {
+        let ownedCount = workspaces.tabs.reduce(into: 0) { count, tab in
+            if workspaceOwners[tab.id] != nil { count += 1 }
+        }
+        guard ownedCount < 12, workspaces.tabs.count < 32 else {
+            throw Failure(code: "WORKSPACE_LIMIT_REACHED", detail: "Graph Studio has too many open workspaces for another automated tab. Reuse the current workspace or close unused tabs before opening another source.")
+        }
     }
 
     private func workspace(_ args: [String: Any], context: Context) throws -> WorkspaceTab {
@@ -4440,6 +4467,7 @@ final class StudioAutomationCoordinator {
         case "PROJECT_SELECTION_REQUIRED": "Call studio_scan_project, choose one exact candidate source_path, and call studio_open_source with a new request_id."
         case "SCHEMA_ONLY_SOURCE": "Use schema and graph tools for this migration model, or open a database source to inspect rows and run queries."
         case "WORKSPACE_IN_USE": "Use an available tab or ask the user to release the foreground tab from Graph Studio's Coding Agents menu."
+        case "WORKSPACE_LIMIT_REACHED": "Reuse this task's current source, or close unused Graph Studio tabs before opening another workspace."
         case "STALE_SOURCE": "Call studio_get_view and use its current source_id."
         case "METADATA_CONFLICT": "Call studio_get_annotations again, merge the user's intended changes, and retry with the returned metadata_revision and a new request_id."
         case "TOOL_UNAVAILABLE": "Use an available Graph Studio action or perform this step directly in the app."

@@ -216,6 +216,8 @@ extension StudioSkills {
 
     ## Connect and choose the source
 
+    Reuse the running Graph Studio app and this task's bound workspace. Do not start another app copy or repeatedly open the same source; use `studio_refresh_source` when the source changed. Close unneeded agent-owned tabs before opening more sources.
+
     Use `studio_status` to check the local bridge. An explicit request to show something authorizes `studio_launch` if the app is closed. For an ordinary coding question where visualization would merely help, offer it. Call `studio_connect_context` once for this coding task. Keep its returned `context_id`, `client_task_id`, and secret `resume_token` in this task's own session state; never copy another task's capability or treat the task label as authentication. Include the exact `context_id` on every later app-bound call. If the MCP stdio connection reconnects while Graph Studio remains open, call `studio_connect_context` with the previous `context_id` as `resume_context_id`, plus the exact `client_task_id` and current `resume_token`. Save the rotated token from the response. A disconnected context is retained for up to 24 hours, with a cap of 128 detached contexts and 4,096 request receipts. The token is in-memory and does not survive Graph Studio restarting. Check `recovery_status`: if it says `ownership_released`, the user transferred the old tab; do not take it back implicitly. Resolve the source from an explicit file or connection, the current selected object, or an established task binding. If the user names a project folder, call `studio_scan_project` and inspect `available_engines`, `source_choice_required`, each candidate's `engine`, and `supports_rows`. If both PostgreSQL and SQLite are found and the user has not selected an engine or exact source, ask which model to use before opening one, even when one migration set looks more prominent. If several candidates remain within the selected engine, ask for the exact source when the answer could differ. A prior task binding or explicit source choice resolves this question; do not repeatedly ask. `studio_open_source` can open a migration-set folder or schema script at a chosen version, but that model has schema only, no rows to browse or queries to run. If the user wants actual values and the scan found only schema sources, explain that a database file or connection is needed rather than implying empty tables. When several workspaces are open, bind this task to the exact `workspace_id`; ask only if more than one plausible source remains. Check `studio_list_workspaces` and `studio_get_view` before changing an active explanation. For an explicit request to show a live view, if `studio_get_view` reports `active=false`, call `studio_update_workspace` with `changes.activate=true` and `changes.activation_intent=foreground` before presenting it.
 
     If MCP is unavailable, use the existing read-only database and repository tools to answer what you can. Preview and diff files have separate workflows in the sibling skills. Do not describe a view as shown unless the app confirms it is visible.
@@ -292,9 +294,19 @@ extension StudioSkills {
     "$studio" --schema-review snapshot after.sqlite after.json
     "$studio" --schema-review compare before.json after.json change.sgreview \
       --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
-      --note "Exact source revisions; schema only, no row data."
+      --note "Exact source revisions; schema only, no row data." \
+      --agent claude --session "$session_name"
     open -a /path/to/SQLiteGraphStudio.app change.sgreview
     ```
+
+    Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
+    `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
+    `--session` takes the human-readable name of the current chat or session. The
+    review header then leads with the tool's mark, for example `Claude · Table diff
+    visualization clarity`. Omit `--session` when you don't know the session's name,
+    and omit both when you may not disclose them; never invent either. The session
+    name travels with the review file, so leave it out when it holds anything that
+    should not be shared. This records where the review came from, not an approval.
 
     Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
     custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection
@@ -322,6 +334,10 @@ extension StudioSkills {
     preserved. Removed tables remain faded with a Removed badge. Modified relations
     show both their removed and added definitions. Table details show field types,
     nullability, defaults, key membership, and available definition changes.
+    The graph opens on every change at once, names changed tables at a readable size,
+    and hides unchanged relations until zoomed in. Choosing a table in the list or the
+    graph isolates its own changes and the tables they reach, fading the rest; choose
+    it again or click empty canvas to see everything. ⌥⌘↓ and ⌥⌘↑ step through changes.
 
     Report the exact base/head, affected tables, artifact path, and unsupported scope.
     No automatic rename inference is made: a rename appears as removal plus addition.
@@ -375,9 +391,17 @@ extension StudioSkills {
     # Read only the fields and incident relations needed for the design.
     "$studio" --schema-review inspect "$baseline" --table public.orders --column status
     # Write plan.json, then project it without SQL, a server, or migration replay.
-    "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview
-    open -n -a "$bundle" changes.sgpreview
+    "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview \
+      --agent claude --session "$session_name"
+    open -a "$bundle" changes.sgpreview
     ```
+
+    When your instructions allow you to name yourself, pass `--agent` (`claude`,
+    `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
+    current chat or session's human-readable name) so the preview header shows where
+    it came from. Never invent either, and leave the session out when its name should
+    not travel with the file. They sit outside the plan, so they never change its
+    fingerprint.
 
     `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
     to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than

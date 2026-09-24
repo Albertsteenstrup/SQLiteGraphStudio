@@ -63,7 +63,7 @@
   {
     "name": "studio_launch",
     "title": "Launch",
-    "description": "Open Graph Studio and wait for its private local bridge to become ready. Call only for an explicit visualization request; this tool does not choose or open a database. Use studio_status for a no-launch availability check.",
+    "description": "Reuse the running Graph Studio app, or launch one copy and wait for its private local bridge to become ready. Call only for an explicit visualization request; this tool does not choose or open a database. Use studio_status for a no-launch availability check.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -123,7 +123,7 @@
   {
     "name": "studio_open_source",
     "title": "Open Source",
-    "description": "Open one exact local SQLite database, PostgreSQL connection or custom backup, supported schema artifact, migration-set folder, or SQL schema script at source_path in a new Graph Studio workspace. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows and queries do not. A PostgreSQL backup opens for schema exploration, but this bridge cannot read its restored rows. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
+    "description": "Open one exact local SQLite database, PostgreSQL connection or custom backup, supported schema artifact, migration-set folder, or SQL schema script at source_path. Reuses this coding task's bound workspace when it already shows the same source and migration version; use studio_refresh_source to reload it. A different source opens a new tab, subject to the app's workspace limit. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows and queries do not. A PostgreSQL backup opens for schema exploration, but this bridge cannot read its restored rows. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
     "inputSchema": {
       "type": "object",
       "properties": {

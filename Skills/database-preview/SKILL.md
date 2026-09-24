@@ -35,9 +35,17 @@ changes. A preview does not check whether a live database has changed since capt
 # Read only the fields and incident relations needed for the design.
 "$studio" --schema-review inspect "$baseline" --table public.orders --column status
 # Write plan.json, then project it without SQL, a server, or migration replay.
-"$studio" --schema-review preview "$baseline" plan.json changes.sgpreview
-open -n -a "$bundle" changes.sgpreview
+"$studio" --schema-review preview "$baseline" plan.json changes.sgpreview \
+  --agent claude --session "$session_name"
+open -a "$bundle" changes.sgpreview
 ```
+
+When your instructions allow you to name yourself, pass `--agent` (`claude`,
+`codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
+current chat or session's human-readable name) so the preview header shows where
+it came from. Never invent either, and leave the session out when its name should
+not travel with the file. They sit outside the plan, so they never change its
+fingerprint.
 
 `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
 to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than

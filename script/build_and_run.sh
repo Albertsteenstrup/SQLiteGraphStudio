@@ -87,7 +87,7 @@ if [[ -n "${SGS_POCKET_TTS_RUNTIME:-}" ]]; then
 fi
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  /usr/bin/open -a "$APP_BUNDLE"
 }
 
 case "$MODE" in

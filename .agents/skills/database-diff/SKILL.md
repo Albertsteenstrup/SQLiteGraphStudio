@@ -40,9 +40,19 @@ Use the same executable for capture, comparison, and display.
 "$studio" --schema-review snapshot after.sqlite after.json
 "$studio" --schema-review compare before.json after.json change.sgreview \
   --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
-  --note "Exact source revisions; schema only, no row data."
+  --note "Exact source revisions; schema only, no row data." \
+  --agent claude --session "$session_name"
 open -a /path/to/SQLiteGraphStudio.app change.sgreview
 ```
+
+Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
+`opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
+`--session` takes the human-readable name of the current chat or session. The
+review header then leads with the tool's mark, for example `Claude · Table diff
+visualization clarity`. Omit `--session` when you don't know the session's name,
+and omit both when you may not disclose them; never invent either. The session
+name travels with the review file, so leave it out when it holds anything that
+should not be shared. This records where the review came from, not an approval.
 
 Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
 custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection
@@ -70,6 +80,10 @@ inner borders and `−` labels indicate removals. The existing outer group colou
 preserved. Removed tables remain faded with a Removed badge. Modified relations
 show both their removed and added definitions. Table details show field types,
 nullability, defaults, key membership, and available definition changes.
+The graph opens on every change at once, names changed tables at a readable size,
+and hides unchanged relations until zoomed in. Choosing a table in the list or the
+graph isolates its own changes and the tables they reach, fading the rest; choose
+it again or click empty canvas to see everything. ⌥⌘↓ and ⌥⌘↑ step through changes.
 
 Report the exact base/head, affected tables, artifact path, and unsupported scope.
 No automatic rename inference is made: a rename appears as removal plus addition.

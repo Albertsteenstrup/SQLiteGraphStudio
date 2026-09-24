@@ -162,11 +162,11 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
         let runningCopies = NSRunningApplication.runningApplications(
             withBundleIdentifier: MCPBridgePaths.appBundleIdentifier
         )
-        let pairedCopyRunning = runningCopies.contains {
+        let pairedCopy = runningCopies.first {
             $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL ==
                 appURL.resolvingSymlinksInPath().standardizedFileURL
         }
-        if !pairedCopyRunning && runningCopies.contains(where: {
+        if pairedCopy == nil && runningCopies.contains(where: {
             $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL !=
                 appURL.resolvingSymlinksInPath().standardizedFileURL
         }) {
@@ -176,13 +176,17 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
             )
         }
 
-        do {
-            try launchApplication(appURL, foreground)
-        } catch {
-            return errorResult(
-                code: "APP_LAUNCH_FAILED",
-                message: "SQLite Graph Studio could not be opened: \(error.localizedDescription)"
-            )
+        if let pairedCopy {
+            if foreground { pairedCopy.activate(options: [.activateAllWindows]) }
+        } else {
+            do {
+                try launchApplication(appURL, foreground)
+            } catch {
+                return errorResult(
+                    code: "APP_LAUNCH_FAILED",
+                    message: "SQLite Graph Studio could not be opened: \(error.localizedDescription)"
+                )
+            }
         }
 
         let deadline = Date().addingTimeInterval(Double(timeoutMilliseconds) / 1_000)
@@ -195,7 +199,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
                 return makeToolResult(
                     summary: "SQLite Graph Studio is open and its local MCP bridge is ready.",
                     structuredContent: [
-                        "launched": true,
+                        "launched": pairedCopy == nil,
                         "ready": true,
                         "appInstanceId": handshake["appInstanceId"] ?? NSNull(),
                         "appVersion": handshake["appVersion"] ?? NSNull(),
