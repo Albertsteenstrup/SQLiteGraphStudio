@@ -3,6 +3,10 @@ import Foundation
 
 @MainActor
 final class StreamingSpeechPlayer {
+    /// Keep a little audio ahead of the playhead without letting a fast producer
+    /// queue an entire utterance that would be slow to interrupt.
+    private static let maximumScheduledBuffers = 4
+
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var connectedFormat: AVAudioFormat?
@@ -14,17 +18,45 @@ final class StreamingSpeechPlayer {
         onFirstAudio: @MainActor @Sendable () -> Void
     ) async throws -> Bool {
         var didStart = false
+        var pendingDrains: [AudioBufferDrainWaiter] = []
 
         do {
             for try await chunk in stream {
                 try Task.checkCancellation()
                 if !didStart {
                     try startOutput(format: chunk.audioBuffer.format)
+                }
+
+                // Scheduling only after the preceding buffer has played puts a
+                // gap between every tiny Pocket TTS frame. Keep a bounded
+                // window queued, then wait only when that window is full.
+                if pendingDrains.count == Self.maximumScheduledBuffers {
+                    guard await pendingDrains.removeFirst().wait(), !Task.isCancelled else {
+                        stopImmediately()
+                        return false
+                    }
+                }
+
+                guard let player else {
+                    stopImmediately()
+                    return false
+                }
+                let drain = AudioBufferDrainWaiter(retaining: chunk.audioBuffer)
+                player.scheduleBuffer(chunk.audioBuffer, completionCallbackType: .dataPlayedBack) { _ in
+                    drain.resolve(true)
+                }
+                pendingDrains.append(drain)
+                if !didStart {
                     didStart = true
                     onFirstAudio()
                 }
+            }
 
-                guard await scheduleAndDrain(chunk.audioBuffer) else {
+            // The producer may finish well before the audio device. A point is
+            // complete only after the final scheduled buffer has played.
+            for drain in pendingDrains {
+                guard await drain.wait(), !Task.isCancelled else {
+                    stopImmediately()
                     return false
                 }
             }
@@ -87,27 +119,6 @@ final class StreamingSpeechPlayer {
         }
     }
 
-    private func scheduleAndDrain(_ buffer: AVAudioPCMBuffer) async -> Bool {
-        guard let player else { return false }
-        let waiter = AudioBufferDrainWaiter()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                guard waiter.install(continuation) else { return }
-                player.scheduleBuffer(
-                    buffer,
-                    completionCallbackType: .dataPlayedBack
-                ) { _ in
-                    waiter.resolve(true)
-                }
-            }
-        } onCancel: {
-            waiter.resolve(false)
-            Task { @MainActor [weak self] in
-                self?.stopImmediately()
-            }
-        }
-    }
-
     /// Creating AVAudioEngine or AVAudioPlayerNode can fail in a process with no audio device.
     /// Keep stream inspection and narrator setup usable in headless contexts; construct the
     /// hardware-backed graph only when the first PCM chunk is ready to play.
@@ -133,20 +144,36 @@ final class StreamingSpeechPlayer {
 }
 
 private final class AudioBufferDrainWaiter: @unchecked Sendable {
+    /// AVAudioPlayerNode may still be reading this buffer after the stream
+    /// iterator advances to another chunk.
+    private let retainedBuffer: AVAudioPCMBuffer
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
     private var result: Bool?
 
-    func install(_ continuation: CheckedContinuation<Bool, Never>) -> Bool {
+    init(retaining buffer: AVAudioPCMBuffer) {
+        retainedBuffer = buffer
+    }
+
+    func wait() async -> Bool {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                install(continuation)
+            }
+        } onCancel: {
+            resolve(false)
+        }
+    }
+
+    private func install(_ continuation: CheckedContinuation<Bool, Never>) {
         lock.lock()
         if let result {
             lock.unlock()
             continuation.resume(returning: result)
-            return false
+            return
         }
         self.continuation = continuation
         lock.unlock()
-        return true
     }
 
     func resolve(_ result: Bool) {
