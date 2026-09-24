@@ -637,7 +637,7 @@
   {
     "name": "studio_show_tables",
     "title": "Show Tables",
-    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed.",
+    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed. For an agent-led explanation, choose the subset because it supports a specific question or claim; changing visibility alone does not explain its significance to the user.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2013,7 +2013,7 @@
   {
     "name": "studio_start_presentation",
     "title": "Start Presentation",
-    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. For a requested model overview or explanation, use a short presentation by default unless the user or saved preference asks for silence; view actions alone do not speak. Each point applies its actions and completes graph camera/focus motion before revealing its caption, starting narration, or counting viewing time. Match each caption to the tables, keys, or rows its actions actually show; use short points and fit/compact related tables when necessary. set_camera actions accept transition_ms from 0 to 1200 (default 420). A manual graph gesture supersedes pending motion and immediately pauses speech on a visible point; a gesture during preparation leaves the point failed for retry or revision. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state. With narration enabled, caption text is spoken when a point omits narration; pass narration as an empty string only for an intentionally silent point. Set target_table_id on a point that makes a claim about one table, so the app selects it after the other actions. Use show_tables for a small legible scope and open_table for meaningful bounded values when the source contains rows.",
+    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. For a requested model overview or explanation, use a short presentation by default unless the user or saved preference asks for silence; view actions alone do not speak. Each point applies its actions and completes graph camera/focus motion before revealing its caption, starting narration, or counting viewing time. Each agent-chosen point must explain why the shown table, key, row, or result matters to the user's question. Ground that reason in inspected schema or keys, observed values, relevant code or documentation, or a clearly labeled domain interpretation; a caption that only names a table is insufficient. Match the claim to what its actions actually show; use short points and fit/compact related tables when necessary. set_camera actions accept transition_ms from 0 to 1200 (default 420). A manual graph gesture supersedes pending motion and immediately pauses speech on a visible point; a gesture during preparation leaves the point failed for retry or revision. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state. With narration enabled, caption text is spoken when a point omits narration; pass narration as an empty string only for an intentionally silent point. Set target_table_id on a point that makes a claim about one table, so the app selects it after the other actions. Use show_tables for a small legible scope and open_table for meaningful bounded values when the source contains rows.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2034,11 +2034,11 @@
               },
               "caption": {
                 "type": "string",
-                "description": "Visible explanation for the user. State a supported fact or interpretation about the model; do not describe UI staging such as expanding a card or routine source limitations. If narration is omitted, this text is also spoken."
+                "description": "Visible explanation for the user. Explain what the shown item establishes or why it matters to the user's question, based on inspected schema or keys, observed values, relevant code or documentation, or a clearly labeled domain interpretation. Merely saying 'This is the contract table' is insufficient. Do not describe UI staging or routine source limitations. If narration is omitted, this text is also spoken."
               },
               "narration": {
                 "type": "string",
-                "description": "Optional spoken explanation of the model, not the graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
+                "description": "Optional spoken explanation of the same question-relevant, supported claim. If distinct from the caption, add useful context rather than just naming the visible table. Do not narrate graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
               },
               "actions": {
                 "type": "array",
@@ -2128,7 +2128,7 @@
   {
     "name": "studio_update_presentation",
     "title": "Update Presentation",
-    "description": "Append points, replace pending points or replace the current and pending points for an active presentation. A revision mismatch is rejected; replacing a current point invalidates its pending action/audio state.",
+    "description": "Append points, replace pending points or replace the current and pending points for an active presentation. New or revised points still need a question-relevant, supported reason for each agent-chosen view; naming the table alone is insufficient. A revision mismatch is rejected; replacing a current point invalidates its pending action/audio state.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2157,11 +2157,11 @@
               },
               "caption": {
                 "type": "string",
-                "description": "Visible explanation for the user. State a supported fact or interpretation about the model; do not describe UI staging such as expanding a card or routine source limitations. If narration is omitted, this text is also spoken."
+                "description": "Visible explanation for the user. Explain what the shown item establishes or why it matters to the user's question, based on inspected schema or keys, observed values, relevant code or documentation, or a clearly labeled domain interpretation. Merely saying 'This is the contract table' is insufficient. Do not describe UI staging or routine source limitations. If narration is omitted, this text is also spoken."
               },
               "narration": {
                 "type": "string",
-                "description": "Optional spoken explanation of the model, not the graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
+                "description": "Optional spoken explanation of the same question-relevant, supported claim. If distinct from the caption, add useful context rather than just naming the visible table. Do not narrate graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
               },
               "actions": {
                 "type": "array",
