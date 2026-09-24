@@ -37,7 +37,7 @@ struct GraphFocusHierarchyTests {
         let hubSize = CGSize(width: 440, height: 236)
         let items = (0..<8).map { index in
             GraphFocusRingLayout.Item(id: "neighbor_\(index)",
-                                      size: CGSize(width: index.isMultiple(of: 3) ? 300 : 226, height: 46))
+                                      size: CGSize(width: 440, height: index.isMultiple(of: 3) ? 80 : 46))
         }
         let positions = GraphFocusRingLayout.graphPositions(
             hubCenter: .zero, hubSize: hubSize, items: items
@@ -62,6 +62,44 @@ struct GraphFocusHierarchyTests {
         )
         #expect(camera.zoom >= 0.5)
         #expect(hubSize.width * GraphReadableCardScale.focusedScale(for: camera.zoom) >= 396)
+        let left = frames[0]
+        let expandedHubLeft = -hubSize.width * GraphReadableCardScale.focusedScale(for: camera.zoom) / 2
+        let visibleLeftEdge = left.maxX * camera.zoom
+        #expect(expandedHubLeft - visibleLeftEdge >= 50)
+    }
+
+    @Test
+    func focusedHubHighlightsOneHoveredNeighbourInsteadOfEveryRelation() {
+        #expect(GraphFocusEdgeEmphasis.highlightedTableID(
+            focusedHubID: "registry_workflow", hoveredTableID: nil,
+            selectedTableID: "registry_workflow", fallbackID: "registry_workflow"
+        ) == nil)
+        #expect(GraphFocusEdgeEmphasis.highlightedTableID(
+            focusedHubID: "registry_workflow", hoveredTableID: "registry_workflow",
+            selectedTableID: "registry_workflow", fallbackID: "registry_workflow"
+        ) == nil)
+        #expect(GraphFocusEdgeEmphasis.highlightedTableID(
+            focusedHubID: "registry_workflow", hoveredTableID: "job_progress_event",
+            selectedTableID: "registry_workflow", fallbackID: "registry_workflow"
+        ) == "job_progress_event")
+        #expect(GraphFocusEdgeEmphasis.highlightedTableID(
+            focusedHubID: "registry_workflow", hoveredTableID: nil,
+            selectedTableID: "app_user", fallbackID: "registry_workflow"
+        ) == "app_user")
+        #expect(GraphFocusEdgeEmphasis.highlightedTableID(
+            focusedHubID: nil, hoveredTableID: nil, selectedTableID: nil, fallbackID: "registry_workflow"
+        ) == "registry_workflow")
+        #expect(GraphFocusEdgeEmphasis.showsEdge(
+            sourceID: "job_progress_event", targetID: "registry_workflow", focusedHubID: "registry_workflow"
+        ))
+        #expect(!GraphFocusEdgeEmphasis.showsEdge(
+            sourceID: "registry_workflow_agent_trigger", targetID: "registry_workflow_agent_turn",
+            focusedHubID: "registry_workflow"
+        ))
+        #expect(GraphFocusEdgeEmphasis.showsEdge(
+            sourceID: "registry_workflow_agent_trigger", targetID: "registry_workflow_agent_turn",
+            focusedHubID: nil
+        ))
     }
 
     @Test

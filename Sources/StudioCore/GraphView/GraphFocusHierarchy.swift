@@ -25,6 +25,21 @@ struct GraphFocusPlan: Sendable, Equatable {
     }
 }
 
+enum GraphFocusEdgeEmphasis {
+    static func highlightedTableID(focusedHubID: String?, hoveredTableID: String?,
+                                   selectedTableID: String?, fallbackID: String?) -> String? {
+        guard let focusedHubID else { return fallbackID }
+        if let hoveredTableID, hoveredTableID != focusedHubID { return hoveredTableID }
+        if let selectedTableID, selectedTableID != focusedHubID { return selectedTableID }
+        return nil
+    }
+
+    static func showsEdge(sourceID: String, targetID: String, focusedHubID: String?) -> Bool {
+        guard let focusedHubID else { return true }
+        return sourceID == focusedHubID || targetID == focusedHubID
+    }
+}
+
 enum GraphFocusRingLayout {
     struct Item: Sendable, Equatable {
         let id: String
@@ -61,7 +76,7 @@ enum GraphFocusRingLayout {
         // becomes unreadable. Keep a bounded page in two short columns instead.
         if items.count > 6 {
             return columnPositions(hubCenter: hubCenter, hubSize: hubSize, items: items,
-                                   gap: gap, interItemGap: interItemGap)
+                                   gap: max(gap, 220), interItemGap: interItemGap)
         }
 
         var positions: [String: CGPoint] = [:]

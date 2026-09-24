@@ -409,7 +409,15 @@ public struct SchemaGraphView: View {
         let hoverSummaryNodes = graph.nodes.filter { hoverSummaryIDs.contains($0.id) }
         let renderPlan = geometry.renderPlan
         let edgeLookup = topologyCache.index(for: graph, graphRevision: renderedGraphRevision)
-        let currentFocusNodeID = focusNodeID
+        let focusedHubID = graphFocusTableRelation?.tableID ?? tableFocusNodeID
+        // In a dense table focus, highlighting every hub relation piles the
+        // cardinality marks together. Emphasize just the hovered neighbour or
+        // key; the complete set remains visible at a quieter resting weight.
+        let currentFocusNodeID = GraphFocusEdgeEmphasis.highlightedTableID(
+            focusedHubID: focusedHubID, hoveredTableID: hoveredNodeID,
+            selectedTableID: session.selectedGraphNodeIDs.count == 1 ? session.selectedGraphNodeID : nil,
+            fallbackID: focusNodeID
+        )
         let currentHoverTarget = tappedRelationTarget ?? hoveredRelationTarget
         let relationHighlight = cachedRelationHighlight(focusNodeID: currentFocusNodeID,
                                                       hoverTarget: currentHoverTarget, edgeLookup: edgeLookup)
@@ -576,7 +584,9 @@ public struct SchemaGraphView: View {
                     schemaChange: session.schemaReviewChanges[node.id],
                     selectNode: {
                         session.notifyManualGraphInteraction()
-                        clearGraphFocusSession()
+                        if tableFocusNodeID == nil && graphFocusTableRelation == nil {
+                            clearGraphFocusSession()
+                        }
                         withAnimation(.snappy(duration: 0.16)) {
                             session.selectGraphNode(node.id)
                         }
@@ -1208,10 +1218,13 @@ public struct SchemaGraphView: View {
         } ?? renderedGraph.edges
 
         let viewport = CGRect(origin: .zero, size: viewportSize)
+        let focusedHubID = graphFocusTableRelation?.tableID ?? tableFocusNodeID
         var renders: [GraphEdgeRender] = []
         renders.reserveCapacity(min(candidates.count, 512))
         for edge in candidates {
             if plan.onlyHighlighted && !highlighted.contains(edge.id) { continue }
+            if !GraphFocusEdgeEmphasis.showsEdge(sourceID: edge.sourceID, targetID: edge.targetID,
+                                                 focusedHubID: focusedHubID) { continue }
             if let focusPlan = plan.focusPlan {
                 let sourceVisible = focusPlan.tierForTable(edge.sourceID) != .hidden
                 let targetVisible = focusPlan.tierForTable(edge.targetID) != .hidden
@@ -1242,8 +1255,10 @@ public struct SchemaGraphView: View {
     }
 
     private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) {
-        let baseOpacity = (session.showAllGraphTableCards ? 0.48 : 0.34) * plan.inkScale
-        let baseWidth = (session.showAllGraphTableCards ? 1.25 : 1.05) * plan.inkScale
+        let focusedTable = plan.focusPlan?.isActive == true
+        let focusedHubID = graphFocusTableRelation?.tableID ?? tableFocusNodeID
+        let baseOpacity = (focusedTable ? 0.95 : (session.showAllGraphTableCards ? 0.48 : 0.34)) * plan.inkScale
+        let baseWidth = (focusedTable ? 1.5 : (session.showAllGraphTableCards ? 1.25 : 1.05)) * plan.inkScale
 
         for render in visibleEdgeRenders(anchorMap: anchorMap, plan: plan) {
             let edge = render.edge
@@ -1288,7 +1303,9 @@ public struct SchemaGraphView: View {
                                     control2: render.control2, to: anchors.target, color: StudioPalette.edgeHighlight)
                 if shows(.relationshipLabels) {
                     drawCardinalityLabels(in: &context, edge: edge, start: anchors.source,
-                                          control1: render.control1, control2: render.control2, end: anchors.target)
+                                          control1: render.control1, control2: render.control2, end: anchors.target,
+                                          showSource: edge.sourceID != focusedHubID,
+                                          showTarget: edge.targetID != focusedHubID)
                 }
             }
         }
@@ -1336,7 +1353,9 @@ public struct SchemaGraphView: View {
         start: CGPoint,
         control1: CGPoint,
         control2: CGPoint,
-        end: CGPoint
+        end: CGPoint,
+        showSource: Bool = true,
+        showTarget: Bool = true
     ) {
         let (sourceSymbol, targetSymbol): (String, String) = {
             switch edge.cardinality {
@@ -1361,17 +1380,21 @@ public struct SchemaGraphView: View {
             (-1,  1), (0,  1), (1,  1),
         ]
         for (dx, dy) in offsets {
-            let strokeText = Text(sourceSymbol).font(labelFont).foregroundStyle(strokeColor)
-            context.draw(strokeText, at: CGPoint(x: sourcePoint.x + dx, y: sourcePoint.y + dy), anchor: .center)
-            let strokeText2 = Text(targetSymbol).font(labelFont).foregroundStyle(strokeColor)
-            context.draw(strokeText2, at: CGPoint(x: targetPoint.x + dx, y: targetPoint.y + dy), anchor: .center)
+            if showSource {
+                let strokeText = Text(sourceSymbol).font(labelFont).foregroundStyle(strokeColor)
+                context.draw(strokeText, at: CGPoint(x: sourcePoint.x + dx, y: sourcePoint.y + dy), anchor: .center)
+            }
+            if showTarget {
+                let strokeText2 = Text(targetSymbol).font(labelFont).foregroundStyle(strokeColor)
+                context.draw(strokeText2, at: CGPoint(x: targetPoint.x + dx, y: targetPoint.y + dy), anchor: .center)
+            }
         }
 
         let sourceText = Text(sourceSymbol).font(labelFont).foregroundStyle(fillColor)
         let targetText = Text(targetSymbol).font(labelFont).foregroundStyle(fillColor)
 
-        context.draw(sourceText, at: sourcePoint, anchor: .center)
-        context.draw(targetText, at: targetPoint, anchor: .center)
+        if showSource { context.draw(sourceText, at: sourcePoint, anchor: .center) }
+        if showTarget { context.draw(targetText, at: targetPoint, anchor: .center) }
     }
 
     private func edgeControlPoints(from start: CGPoint, to end: CGPoint) -> (control1: CGPoint, control2: CGPoint) {
