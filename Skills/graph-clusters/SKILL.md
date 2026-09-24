@@ -5,7 +5,7 @@ description: Generate cluster hints for the SQLite Graph Studio physics engine s
 
 # graph-clusters
 
-You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` to name on the full-catalog map.
+You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` whose normal table cards remain visible on the full-catalog map.
 
 When Graph Studio MCP is available, show temporary groups immediately with `studio_set_groups`. To save a requested durable grouping, read `studio_get_annotations` first and pass its `metadata_revision` as `expected_metadata_revision` to `studio_update_annotations`; the app refreshes it. If the save returns `METADATA_CONFLICT`, read again, merge the intended grouping with the current metadata, and retry with a new `request_id`. The sidecar file remains available for offline work, and the user can edit it by hand.
 
@@ -49,7 +49,7 @@ Cluster count guidance:
 
 Tables that don't fit anywhere are fine to leave out of all clusters. The app computes deterministic groups for unassigned tables from schema, names, and relationships. These inferred groups are not written into the sidecar.
 
-For an overview, choose 4–16 exact table IDs across the main domains as `overviewTables`. Favor canonical records and the few tables that explain how sources, evidence, decisions, and outputs connect. Verify their roles from schema or code; raw foreign-key degree alone is a poor guide because account and audit tables often have many incidental references. The list is ordered by explanatory priority. It enlarges those existing nodes enough to show their names on the full map; it does not add floating labels, pin tables, create relations, or restrict what an agent can focus on. A narrow task does not need this hint.
+For an overview, choose 4–16 exact table IDs across the main domains as `overviewTables`. Favor canonical records and the few tables that explain how sources, evidence, decisions, and outputs connect. Verify their roles from schema or code; raw foreign-key degree alone is a poor guide because account and audit tables often have many incidental references. The list is ordered by explanatory priority. It keeps those tables in their normal card format, including fields and rows pills, while their cards shrink more slowly during zoom-out; it does not add floating labels, pin tables, create relations, or restrict what an agent can focus on. A narrow task does not need this hint.
 
 ## Output format
 

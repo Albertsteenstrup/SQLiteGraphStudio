@@ -1,25 +1,31 @@
-import AppKit
 import CoreGraphics
-import Foundation
 
-/// Important overview tables remain nodes at their graph coordinates. Their
-/// markers grow enough to contain a name instead of gaining detached callouts.
+/// Important overview tables use the same full card as other tables, but shrink
+/// more slowly while the surrounding catalog turns into compact markers.
 enum GraphOverviewAnchors {
     struct Anchor: Hashable {
         let id: String
-        let title: String
     }
 
     static let minimumZoom: CGFloat = 0.10
     static let cardTransitionZoom: CGFloat = 0.78
+    private static let readableZoom: CGFloat = 0.20
+    private static let readableScale: CGFloat = 0.70
 
-    static func frame(for marker: CGRect, title: String) -> CGRect {
-        let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
-        let measuredWidth = (title as NSString).size(withAttributes: [.font: font]).width
-        let readableWidth = min(180, max(52, ceil(measuredWidth) + 12))
-        let width = max(marker.width, readableWidth)
-        let height = max(marker.height, 20)
-        return CGRect(x: marker.midX - width / 2, y: marker.midY - height / 2,
+    static func displayScale(for zoom: CGFloat) -> CGFloat {
+        guard zoom < cardTransitionZoom else { return zoom }
+        if zoom <= readableZoom { return zoom * readableScale / readableZoom }
+        let progress = (zoom - readableZoom) / (cardTransitionZoom - readableZoom)
+        return readableScale + (cardTransitionZoom - readableScale) * progress
+    }
+
+    static func frame(for normalCardFrame: CGRect, zoom: CGFloat) -> CGRect {
+        guard zoom > 0 else { return normalCardFrame }
+        let ratio = displayScale(for: zoom) / zoom
+        let width = normalCardFrame.width * ratio
+        let height = normalCardFrame.height * ratio
+        return CGRect(x: normalCardFrame.midX - width / 2,
+                      y: normalCardFrame.midY - height / 2,
                       width: width, height: height)
     }
 }

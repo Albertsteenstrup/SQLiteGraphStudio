@@ -79,13 +79,10 @@ public struct SchemaGraphView: View {
 
     private var overviewAnchors: [GraphOverviewAnchors.Anchor] {
         guard isLargeGraph, focusedGroupID == nil, effectiveFocusPlan == nil,
-              zoom >= GraphOverviewAnchors.minimumZoom,
-              zoom < GraphOverviewAnchors.cardTransitionZoom else { return [] }
+              zoom >= GraphOverviewAnchors.minimumZoom else { return [] }
         return session.schemaSidecar.overviewTables.compactMap { id in
-            guard let node = renderedGraph.node(id: id) else { return nil }
-            return GraphOverviewAnchors.Anchor(
-                id: id, title: session.descriptor(named: id)?.objectName ?? node.title
-            )
+            guard renderedGraph.node(id: id) != nil else { return nil }
+            return GraphOverviewAnchors.Anchor(id: id)
         }
     }
 
@@ -399,7 +396,7 @@ public struct SchemaGraphView: View {
         let graph = renderedGraph
         let viewport = CGRect(origin: .zero, size: size)
         let displayedTableIDs = Set(geometry.renderPlan.detailIDs.filter {
-            geometry.frames[$0]?.intersects(viewport) == true
+            geometry.anchorMap.nodeCards[$0]?.frame.intersects(viewport) == true
         }).union(geometry.renderPlan.markerIDs.filter {
             geometry.markerFrames[$0]?.intersects(viewport) == true
         })
@@ -484,7 +481,7 @@ public struct SchemaGraphView: View {
                     drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan)
                 }
                 drawOverviewMarks(in: &context, frames: geometry.markerFrames,
-                                  connectedIDs: hoverNeighbors, anchors: anchors)
+                                  connectedIDs: hoverNeighbors)
                 for id in hoverSummaryIDs {
                     guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                     let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -542,6 +539,7 @@ public struct SchemaGraphView: View {
             }
 
             ForEach(renderedNodes) { node in
+                let isOverviewAnchor = geometry.overviewAnchorIDs.contains(node.id)
                 let descriptor = session.descriptor(named: node.id)
                 let outgoingEdges = edgeLookup.outgoingEdges(for: node.id)
                 let incomingEdges = edgeLookup.incomingEdges(for: node.id)
@@ -565,14 +563,14 @@ public struct SchemaGraphView: View {
                     incomingEdges: incomingEdges,
                     isSelected: session.selectedGraphNodeIDs.contains(node.id),
                     isMultiSelected: isMultiSelected,
-                    viewportZoom: zoom,
+                    viewportZoom: isOverviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom,
                     displayStyle: displayStyle,
                     isFocusRoot: tableFocusNodeID == node.id || graphFocusTableRelation?.tableID == node.id,
                     scrollOffset: scrollOffset,
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
                     highlightState: relationHighlight.highlightState(for: node.id),
-                    keepsTextReadableWhenZoomed: focusPlan != nil || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
+                    keepsTextReadableWhenZoomed: isOverviewAnchor || focusPlan != nil || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
                     schemaChange: session.schemaReviewChanges[node.id],
                     selectNode: {
                         session.notifyManualGraphInteraction()
@@ -613,7 +611,9 @@ public struct SchemaGraphView: View {
                     headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
                 )
                 .frame(width: cardSize.width, height: cardSize.height, alignment: .topLeading)
-                .scaleEffect(zoom * GraphHoverPresentation.cardScale(hovered: hoveredNodeID == node.id && draggedNodeID == nil, connected: hoverNeighbors.contains(node.id)))
+                .scaleEffect((isOverviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom)
+                    * GraphHoverPresentation.cardScale(hovered: hoveredNodeID == node.id && draggedNodeID == nil,
+                                                       connected: hoverNeighbors.contains(node.id)))
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredNodeID)
                 .position(screenCenter(for: node.id, in: size))
                 .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
@@ -887,24 +887,9 @@ public struct SchemaGraphView: View {
     }
 
     private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect],
-                                   connectedIDs: Set<String>, anchors: [GraphOverviewAnchors.Anchor]) {
-        let anchorIDs = Set(anchors.map(\.id))
-        for (id, mark) in frames where !anchorIDs.contains(id) {
+                                   connectedIDs: Set<String>) {
+        for (id, mark) in frames {
             drawOverviewMark(in: &context, id: id, frame: mark, connectedIDs: connectedIDs)
-        }
-        // Draw enlarged anchors last. The name is inside its actual node, whose
-        // marker frame is also used by hit testing and relation endpoints.
-        for anchor in anchors {
-            guard let mark = frames[anchor.id] else { continue }
-            drawOverviewMark(in: &context, id: anchor.id, frame: mark, connectedIDs: connectedIDs)
-            let name = context.resolve(
-                Text(anchor.title)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(StudioPalette.primaryText)
-            )
-            var nameContext = context
-            nameContext.clip(to: Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2)))
-            nameContext.draw(name, in: mark.insetBy(dx: 5, dy: 2))
         }
     }
 

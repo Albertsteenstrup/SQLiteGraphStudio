@@ -91,16 +91,14 @@ struct GraphInteractionGeometry {
     /// using the same z-index and original node order as the SwiftUI card views.
     func topmostHit(at point: CGPoint, zIndexForNode: (String) -> Double,
                     nodeIndexForNode: (String) -> Int?) -> String? {
-        var best: (id: String, detail: Bool, anchor: Bool, z: Double, index: Int)?
+        var best: (id: String, detail: Bool, z: Double, index: Int)?
         for id in hitCandidates(at: point) {
             guard let index = nodeIndexForNode(id) else { continue }
             let candidate = (id: id, detail: renderPlan.detailIDs.contains(id),
-                             anchor: overviewAnchorIDs.contains(id), z: zIndexForNode(id), index: index)
+                             z: zIndexForNode(id), index: index)
             if let current = best {
                 if candidate.detail != current.detail {
                     if candidate.detail { best = candidate }
-                } else if candidate.anchor != current.anchor {
-                    if candidate.anchor { best = candidate }
                 } else if candidate.z > current.z || (candidate.z == current.z && candidate.index > current.index) {
                     best = candidate
                 }
@@ -184,23 +182,26 @@ final class GraphInteractionGeometryCache {
         )
         if key == newKey, let geometry { return geometry }
 
+        let overviewAnchorIDs = Set(overviewAnchors.map(\.id))
         let renderPlan = GraphExploration.renderPlan(
             frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
             emphasized: emphasized, primary: primary, retained: retained,
-            overviewAnchorIDs: Set(overviewAnchors.map(\.id))
+            overviewAnchorIDs: overviewAnchorIDs
         )
-        let anchorTitles = Dictionary(uniqueKeysWithValues: overviewAnchors.map { ($0.id, $0.title) })
         let markerFrames = Dictionary(uniqueKeysWithValues: renderPlan.markerIDs.compactMap { id in
             frames[id].map { frame in
                 let sized = nodeSizing.markerFrame(for: id, frame: frame, zoom: zoom)
-                let anchored = anchorTitles[id].map { GraphOverviewAnchors.frame(for: sized, title: $0) } ?? sized
-                return (id, GraphHoverPresentation.markerFrame(anchored, hovered: id == hoveredID, connected: connectedIDs.contains(id)))
+                return (id, GraphHoverPresentation.markerFrame(sized, hovered: id == hoveredID, connected: connectedIDs.contains(id)))
             }
         })
         var nodeCards: [String: GraphCardGeometry] = [:]
         nodeCards.reserveCapacity(frames.count)
         for (id, frame) in frames {
-            let displayFrame = markerFrames[id] ?? GraphHoverPresentation.enlarged(frame, scale: GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id)))
+            let cardFrame = overviewAnchorIDs.contains(id) && renderPlan.detailIDs.contains(id)
+                ? GraphOverviewAnchors.frame(for: frame, zoom: zoom) : frame
+            let displayFrame = markerFrames[id] ?? GraphHoverPresentation.enlarged(
+                cardFrame, scale: GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id))
+            )
             nodeCards[id] = GraphCardGeometry(tableID: id, frame: displayFrame, role: .collapsedNode, descriptor: nil)
         }
         for id in renderPlan.detailIDs {
@@ -209,7 +210,9 @@ final class GraphInteractionGeometryCache {
             guard role != .collapsedNode else { continue }
             nodeCards[id] = GraphCardGeometry(
                 tableID: id, frame: frame, role: role,
-                descriptor: descriptorForNode(id), displayedColumns: displayedColumnsForNode(id), scale: zoom * GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id))
+                descriptor: descriptorForNode(id), displayedColumns: displayedColumnsForNode(id),
+                scale: (overviewAnchorIDs.contains(id) ? GraphOverviewAnchors.displayScale(for: zoom) : zoom)
+                    * GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id))
             )
         }
 
@@ -219,7 +222,7 @@ final class GraphInteractionGeometryCache {
         revision &+= 1
         let snapshot = GraphInteractionGeometry(
             frames: frames, markerFrames: markerFrames,
-            overviewAnchorIDs: Set(overviewAnchors.map(\.id)).intersection(renderPlan.markerIDs),
+            overviewAnchorIDs: overviewAnchorIDs.intersection(renderPlan.detailIDs),
             renderPlan: renderPlan, anchorMap: GraphAnchorMap(nodeCards: nodeCards),
             revision: revision, hitIndex: GraphInteractionHitIndex(frames: interactiveFrames)
         )

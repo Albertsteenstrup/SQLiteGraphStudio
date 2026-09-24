@@ -77,17 +77,14 @@ enum GraphExploration {
         if isLarge { candidates.reserveCapacity(frames.count) }
 
         for (id, frame) in frames {
-            let isVisible = frame.intersects(paddedViewport)
+            let isOverviewAnchor = overviewAnchorIDs.contains(id)
+            let visibleFrame = isOverviewAnchor ? GraphOverviewAnchors.frame(for: frame, zoom: zoom) : frame
+            let isVisible = visibleFrame.intersects(paddedViewport)
             let isRetained = retained.contains(id)
             guard isVisible || isRetained else { continue }
             if isVisible { visibleIDs.insert(id) }
             if isRetained { retainedIDs.insert(id) }
             guard isLarge else { continue }
-            // A named overview marker stays intact until the normal card's text
-            // reaches a useful size; switching at detailZoom made names vanish.
-            if overviewAnchorIDs.contains(id), zoom < GraphOverviewAnchors.cardTransitionZoom,
-               !isRetained { continue }
-
             // Resolve membership once per candidate. Sorting uses scalar ranks and
             // distances instead of repeatedly hashing IDs into sets/dictionaries.
             let isPrimary = primary.contains(id)
@@ -96,11 +93,13 @@ enum GraphExploration {
                 priority = isPrimary ? 0 : 1
             } else if isPrimary {
                 priority = 2
-            } else if emphasized.contains(id) {
+            } else if isOverviewAnchor {
                 priority = 3
+            } else if emphasized.contains(id) {
+                priority = 4
             } else {
                 guard includesOrdinaryDetails else { continue }
-                priority = 4
+                priority = 5
             }
             let dx = frame.midX - centerX, dy = frame.midY - centerY
             candidates.append(RenderCandidate(id: id, priority: priority, distanceSquared: dx * dx + dy * dy))
