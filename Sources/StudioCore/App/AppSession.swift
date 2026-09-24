@@ -223,6 +223,9 @@ public final class AppSession {
     public private(set) var graphRelationCounts: [String: Int] = [:] {
         didSet { rebuildGraphNodeSizeProfile() }
     }
+    public var graphNodeSizeData: GraphNodeSizeData {
+        GraphNodeSizeData(tables: tables, rowCounts: graphRowCounts, relationCounts: graphRelationCounts)
+    }
     public private(set) var graphFilterProgress: Int?
     private var graphFilterGeneration = UUID()
 

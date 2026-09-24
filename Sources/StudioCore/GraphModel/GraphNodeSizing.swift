@@ -6,6 +6,45 @@ public enum GraphNodeSizeMetric: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
     public var title: String { rawValue.capitalized }
+
+    public var explanation: String {
+        switch self {
+        case .uniform: return "All overview nodes have the same size."
+        case .fields: return "Larger overview nodes have more fields."
+        case .rows: return "Larger overview nodes have more available rows; counts may be estimates."
+        case .relations: return "Larger overview nodes have more declared database relationships."
+        }
+    }
+}
+
+/// Bounded, full-catalog evidence for choosing a useful overview scale.
+/// Available row counts can include database estimates; missing is not zero.
+public struct GraphNodeSizeData: Sendable, Equatable {
+    public let objectCount: Int
+    public let minimumFields: Int?
+    public let maximumFields: Int?
+    public let availableRowCounts: Int
+    public let minimumRows: Int?
+    public let maximumRows: Int?
+    public let connectedObjects: Int
+    public let maximumRelations: Int
+
+    public init(tables: [TableSummary], rowCounts: [String: Int], relationCounts: [String: Int]) {
+        objectCount = tables.count
+        let fields = tables.map(\.columnCount)
+        minimumFields = fields.min()
+        maximumFields = fields.max()
+        let rows = tables.compactMap { table -> Int? in
+            guard let count = rowCounts[table.id] ?? table.rowCount, count >= 0 else { return nil }
+            return count
+        }
+        availableRowCounts = rows.count
+        minimumRows = rows.min()
+        maximumRows = rows.max()
+        let relations = tables.map { relationCounts[$0.id, default: 0] }
+        connectedObjects = relations.filter { $0 > 0 }.count
+        maximumRelations = relations.max() ?? 0
+    }
 }
 
 /// A full-catalog scale, rebuilt on data/metric changes rather than camera updates.

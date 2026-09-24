@@ -1526,11 +1526,15 @@ public struct SchemaGraphView: View {
                 rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
             }
         } label: {
-            Image(systemName: "ellipsis")
+            if session.graphNodeSizeMetric == .uniform || size.width < 760 {
+                Image(systemName: "ellipsis")
+            } else {
+                Label("Size: \(session.graphNodeSizeMetric.title)", systemImage: "ellipsis")
+            }
         }
         .menuIndicator(.hidden)
-        .help("Graph options")
-        .accessibilityLabel("Graph options")
+        .help("Graph options. \(session.graphNodeSizeMetric.explanation)")
+        .accessibilityLabel("Graph options. Node size: \(session.graphNodeSizeMetric.title)")
         .fixedSize()
     }
 

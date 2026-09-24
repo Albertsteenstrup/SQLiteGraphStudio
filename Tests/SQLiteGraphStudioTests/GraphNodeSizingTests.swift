@@ -10,6 +10,21 @@ struct GraphNodeSizingTests {
         TableSummary(name: name, objectType: .table, isEditable: true, columnCount: fields, rowCount: rows)
     }
 
+    @Test func sizingDataDistinguishesMissingRowsFromZeroAndCountsDeclaredLinks() {
+        let tables = [table("empty", fields: 2, rows: 0), table("estimated", fields: 20, rows: 500),
+                      table("unknown", fields: 8)]
+        let data = GraphNodeSizeData(tables: tables, rowCounts: ["estimated": 10],
+                                     relationCounts: ["empty": 2, "unknown": 1])
+        #expect(data.objectCount == 3)
+        #expect(data.minimumFields == 2 && data.maximumFields == 20)
+        #expect(data.availableRowCounts == 2)
+        #expect(data.minimumRows == 0 && data.maximumRows == 10)
+        #expect(data.connectedObjects == 2 && data.maximumRelations == 2)
+        let schemaOnly = GraphNodeSizeData(tables: tables.map { table($0.name, fields: $0.columnCount) },
+                                           rowCounts: [:], relationCounts: [:])
+        #expect(schemaOnly.availableRowCounts == 0 && schemaOnly.minimumRows == nil)
+    }
+
     @Test func fieldsRowsAndRelationsUseTheirOwnCountsAndUnknownIsNotZero() throws {
         let tables = [table("a", fields: 2, rows: 0), table("b", fields: 20, rows: 1_000_000), table("c", fields: 8)]
         let fields = GraphNodeSizeProfile(metric: .fields, tables: tables, rowCounts: [:], relationCounts: ["a": 10, "b": 1])

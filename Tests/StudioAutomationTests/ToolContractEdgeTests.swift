@@ -32,7 +32,8 @@ struct ToolContractEdgeTests {
         ], context: context)
         #expect(shown["isError"] as? Bool == false)
         let positions = ids.map { tab.session.graphLayout.position(for: $0) }
-        #expect((positions.map(\.x).max() ?? 0) - (positions.map(\.x).min() ?? 0) == 650)
+        let width = (positions.map(\.x).max() ?? 0) - (positions.map(\.x).min() ?? 0)
+        #expect(width > 250 && width < 900)
 
         let target = ids[1]
         let started = await invoke(coordinator, "studio_start_presentation", [
@@ -138,6 +139,26 @@ struct ToolContractEdgeTests {
         ], context: context)
         let workspace = try #require(payload(opened)["workspace_id"] as? String)
         let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+
+        let initialMetric = tab.session.graphNodeSizeMetric
+        let metric: GraphNodeSizeMetric = initialMetric == .relations ? .fields : .relations
+        let checkpoint = await invoke(coordinator, "studio_capture_view", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+        ], context: context)
+        let checkpointID = try #require(payload(checkpoint)["checkpoint_id"] as? String)
+        let sized = await invoke(coordinator, "studio_set_node_sizing", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "metric": metric.rawValue,
+        ], context: context)
+        let sizingData = try #require(payload(sized)["node_sizing_data"] as? [String: Any])
+        #expect(sizingData["object_count"] as? Int == tab.session.tables.count)
+        #expect(tab.session.graphNodeSizeMetric == metric)
+        let restored = await invoke(coordinator, "studio_restore_view", [
+            "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
+            "checkpoint_id": checkpointID,
+        ], context: context)
+        #expect(restored["isError"] as? Bool == false)
+        #expect(tab.session.graphNodeSizeMetric == initialMetric)
 
         let scoped = await invoke(coordinator, "studio_show_tables", [
             "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,

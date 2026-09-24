@@ -73,6 +73,7 @@ final class StudioAutomationCoordinator {
         let zoom: CGFloat
         let pan: CGSize
         let positions: GraphLayoutSnapshot
+        let nodeSizeMetric: GraphNodeSizeMetric
         let leftPane: PaneContentKind
         let rightPane: PaneContentKind
         let activePaneSide: WorkspacePaneSide
@@ -1178,7 +1179,9 @@ final class StudioAutomationCoordinator {
             tab.session.setGraphNodeSizeMetric(metric, persist: bool(args, "persist") == true)
             tab.session.revealSchemaForAutomation()
             tab.session.markAutomationViewChanged()
-            return ["workspace_id": tab.id.uuidString, "metric": metric.rawValue, "view_revision": viewRevision(tab)]
+            return ["workspace_id": tab.id.uuidString, "metric": metric.rawValue,
+                    "node_sizing_data": nodeSizingDataPayload(tab.session),
+                    "view_revision": viewRevision(tab), "visual_state": visualState(tab)]
         case "studio_set_groups":
             let tab = try sourceWorkspace(args, context: context)
             let session = tab.session
@@ -3133,6 +3136,7 @@ final class StudioAutomationCoordinator {
             zoom: session.graphZoom,
             pan: session.graphPan,
             positions: session.graphLayout.snapshot(for: session.graph),
+            nodeSizeMetric: session.graphNodeSizeMetric,
             leftPane: session.paneState(for: .left).kind,
             rightPane: session.paneState(for: .right).kind,
             activePaneSide: session.activePaneSide,
@@ -3164,6 +3168,7 @@ final class StudioAutomationCoordinator {
         session.requestAutomationViewport(fitVisibleTables: false, transitionMilliseconds: 0)
         session.showAllGraphTableCards = point.showsAllGraphTableCards
         session.restoreAutomationGraphLayout(point.positions)
+        session.setGraphNodeSizeMetric(point.nodeSizeMetric, persist: false)
         session.setPaneContent(point.leftPane, for: .left)
         session.setPaneContent(point.rightPane, for: .right)
         session.setActivePaneSide(point.activePaneSide)
@@ -4073,6 +4078,7 @@ final class StudioAutomationCoordinator {
                 "rendered_table_ids": session.automationRenderedTableIDs.sorted(), "visual_state": visualState(tab),
                 "pan": ["x": Double(session.graphPan.width), "y": Double(session.graphPan.height)],
                 "node_sizing": session.graphNodeSizeMetric.rawValue,
+                "node_sizing_data": nodeSizingDataPayload(session),
                 "annotations": viewAnnotations.annotations(in: tab.id).map(\.payload),
                 "active_table": nullable(session.activeTab?.descriptor.name),
                 "active_query_id": nullable(session.queryWorkspace.activeQueryID?.uuidString)]
@@ -4082,6 +4088,16 @@ final class StudioAutomationCoordinator {
         guard workspaces.activeTabID == tab.id, hasVisibleAppWindow else { return "applied_in_background" }
         guard tab.session.isSchemaPaneVisiblyDisplayed else { return "graph_not_visible" }
         return tab.session.automationRenderedViewRevision == tab.session.automationViewRevision ? "rendered_in_foreground" : "applied_waiting_for_render"
+    }
+
+    private func nodeSizingDataPayload(_ session: AppSession) -> [String: Any] {
+        let data = session.graphNodeSizeData
+        return ["scope": "full_catalog", "object_count": data.objectCount,
+                "fields": ["minimum": nullable(data.minimumFields), "maximum": nullable(data.maximumFields)],
+                "rows": ["available_count": data.availableRowCounts,
+                         "minimum": nullable(data.minimumRows), "maximum": nullable(data.maximumRows)],
+                "relations": ["connected_objects": data.connectedObjects,
+                              "maximum": data.maximumRelations]]
     }
 
     private func descriptorPayload(_ descriptor: EditableTableDescriptor, session: AppSession) -> [String: Any] {
