@@ -5,6 +5,45 @@ import Testing
 @MainActor
 struct LargeGraphLayoutTests {
     @Test
+    func connectedDomainStarsSpreadAroundTheirHubsWithoutPackedRows() {
+        var nodes: [GraphNode] = []
+        var edges: [GraphEdge] = []
+        var hints: [String: String] = [:]
+        for group in 0..<7 {
+            let hub = "domain_\(group)_hub"
+            nodes.append(GraphNode(id: hub, title: hub, isEditable: false))
+            hints[hub] = "domain_\(group)"
+            for leaf in 0..<19 {
+                let id = "domain_\(group)_leaf_\(leaf)"
+                nodes.append(GraphNode(id: id, title: id, isEditable: false))
+                hints[id] = "domain_\(group)"
+                edges.append(GraphEdge(id: "spoke_\(group)_\(leaf)", sourceID: id,
+                                       targetID: hub, sourceColumn: "hub_id", targetColumn: "id"))
+            }
+            if group > 0 {
+                edges.append(GraphEdge(id: "bridge_\(group)", sourceID: hub,
+                                       targetID: "domain_0_hub", sourceColumn: "parent_id", targetColumn: "id"))
+            }
+        }
+        let graph = SchemaGraph(nodes: nodes, edges: edges)
+        let layout = GraphLayoutModel()
+        layout.setClusterHints(hints)
+        layout.reset(for: graph)
+        let card = CGSize(width: 180, height: 42)
+        layout.stabilize(graph: graph, presentation: .compact,
+                         descriptorLookup: nil, nodeSizeLookup: { _ in card })
+
+        let frames = nodes.map { layoutFrame(center: layout.position(for: $0.id), size: card) }
+        #expect(overlappingPairCount(frames) == 0)
+        let firstGroup = nodes.prefix(20).map { layout.position(for: $0.id) }
+        #expect(Set(firstGroup.map { Int($0.x.rounded()) }).count > 8)
+        #expect(Set(firstGroup.map { Int($0.y.rounded()) }).count > 8)
+        let centers = (0..<7).map { layout.position(for: "domain_\($0)_hub") }
+        #expect(Set(centers.map { Int($0.x.rounded()) }).count > 3)
+        #expect(Set(centers.map { Int($0.y.rounded()) }).count > 3)
+    }
+
+    @Test
     func authoredGroupsHaveSeparateRegionsDespiteCrossGroupEdges() {
         let fixture = makeLargeLayoutFixture(nodeCount: 585, groupSize: 65)
         let layout = GraphLayoutModel()
@@ -18,6 +57,22 @@ struct LargeGraphLayoutTests {
         #expect(overlappingPairCount(Array(regions.values)) == 0)
         #expect(layout.allPositions(for: fixture.graph).count == 585)
         #expect(layout.allPositions(for: fixture.graph).values.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+    }
+
+    @Test
+    func unusuallyManyAuthoredGroupsKeepBoundedNonoverlappingPlacement() {
+        let fixture = makeLargeLayoutFixture(nodeCount: 195, groupSize: 1)
+        let layout = GraphLayoutModel()
+        layout.setClusterHints(fixture.hints)
+        layout.reset(for: fixture.graph)
+        layout.stabilize(graph: fixture.graph, presentation: .compact,
+                         descriptorLookup: nil, nodeSizeLookup: { _ in fixture.compactSize })
+
+        let frames = fixture.graph.nodes.map {
+            layoutFrame(center: layout.position(for: $0.id), size: fixture.compactSize)
+        }
+        #expect(overlappingPairCount(frames) == 0)
+        #expect(layout.allPositions(for: fixture.graph).count == 195)
     }
 
     @Test

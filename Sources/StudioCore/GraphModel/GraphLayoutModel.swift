@@ -18,7 +18,7 @@ public final class GraphLayoutModel {
     public static let crowdedNodeThreshold = 14
 
     /// Above this threshold the same force solver runs only on bounded local pieces.
-    /// Card-aware packing separates those pieces and their authored parent groups.
+    /// Card-aware community placement separates those pieces and parent groups.
     public static let largeGraphOverviewThreshold = 128
 
     private var positions: [String: CGPoint] = [:]

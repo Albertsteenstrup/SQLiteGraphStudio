@@ -64,6 +64,39 @@ struct AppSessionSmokeTests {
     }
 
     @Test
+    func olderSavedPlacementRegeneratesCoordinatesButKeepsManualPins() async throws {
+        let url = try TestSupport.createFixture(named: "older-placement")
+        let suite = "SQLiteGraphStudioTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let first = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
+        await first.openDatabase(url: url)
+        let pin = CGPoint(x: -120, y: 64)
+        first.graphLayout.pin(nodeID: "authors", at: pin)
+        first.persistCurrentGraphLayout()
+        let key = try #require(defaults.dictionaryRepresentation().keys.first {
+            $0.hasPrefix("SQLiteGraphStudio.graph-layout.v2.")
+        })
+        let saved = try #require(defaults.data(forKey: key))
+        var legacy = try #require(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        legacy.removeValue(forKey: "placementVersion")
+        var positions = try #require(legacy["positions"] as? [String: [String: Double]])
+        positions["posts"] = ["x": 10_000, "y": 10_000]
+        legacy["positions"] = positions
+        defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: key)
+
+        let second = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
+        await second.openDatabase(url: url)
+        #expect(second.graphLayout.position(for: "authors") == pin)
+        #expect(second.graphLayout.position(for: "posts") != CGPoint(x: 10_000, y: 10_000))
+        let migrated = try #require(defaults.data(forKey: key))
+        let savedAgain = try #require(JSONSerialization.jsonObject(with: migrated) as? [String: Any])
+        #expect(savedAgain["placementVersion"] as? Int == 4)
+    }
+
+    @Test
     func automationScopeAndRenderAcknowledgementTrackVisibleRevision() async throws {
         let url = try TestSupport.createFixture(named: "automation-visible-scope")
         let session = AppSession(databaseService: DatabaseService())

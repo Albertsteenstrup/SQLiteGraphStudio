@@ -171,7 +171,7 @@ Query history, saved queries and graph layout use a password-free, hashed connec
 
 ## Exploring large schemas
 
-Both database types use the same graph engine. For more than 128 tables, it divides layout work into neighbourhoods of at most 64 tables, applies the existing force solver inside them, and packs the resulting regions without overlapping cards. Authored groups retain their labels and colours, including groups larger than one neighbourhood. Unassigned tables get deterministic local groups based on schema, repeated name prefixes and relationships; these inferred groups are not saved into the sidecar.
+SQLite, PostgreSQL connections, PostgreSQL backups and migration models use the same schema-graph placement path. For more than 128 objects, it divides layout work into neighbourhoods of at most 64 tables. Connected groups of up to 48 keep the force solver's hub-and-neighbour shape, with actual card rectangles separated; bigger or disconnected pieces use compact packing. At the catalog level, weighted cross-group relationships place domains around connected hubs with clearance between groups. This distributed community layout follows the same principles as GRC Platform's graph fabric while retaining Graph Studio's authored group hints and exact card sizes. Authored groups retain their labels and colours, including groups larger than one neighbourhood. Unassigned tables get deterministic local groups based on schema, repeated name prefixes and relationships; these inferred groups are not saved into the sidecar.
 
 At full-model zoom, authored group titles and a few optional `overviewTables` callouts provide orientation while the other nodes stay compact. A coding agent can then show a readable subset spanning the main domains and move into a narrower group or table. The sidecar hints guide that presentation; they do not restrict the agent to those tables.
 
@@ -189,7 +189,7 @@ Canvas interaction reuses relationship indexes, group connections and table size
 
 See [dump and native UI verification](docs/dump-ui-verification.md) for archive, crash, scrolling and filter checks. See [verification evidence](docs/postgres-parity-scale-verification.md) for measured layout and canvas preparation work, test coverage and the limits of the native interaction checks.
 
-Dragging and saved pins remain available. Relayout deliberately rebuilds positions; obsolete large-grid snapshots are regenerated while preserving saved pins. If saved pins themselves overlap, their explicit positions take precedence.
+Dragging and saved pins remain available. Relayout deliberately rebuilds positions; older row-packed snapshots are regenerated once under the current placement model while preserving saved pins. If saved pins themselves overlap, their explicit positions take precedence.
 
 See [query, browsing, export and metadata contracts](docs/query-data-contracts.md) for value formats and consistency guarantees.
 

@@ -2436,6 +2436,28 @@ public final class AppSession {
             return
         }
 
+        if persistedLayout.placementVersion != currentGraphPlacementVersion {
+            // A prior build saved older placement coordinates. Recreate the
+            // current community layout while retaining deliberate drag pins.
+            graphLayout.restore(
+                GraphLayoutSnapshot(positions: [:], pinnedPositions: persistedLayout.snapshot.pinnedPositions),
+                for: graph,
+                presentation: .compact,
+                descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] }
+            )
+            if graph.nodes.count <= GraphLayoutModel.largeGraphOverviewThreshold {
+                graphLayout.stabilize(
+                    graph: graph, presentation: .compact,
+                    descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] },
+                    nodeSizeLookup: { [tableDescriptors] id in
+                        GraphCardLayout.nodeSize(title: graph.node(id: id)?.title ?? id,
+                                                 descriptor: tableDescriptors[id], style: .collapsed)
+                    }
+                )
+            }
+            persistCurrentGraphLayout()
+            return
+        }
         graphLayout.restore(
             persistedLayout.snapshot,
             for: graph,
@@ -2544,11 +2566,15 @@ final class DatabaseDocumentOpenPanelDelegate: NSObject, NSOpenSavePanelDelegate
     }
 }
 
+private let currentGraphPlacementVersion = 4
+
 private struct PersistedGraphLayout: Codable {
+    let placementVersion: Int?
     let positions: [String: PersistedPoint]
     let pinnedPositions: [String: PersistedPoint]
 
     init(snapshot: GraphLayoutSnapshot) {
+        placementVersion = currentGraphPlacementVersion
         positions = snapshot.positions.mapValues(PersistedPoint.init)
         pinnedPositions = snapshot.pinnedPositions.mapValues(PersistedPoint.init)
     }

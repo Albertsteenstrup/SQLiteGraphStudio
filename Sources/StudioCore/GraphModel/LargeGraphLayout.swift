@@ -12,9 +12,11 @@ struct LargeGraphLayoutMetrics {
     var obstacleChecks = 0
 }
 
-/// A hierarchy around the ordinary force solver. Physics orders small connected
-/// pieces; rectangle packing gives every card clearance and keeps authored groups
-/// separate. Every pairwise operation is confined to a piece of at most 64 nodes.
+/// A hierarchy around the ordinary force solver. Small connected pieces keep
+/// their hub-and-neighbour geometry, while card-aware placement gives every
+/// table clearance. Weighted links place the resulting communities near one
+/// another without collapsing the whole catalog into rows or a single ring.
+/// Every node-pair operation is confined to a piece of at most 64 nodes.
 @MainActor
 enum LargeGraphLayout {
     nonisolated static let maximumLocalNodeCount = 64
@@ -164,12 +166,21 @@ enum LargeGraphLayout {
                 if left.x != right.x { return left.x < right.x }
                 return lhs < rhs
             }
-            let region = pack(
-                orderedIDs.map { Item(id: $0, size: sizes[$0]!) },
-                gap: nodeGap,
-                aspect: presentation == .compact ? 1.8 : 1.35,
-                horizontalPositions: solution.positions
-            )
+            let items = orderedIDs.map { Item(id: $0, size: sizes[$0]!) }
+            // A normal domain group fits in one bounded piece. Keep its local
+            // force solution so a connected hub actually has nearby spokes.
+            // Very large pieces use the proven compact packer for predictable
+            // work and clearance; their parent groups still use fabric placement.
+            let region = items.count <= 48 && !localEdges.isEmpty
+                ? fabric(items.sorted { importanceOrder($0.id, $1.id) },
+                         preferred: solution.positions, gap: nodeGap,
+                         preserveGeometry: prior?.count == localNodes.count && solution.iterations == 0)
+                    ?? pack(items, gap: nodeGap,
+                            aspect: presentation == .compact ? 1.8 : 1.35,
+                            horizontalPositions: solution.positions)
+                : pack(items, gap: nodeGap,
+                       aspect: presentation == .compact ? 1.8 : 1.35,
+                       horizontalPositions: solution.positions)
             regionsByGroup[piece.group, default: []].append(("piece:\(pieceIndex)", region))
         }
 
@@ -190,8 +201,10 @@ enum LargeGraphLayout {
         }
 
         let orderedGroups = connectedGroupOrder(Array(groupRegions.keys), links: groupLinks)
-        let packedGroups = pack(orderedGroups.map { Item(id: $0, size: groupRegions[$0]!.size) },
-                                gap: groupGap, aspect: 2.2, serpentine: true)
+        let packedGroups = placeCommunities(
+            orderedGroups.map { Item(id: $0, size: groupRegions[$0]!.size) },
+            links: groupLinks, gap: groupGap
+        )
         var points: [String: CGPoint] = [:]
         for group in orderedGroups {
             let region = groupRegions[group]!
@@ -257,6 +270,144 @@ enum LargeGraphLayout {
             }
         }
         return result
+    }
+
+    /// Preserve the local force solution instead of flattening a community into
+    /// rows. Place the best-connected card first, then move only cards whose
+    /// actual rectangles collide. The search is bounded by the 48-card cutoff.
+    private static func fabric(
+        _ items: [Item], preferred: [String: CGPoint], gap: CGFloat,
+        preserveGeometry: Bool = false
+    ) -> Region? {
+        guard let hub = items.first else { return Region(positions: [:], size: .zero) }
+        let hubPoint = finitePosition(preferred[hub.id])
+        let seeds = items.map { finitePosition(preferred[$0.id]) }
+        let xSpan = max(1, (seeds.map(\.x).max() ?? 0) - (seeds.map(\.x).min() ?? 0))
+        let ySpan = max(1, (seeds.map(\.y).max() ?? 0) - (seeds.map(\.y).min() ?? 0))
+        let cardArea = items.reduce(CGFloat.zero) {
+            $0 + ($1.size.width + gap) * ($1.size.height + gap)
+        }
+        // The ordinary solver may return a tall or wide strip when an authored
+        // domain contains several weakly linked components. Give both axes a
+        // card-area-derived span before resolving collisions; this avoids a
+        // full catalog that fits only as a thin vertical column.
+        let targetSpan = sqrt(cardArea) * 1.45
+        let xScale = preserveGeometry ? 1 : min(2.4, max(0.12, targetSpan / xSpan))
+        let yScale = preserveGeometry ? 1 : min(2.4, max(0.12, targetSpan / ySpan))
+        var positions: [String: CGPoint] = [:]
+        var occupied: [CGRect] = []
+        for item in items {
+            let seed = finitePosition(preferred[item.id])
+            let desired = CGPoint(x: (seed.x - hubPoint.x) * xScale,
+                                  y: (seed.y - hubPoint.y) * yScale)
+            let step = max(item.size.width, item.size.height) * 0.46 + gap
+            var chosen: CGPoint?
+            for ring in 0...max(24, items.count) {
+                let candidateCount = ring == 0 ? 1 : 18
+                for index in 0..<candidateCount {
+                    let angle = stableAngle(item.id) + CGFloat(index) * 2 * .pi / CGFloat(candidateCount)
+                        + CGFloat(ring) * 0.37
+                    let candidate = ring == 0 ? desired : CGPoint(
+                        x: desired.x + cos(angle) * step * CGFloat(ring),
+                        y: desired.y + sin(angle) * step * CGFloat(ring)
+                    )
+                    let padded = frame(candidate, item.size).insetBy(dx: -gap / 2, dy: -gap / 2)
+                    if !occupied.contains(where: { $0.intersects(padded) }) {
+                        chosen = candidate
+                        occupied.append(padded)
+                        break
+                    }
+                }
+                if chosen != nil { break }
+            }
+            guard let chosen else { return nil }
+            positions[item.id] = chosen
+        }
+        return normalizedRegion(positions, items: items)
+    }
+
+    /// A weighted community meta-graph supplies a preferred center for each
+    /// domain. Linked domains gather around shared hubs, while disconnected
+    /// domains use a deterministic spiral. Rectangle clearance is exact, so
+    /// the layout remains readable with wide or expanded database cards.
+    private static func placeCommunities(
+        _ items: [Item], links: [String: [String: Int]], gap: CGFloat
+    ) -> Region {
+        guard !items.isEmpty else { return Region(positions: [:], size: .zero) }
+        guard items.count <= 64 else { return pack(items, gap: gap, aspect: 2.2, serpentine: true) }
+        var positions: [String: CGPoint] = [:]
+        var occupied: [CGRect] = []
+        for (index, item) in items.enumerated() {
+            let neighbors = links[item.id, default: [:]].compactMap { id, count -> (CGPoint, CGFloat)? in
+                guard let position = positions[id], count > 0 else { return nil }
+                return (position, CGFloat(log1p(Double(count))))
+            }
+            let weight = neighbors.reduce(CGFloat.zero) { $0 + $1.1 }
+            let preferred: CGPoint
+            if index == 0 {
+                preferred = .zero
+            } else if weight > 0 {
+                preferred = CGPoint(
+                    x: neighbors.reduce(CGFloat.zero) { $0 + $1.0.x * $1.1 } / weight,
+                    y: neighbors.reduce(CGFloat.zero) { $0 + $1.0.y * $1.1 } / weight
+                )
+            } else {
+                let angle = CGFloat(index) * 2.399_963_23 + stableAngle(item.id) * 0.13
+                let radius = sqrt(CGFloat(index)) * max(item.size.width, item.size.height, gap)
+                preferred = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
+            }
+            let step = max(item.size.width, item.size.height) * 0.52 + gap
+            let priorBounds = occupied.reduce(CGRect.null) { $0.union($1) }
+            var best: (point: CGPoint, score: CGFloat)?
+            var firstFreeRing: Int?
+            for ring in 0...max(40, items.count * 3) {
+                if let firstFreeRing, ring > firstFreeRing + 2 { break }
+                let candidateCount = ring == 0 ? 1 : 24
+                for sample in 0..<candidateCount {
+                    let angle = stableAngle(item.id) + CGFloat(sample) * 2 * .pi / CGFloat(candidateCount)
+                        + CGFloat(ring) * 0.19
+                    let candidate = ring == 0 ? preferred : CGPoint(
+                        x: preferred.x + cos(angle) * step * CGFloat(ring),
+                        y: preferred.y + sin(angle) * step * CGFloat(ring)
+                    )
+                    let padded = frame(candidate, item.size).insetBy(dx: -gap / 2, dy: -gap / 2)
+                    guard !occupied.contains(where: { $0.intersects(padded) }) else { continue }
+                    if firstFreeRing == nil { firstFreeRing = ring }
+                    let linkDistance = neighbors.reduce(CGFloat.zero) {
+                        $0 + $1.1 * hypot(candidate.x - $1.0.x, candidate.y - $1.0.y)
+                    }
+                    let bounds = priorBounds.isNull ? padded : priorBounds.union(padded)
+                    let aspect = max(bounds.width, 1) / max(bounds.height, 1)
+                    let aspectCost = abs(log(aspect / 1.85)) * max(bounds.width, bounds.height) * 1.35
+                    let score = linkDistance
+                        + hypot(candidate.x - preferred.x, candidate.y - preferred.y) * 0.2
+                        + aspectCost
+                    if best == nil || score < best!.score { best = (candidate, score) }
+                }
+            }
+            guard let best else { return pack(items, gap: gap, aspect: 2.2, serpentine: true) }
+            positions[item.id] = best.point
+            occupied.append(frame(best.point, item.size).insetBy(dx: -gap / 2, dy: -gap / 2))
+        }
+        return normalizedRegion(positions, items: items)
+    }
+
+    private static func normalizedRegion(_ positions: [String: CGPoint], items: [Item]) -> Region {
+        let bounds = items.reduce(CGRect.null) { result, item in
+            guard let position = positions[item.id] else { return result }
+            return result.union(frame(position, item.size))
+        }
+        guard !bounds.isNull else { return Region(positions: [:], size: .zero) }
+        return Region(
+            positions: positions.mapValues { CGPoint(x: $0.x - bounds.minX, y: $0.y - bounds.minY) },
+            size: bounds.size
+        )
+    }
+
+    private static func stableAngle(_ id: String) -> CGFloat {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in id.utf8 { hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211 }
+        return CGFloat(hash % 10_000) * 2 * .pi / 10_000
     }
 
     /// Try a fixed number of shelf widths. Work remains linear in the item count;
