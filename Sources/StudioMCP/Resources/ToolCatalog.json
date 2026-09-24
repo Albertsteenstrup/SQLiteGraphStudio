@@ -2033,11 +2033,12 @@
                 "type": "string"
               },
               "caption": {
-                "type": "string"
+                "type": "string",
+                "description": "Visible explanation for the user. State a supported fact or interpretation about the model; do not describe UI staging such as expanding a card or routine source limitations. If narration is omitted, this text is also spoken."
               },
               "narration": {
                 "type": "string",
-                "description": "Optional spoken wording. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
+                "description": "Optional spoken explanation of the model, not the graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
               },
               "actions": {
                 "type": "array",
@@ -2155,11 +2156,12 @@
                 "type": "string"
               },
               "caption": {
-                "type": "string"
+                "type": "string",
+                "description": "Visible explanation for the user. State a supported fact or interpretation about the model; do not describe UI staging such as expanding a card or routine source limitations. If narration is omitted, this text is also spoken."
               },
               "narration": {
                 "type": "string",
-                "description": "Optional spoken wording. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
+                "description": "Optional spoken explanation of the model, not the graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
               },
               "actions": {
                 "type": "array",
