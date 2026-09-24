@@ -21,7 +21,7 @@ public enum GraphVisual: String, CaseIterable, Sendable, Identifiable, Codable {
     case overviewGroupLinks
     /// Drop shadows under table and story cards.
     case cardShadows
-    /// Callout labels naming the tables around the pointer at overview zoom.
+    /// Names and counts shown inside nearby overview nodes on hover.
     case hoverPreviews
     /// The graph overview inset in the bottom-left corner.
     case minimap
@@ -60,7 +60,7 @@ public enum GraphVisual: String, CaseIterable, Sendable, Identifiable, Codable {
         case .cardShadows:
             return "Lift table cards off the canvas with a drop shadow."
         case .hoverPreviews:
-            return "Name the tables around the pointer while zoomed out."
+            return "Show names and counts inside nearby nodes while zoomed out."
         case .minimap:
             return "Show the whole graph in the bottom-left corner."
         }

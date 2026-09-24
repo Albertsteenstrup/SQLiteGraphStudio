@@ -49,7 +49,7 @@ Cluster count guidance:
 
 Tables that don't fit anywhere are fine to leave out of all clusters. The app computes deterministic groups for unassigned tables from schema, names, and relationships. These inferred groups are not written into the sidecar.
 
-For an overview, choose 4–16 exact table IDs across the main domains as `overviewTables`. Favor canonical records and the few tables that explain how sources, evidence, decisions, and outputs connect. Verify their roles from schema or code; raw foreign-key degree alone is a poor guide because account and audit tables often have many incidental references. The list is ordered by explanatory priority. It adds readable labels on the full map and gives agents useful anchors; it does not pin tables, create relations, or restrict what an agent can focus on. A narrow task does not need this hint.
+For an overview, choose 4–16 exact table IDs across the main domains as `overviewTables`. Favor canonical records and the few tables that explain how sources, evidence, decisions, and outputs connect. Verify their roles from schema or code; raw foreign-key degree alone is a poor guide because account and audit tables often have many incidental references. The list is ordered by explanatory priority. It enlarges those existing nodes enough to show their names on the full map; it does not add floating labels, pin tables, create relations, or restrict what an agent can focus on. A narrow task does not need this hint.
 
 ## Output format
 

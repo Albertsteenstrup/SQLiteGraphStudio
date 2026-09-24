@@ -65,7 +65,8 @@ enum GraphExploration {
 
     static func renderPlan(
         frames: [String: CGRect], viewport: CGRect, zoom: CGFloat,
-        isLarge: Bool, emphasized: Set<String>, primary: Set<String> = [], retained: Set<String> = []
+        isLarge: Bool, emphasized: Set<String>, primary: Set<String> = [], retained: Set<String> = [],
+        overviewAnchorIDs: Set<String> = []
     ) -> RenderPlan {
         let paddedViewport = viewport.insetBy(dx: -80, dy: -80)
         let centerX = viewport.midX, centerY = viewport.midY
@@ -82,6 +83,10 @@ enum GraphExploration {
             if isVisible { visibleIDs.insert(id) }
             if isRetained { retainedIDs.insert(id) }
             guard isLarge else { continue }
+            // A named overview marker stays intact until the normal card's text
+            // reaches a useful size; switching at detailZoom made names vanish.
+            if overviewAnchorIDs.contains(id), zoom < GraphOverviewAnchors.cardTransitionZoom,
+               !isRetained { continue }
 
             // Resolve membership once per candidate. Sorting uses scalar ranks and
             // distances instead of repeatedly hashing IDs into sets/dictionaries.

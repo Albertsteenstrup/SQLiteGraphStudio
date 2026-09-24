@@ -77,6 +77,18 @@ public struct SchemaGraphView: View {
     private var isLargeGraph: Bool { renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
     private var usesOverviewMarks: Bool { (isLargeGraph || session.graphNodeSizeMetric != .uniform) && zoom < GraphExploration.detailZoom }
 
+    private var overviewAnchors: [GraphOverviewAnchors.Anchor] {
+        guard isLargeGraph, focusedGroupID == nil, effectiveFocusPlan == nil,
+              zoom >= GraphOverviewAnchors.minimumZoom,
+              zoom < GraphOverviewAnchors.cardTransitionZoom else { return [] }
+        return session.schemaSidecar.overviewTables.compactMap { id in
+            guard let node = renderedGraph.node(id: id) else { return nil }
+            return GraphOverviewAnchors.Anchor(
+                id: id, title: session.descriptor(named: id)?.objectName ?? node.title
+            )
+        }
+    }
+
     public init(session: AppSession) {
         self.session = session
     }
@@ -381,7 +393,8 @@ public struct SchemaGraphView: View {
     @ViewBuilder
     private func graphScene(size: CGSize) -> some View {
         let focusPlan = effectiveFocusPlan
-        let geometry = interactionGeometry(in: size, focusPlan: focusPlan)
+        let anchors = overviewAnchors
+        let geometry = interactionGeometry(in: size, focusPlan: focusPlan, overviewAnchors: anchors)
         let anchorMap = geometry.anchorMap
         let graph = renderedGraph
         let viewport = CGRect(origin: .zero, size: size)
@@ -396,7 +409,7 @@ public struct SchemaGraphView: View {
         let hoverSummaryIDs = shows(.hoverPreviews) ? GraphHoverPresentation.summaryIDs(
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil, connectedIDs: hoverNeighbors,
             markerFrames: geometry.markerFrames, viewport: viewport
-        ) : []
+        ).subtracting(geometry.overviewAnchorIDs) : []
         let hoverSummaryNodes = graph.nodes.filter { hoverSummaryIDs.contains($0.id) }
         let renderPlan = geometry.renderPlan
         let edgeLookup = topologyCache.index(for: graph, graphRevision: renderedGraphRevision)
@@ -470,8 +483,8 @@ public struct SchemaGraphView: View {
                 if let edgePlan {
                     drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan)
                 }
-                drawOverviewMarks(in: &context, frames: geometry.markerFrames, connectedIDs: hoverNeighbors)
-                drawOverviewTableLabels(in: &context, frames: geometry.markerFrames, canvasSize: size)
+                drawOverviewMarks(in: &context, frames: geometry.markerFrames,
+                                  connectedIDs: hoverNeighbors, anchors: anchors)
                 for id in hoverSummaryIDs {
                     guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                     let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -873,62 +886,45 @@ public struct SchemaGraphView: View {
         clearGraphFocusSession(restoreViewport: false)
     }
 
-    private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect], connectedIDs: Set<String>) {
-        for (id, mark) in frames {
-            let color = clusterBorderColor(for: id) ?? StudioPalette.accent
-            let isHovered = hoveredNodeID == id
-            let connected = connectedIDs.contains(id)
-            let emphasis = isHovered || connected ? 0.78 : 0.62
-            let opacity = emphasis * (session.schemaReviewChanges[id]?.kind == .removed ? 0.6 : 1)
-            let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
-            let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
-            context.fill(path, with: .color(color.opacity(isUnknown ? opacity * 0.45 : opacity)))
-            if let change = session.schemaReviewChanges[id], change.kind != .unchanged {
-                context.stroke(path, with: .color(.white), lineWidth: 4)
-                context.stroke(path, with: .color(change.kind.tint), style: StrokeStyle(lineWidth: 2, dash: change.kind == .removed ? [3, 2] : []))
-            }
-            if isUnknown {
-                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-            }
-            if session.selectedGraphNodeIDs.contains(id) {
-                context.stroke(path, with: .color(StudioPalette.primaryText), lineWidth: 1.5)
-            }
+    private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect],
+                                   connectedIDs: Set<String>, anchors: [GraphOverviewAnchors.Anchor]) {
+        let anchorIDs = Set(anchors.map(\.id))
+        for (id, mark) in frames where !anchorIDs.contains(id) {
+            drawOverviewMark(in: &context, id: id, frame: mark, connectedIDs: connectedIDs)
+        }
+        // Draw enlarged anchors last. The name is inside its actual node, whose
+        // marker frame is also used by hit testing and relation endpoints.
+        for anchor in anchors {
+            guard let mark = frames[anchor.id] else { continue }
+            drawOverviewMark(in: &context, id: anchor.id, frame: mark, connectedIDs: connectedIDs)
+            let name = context.resolve(
+                Text(anchor.title)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(StudioPalette.primaryText)
+            )
+            var nameContext = context
+            nameContext.clip(to: Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2)))
+            nameContext.draw(name, in: mark.insetBy(dx: 5, dy: 2))
         }
     }
 
-    private func drawOverviewTableLabels(in context: inout GraphicsContext,
-                                         frames: [String: CGRect], canvasSize: CGSize) {
-        guard isLargeGraph, effectiveFocusPlan == nil, zoom < GraphExploration.detailZoom,
-              zoom >= 0.12, !session.schemaSidecar.overviewTables.isEmpty else { return }
-        var labels: [String: GraphicsContext.ResolvedText] = [:]
-        let candidates: [GraphOverviewLabels.Candidate] = session.schemaSidecar.overviewTables.compactMap { id in
-            guard let frame = frames[id], let descriptor = session.descriptor(named: id) else { return nil }
-            let resolved = context.resolve(
-                Text(descriptor.objectName)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(StudioPalette.primaryText)
-            )
-            let measured = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude,
-                                                        height: CGFloat.greatestFiniteMagnitude))
-            labels[id] = resolved
-            return GraphOverviewLabels.Candidate(
-                id: id, marker: frame,
-                labelSize: CGSize(width: ceil(measured.width) + 12, height: ceil(measured.height) + 6)
-            )
+    private func drawOverviewMark(in context: inout GraphicsContext, id: String, frame: CGRect,
+                                  connectedIDs: Set<String>) {
+        let color = clusterBorderColor(for: id) ?? StudioPalette.accent
+        let emphasis = hoveredNodeID == id || connectedIDs.contains(id) ? 0.78 : 0.62
+        let opacity = emphasis * (session.schemaReviewChanges[id]?.kind == .removed ? 0.6 : 1)
+        let path = Path(roundedRect: frame, cornerRadius: min(4, frame.height / 2))
+        let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
+        context.fill(path, with: .color(color.opacity(isUnknown ? opacity * 0.45 : opacity)))
+        if let change = session.schemaReviewChanges[id], change.kind != .unchanged {
+            context.stroke(path, with: .color(.white), lineWidth: 4)
+            context.stroke(path, with: .color(change.kind.tint), style: StrokeStyle(lineWidth: 2, dash: change.kind == .removed ? [3, 2] : []))
         }
-        for placement in GraphOverviewLabels.place(candidates,
-                                                   in: CGRect(origin: .zero, size: canvasSize)) {
-            guard let resolved = labels[placement.id] else { continue }
-            let tint = clusterBorderColor(for: placement.id) ?? StudioPalette.accent
-            var leader = Path()
-            leader.move(to: CGPoint(x: placement.marker.midX, y: placement.marker.midY))
-            leader.addLine(to: CGPoint(x: placement.label.midX, y: placement.label.midY))
-            context.stroke(leader, with: .color(tint.opacity(0.7)), lineWidth: 1)
-            let shape = Path(roundedRect: placement.label, cornerRadius: 5)
-            context.fill(shape, with: .color(StudioPalette.chromeFillStrong))
-            context.stroke(shape, with: .color(tint.opacity(0.8)), lineWidth: 1)
-            context.draw(resolved, at: CGPoint(x: placement.label.midX,
-                                               y: placement.label.midY), anchor: .center)
+        if isUnknown {
+            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+        }
+        if session.selectedGraphNodeIDs.contains(id) {
+            context.stroke(path, with: .color(StudioPalette.primaryText), lineWidth: 1.5)
         }
     }
 
@@ -2130,7 +2126,8 @@ public struct SchemaGraphView: View {
         return frames
     }
 
-    private func interactionGeometry(in size: CGSize, focusPlan: GraphFocusPlan?) -> GraphInteractionGeometry {
+    private func interactionGeometry(in size: CGSize, focusPlan: GraphFocusPlan?,
+                                     overviewAnchors: [GraphOverviewAnchors.Anchor]) -> GraphInteractionGeometry {
         let frames = GraphInteractionGeometry.screenFrames(
             worldFrames: worldFrames(focusPlan: focusPlan),
             transform: GraphViewportTransform(zoom: zoom, pan: pan), viewportSize: size
@@ -2151,6 +2148,7 @@ public struct SchemaGraphView: View {
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil,
             connectedIDs: draggedNodeID == nil ? (hoveredNodeID.map { renderedGraph.neighbors(of: $0) } ?? []) : [],
             nodeSizing: session.graphNodeSizeProfile,
+            overviewAnchors: overviewAnchors,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
     }

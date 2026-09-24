@@ -77,6 +77,7 @@ final class GraphTopologyCache {
 struct GraphInteractionGeometry {
     let frames: [String: CGRect]
     let markerFrames: [String: CGRect]
+    let overviewAnchorIDs: Set<String>
     let renderPlan: GraphExploration.RenderPlan
     let anchorMap: GraphAnchorMap
     let revision: Int
@@ -90,13 +91,16 @@ struct GraphInteractionGeometry {
     /// using the same z-index and original node order as the SwiftUI card views.
     func topmostHit(at point: CGPoint, zIndexForNode: (String) -> Double,
                     nodeIndexForNode: (String) -> Int?) -> String? {
-        var best: (id: String, detail: Bool, z: Double, index: Int)?
+        var best: (id: String, detail: Bool, anchor: Bool, z: Double, index: Int)?
         for id in hitCandidates(at: point) {
             guard let index = nodeIndexForNode(id) else { continue }
-            let candidate = (id: id, detail: renderPlan.detailIDs.contains(id), z: zIndexForNode(id), index: index)
+            let candidate = (id: id, detail: renderPlan.detailIDs.contains(id),
+                             anchor: overviewAnchorIDs.contains(id), z: zIndexForNode(id), index: index)
             if let current = best {
                 if candidate.detail != current.detail {
                     if candidate.detail { best = candidate }
+                } else if candidate.anchor != current.anchor {
+                    if candidate.anchor { best = candidate }
                 } else if candidate.z > current.z || (candidate.z == current.z && candidate.index > current.index) {
                     best = candidate
                 }
@@ -145,6 +149,7 @@ final class GraphInteractionGeometryCache {
         let hoveredID: String?
         let connectedIDs: Set<String>
         let nodeSizing: GraphNodeSizeProfile
+        let overviewAnchors: [GraphOverviewAnchors.Anchor]
     }
 
     private var key: Key?
@@ -166,6 +171,7 @@ final class GraphInteractionGeometryCache {
         hoveredID: String? = nil,
         connectedIDs: Set<String> = [],
         nodeSizing: GraphNodeSizeProfile = .uniform,
+        overviewAnchors: [GraphOverviewAnchors.Anchor] = [],
         roleForNode: (String) -> GraphCardRole,
         descriptorForNode: (String) -> EditableTableDescriptor?,
         displayedColumnsForNode: (String) -> [String]? = { _ in nil }
@@ -173,18 +179,22 @@ final class GraphInteractionGeometryCache {
         let newKey = Key(
             frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
             emphasized: emphasized, primary: primary, retained: retained, contentRevision: contentRevision,
-            hoveredID: hoveredID, connectedIDs: connectedIDs, nodeSizing: nodeSizing
+            hoveredID: hoveredID, connectedIDs: connectedIDs, nodeSizing: nodeSizing,
+            overviewAnchors: overviewAnchors
         )
         if key == newKey, let geometry { return geometry }
 
         let renderPlan = GraphExploration.renderPlan(
             frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
-            emphasized: emphasized, primary: primary, retained: retained
+            emphasized: emphasized, primary: primary, retained: retained,
+            overviewAnchorIDs: Set(overviewAnchors.map(\.id))
         )
+        let anchorTitles = Dictionary(uniqueKeysWithValues: overviewAnchors.map { ($0.id, $0.title) })
         let markerFrames = Dictionary(uniqueKeysWithValues: renderPlan.markerIDs.compactMap { id in
             frames[id].map { frame in
                 let sized = nodeSizing.markerFrame(for: id, frame: frame, zoom: zoom)
-                return (id, GraphHoverPresentation.markerFrame(sized, hovered: id == hoveredID, connected: connectedIDs.contains(id)))
+                let anchored = anchorTitles[id].map { GraphOverviewAnchors.frame(for: sized, title: $0) } ?? sized
+                return (id, GraphHoverPresentation.markerFrame(anchored, hovered: id == hoveredID, connected: connectedIDs.contains(id)))
             }
         })
         var nodeCards: [String: GraphCardGeometry] = [:]
@@ -208,7 +218,9 @@ final class GraphInteractionGeometryCache {
         })
         revision &+= 1
         let snapshot = GraphInteractionGeometry(
-            frames: frames, markerFrames: markerFrames, renderPlan: renderPlan, anchorMap: GraphAnchorMap(nodeCards: nodeCards),
+            frames: frames, markerFrames: markerFrames,
+            overviewAnchorIDs: Set(overviewAnchors.map(\.id)).intersection(renderPlan.markerIDs),
+            renderPlan: renderPlan, anchorMap: GraphAnchorMap(nodeCards: nodeCards),
             revision: revision, hitIndex: GraphInteractionHitIndex(frames: interactiveFrames)
         )
         key = newKey
