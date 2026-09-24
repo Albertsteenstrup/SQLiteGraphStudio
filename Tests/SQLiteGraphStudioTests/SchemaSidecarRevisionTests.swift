@@ -43,6 +43,7 @@ struct SchemaSidecarRevisionTests {
         let initial: [String: Any] = [
             "version": 1,
             "futureRoot": ["keep": true],
+            "overviewTables": ["orders", "customers"],
             "tables": ["orders": ["description": "Orders", "futureTable": "keep"]],
             "notes": [["id": "n1", "text": "First note", "tableID": "orders", "futureNote": "keep"]],
         ]
@@ -50,6 +51,7 @@ struct SchemaSidecarRevisionTests {
 
         let before = try SchemaSidecarStore.loadSnapshot(for: database)
         #expect(before.sidecar.notes.map(\.id) == ["n1"])
+        #expect(before.sidecar.overviewTables == ["orders", "customers"])
         var updated = before.sidecar
         updated.notes.append(.init(id: "n2", text: "Payment happens after validation.", tableID: "orders"))
         let currentRevision = try SchemaSidecarStore.save(updated, for: database,
@@ -62,11 +64,27 @@ struct SchemaSidecarRevisionTests {
 
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: sidecarURL)) as! [String: Any]
         #expect((saved["futureRoot"] as? [String: Bool])?["keep"] == true)
+        #expect(saved["overviewTables"] as? [String] == ["orders", "customers"])
         #expect((saved["tables"] as? [String: [String: Any]])?["orders"]?["futureTable"] as? String == "keep")
         let notes = saved["notes"] as! [[String: Any]]
         #expect(notes.count == 2)
         #expect(notes.first?["futureNote"] as? String == "keep")
         #expect(try SchemaSidecarStore.loadSnapshot(for: database).revision == currentRevision)
+    }
+
+    @Test func overviewTableHintsAreBoundedAndDistinct() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let database = folder.appendingPathComponent("model.sqlite")
+
+        #expect(throws: SchemaMetadataError.self) {
+            try SchemaSidecarStore.save(.init(overviewTables: ["orders", "orders"]), for: database)
+        }
+        #expect(throws: SchemaMetadataError.self) {
+            try SchemaSidecarStore.save(.init(overviewTables: (0..<17).map { "table\($0)" }), for: database)
+        }
+        #expect(!FileManager.default.fileExists(atPath: SchemaSidecarStore.sidecarURL(for: database).path))
     }
 
     @Test func absentSidecarRevisionConflictsAfterAnotherWriterCreatesIt() throws {

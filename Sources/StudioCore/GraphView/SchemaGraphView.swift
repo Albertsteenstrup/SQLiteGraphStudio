@@ -471,6 +471,7 @@ public struct SchemaGraphView: View {
                     drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan)
                 }
                 drawOverviewMarks(in: &context, frames: geometry.markerFrames, connectedIDs: hoverNeighbors)
+                drawOverviewTableLabels(in: &context, frames: geometry.markerFrames, canvasSize: size)
                 for id in hoverSummaryIDs {
                     guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                     let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -895,6 +896,42 @@ public struct SchemaGraphView: View {
         }
     }
 
+    private func drawOverviewTableLabels(in context: inout GraphicsContext,
+                                         frames: [String: CGRect], canvasSize: CGSize) {
+        guard isLargeGraph, effectiveFocusPlan == nil, zoom < GraphExploration.detailZoom,
+              zoom >= 0.12, !session.schemaSidecar.overviewTables.isEmpty else { return }
+        var labels: [String: GraphicsContext.ResolvedText] = [:]
+        let candidates: [GraphOverviewLabels.Candidate] = session.schemaSidecar.overviewTables.compactMap { id in
+            guard let frame = frames[id], let descriptor = session.descriptor(named: id) else { return nil }
+            let resolved = context.resolve(
+                Text(descriptor.objectName)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(StudioPalette.primaryText)
+            )
+            let measured = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                        height: CGFloat.greatestFiniteMagnitude))
+            labels[id] = resolved
+            return GraphOverviewLabels.Candidate(
+                id: id, marker: frame,
+                labelSize: CGSize(width: ceil(measured.width) + 12, height: ceil(measured.height) + 6)
+            )
+        }
+        for placement in GraphOverviewLabels.place(candidates,
+                                                   in: CGRect(origin: .zero, size: canvasSize)) {
+            guard let resolved = labels[placement.id] else { continue }
+            let tint = clusterBorderColor(for: placement.id) ?? StudioPalette.accent
+            var leader = Path()
+            leader.move(to: CGPoint(x: placement.marker.midX, y: placement.marker.midY))
+            leader.addLine(to: CGPoint(x: placement.label.midX, y: placement.label.midY))
+            context.stroke(leader, with: .color(tint.opacity(0.7)), lineWidth: 1)
+            let shape = Path(roundedRect: placement.label, cornerRadius: 5)
+            context.fill(shape, with: .color(StudioPalette.chromeFillStrong))
+            context.stroke(shape, with: .color(tint.opacity(0.8)), lineWidth: 1)
+            context.draw(resolved, at: CGPoint(x: placement.label.midX,
+                                               y: placement.label.midY), anchor: .center)
+        }
+    }
+
     private func drawGroupConnections(in context: inout GraphicsContext, size: CGSize) {
         let key = GraphGroupGeometryKey(graphRevision: renderedGraphRevision,
                                         groupingRevision: session.graphGroupingRevision, layoutRevision: layoutRevision)
@@ -974,30 +1011,32 @@ public struct SchemaGraphView: View {
                 labelPoint = CGPoint(x: bounds.midX, y: bounds.minY - 6)
             }
             let labelFontSize: CGFloat = isLargeGraph && !inFocusLayout ? 11 : titleStyle.fontSize
-            let characterBudget = max(10, Int(entry.path.boundingRect.width * zoom / (labelFontSize * 0.62)))
-            let displayLabel: String
-            if isLargeGraph && !inFocusLayout && label.count > characterBudget {
-                displayLabel = String(label.prefix(max(3, characterBudget - 7))) + "…" + String(label.suffix(6))
-            } else {
-                displayLabel = label
-            }
             let resolved = context.resolve(
-                Text(displayLabel.uppercased())
+                Text(label.uppercased())
                     .font(.system(size: labelFontSize, weight: .bold, design: .rounded))
                     // A group's own tint, unless the reader switched group colour off — in
                     // which case the name still belongs on screen, just in plain ink.
                     .foregroundStyle((shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
                         .opacity(inFocusLayout ? 0.96 : 0.85))
             )
+            var drawPoint = labelPoint
             if isOverview {
                 let measured = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-                let frame = CGRect(x: labelPoint.x - measured.width / 2, y: labelPoint.y - measured.height,
+                let options = [labelPoint,
+                               CGPoint(x: labelPoint.x, y: labelPoint.y - 18),
+                               CGPoint(x: labelPoint.x, y: labelPoint.y + 18)]
+                guard let chosen = options.first(where: { point in
+                    let frame = CGRect(x: point.x - measured.width / 2, y: point.y - measured.height,
+                                       width: measured.width, height: measured.height).insetBy(dx: -4, dy: -3)
+                    return CGRect(origin: .zero, size: canvasSize).insetBy(dx: 8, dy: 8).contains(frame)
+                        && !occupiedLabels.contains(where: { $0.intersects(frame) })
+                }) else { continue }
+                drawPoint = chosen
+                let frame = CGRect(x: chosen.x - measured.width / 2, y: chosen.y - measured.height,
                                    width: measured.width, height: measured.height).insetBy(dx: -4, dy: -3)
-                guard frame.intersects(CGRect(origin: .zero, size: canvasSize)),
-                      !occupiedLabels.contains(where: { $0.intersects(frame) }) else { continue }
                 occupiedLabels.append(frame)
             }
-            context.draw(resolved, at: labelPoint, anchor: .bottom)
+            context.draw(resolved, at: drawPoint, anchor: .bottom)
         }
     }
 
@@ -1991,7 +2030,9 @@ public struct SchemaGraphView: View {
             contentBounds: bounds,
             in: CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset)),
             padding: 72,
-            minZoom: readableSubset ? 0.7 : (isLargeGraph ? 0.01 : 0.22),
+            // Readability is preferred, but a subset must remain fully visible
+            // when expanded cards or a short pane make 0.7 impossible.
+            minZoom: readableSubset ? 0.4 : (isLargeGraph ? 0.01 : 0.22),
             maxZoom: readableSubset ? 1.3 : 1.05
         )
         transform.pan.height += (topInset - bottomInset) / 2
@@ -2191,10 +2232,19 @@ public struct SchemaGraphView: View {
             return
         }
         let bounds = graphContentBoundsForFit()
-        let transform: GraphViewportTransform
-        let fitMinimumZoom: CGFloat = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 0.005 : 0.45
-        let fitPadding: CGFloat = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold ? 72 : 120
-        transform = GraphViewportTransform.fit(contentBounds: bounds, in: size, padding: fitPadding, minZoom: fitMinimumZoom)
+        let largeOverview = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold
+        let fitMinimumZoom: CGFloat = largeOverview ? 0.005 : 0.45
+        let topInset: CGFloat = largeOverview ? min(graphControlsHeight + 20, size.height * 0.25) : 0
+        // The minimap and metadata bar occupy the lower edge of a large map.
+        // Leave room for the last group instead of fitting its cards behind them.
+        let bottomInset: CGFloat = largeOverview ? min(100, size.height * 0.25) : 0
+        var transform = GraphViewportTransform.fit(
+            contentBounds: bounds,
+            in: CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset)),
+            padding: largeOverview ? 36 : 120,
+            minZoom: fitMinimumZoom
+        )
+        transform.pan.height += (topInset - bottomInset) / 2
         setViewport(transform, animated: animated, animation: animation, completion: completion)
     }
 

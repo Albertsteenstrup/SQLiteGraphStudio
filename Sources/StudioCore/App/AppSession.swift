@@ -1652,6 +1652,20 @@ public final class AppSession {
         expandedGraphNodeIDs.removeAll()
     }
 
+    /// Temporarily brings a chosen set of tables together without changing the
+    /// authored domain layout. The displayed card sizes determine their spacing.
+    public func compactGraphTables(_ tableIDs: [String], columns: Int = 3, around center: CGPoint = .zero) {
+        let items = tableIDs.compactMap { id -> GraphCompactPlacement.Item? in
+            guard let node = graph.node(id: id) else { return nil }
+            let style: GraphNodeCardStyle = isGraphNodeExpanded(id) ? .expanded : .collapsed
+            let size = GraphCardLayout.nodeSize(title: node.title, descriptor: tableDescriptors[id], style: style)
+            return GraphCompactPlacement.Item(id: id, size: size)
+        }
+        for (id, position) in GraphCompactPlacement.positions(for: items, columns: columns, around: center) {
+            graphLayout.pin(nodeID: id, at: position)
+        }
+    }
+
     public func persistCurrentGraphLayout() {
         guard let target = databaseTarget, !graph.nodes.isEmpty else { return }
         let snapshot = graphLayout.snapshot(for: graph)

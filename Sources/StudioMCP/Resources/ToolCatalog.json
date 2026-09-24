@@ -637,7 +637,7 @@
   {
     "name": "studio_show_tables",
     "title": "Show Tables",
-    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed. For an agent-led explanation, choose the subset because it supports a specific question or claim; changing visibility alone does not explain its significance to the user.",
+    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. For a whole-model explanation, operation=all gives the domain map; then replace it with a small cross-domain set so exact table names become readable before focusing deeper. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed. For an agent-led explanation, choose the subset because it supports a specific question or claim; changing visibility alone does not explain its significance to the user.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2425,7 +2425,7 @@
   {
     "name": "studio_get_annotations",
     "title": "Get Annotations",
-    "description": "Read the current source-sidecar metadata revision, saved table/column descriptions, graph clusters, and a bounded page of durable notes. Call this before studio_update_annotations and pass the returned metadata_revision as expected_metadata_revision; if an update conflicts, read again and merge the intended changes. Notes may describe application-level connections without drawing a database relation. Use studio_annotate_view for temporary presentation notes. Record mappings have a separate paged discovery tool.",
+    "description": "Read the current source-sidecar metadata revision, saved table/column descriptions, graph clusters, ordered overview_table_ids, and a bounded page of durable notes. Overview tables are optional domain anchors for a full-model map, not a limit on what the agent may show. Call this before studio_update_annotations and pass the returned metadata_revision as expected_metadata_revision; if an update conflicts, read again and merge the intended changes. Notes may describe application-level connections without drawing a database relation. Use studio_annotate_view for temporary presentation notes. Record mappings have a separate paged discovery tool.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2466,7 +2466,7 @@
   {
     "name": "studio_update_annotations",
     "title": "Update Annotations",
-    "description": "Save durable table/column descriptions, graph groups, and/or plain-language notes to the local source sidecar, then refresh the app. First call studio_get_annotations and send its metadata_revision as expected_metadata_revision so concurrent edits cannot be silently overwritten. On METADATA_CONFLICT, re-read, merge the user's intended changes, and retry with a new request_id. Use notes_upsert for application-level explanations or evidence that should survive sessions; this never creates a visual database relation. Use studio_annotate_view for temporary notes. This tool does not edit record mappings or database data.",
+    "description": "Save durable table/column descriptions, graph groups, optional overview_table_ids, and/or plain-language notes to the local source sidecar, then refresh the app. Overview tables label a few important nodes on the full-model map; they do not add relationships, pin layout, or restrict the agent's focus. First call studio_get_annotations and send its metadata_revision as expected_metadata_revision so concurrent edits cannot be silently overwritten. On METADATA_CONFLICT, re-read, merge the user's intended changes, and retry with a new request_id. Use notes_upsert for application-level explanations or evidence that should survive sessions; this never creates a visual database relation. Use studio_annotate_view for temporary notes. This tool does not edit record mappings or database data.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2531,6 +2531,14 @@
                 "type": "string"
               }
             }
+          }
+        },
+        "overview_table_ids": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "Ordered exact table IDs to label as anchors in a full-model overview. An empty array clears the hint.",
+          "items": {
+            "type": "string"
           }
         },
         "notes_upsert": {

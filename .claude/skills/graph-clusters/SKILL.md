@@ -5,9 +5,9 @@ description: Generate cluster hints for the SQLite Graph Studio physics engine s
 
 # graph-clusters
 
-You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared.
+You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` to name on the full-catalog map.
 
-When Graph Studio MCP is available, show temporary groups immediately with `studio_set_groups`. Save a requested durable grouping with `studio_update_annotations`; the app refreshes it. The sidecar file remains available for offline work, and the user can edit it by hand.
+When Graph Studio MCP is available, show temporary groups immediately with `studio_set_groups`. To save a requested durable grouping, read `studio_get_annotations` first and pass its `metadata_revision` as `expected_metadata_revision` to `studio_update_annotations`; the app refreshes it. If the save returns `METADATA_CONFLICT`, read again, merge the intended grouping with the current metadata, and retry with a new `request_id`. The sidecar file remains available for offline work, and the user can edit it by hand.
 
 ## Database documents and read-only discovery
 
@@ -49,13 +49,16 @@ Cluster count guidance:
 
 Tables that don't fit anywhere are fine to leave out of all clusters. The app computes deterministic groups for unassigned tables from schema, names, and relationships. These inferred groups are not written into the sidecar.
 
+For an overview, choose 4–16 exact table IDs across the main domains as `overviewTables`. Favor canonical records and the few tables that explain how sources, evidence, decisions, and outputs connect. Verify their roles from schema or code; raw foreign-key degree alone is a poor guide because account and audit tables often have many incidental references. The list is ordered by explanatory priority. It adds readable labels on the full map and gives agents useful anchors; it does not pin tables, create relations, or restrict what an agent can focus on. A narrow task does not need this hint.
+
 ## Output format
 
-Write to `<document>.studio.json` beside the opened database file or PostgreSQL connection document. Preserve existing `tables` and all other unrelated metadata; update only `clusters`.
+Write to `<document>.studio.json` beside the opened database file or PostgreSQL connection document. Preserve existing `tables` and all other unrelated metadata. Update `clusters`; update `overviewTables` only when the user wants a broad model map or different anchors.
 
 ```json
 {
   "version": 1,
+  "overviewTables": ["users", "orders", "payments"],
   "clusters": [
     {
       "id": "auth",
@@ -83,19 +86,21 @@ Field rules:
 - `label` — human-readable name shown on graph groups, in the table picker, and in table tooltips (e.g. "Authentication & Users").
 - `tables` — exact case-sensitive table IDs; PostgreSQL uses schema-qualified IDs such as `public.orders`. Names not in the schema are skipped.
 - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. The app provides a stable colour when omitted.
+- `overviewTables` — optional ordered list of at most 16 distinct, exact table IDs. PostgreSQL uses schema-qualified IDs. Unknown IDs are ignored when drawing so the sidecar can survive schema changes; check against the current catalog before saving.
 
 ## Workflow
 
 1. Read `<document>.studio.json` if it already exists — preserve `tables` and all other unrelated fields; update only `clusters`.
 2. List the tables using read-only schema discovery or existing schema docs.
-3. Choose meaningful clusters for the requested lens and briefly explain them. When the user has requested this change, write the sidecar using that scope.
+3. Choose meaningful clusters for the requested lens and, for a requested broad overview, a short set of model anchors. Briefly explain what makes each group and anchor relevant. When the user has requested this change, write the sidecar using that scope.
 4. Write the file with `Write`.
-5. If MCP is connected, call `studio_update_annotations` for requested persistent groups, then confirm the refreshed view. For offline sidecar edits, tell the user to click **Relayout** in the running app.
+5. If MCP is connected, call `studio_get_annotations`, then `studio_update_annotations` for requested persistent groups and `overview_table_ids` using the returned revision, and confirm the refreshed view. For offline sidecar edits, tell the user to click **Relayout** in the running app.
 
 ## What not to do
 
 - Don't create a cluster per table — the physics engine already handles single nodes.
-- Don't put every table in a cluster — leaving some uncluttered lets the FK-based fallback handle them.
+- Don't force an ambiguous table into a cluster. For a catalog-wide overview, assigning every object is useful when each placement has a defensible domain; otherwise let the FK-based fallback handle the remainder.
 - Don't write `strength`, `weight`, or other fields not in the format above — they're ignored and signal you're guessing.
+- Don't add an overview anchor solely because it has many foreign keys or imply that the labels describe every important table.
 - Don't run SQL beyond read-only schema discovery or a `LIMIT 5` sample — the user's data isn't the clustering input.
 - Don't commit the sidecar without asking. Some users want it gitignored.

@@ -227,6 +227,53 @@ enum GraphCardLayout {
     }
 }
 
+/// Packs a chosen set of cards in caller order using their rendered sizes.
+/// Column and row extents keep long names and expanded cards from overlapping.
+enum GraphCompactPlacement {
+    struct Item {
+        let id: String
+        let size: CGSize
+    }
+
+    static func positions(
+        for items: [Item],
+        columns requestedColumns: Int,
+        around center: CGPoint,
+        columnGap: CGFloat = 100,
+        rowGap: CGFloat = 140
+    ) -> [String: CGPoint] {
+        var seen = Set<String>()
+        let items = items.filter { seen.insert($0.id).inserted }
+        guard !items.isEmpty else { return [:] }
+        let columns = min(items.count, max(1, requestedColumns))
+        let rows = (items.count + columns - 1) / columns
+        var widths = Array(repeating: CGFloat.zero, count: columns)
+        var heights = Array(repeating: CGFloat.zero, count: rows)
+        for (index, item) in items.enumerated() {
+            widths[index % columns] = max(widths[index % columns], item.size.width)
+            heights[index / columns] = max(heights[index / columns], item.size.height)
+        }
+
+        let totalWidth = widths.reduce(0, +) + CGFloat(columns - 1) * columnGap
+        let totalHeight = heights.reduce(0, +) + CGFloat(rows - 1) * rowGap
+        var xCenters: [CGFloat] = []
+        var x = center.x - totalWidth / 2
+        for width in widths {
+            xCenters.append(x + width / 2)
+            x += width + columnGap
+        }
+        var yCenters: [CGFloat] = []
+        var y = center.y - totalHeight / 2
+        for height in heights {
+            yCenters.append(y + height / 2)
+            y += height + rowGap
+        }
+        return Dictionary(uniqueKeysWithValues: items.enumerated().map { index, item in
+            (item.id, CGPoint(x: xCenters[index % columns], y: yCenters[index / columns]))
+        })
+    }
+}
+
 struct GraphEdgeAnchors: Sendable, Equatable {
     let source: CGPoint
     let target: CGPoint

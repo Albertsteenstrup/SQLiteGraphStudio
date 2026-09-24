@@ -1095,10 +1095,7 @@ final class StudioAutomationCoordinator {
             session.expandedGraphNodeIDs = chosen
             session.setGraphSelection(tableIDs.isEmpty ? connected : tableIDs)
             if bool(args, "compact_layout") == true {
-                for (index, id) in chosen.sorted().enumerated() {
-                    session.graphLayout.pin(nodeID: id, at: CGPoint(x: CGFloat(index % 3) * 320,
-                                                                     y: CGFloat(index / 3) * 230))
-                }
+                session.compactGraphTables(chosen.sorted())
             }
             if let edge = selectedEdges.first {
                 session.setAutomationFocusCommand(AutomationGraphFocusCommand(tableID: edge.sourceID,
@@ -1160,10 +1157,7 @@ final class StudioAutomationCoordinator {
                     throw Failure(code: "INVALID_ARGUMENT", detail: "Compact table IDs must be unique.")
                 }
                 let midpoint = CGPoint(x: number(args, "x") ?? 0, y: number(args, "y") ?? 0)
-                for (index, id) in ids.enumerated() {
-                    tab.session.graphLayout.pin(nodeID: id, at: CGPoint(x: midpoint.x + CGFloat(index % 3) * 320,
-                                                                          y: midpoint.y + CGFloat(index / 3) * 230))
-                }
+                tab.session.compactGraphTables(ids, around: midpoint)
             } else if mode == "position", ids.count == 1, let id = ids.first,
                       let x = number(args, "x"), let y = number(args, "y") {
                 tab.session.graphLayout.pin(nodeID: id, at: CGPoint(x: x, y: y))
@@ -1785,6 +1779,7 @@ final class StudioAutomationCoordinator {
             let visibleNotes = matchingNotes.dropFirst(noteOffset).prefix(noteLimit)
             return ["source_id": sourceID(tab), "descriptions": descriptions,
                     "clusters": sidecar.clusters.map { ["id": $0.id, "label": nullable($0.label), "table_ids": $0.tables, "color": nullable($0.color)] as [String: Any] },
+                    "overview_table_ids": sidecar.overviewTables,
                     "active_groups": groupPayload(tab.session),
                     "record_mapping_count": sidecar.recordGraphMappings.count,
                     "metadata_revision": snapshot.revision,
@@ -1805,10 +1800,14 @@ final class StudioAutomationCoordinator {
             }
             let updates = args["tables"] as? [String: [String: Any]] ?? [:]
             let rawGroups = args["groups"] as? [[String: Any]]
+            let overviewTableIDs = strings(args, "overview_table_ids")
             let rawNotes = args["notes_upsert"] as? [[String: Any]]
             let removedNoteIDs = strings(args, "note_ids_remove")
-            guard !updates.isEmpty || rawGroups != nil || rawNotes != nil || removedNoteIDs != nil else {
-                throw Failure(code: "INVALID_ARGUMENT", detail: "Provide table descriptions, groups, or saved note changes.")
+            guard args["overview_table_ids"] == nil || overviewTableIDs != nil else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "overview_table_ids must be a list of exact table IDs.")
+            }
+            guard !updates.isEmpty || rawGroups != nil || overviewTableIDs != nil || rawNotes != nil || removedNoteIDs != nil else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "Provide table descriptions, groups, overview tables, or saved note changes.")
             }
             let snapshot = try SchemaSidecarStore.loadSnapshot(for: databaseURL)
             guard snapshot.revision == expectedRevision else {
@@ -1828,6 +1827,14 @@ final class StudioAutomationCoordinator {
                 sidecar.tables[tableID] = description
             }
             if let rawGroups { sidecar.clusters = try groupHints(rawGroups, session: tab.session) }
+            if let overviewTableIDs {
+                guard overviewTableIDs.count <= 16,
+                      Set(overviewTableIDs).count == overviewTableIDs.count,
+                      overviewTableIDs.allSatisfy({ tab.session.descriptor(named: $0) != nil }) else {
+                    throw Failure(code: "INVALID_ARGUMENT", detail: "Choose at most 16 distinct overview tables from this source.")
+                }
+                sidecar.overviewTables = overviewTableIDs
+            }
             if let rawNotes {
                 guard rawNotes.count <= 100 else { throw Failure(code: "LIMIT_REACHED", detail: "Save at most 100 notes per update.") }
                 var seen = Set<String>()
@@ -1865,7 +1872,8 @@ final class StudioAutomationCoordinator {
             tab.session.reloadSchemaSidecarFromDisk()
             tab.session.markAutomationViewChanged()
             return ["source_id": sourceID(tab), "updated_table_ids": updates.keys.sorted(),
-                    "groups_saved": rawGroups != nil, "notes_upserted": rawNotes?.map { $0["id"] as? String ?? "" } ?? [],
+                    "groups_saved": rawGroups != nil, "overview_tables_saved": overviewTableIDs != nil,
+                    "notes_upserted": rawNotes?.map { $0["id"] as? String ?? "" } ?? [],
                     "notes_removed": removedNoteIDs ?? [], "metadata_revision": revision,
                     "metadata_status": "saved"]
         case "studio_capture_schema":
@@ -3637,19 +3645,15 @@ final class StudioAutomationCoordinator {
               let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else { return }
         let columns = 2
         let rows = (ids.count + columns - 1) / columns
-        // Collapsed cards can be up to 560 wide for readable names, while
-        // expanded cards can be 440 x 236. Leave room for either style.
-        let rowSpacing: CGFloat = 280
-        let isSparse = maxX - minX > 720 || maxY - minY > CGFloat(rows) * rowSpacing + 180
+        // Keep a collapsed bridge view inside a normal window. Expanded cards
+        // need more height, and the camera will reduce zoom if that is still
+        // too tall for the current pane.
+        let rowSpacing: CGFloat = ids.contains(where: { session.expandedGraphNodeIDs.contains($0) }) ? 280 : 210
+        let columnSpacing: CGFloat = 540
+        let isSparse = maxX - minX > columnSpacing + 180
+            || maxY - minY > CGFloat(rows - 1) * rowSpacing + 120
         guard isSparse else { return }
-        for (index, id) in ids.enumerated() {
-            let column = index % columns
-            let row = index / columns
-            session.graphLayout.pin(nodeID: id, at: CGPoint(
-                x: CGFloat(column) * 650 - 325,
-                y: CGFloat(row) * rowSpacing - CGFloat(rows - 1) * rowSpacing / 2
-            ))
-        }
+        session.compactGraphTables(ids, columns: columns)
     }
 
     private func makePoint(_ raw: [String: Any], state: PresentationState, narration: Bool) throws -> LivePresentationController.Point {
@@ -3838,10 +3842,7 @@ final class StudioAutomationCoordinator {
                 case "arrange_tables":
                     let ids = strings(action, "table_ids") ?? []
                     let origin = CGPoint(x: number(action, "x") ?? 0, y: number(action, "y") ?? 0)
-                    for (index, id) in ids.enumerated() {
-                        session.graphLayout.pin(nodeID: id, at: CGPoint(x: origin.x + CGFloat(index % 3) * 320,
-                                                                           y: origin.y + CGFloat(index / 3) * 230))
-                    }
+                    session.compactGraphTables(ids, around: origin)
                     session.requestAutomationViewport(fitVisibleTables: true)
                     needsGraphRender = true
                 case "set_node_sizing":

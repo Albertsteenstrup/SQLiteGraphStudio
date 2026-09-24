@@ -12,6 +12,9 @@ import Darwin
 public struct SchemaSidecar: Codable, Sendable, Hashable {
     public var version: Int
     public var clusters: [ClusterHint]
+    /// A short, ordered set of domain anchors to name on a full-model map.
+    /// This is a presentation hint, not a database relationship or a forced layout pin.
+    public var overviewTables: [String]
     public var tables: [String: TableDescription]
     public var recordGraphMappings: [RecordGraphMapping]
     /// Explicitly saved, human-readable notes. Temporary view annotations are
@@ -21,12 +24,14 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
     public init(
         version: Int = 1,
         clusters: [ClusterHint] = [],
+        overviewTables: [String] = [],
         tables: [String: TableDescription] = [:],
         recordGraphMappings: [RecordGraphMapping] = [],
         notes: [Note] = []
     ) {
         self.version = version
         self.clusters = clusters
+        self.overviewTables = overviewTables
         self.tables = tables
         self.recordGraphMappings = recordGraphMappings
         self.notes = notes
@@ -37,6 +42,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case version
         case clusters
+        case overviewTables
         case tables
         case recordGraphMappings
         case notes
@@ -46,6 +52,7 @@ public struct SchemaSidecar: Codable, Sendable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         clusters = try container.decodeIfPresent([ClusterHint].self, forKey: .clusters) ?? []
+        overviewTables = try container.decodeIfPresent([String].self, forKey: .overviewTables) ?? []
         tables = try container.decodeIfPresent([String: TableDescription].self, forKey: .tables) ?? [:]
         recordGraphMappings = try container.decodeIfPresent([RecordGraphMapping].self, forKey: .recordGraphMappings) ?? []
         notes = try container.decodeIfPresent([Note].self, forKey: .notes) ?? []
@@ -175,6 +182,7 @@ public enum SchemaSidecarStore {
         guard Set(sidecar.clusters.map(\.id)).count == sidecar.clusters.count else {
             throw SchemaMetadataError.malformed("Cluster identifiers must be unique.")
         }
+        try validateOverviewTables(sidecar.overviewTables)
         guard Set(sidecar.notes.map(\.id)).count == sidecar.notes.count,
               sidecar.notes.count <= 500,
               sidecar.notes.allSatisfy({ validNote($0) }) else {
@@ -209,6 +217,13 @@ public enum SchemaSidecarStore {
             && (note.columnName?.count ?? 0) <= 500
             && (note.relationID?.count ?? 0) <= 500
             && (note.columnName == nil || note.tableID != nil)
+    }
+
+    private static func validateOverviewTables(_ ids: [String]) throws {
+        guard ids.count <= 16, Set(ids).count == ids.count,
+              ids.allSatisfy({ !$0.isEmpty && $0.count <= 500 }) else {
+            throw SchemaMetadataError.malformed("Choose at most 16 distinct overview tables with valid IDs.")
+        }
     }
 
     public static func save(_ sidecar: SchemaSidecar, for databaseURL: URL) throws {
@@ -251,6 +266,7 @@ public enum SchemaSidecarStore {
 
     private static func write(_ sidecar: SchemaSidecar, for databaseURL: URL,
                               expectedRevision: String?) throws -> String {
+        try validateOverviewTables(sidecar.overviewTables)
         guard Set(sidecar.notes.map(\.id)).count == sidecar.notes.count,
               sidecar.notes.count <= 500,
               sidecar.notes.allSatisfy({ validNote($0) }) else {
@@ -297,6 +313,7 @@ public enum SchemaSidecarStore {
             existing: root["clusters"], replacement: replacement["clusters"],
             knownFields: ["id", "label", "tables", "color"]
         )
+        root["overviewTables"] = sidecar.overviewTables
         root["recordGraphMappings"] = mergeIdentifiedEntries(
             existing: root["recordGraphMappings"], replacement: replacement["recordGraphMappings"],
             knownFields: ["id", "name", "nodeTable", "nodeIDColumns", "labelColumn", "edgeTable", "sourceColumns", "targetColumns", "typeColumn", "isDirected", "nodeScope", "edgeScope"]
