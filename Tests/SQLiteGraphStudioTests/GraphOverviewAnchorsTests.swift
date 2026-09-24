@@ -12,6 +12,7 @@ struct GraphOverviewAnchorsTests {
         #expect(abs(anchor.width - 226 * 0.7) < 0.0001)
         #expect(abs(anchor.height - 46 * 0.7) < 0.0001)
         #expect(GraphOverviewAnchors.displayScale(for: 0.1) < GraphOverviewAnchors.displayScale(for: 0.2))
+        #expect(GraphOverviewAnchors.displayScale(for: 0.08) > 0.4)
         #expect(GraphOverviewAnchors.displayScale(for: 0.6) > GraphOverviewAnchors.displayScale(for: 0.2))
         #expect(GraphOverviewAnchors.displayScale(for: 0.6) < GraphOverviewAnchors.displayScale(for: 0.78))
         #expect(GraphOverviewAnchors.displayScale(for: 0.78) == 0.78)
@@ -41,6 +42,10 @@ struct GraphOverviewAnchorsTests {
                                    nodeIndexForNode: { $0 == "neighbor" ? 1 : 0 }) == "contract")
         #expect(snapshot(0.2, anchors: [.init(id: "contract")]).revision == anchored.revision)
         #expect(snapshot(0.2, anchors: []).revision != anchored.revision)
+
+        let fullMap = snapshot(0.08, anchors: [.init(id: "contract")])
+        #expect(fullMap.renderPlan.detailIDs.contains("contract"))
+        #expect(fullMap.anchorMap.nodeCards["contract"]!.frame.width > frames["contract"]!.width)
 
         let transition = snapshot(0.6, anchors: [.init(id: "contract")])
         #expect(transition.renderPlan.detailIDs.contains("contract"))

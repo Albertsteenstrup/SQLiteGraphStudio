@@ -33,6 +33,38 @@ struct GraphFocusHierarchyTests {
     }
 
     @Test
+    func denseFocusUsesReadableColumnsWithoutCoveringTheExpandedTable() {
+        let hubSize = CGSize(width: 440, height: 236)
+        let items = (0..<8).map { index in
+            GraphFocusRingLayout.Item(id: "neighbor_\(index)",
+                                      size: CGSize(width: index.isMultiple(of: 3) ? 300 : 226, height: 46))
+        }
+        let positions = GraphFocusRingLayout.graphPositions(
+            hubCenter: .zero, hubSize: hubSize, items: items
+        )
+        let hub = CGRect(x: -hubSize.width / 2, y: -hubSize.height / 2,
+                         width: hubSize.width, height: hubSize.height)
+        let frames = items.map { item in
+            let point = positions[item.id]!
+            return CGRect(x: point.x - item.size.width / 2, y: point.y - item.size.height / 2,
+                          width: item.size.width, height: item.size.height)
+        }
+        #expect(frames.allSatisfy { !$0.intersects(hub) })
+        for first in frames.indices {
+            for second in frames.indices where second > first {
+                #expect(!frames[first].intersects(frames[second]))
+            }
+        }
+        let bounds = frames.reduce(hub) { $0.union($1) }
+        let camera = GraphViewportTransform.fit(
+            contentBounds: bounds, in: CGSize(width: 1167, height: 520),
+            padding: 128, minZoom: 0.5, maxZoom: 1.3
+        )
+        #expect(camera.zoom >= 0.5)
+        #expect(hubSize.width * GraphReadableCardScale.focusedScale(for: camera.zoom) >= 396)
+    }
+
+    @Test
     func focusPlanHidesUnrelatedTables() {
         let plan = GraphFocusPlan(
             activeTableIDs: ["users"],

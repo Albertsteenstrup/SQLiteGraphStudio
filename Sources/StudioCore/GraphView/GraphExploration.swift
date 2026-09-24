@@ -14,6 +14,7 @@ struct GraphViewportBookmark: Equatable {
 /// Backend-neutral limits shared by the navigator, renderer, and interaction targets.
 enum GraphExploration {
     static let pageSize = 48
+    static let connectionPageSize = 8
     static let maximumDetailedCards = 160
     static let detailZoom: CGFloat = 0.42
 
@@ -22,21 +23,24 @@ enum GraphExploration {
         let index: Int
         let count: Int
         let total: Int
-        var start: Int { total == 0 ? 0 : index * pageSize + 1 }
-        var end: Int { min(total, (index + 1) * pageSize) }
+        let size: Int
+        var start: Int { total == 0 ? 0 : index * size + 1 }
+        var end: Int { min(total, (index + 1) * size) }
     }
 
-    static func page(_ ids: [String], index: Int) -> Page {
+    static func page(_ ids: [String], index: Int, size: Int = pageSize) -> Page {
         let ordered = Set(ids).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-        return pageOrdered(ordered, index: index)
+        return pageOrdered(ordered, index: index, size: size)
     }
 
     /// Group memberships are already unique and sorted by the grouping model.
-    static func pageOrdered(_ ordered: [String], index: Int) -> Page {
-        let count = max(1, (ordered.count + pageSize - 1) / pageSize)
+    static func pageOrdered(_ ordered: [String], index: Int, size: Int = pageSize) -> Page {
+        let size = max(1, size)
+        let count = max(1, (ordered.count + size - 1) / size)
         let index = min(max(index, 0), count - 1)
-        let start = index * pageSize
-        return Page(ids: Array(ordered.dropFirst(start).prefix(pageSize)), index: index, count: count, total: ordered.count)
+        let start = index * size
+        return Page(ids: Array(ordered.dropFirst(start).prefix(size)), index: index,
+                    count: count, total: ordered.count, size: size)
     }
 
     struct RenderPlan {

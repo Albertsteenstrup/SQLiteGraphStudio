@@ -78,8 +78,7 @@ public struct SchemaGraphView: View {
     private var usesOverviewMarks: Bool { (isLargeGraph || session.graphNodeSizeMetric != .uniform) && zoom < GraphExploration.detailZoom }
 
     private var overviewAnchors: [GraphOverviewAnchors.Anchor] {
-        guard isLargeGraph, focusedGroupID == nil, effectiveFocusPlan == nil,
-              zoom >= GraphOverviewAnchors.minimumZoom else { return [] }
+        guard isLargeGraph, focusedGroupID == nil, effectiveFocusPlan == nil else { return [] }
         return session.schemaSidecar.overviewTables.compactMap { id in
             guard renderedGraph.node(id: id) != nil else { return nil }
             return GraphOverviewAnchors.Anchor(id: id)
@@ -540,6 +539,9 @@ public struct SchemaGraphView: View {
 
             ForEach(renderedNodes) { node in
                 let isOverviewAnchor = geometry.overviewAnchorIDs.contains(node.id)
+                let isFocusRoot = tableFocusNodeID == node.id || graphFocusTableRelation?.tableID == node.id
+                let displayZoom = isFocusRoot ? GraphReadableCardScale.focusedScale(for: zoom)
+                    : (isOverviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom)
                 let descriptor = session.descriptor(named: node.id)
                 let outgoingEdges = edgeLookup.outgoingEdges(for: node.id)
                 let incomingEdges = edgeLookup.incomingEdges(for: node.id)
@@ -563,9 +565,9 @@ public struct SchemaGraphView: View {
                     incomingEdges: incomingEdges,
                     isSelected: session.selectedGraphNodeIDs.contains(node.id),
                     isMultiSelected: isMultiSelected,
-                    viewportZoom: isOverviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom,
+                    viewportZoom: displayZoom,
                     displayStyle: displayStyle,
-                    isFocusRoot: tableFocusNodeID == node.id || graphFocusTableRelation?.tableID == node.id,
+                    isFocusRoot: isFocusRoot,
                     scrollOffset: scrollOffset,
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
@@ -611,7 +613,7 @@ public struct SchemaGraphView: View {
                     headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
                 )
                 .frame(width: cardSize.width, height: cardSize.height, alignment: .topLeading)
-                .scaleEffect((isOverviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom)
+                .scaleEffect(displayZoom
                     * GraphHoverPresentation.cardScale(hovered: hoveredNodeID == node.id && draggedNodeID == nil,
                                                        connected: hoverNeighbors.contains(node.id)))
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredNodeID)
@@ -683,9 +685,10 @@ public struct SchemaGraphView: View {
             .accessibilityLabel("Return to overview")
 
             if let target = graphFocusTableRelation {
-                let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: relationPageIndex)
+                let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: relationPageIndex,
+                                                        size: GraphExploration.connectionPageSize)
                 if page.count > 1 {
-                    graphPageControls(index: page.index, count: page.count) {
+                    graphPageControls(page: page, noun: "related tables") {
                         session.notifyManualGraphInteraction()
                         pullConnectedNodesIntoView(for: target, pageIndex: page.index - 1)
                     } next: {
@@ -696,7 +699,7 @@ public struct SchemaGraphView: View {
             } else if let nodeID = tableFocusNodeID {
                 let page = tableConnectionPage(nodeID)
                 if page.count > 1 {
-                    graphPageControls(index: page.index, count: page.count) {
+                    graphPageControls(page: page, noun: "related tables") {
                         session.notifyManualGraphInteraction()
                         focusTableConnections(nodeID, pageIndex: page.index - 1)
                     } next: {
@@ -714,7 +717,7 @@ public struct SchemaGraphView: View {
 
             let page = GraphExploration.pageOrdered(group.nodeIDs, index: focusedGroupPage)
             if page.count > 1 {
-                graphPageControls(index: page.index, count: page.count) {
+                graphPageControls(page: page, noun: "tables") {
                     focusGroup(group.id, pageIndex: page.index - 1, in: size)
                 } next: {
                     focusGroup(group.id, pageIndex: page.index + 1, in: size)
@@ -723,13 +726,15 @@ public struct SchemaGraphView: View {
         }
     }
 
-    private func graphPageControls(index: Int, count: Int, previous: @escaping () -> Void, next: @escaping () -> Void) -> some View {
+    private func graphPageControls(page: GraphExploration.Page, noun: String,
+                                   previous: @escaping () -> Void, next: @escaping () -> Void) -> some View {
         HStack(spacing: 4) {
             Button(action: previous) { Image(systemName: "chevron.left") }
-                .disabled(index == 0).help("Previous tables")
-            Text("\(index + 1)/\(count)").font(.caption).monospacedDigit()
+                .disabled(page.index == 0).help("Previous tables")
+            Text("\(page.start)–\(page.end) of \(page.total) \(noun)")
+                .font(.caption).monospacedDigit()
             Button(action: next) { Image(systemName: "chevron.right") }
-                .disabled(index + 1 == count).help("Next tables")
+                .disabled(page.index + 1 == page.count).help("Next tables")
         }
     }
 
@@ -948,6 +953,9 @@ public struct SchemaGraphView: View {
     }
 
     private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
+        // Table focus already names every visible card. Large group headings
+        // can cross the expanded hub and hide its fields.
+        guard graphFocusPlan == nil else { return }
         let focusPlan = effectiveFocusPlan
         guard shows(.groupTitles), session.showClusterHalos || focusPlan != nil else { return }
 
@@ -1962,7 +1970,10 @@ public struct SchemaGraphView: View {
 
 
     private func tableRelationFocusPlan(target: GraphRelationHoverTarget) -> GraphFocusPlan {
-        let relatedTables = Set(GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: relationPageIndex).ids)
+        let relatedTables = Set(GraphExploration.pageOrdered(
+            relatedNodeIDs(for: target), index: relationPageIndex,
+            size: GraphExploration.connectionPageSize
+        ).ids)
         return GraphFocusPlan(activeTableIDs: [target.tableID], relatedTableIDs: relatedTables)
     }
 
@@ -2011,15 +2022,27 @@ public struct SchemaGraphView: View {
         let topInset = min(graphControlsHeight + 30, size.height * 0.4)
         let bottomInset: CGFloat = 70
         let readableSubset = session.automationVisibleTableIDs != nil && plan.visibleTableIDs().count <= 8
+        let connectionFocus = tableFocusNodeID != nil || graphFocusTableRelation != nil
+        let minimumZoom: CGFloat = connectionFocus ? 0.5 : (readableSubset ? 0.4 : (isLargeGraph ? 0.01 : 0.22))
+        let fitPadding: CGFloat = connectionFocus ? 128 : 72
+        let fittingSize = CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset))
+        let naturalFit = GraphViewportTransform.fit(contentBounds: bounds, in: fittingSize,
+                                                    padding: fitPadding, minZoom: 0.01,
+                                                    maxZoom: readableSubset || connectionFocus ? 1.3 : 1.05)
         var transform = GraphViewportTransform.fit(
             contentBounds: bounds,
-            in: CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset)),
-            padding: 72,
-            // Readability is preferred, but a subset must remain fully visible
-            // when expanded cards or a short pane make 0.7 impossible.
-            minZoom: readableSubset ? 0.4 : (isLargeGraph ? 0.01 : 0.22),
-            maxZoom: readableSubset ? 1.3 : 1.05
+            in: fittingSize,
+            padding: fitPadding,
+            // The centre card has its own readable scale; the camera can fit
+            // the neighbour page without shrinking the expanded rows.
+            minZoom: minimumZoom,
+            maxZoom: readableSubset || connectionFocus ? 1.3 : 1.05
         )
+        if connectionFocus, naturalFit.zoom < minimumZoom,
+           let rootID = graphFocusTableRelation?.tableID ?? tableFocusNodeID {
+            let center = pulledGraphPositions[rootID] ?? session.graphLayout.position(for: rootID)
+            transform.pan = CGSize(width: -center.x * transform.zoom, height: -center.y * transform.zoom)
+        }
         transform.pan.height += (topInset - bottomInset) / 2
         setViewport(transform, animated: animated, animation: animation, completion: completion)
     }
@@ -2134,6 +2157,7 @@ public struct SchemaGraphView: View {
             connectedIDs: draggedNodeID == nil ? (hoveredNodeID.map { renderedGraph.neighbors(of: $0) } ?? []) : [],
             nodeSizing: session.graphNodeSizeProfile,
             overviewAnchors: overviewAnchors,
+            focusRootID: graphFocusTableRelation?.tableID ?? tableFocusNodeID,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
     }
@@ -2641,7 +2665,8 @@ public struct SchemaGraphView: View {
                                             animated: Bool = true) {
         guard draggedNodeID == nil else { return }
 
-        let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: pageIndex)
+        let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: pageIndex,
+                                                size: GraphExploration.connectionPageSize)
         let connectedIDs = page.ids
         guard !connectedIDs.isEmpty else { return }
         relationPageIndex = page.index
@@ -2716,7 +2741,8 @@ public struct SchemaGraphView: View {
     private func tableConnectionPage(_ nodeID: String) -> GraphExploration.Page {
         let neighbors = renderedGraph.neighbors(of: nodeID).subtracting([nodeID])
         let allowed = neighbors.intersection(session.graphVisibleTableIDs)
-        return GraphExploration.page(Array(allowed), index: relationPageIndex)
+        return GraphExploration.page(Array(allowed), index: relationPageIndex,
+                                     size: GraphExploration.connectionPageSize)
     }
 
     private func focusTableConnections(_ nodeID: String, pageIndex: Int = 0, animated: Bool = true) {
@@ -2782,7 +2808,9 @@ public struct SchemaGraphView: View {
                 let maxOffset = CGFloat(totalColumns - GraphCardLayout.maxExpandedVisibleRows) * GraphCardLayout.expandedRowHeight
                 let current = cardScrollOffsets[targetID] ?? 0
                 // delta.height from scrollWheel: negative = fingers moving up = scroll content up = offset increases.
-                let newOffset = max(0, min(maxOffset, current - delta.height / zoom))
+                let contentScale = (targetID == tableFocusNodeID || targetID == graphFocusTableRelation?.tableID)
+                    ? GraphReadableCardScale.focusedScale(for: zoom) : zoom
+                let newOffset = max(0, min(maxOffset, current - delta.height / contentScale))
                 guard newOffset != current else { return false }
                 cardScrollOffsets[targetID] = newOffset
                 return true

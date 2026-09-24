@@ -110,6 +110,24 @@ struct GraphViewportTransform: Sendable, Equatable {
     }
 }
 
+enum GraphReadableCardScale {
+    static let focusedMinimum: CGFloat = 0.90
+
+    static func focusedScale(for zoom: CGFloat) -> CGFloat {
+        max(zoom, focusedMinimum)
+    }
+
+    static func frame(for normalCardFrame: CGRect, zoom: CGFloat, displayScale: CGFloat) -> CGRect {
+        guard zoom > 0 else { return normalCardFrame }
+        let ratio = displayScale / zoom
+        let width = normalCardFrame.width * ratio
+        let height = normalCardFrame.height * ratio
+        return CGRect(x: normalCardFrame.midX - width / 2,
+                      y: normalCardFrame.midY - height / 2,
+                      width: width, height: height)
+    }
+}
+
 enum GraphCardRole: Sendable, Hashable {
     case collapsedNode
     case previewNode

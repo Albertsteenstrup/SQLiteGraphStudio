@@ -140,6 +140,21 @@ struct GraphInteractionGeometryTests {
     }
 
     @Test
+    func expandedFocusRootKeepsReadableRowsAndMatchingHitBounds() throws {
+        let normalFrame = CGRect(x: 200, y: 160, width: 440 * 0.7, height: 236 * 0.7)
+        let snapshot = GraphInteractionGeometryCache().snapshot(
+            frames: ["contract": normalFrame], viewport: viewport, zoom: 0.7,
+            isLarge: true, emphasized: ["contract"], contentRevision: 0,
+            focusRootID: "contract", roleForNode: { _ in .expandedNode },
+            descriptorForNode: { _ in descriptor(columnCount: 66) }
+        )
+        let card = try #require(snapshot.anchorMap.nodeCards["contract"])
+        #expect(card.frame.width >= 440 * GraphReadableCardScale.focusedMinimum - 0.001)
+        #expect(card.rowFrames.count == GraphCardLayout.maxExpandedVisibleRows)
+        #expect(snapshot.hitCandidates(at: CGPoint(x: 170, y: 180)) == ["contract"])
+    }
+
+    @Test
     func retainedDragOutsideViewportKeepsDetailedCardAndRows() {
         let cache = GraphInteractionGeometryCache()
         let descriptor = descriptor(columnCount: 3)

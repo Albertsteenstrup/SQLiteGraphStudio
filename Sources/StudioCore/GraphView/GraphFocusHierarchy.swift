@@ -57,6 +57,13 @@ enum GraphFocusRingLayout {
             ]
         }
 
+        // A dense ring forces the camera so far out that even the expanded hub
+        // becomes unreadable. Keep a bounded page in two short columns instead.
+        if items.count > 6 {
+            return columnPositions(hubCenter: hubCenter, hubSize: hubSize, items: items,
+                                   gap: gap, interItemGap: interItemGap)
+        }
+
         var positions: [String: CGPoint] = [:]
         var sizes: [String: CGSize] = [:]
         let count = items.count
@@ -89,6 +96,27 @@ enum GraphFocusRingLayout {
             minimumGap: interItemGap
         )
 
+        return positions
+    }
+
+    private static func columnPositions(hubCenter: CGPoint, hubSize: CGSize,
+                                        items: [Item], gap: CGFloat, interItemGap: CGFloat) -> [String: CGPoint] {
+        let left = items.enumerated().compactMap { $0.offset.isMultiple(of: 2) ? $0.element : nil }
+        let right = items.enumerated().compactMap { $0.offset.isMultiple(of: 2) ? nil : $0.element }
+        var positions: [String: CGPoint] = [:]
+
+        for (column, direction) in [(left, CGFloat(-1)), (right, CGFloat(1))] {
+            guard !column.isEmpty else { continue }
+            let widest = column.map(\.size.width).max() ?? 0
+            let height = column.reduce(CGFloat.zero) { $0 + $1.size.height }
+                + CGFloat(column.count - 1) * interItemGap
+            let x = hubCenter.x + direction * (hubSize.width / 2 + gap + widest / 2)
+            var y = hubCenter.y - height / 2
+            for item in column {
+                positions[item.id] = CGPoint(x: x, y: y + item.size.height / 2)
+                y += item.size.height + interItemGap
+            }
+        }
         return positions
     }
 

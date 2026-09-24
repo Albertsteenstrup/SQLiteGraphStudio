@@ -148,6 +148,7 @@ final class GraphInteractionGeometryCache {
         let connectedIDs: Set<String>
         let nodeSizing: GraphNodeSizeProfile
         let overviewAnchors: [GraphOverviewAnchors.Anchor]
+        let focusRootID: String?
     }
 
     private var key: Key?
@@ -170,6 +171,7 @@ final class GraphInteractionGeometryCache {
         connectedIDs: Set<String> = [],
         nodeSizing: GraphNodeSizeProfile = .uniform,
         overviewAnchors: [GraphOverviewAnchors.Anchor] = [],
+        focusRootID: String? = nil,
         roleForNode: (String) -> GraphCardRole,
         descriptorForNode: (String) -> EditableTableDescriptor?,
         displayedColumnsForNode: (String) -> [String]? = { _ in nil }
@@ -178,7 +180,7 @@ final class GraphInteractionGeometryCache {
             frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
             emphasized: emphasized, primary: primary, retained: retained, contentRevision: contentRevision,
             hoveredID: hoveredID, connectedIDs: connectedIDs, nodeSizing: nodeSizing,
-            overviewAnchors: overviewAnchors
+            overviewAnchors: overviewAnchors, focusRootID: focusRootID
         )
         if key == newKey, let geometry { return geometry }
 
@@ -197,8 +199,17 @@ final class GraphInteractionGeometryCache {
         var nodeCards: [String: GraphCardGeometry] = [:]
         nodeCards.reserveCapacity(frames.count)
         for (id, frame) in frames {
-            let cardFrame = overviewAnchorIDs.contains(id) && renderPlan.detailIDs.contains(id)
-                ? GraphOverviewAnchors.frame(for: frame, zoom: zoom) : frame
+            let cardFrame: CGRect
+            if renderPlan.detailIDs.contains(id), id == focusRootID {
+                cardFrame = GraphReadableCardScale.frame(
+                    for: frame, zoom: zoom,
+                    displayScale: GraphReadableCardScale.focusedScale(for: zoom)
+                )
+            } else if overviewAnchorIDs.contains(id), renderPlan.detailIDs.contains(id) {
+                cardFrame = GraphOverviewAnchors.frame(for: frame, zoom: zoom)
+            } else {
+                cardFrame = frame
+            }
             let displayFrame = markerFrames[id] ?? GraphHoverPresentation.enlarged(
                 cardFrame, scale: GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id))
             )
@@ -211,7 +222,8 @@ final class GraphInteractionGeometryCache {
             nodeCards[id] = GraphCardGeometry(
                 tableID: id, frame: frame, role: role,
                 descriptor: descriptorForNode(id), displayedColumns: displayedColumnsForNode(id),
-                scale: (overviewAnchorIDs.contains(id) ? GraphOverviewAnchors.displayScale(for: zoom) : zoom)
+                scale: (id == focusRootID ? GraphReadableCardScale.focusedScale(for: zoom)
+                        : (overviewAnchorIDs.contains(id) ? GraphOverviewAnchors.displayScale(for: zoom) : zoom))
                     * GraphHoverPresentation.cardScale(hovered: id == hoveredID, connected: connectedIDs.contains(id))
             )
         }
