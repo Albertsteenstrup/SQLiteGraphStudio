@@ -46,7 +46,6 @@ public struct SchemaGraphView: View {
     @State private var isGraphNavigatorPresented = false
     @State private var focusedGroupID: String?
     @State private var focusedGroupPage = 0
-    @State private var relationPageIndex = 0
     @State private var overviewViewport: GraphViewportBookmark?
     @State private var relationPreviewCache = RelationPreviewCache()
     @State private var topologyCache = GraphTopologyCache()
@@ -253,6 +252,10 @@ public struct SchemaGraphView: View {
                    newSize.width > 0, newSize.height > 0 {
                     applyAutomationFocus(command, in: newSize)
                     return
+                }
+                if graphFocusPlan != nil, !session.graph.nodes.isEmpty,
+                   newSize.width > 0, newSize.height > 0 {
+                    reflowFocusedConnections(in: newSize)
                 }
                 if initialViewport.viewportChanged() {
                     scheduleInitialViewportFit()
@@ -695,28 +698,11 @@ public struct SchemaGraphView: View {
             .accessibilityLabel("Return to overview")
 
             if let target = graphFocusTableRelation {
-                let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: relationPageIndex,
-                                                        size: GraphExploration.connectionPageSize)
-                if page.count > 1 {
-                    graphPageControls(page: page, noun: "related tables") {
-                        session.notifyManualGraphInteraction()
-                        pullConnectedNodesIntoView(for: target, pageIndex: page.index - 1)
-                    } next: {
-                        session.notifyManualGraphInteraction()
-                        pullConnectedNodesIntoView(for: target, pageIndex: page.index + 1)
-                    }
-                }
+                Text("\(visibleRelatedNodeIDs(for: target).count) related tables")
+                    .font(.caption).monospacedDigit()
             } else if let nodeID = tableFocusNodeID {
-                let page = tableConnectionPage(nodeID)
-                if page.count > 1 {
-                    graphPageControls(page: page, noun: "related tables") {
-                        session.notifyManualGraphInteraction()
-                        focusTableConnections(nodeID, pageIndex: page.index - 1)
-                    } next: {
-                        session.notifyManualGraphInteraction()
-                        focusTableConnections(nodeID, pageIndex: page.index + 1)
-                    }
-                }
+                Text("\(tableConnectionIDs(nodeID).count) related tables")
+                    .font(.caption).monospacedDigit()
             }
         } else if let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
             Button { showGraphOverview(in: size) } label: {
@@ -1971,7 +1957,7 @@ public struct SchemaGraphView: View {
         if let nodeID = tableFocusNodeID {
             return GraphFocusPlan(
                 activeTableIDs: [nodeID],
-                relatedTableIDs: Set(tableConnectionPage(nodeID).ids)
+                relatedTableIDs: Set(tableConnectionIDs(nodeID))
             )
         }
         return nil
@@ -1993,10 +1979,7 @@ public struct SchemaGraphView: View {
 
 
     private func tableRelationFocusPlan(target: GraphRelationHoverTarget) -> GraphFocusPlan {
-        let relatedTables = Set(GraphExploration.pageOrdered(
-            relatedNodeIDs(for: target), index: relationPageIndex,
-            size: GraphExploration.connectionPageSize
-        ).ids)
+        let relatedTables = Set(visibleRelatedNodeIDs(for: target))
         return GraphFocusPlan(activeTableIDs: [target.tableID], relatedTableIDs: relatedTables)
     }
 
@@ -2046,8 +2029,10 @@ public struct SchemaGraphView: View {
         let bottomInset: CGFloat = 70
         let readableSubset = session.automationVisibleTableIDs != nil && plan.visibleTableIDs().count <= 8
         let connectionFocus = tableFocusNodeID != nil || graphFocusTableRelation != nil
-        let minimumZoom: CGFloat = connectionFocus ? 0.5 : (readableSubset ? 0.4 : (isLargeGraph ? 0.01 : 0.22))
-        let fitPadding: CGFloat = connectionFocus ? 128 : 72
+        let denseConnectionFocus = connectionFocus && plan.visibleTableIDs().count > 17
+        let minimumZoom: CGFloat = denseConnectionFocus ? 0.01
+            : (connectionFocus ? 0.5 : (readableSubset ? 0.4 : (isLargeGraph ? 0.01 : 0.22)))
+        let fitPadding: CGFloat = denseConnectionFocus ? 24 : (connectionFocus ? 128 : 72)
         let fittingSize = CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset))
         let naturalFit = GraphViewportTransform.fit(contentBounds: bounds, in: fittingSize,
                                                     padding: fitPadding, minZoom: 0.01,
@@ -2061,7 +2046,7 @@ public struct SchemaGraphView: View {
             minZoom: minimumZoom,
             maxZoom: readableSubset || connectionFocus ? 1.3 : 1.05
         )
-        if connectionFocus, naturalFit.zoom < minimumZoom,
+        if connectionFocus, !denseConnectionFocus, naturalFit.zoom < minimumZoom,
            let rootID = graphFocusTableRelation?.tableID ?? tableFocusNodeID {
             let center = pulledGraphPositions[rootID] ?? session.graphLayout.position(for: rootID)
             transform.pan = CGSize(width: -center.x * transform.zoom, height: -center.y * transform.zoom)
@@ -2308,8 +2293,11 @@ public struct SchemaGraphView: View {
 
             let currentSize = viewportSize
             if session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout {
+                if tableFocusNodeID != nil {
+                    reflowFocusedConnections(in: currentSize)
+                }
                 if isLargeGraph, let target = graphFocusTableRelation {
-                    pullConnectedNodesIntoView(for: target, pageIndex: relationPageIndex)
+                    pullConnectedNodesIntoView(for: target)
                 } else if isLargeGraph {
                     refitCurrentScope(in: currentSize)
                 } else {
@@ -2684,15 +2672,11 @@ public struct SchemaGraphView: View {
     // MARK: - Graph focus layout
 
     /// Enters table-relation focus: hides unrelated cards, lays out FK/PK neighbors without overlap, and zooms to fit.
-    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget, pageIndex: Int = 0,
-                                            animated: Bool = true) {
+    private func pullConnectedNodesIntoView(for target: GraphRelationHoverTarget, animated: Bool = true) {
         guard draggedNodeID == nil else { return }
 
-        let page = GraphExploration.pageOrdered(relatedNodeIDs(for: target), index: pageIndex,
-                                                size: GraphExploration.connectionPageSize)
-        let connectedIDs = page.ids
+        let connectedIDs = visibleRelatedNodeIDs(for: target)
         guard !connectedIDs.isEmpty else { return }
-        relationPageIndex = page.index
 
         enterGraphFocusSession()
         graphFocusTableRelation = target
@@ -2703,20 +2687,8 @@ public struct SchemaGraphView: View {
             endpointKind: .column
         )
 
-        let hubCenter = pulledGraphPositions[target.tableID] ?? session.graphLayout.position(for: target.tableID)
-        let hubSize = nodeSize(for: target.tableID)
-        let items = connectedIDs.map { connectedID in
-            GraphFocusRingLayout.Item(id: connectedID, size: nodeSize(for: connectedID))
-        }
-        var layout = GraphFocusRingLayout.graphPositions(
-            hubCenter: hubCenter,
-            hubSize: hubSize,
-            items: items,
-            gap: 88,
-            interItemGap: 36
-        )
-
-        layout[target.tableID] = hubCenter
+        let layout = focusedConnectionPositions(rootID: target.tableID, relatedIDs: connectedIDs,
+                                                in: viewportSize, gap: 88, interItemGap: 36)
         if animated {
             withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { pulledGraphPositions = layout }
         } else {
@@ -2747,6 +2719,10 @@ public struct SchemaGraphView: View {
         return ids
     }
 
+    private func visibleRelatedNodeIDs(for target: GraphRelationHoverTarget) -> [String] {
+        relatedNodeIDs(for: target).filter { session.graphVisibleTableIDs.contains($0) }
+    }
+
     private func toggleExpandedState(for nodeID: String, in size: CGSize) {
         if tableFocusNodeID == nodeID || graphFocusTableRelation?.tableID == nodeID {
             collapseExpandedNode(nodeID, in: size)
@@ -2761,26 +2737,49 @@ public struct SchemaGraphView: View {
         focusTableConnections(nodeID)
     }
 
-    private func tableConnectionPage(_ nodeID: String) -> GraphExploration.Page {
+    private func tableConnectionIDs(_ nodeID: String) -> [String] {
         let neighbors = renderedGraph.neighbors(of: nodeID).subtracting([nodeID])
         let allowed = neighbors.intersection(session.graphVisibleTableIDs)
-        return GraphExploration.page(Array(allowed), index: relationPageIndex,
-                                     size: GraphExploration.connectionPageSize)
+        return allowed.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
-    private func focusTableConnections(_ nodeID: String, pageIndex: Int = 0, animated: Bool = true) {
+    private func focusTableConnections(_ nodeID: String, animated: Bool = true) {
         enterGraphFocusSession()
-        relationPageIndex = pageIndex
         tableFocusNodeID = nodeID
         graphFocusTableRelation = nil
         tappedRelationTarget = nil
         hoveredNodeID = nil
         clearRelationHoverState()
-        let hubCenter = session.graphLayout.position(for: nodeID)
-        let items = tableConnectionPage(nodeID).ids.map { GraphFocusRingLayout.Item(id: $0, size: nodeSize(for: $0)) }
-        pulledGraphPositions = GraphFocusRingLayout.graphPositions(hubCenter: hubCenter, hubSize: nodeSize(for: nodeID), items: items)
+        pulledGraphPositions = focusedConnectionPositions(rootID: nodeID,
+                                                          relatedIDs: tableConnectionIDs(nodeID), in: viewportSize)
         layoutRevision &+= 1
         fitGraphFocusViewport(in: viewportSize, animated: animated)
+    }
+
+    private func focusedConnectionPositions(rootID: String, relatedIDs: [String], in size: CGSize,
+                                            gap: CGFloat = 84, interItemGap: CGFloat = 32) -> [String: CGPoint] {
+        let hubCenter = session.graphLayout.position(for: rootID)
+        let items = relatedIDs.map { GraphFocusRingLayout.Item(id: $0, size: nodeSize(for: $0)) }
+        var layout = GraphFocusRingLayout.graphPositions(
+            hubCenter: hubCenter, hubSize: nodeSize(for: rootID), items: items,
+            gap: gap, interItemGap: interItemGap, viewportSize: size
+        )
+        layout[rootID] = hubCenter
+        return layout
+    }
+
+    private func reflowFocusedConnections(in size: CGSize) {
+        if let target = graphFocusTableRelation {
+            pulledGraphPositions = focusedConnectionPositions(
+                rootID: target.tableID,
+                relatedIDs: visibleRelatedNodeIDs(for: target),
+                in: size, gap: 88, interItemGap: 36
+            )
+        } else if let nodeID = tableFocusNodeID {
+            pulledGraphPositions = focusedConnectionPositions(rootID: nodeID,
+                                                              relatedIDs: tableConnectionIDs(nodeID), in: size)
+        }
+        layoutRevision &+= 1
     }
 
     private func collapseExpandedNode(_ nodeID: String, in size: CGSize) {

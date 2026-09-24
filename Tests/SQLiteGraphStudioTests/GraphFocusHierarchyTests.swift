@@ -69,6 +69,96 @@ struct GraphFocusHierarchyTests {
     }
 
     @Test
+    func highlyConnectedFocusIncludesEveryNeighbourAndKeepsCardsApart() {
+        let viewport = CGSize(width: 1000, height: 600)
+        let hubSize = CGSize(width: 440, height: 236)
+        let items = (0..<80).map { index in
+            GraphFocusRingLayout.Item(id: "related_\(index)",
+                                      size: CGSize(width: 440, height: index.isMultiple(of: 5) ? 104 : 80))
+        }
+        let positions = GraphFocusRingLayout.graphPositions(
+            hubCenter: .zero, hubSize: hubSize, items: items, viewportSize: viewport
+        )
+        #expect(positions.count == 80)
+        #expect(Set(positions.keys) == Set(items.map(\.id)))
+
+        let hub = CGRect(x: -hubSize.width / 2, y: -hubSize.height / 2,
+                         width: hubSize.width, height: hubSize.height)
+        let frames = items.map { item in
+            let center = positions[item.id]!
+            return CGRect(x: center.x - item.size.width / 2, y: center.y - item.size.height / 2,
+                          width: item.size.width, height: item.size.height)
+        }
+        let bounds = frames.reduce(hub) { $0.union($1) }
+        let camera = GraphViewportTransform.fit(
+            contentBounds: bounds, in: CGSize(width: viewport.width, height: 452),
+            padding: 24, minZoom: 0.01, maxZoom: 1.3
+        )
+        let root = CGRect(x: -hubSize.width * GraphReadableCardScale.focusedScale(for: camera.zoom) / 2,
+                          y: -hubSize.height * GraphReadableCardScale.focusedScale(for: camera.zoom) / 2,
+                          width: hubSize.width * GraphReadableCardScale.focusedScale(for: camera.zoom),
+                          height: hubSize.height * GraphReadableCardScale.focusedScale(for: camera.zoom))
+        for first in frames.indices {
+            let frame = frames[first]
+            let screenFrame = CGRect(x: frame.minX * camera.zoom, y: frame.minY * camera.zoom,
+                                     width: frame.width * camera.zoom, height: frame.height * camera.zoom)
+            #expect(!screenFrame.intersects(root))
+            for second in frames.indices where second > first {
+                #expect(!frame.intersects(frames[second]))
+            }
+        }
+    }
+
+    @Test
+    func mediumFocusKeepsReadableEdgeLanesWhileShowingEveryNeighbour() {
+        let items = (0..<11).map { index in
+            GraphFocusRingLayout.Item(id: "related_\(index)",
+                                      size: CGSize(width: 440, height: 80))
+        }
+        let positions = GraphFocusRingLayout.graphPositions(
+            hubCenter: .zero, hubSize: CGSize(width: 440, height: 236),
+            items: items, viewportSize: CGSize(width: 1000, height: 600)
+        )
+        #expect(positions.count == 11)
+        let nearestEdge = items.compactMap { item -> CGFloat? in
+            guard let center = positions[item.id] else { return nil }
+            return abs(center.x) - item.size.width / 2
+        }.min()!
+        #expect(nearestEdge * 0.5 - 440 * GraphReadableCardScale.focusedMinimum / 2 >= 20)
+    }
+
+    @Test
+    func denseFocusAlsoKeepsAllCardsReachableAtNarrowWidths() {
+        let hubSize = CGSize(width: 440, height: 236)
+        let viewport = CGSize(width: 600, height: 450)
+        for count in [17, 40, 160] {
+            let items = (0..<count).map { index in
+                GraphFocusRingLayout.Item(id: "related_\(index)",
+                                          size: CGSize(width: 440, height: index.isMultiple(of: 4) ? 104 : 80))
+            }
+            let positions = GraphFocusRingLayout.graphPositions(
+                hubCenter: .zero, hubSize: hubSize, items: items, viewportSize: viewport
+            )
+            #expect(positions.count == count)
+            let frames = items.map { item -> CGRect in
+                let center = positions[item.id]!
+                return CGRect(x: center.x - item.size.width / 2, y: center.y - item.size.height / 2,
+                              width: item.size.width, height: item.size.height)
+            }
+            let bounds = frames.reduce(CGRect(x: -220, y: -118, width: 440, height: 236)) { $0.union($1) }
+            let camera = GraphViewportTransform.fit(
+                contentBounds: bounds, in: CGSize(width: viewport.width, height: 302),
+                padding: 24, minZoom: 0.01, maxZoom: 1.3
+            )
+            let rootHalfWidth = hubSize.width * GraphReadableCardScale.focusedScale(for: camera.zoom) / 2
+            for frame in frames {
+                let innerEdge = min(abs(frame.minX), abs(frame.maxX)) * camera.zoom
+                #expect(innerEdge > rootHalfWidth)
+            }
+        }
+    }
+
+    @Test
     func focusedHubHighlightsOneHoveredNeighbourInsteadOfEveryRelation() {
         #expect(GraphFocusEdgeEmphasis.highlightedTableID(
             focusedHubID: "registry_workflow", hoveredTableID: nil,

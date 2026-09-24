@@ -14,7 +14,6 @@ struct GraphViewportBookmark: Equatable {
 /// Backend-neutral limits shared by the navigator, renderer, and interaction targets.
 enum GraphExploration {
     static let pageSize = 48
-    static let connectionPageSize = 8
     static let maximumDetailedCards = 160
     static let detailZoom: CGFloat = 0.42
 

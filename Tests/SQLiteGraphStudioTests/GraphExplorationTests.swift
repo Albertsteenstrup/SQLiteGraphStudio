@@ -25,17 +25,6 @@ struct GraphExplorationTests {
         #expect(GraphExploration.page([], index: 1).ids.isEmpty)
     }
 
-    @Test func denseConnectionPagesKeepTheRootReadableAndEveryNeighborReachable() {
-        let ids = (0..<47).map { "related_\($0)" }
-        let pages = (0..<6).map {
-            GraphExploration.page(ids, index: $0, size: GraphExploration.connectionPageSize)
-        }
-        #expect(pages.flatMap(\.ids).count == ids.count)
-        #expect(Set(pages.flatMap(\.ids)) == Set(ids))
-        #expect(pages[1].start == 9 && pages[1].end == 16)
-        #expect(pages.last?.end == 47)
-    }
-
     @Test func lowZoomUsesMarksAndKeepsSelectedDetails() {
         let frames = Dictionary(uniqueKeysWithValues: (0..<2_000).map {
             (String($0), CGRect(x: $0 % 50 * 8, y: $0 / 50 * 8, width: 6, height: 6))

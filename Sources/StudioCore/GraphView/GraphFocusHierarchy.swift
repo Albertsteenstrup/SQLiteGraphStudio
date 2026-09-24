@@ -52,9 +52,16 @@ enum GraphFocusRingLayout {
         hubSize: CGSize,
         items: [Item],
         gap: CGFloat = 84,
-        interItemGap: CGFloat = 32
+        interItemGap: CGFloat = 32,
+        viewportSize: CGSize = .zero
     ) -> [String: CGPoint] {
         guard !items.isEmpty else { return [:] }
+
+        if items.count > 16, viewportSize.width > 0, viewportSize.height > 0 {
+            return overviewColumnPositions(hubCenter: hubCenter, hubSize: hubSize,
+                                           items: items, viewportSize: viewportSize,
+                                           interItemGap: interItemGap)
+        }
 
         if items.count == 1 {
             let item = items[0]
@@ -111,6 +118,73 @@ enum GraphFocusRingLayout {
             minimumGap: interItemGap
         )
 
+        return positions
+    }
+
+    /// Keep every direct neighbour in one focus scene. Choose the number of
+    /// columns that gives their cards the largest fitted scale, while reserving
+    /// screen space for the enlarged hub and a visible edge lane beside it.
+    private static func overviewColumnPositions(hubCenter: CGPoint, hubSize: CGSize,
+                                                items: [Item], viewportSize: CGSize,
+                                                interItemGap: CGFloat) -> [String: CGPoint] {
+        let columnGap: CGFloat = 24
+        let rowGap = min(interItemGap, 24)
+        let edgeLane: CGFloat = 24
+        let rootDisplayWidth = hubSize.width * GraphReadableCardScale.focusedMinimum
+        let availableWidth = max(viewportSize.width - 48, 300)
+        let availableHeight = max(viewportSize.height - min(100, viewportSize.height * 0.3) - 94, 120)
+        let sideWidth = max((availableWidth - rootDisplayWidth) / 2 - edgeLane, 40)
+        let maximumColumnsPerSide = min(12, (items.count + 1) / 2)
+
+        var bestColumns: [[Item]] = []
+        var bestZoom: CGFloat = 0
+        for columnsPerSide in 1...maximumColumnsPerSide {
+            var columns = Array(repeating: [Item](), count: columnsPerSide * 2)
+            for (index, item) in items.enumerated() {
+                columns[index % columns.count].append(item)
+            }
+            let widths: [CGFloat] = columns.map { column in
+                column.map { $0.size.width }.max() ?? 0
+            }
+            var sideWidths = [CGFloat.zero, CGFloat.zero]
+            for side in 0..<2 {
+                for column in 0..<columnsPerSide {
+                    sideWidths[side] += widths[column * 2 + side]
+                    if column > 0 { sideWidths[side] += columnGap }
+                }
+            }
+            let tallest = columns.map { column in
+                column.reduce(CGFloat.zero) { $0 + $1.size.height }
+                    + CGFloat(max(column.count - 1, 0)) * rowGap
+            }.max() ?? 1
+            let fittedZoom = min(sideWidth / max(sideWidths.max() ?? 1, 1),
+                                 availableHeight / max(tallest, 1), 0.9)
+            if fittedZoom > bestZoom {
+                bestZoom = fittedZoom
+                bestColumns = columns
+            }
+        }
+
+        let zoom = max(bestZoom, 0.01)
+        let firstColumnEdge = (rootDisplayWidth / 2 + edgeLane) / zoom
+        var positions: [String: CGPoint] = [:]
+        for side in 0..<2 {
+            let direction: CGFloat = side == 0 ? -1 : 1
+            var offset = firstColumnEdge
+            for columnIndex in 0..<(bestColumns.count / 2) {
+                let column = bestColumns[columnIndex * 2 + side]
+                let width = column.map(\.size.width).max() ?? 0
+                let height = column.reduce(CGFloat.zero) { $0 + $1.size.height }
+                    + CGFloat(max(column.count - 1, 0)) * rowGap
+                let x = hubCenter.x + direction * (offset + width / 2)
+                var y = hubCenter.y - height / 2
+                for item in column {
+                    positions[item.id] = CGPoint(x: x, y: y + item.size.height / 2)
+                    y += item.size.height + rowGap
+                }
+                offset += width + columnGap
+            }
+        }
         return positions
     }
 
