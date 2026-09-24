@@ -1,3 +1,4 @@
+import Foundation
 import StudioCore
 import SwiftUI
 
@@ -6,32 +7,57 @@ import SwiftUI
 @MainActor
 struct LivePresentationOverlay: View {
     let coordinator: StudioAutomationCoordinator
+    @State private var expandedTranscriptForID: String?
 
     var body: some View {
         if let presentation = coordinator.activePresentation,
            let point = presentation.currentPoint {
+            let spokenPoint = point.narration?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            let presentationID = coordinator.activePresentationID
+            let showsTranscript = !spokenPoint || (presentationID != nil && expandedTranscriptForID == presentationID)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
                     Text(coordinator.activePresentationTitle ?? "Live explanation")
                         .font(.headline)
+                        .lineLimit(1)
                     Spacer(minLength: 12)
+                    if spokenPoint {
+                        Image(systemName: "waveform")
+                            .accessibilityLabel("Audio narration")
+                    }
                     Text(statusText(presentation.status))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                Text(presentation.needsViewReplay
-                     ? "View changed. Continue to replay this point."
-                     : presentation.hasVisibleCurrentPoint ? point.caption : "Updating the view…")
-                    .font(.body)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if !presentation.displayedHistory.isEmpty {
-                    DisclosureGroup("Earlier points") {
-                        ForEach(presentation.displayedHistory) { earlier in
-                            Text(earlier.caption)
-                                .font(.caption)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1)
+                    if spokenPoint && presentation.hasVisibleCurrentPoint && !presentation.status.isFailed {
+                        Button(showsTranscript ? "Hide text" : "Show text") {
+                            expandedTranscriptForID = showsTranscript ? nil : presentationID
                         }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                    }
+                }
+                if presentation.needsViewReplay {
+                    explanationText("View changed. Continue to replay this point.")
+                } else if let failure = failureMessage(presentation.status) {
+                    explanationText(failure)
+                } else if !presentation.hasVisibleCurrentPoint {
+                    explanationText("Updating the view…")
+                } else if showsTranscript {
+                    explanationText(point.caption)
+                }
+                if showsTranscript && !presentation.displayedHistory.isEmpty {
+                    DisclosureGroup("Earlier points") {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(presentation.displayedHistory) { earlier in
+                                    Text(earlier.caption)
+                                        .font(.caption)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 160)
                     }
                     .font(.caption)
                 }
@@ -63,12 +89,24 @@ struct LivePresentationOverlay: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .shadow(radius: 8)
             .task(id: point.id) {
-                // Yield once so SwiftUI can install the point controls before
-                // the graph's own render acknowledgement permits the caption.
+                // Yield once so SwiftUI can install the controls before the
+                // graph's render acknowledgement permits this point to speak.
                 await Task.yield()
                 coordinator.captionRendered(pointID: point.id)
             }
         }
+    }
+
+    private func explanationText(_ value: String) -> some View {
+        Text(value)
+            .font(.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func failureMessage(_ status: LivePresentationController.Status) -> String? {
+        if case .failed(_, let message) = status { return message }
+        return nil
     }
 
     private func statusText(_ status: LivePresentationController.Status) -> String {
@@ -80,7 +118,7 @@ struct LivePresentationOverlay: View {
         case .waitingForNext: "Ready for next"
         case .waitingForPoints: "Waiting for agent"
         case .completed: "Finished"
-        case .failed(_, let message): "Could not continue: \(message)"
+        case .failed: "Could not continue"
         default: "Showing"
         }
     }

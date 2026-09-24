@@ -152,6 +152,17 @@ struct StudioSpeechNarratorTests {
         #expect(provider.streamRequestCount == 0)
     }
 
+    @Test @MainActor
+    func stoppingAPausedPointAllowsItsReplayToStart() async {
+        let provider = TestStreamingSpeechProvider()
+        let narrator = StudioSpeechNarrator(provider: provider)
+        narrator.pause()
+        narrator.stop()
+
+        _ = await narrator.playStreamed("replayed point", status: { _ in })
+        #expect(provider.streamRequestCount == 1)
+    }
+
     @Test
     func pocketPresetPinsOnlyNongatedEnglishAssets() {
         #expect(PocketTTSSpeechAssets.packageVersion == "3.1.0")
@@ -270,10 +281,12 @@ private final class TestStreamingSpeechProvider: StreamingSpeechProvider {
     let identifier = "test"
     let displayName = "Test speech"
     let isAvailable = true
+    private(set) var streamRequestCount = 0
 
     func prepare() async throws {}
 
     func makeStream(for text: String) throws -> SpeechAudioStream {
+        streamRequestCount += 1
         let producer = SpeechAudioStreamProducer(capacity: 1)
         let buffer = try makeTestPCMBuffer()
         producer.yield(try SpeechPCMChunk(copying: buffer))

@@ -338,7 +338,7 @@ public final class LivePresentationController {
         publish(.preparing(pointID: currentPoint.id))
     }
 
-    /// A direct graph gesture leaves the current short point audible and visible, but
+    /// A direct graph gesture leaves the current point audible and visible, but
     /// prevents the queued point from taking over the manually adjusted view.
     public func pauseAfterCurrentPoint() {
         guard currentPoint != nil, !isPaused else { return }

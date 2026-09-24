@@ -183,6 +183,7 @@ public final class StudioSpeechNarrator {
         activeSpeechID = UUID()
         playbackTask?.cancel()
         playbackTask = nil
+        isPaused = false
         provider.cancel()
         player.stopImmediately()
         statusHandler?(.idle)

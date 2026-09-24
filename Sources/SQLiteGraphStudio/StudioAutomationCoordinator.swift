@@ -290,7 +290,10 @@ final class StudioAutomationCoordinator {
     private var hasVisibleAppWindow: Bool {
         guard let app = NSApp, !app.isHidden else { return false }
         return app.windows.contains {
-            $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
+            // AppKit can report an active SwiftUI window as occluded while a
+            // local agent's host is switching focus. An active window is still
+            // safe to narrate; inactive windows must be genuinely exposed.
+            $0.isVisible && !$0.isMiniaturized && (app.isActive || $0.occlusionState.contains(.visible))
         }
     }
 
@@ -379,6 +382,10 @@ final class StudioAutomationCoordinator {
 
     var activePresentationTitle: String? {
         activePresentation == nil ? nil : currentPresentationState?.title
+    }
+
+    var activePresentationID: String? {
+        activePresentation == nil ? nil : currentPresentationState?.id
     }
 
     private var currentPresentationState: PresentationState? {
@@ -2209,6 +2216,7 @@ final class StudioAutomationCoordinator {
             }
             if string(args, "activation_intent") == "foreground" || bool(args, "activate") == true {
                 workspaces.activate(tab.id)
+                NSApp.activate(ignoringOtherApps: true)
             }
             presentations[state.id] = state
             currentPresentationIDByWorkspace[tab.id] = state.id
