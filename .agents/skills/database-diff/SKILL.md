@@ -46,15 +46,20 @@ Use the same executable for capture, comparison, and display.
   --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
   --note "Exact source revisions; schema only, no row data." \
   --agent claude --session "$session_name"
-open -a /path/to/SQLiteGraphStudio.app change.sgreview
 ```
+
+Show the result in the conversation with the Graph Studio MCP tool
+`studio_show_review_inline`, passing the `.sgreview` path. It reads the file
+directly, so no app window, database, or tab opens; hosts without inline views get
+a text summary instead. Open the app only when the user asks for it or the tool is
+unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
 
 Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
 `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
 `--session` takes the human-readable name of the current chat or session. The
 review header then leads with the tool's mark, for example `Claude · Table diff
-visualization clarity`. Graph Studio replaces the tab of an earlier review from the
-same tool and session, so an updated diff does not open another tab; reviews from
+visualization clarity`. In the app, Graph Studio replaces the tab of an earlier review
+from the same tool and session, so an updated diff does not open another tab; reviews from
 other sessions open in their own tabs. Omit `--session` when you don't know the session's name,
 and omit both when you may not disclose them; never invent either. The session
 name travels with the review file, so leave it out when it holds anything that
@@ -80,7 +85,7 @@ that the schema is unchanged; data effects remain part of the original review.
 
 ## Review and handoff
 
-Open the `.sgreview` file and inspect changed tables and their relationships.
+Look at the shown review and inspect changed tables and their relationships.
 Blue solid inner borders and `+`/`~` labels indicate additions/changes. Red dashed
 inner borders and `−` labels indicate removals. The existing outer group colour is
 preserved. Removed tables remain faded with a Removed badge. Modified relations

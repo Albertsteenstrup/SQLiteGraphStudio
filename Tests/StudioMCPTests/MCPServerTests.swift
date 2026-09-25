@@ -3,9 +3,9 @@ import XCTest
 @testable import StudioMCP
 
 final class MCPServerTests: XCTestCase {
-    func testCatalogHasAllSixtyTwoUniqueDocumentedTools() {
-        XCTAssertEqual(MCPToolCatalog.tools.count, 62)
-        XCTAssertEqual(Set(MCPToolCatalog.names).count, 62)
+    func testCatalogHasAllSixtyThreeUniqueDocumentedTools() {
+        XCTAssertEqual(MCPToolCatalog.tools.count, 63)
+        XCTAssertEqual(Set(MCPToolCatalog.names).count, 63)
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_status"))
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_test_speech"))
         for tool in MCPToolCatalog.tools {
@@ -181,7 +181,7 @@ final class MCPServerTests: XCTestCase {
         ]))
         let response = object(list)
         let tools = (response["result"] as? [String: Any])?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 62)
+        XCTAssertEqual(tools?.count, 63)
     }
 
     func testToolCallCarriesTaskAndSourceContext() throws {

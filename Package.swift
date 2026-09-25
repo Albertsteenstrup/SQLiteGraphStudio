@@ -82,7 +82,7 @@ let package = Package(
         ),
         .testTarget(
             name: "StudioAutomationTests",
-            dependencies: ["SQLiteGraphStudio", "StudioCore"],
+            dependencies: ["SQLiteGraphStudio", "StudioCore", "StudioMCP"],
             path: "Tests/StudioAutomationTests"
         ),
     ],

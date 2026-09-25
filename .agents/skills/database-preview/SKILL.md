@@ -42,8 +42,12 @@ changes. A preview does not check whether a live database has changed since capt
 # Write plan.json, then project it without SQL, a server, or migration replay.
 "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview \
   --agent claude --session "$session_name"
-open -a "$bundle" changes.sgpreview
 ```
+
+Show the preview in the conversation with the Graph Studio MCP tool
+`studio_show_review_inline`, passing the `.sgpreview` path; no app window opens.
+Open the app only when the user asks for it or the tool is unavailable:
+`open -a "$bundle" changes.sgpreview`.
 
 When your instructions allow you to name yourself, pass `--agent` (`claude`,
 `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
@@ -59,8 +63,9 @@ that field; repeat it for multiple fields. Omit it when full table context is
 needed. Raw snapshot metadata need not pass through the agent.
 
 For each iteration, edit the small plan and rerun only `preview` to the **same
-output file**. The open preview reloads automatically, keeping selection and
-the overview camera. Don't reopen windows, recapture, restore backups, replay
+output file**, then show it again with `studio_show_review_inline`. A preview
+already open in the app reloads automatically, keeping selection and the overview
+camera. Don't reopen windows, recapture, restore backups, replay
 migrations, or rewrite complete before/after schemas on each iteration. The CLI
 prints a short summary; inspect the visual result when a change affects the design.
 

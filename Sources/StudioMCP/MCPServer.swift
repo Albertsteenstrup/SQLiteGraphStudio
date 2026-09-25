@@ -140,6 +140,29 @@ public final class MCPServer {
             let result: [String: Any] = ["tools": MCPToolCatalog.tools.map(\.json)]
             return responseIfNeeded(isNotification: isNotification, id: requestID, result: result)
 
+        case "resources/list":
+            return responseIfNeeded(isNotification: isNotification, id: requestID, result: ["resources": MCPAppResources.resources])
+
+        case "resources/templates/list":
+            return responseIfNeeded(isNotification: isNotification, id: requestID, result: ["resourceTemplates": [Any]()])
+
+        case "resources/read":
+            guard let uri = params["uri"] as? String else {
+                return responseIfNeeded(
+                    isNotification: isNotification,
+                    id: requestID,
+                    error: (-32602, "resources/read requires a uri", nil)
+                )
+            }
+            guard let result = MCPAppResources.read(uri) else {
+                return responseIfNeeded(
+                    isNotification: isNotification,
+                    id: requestID,
+                    error: (-32002, "Resource not found", ["uri": uri])
+                )
+            }
+            return responseIfNeeded(isNotification: isNotification, id: requestID, result: result)
+
         case "tools/call":
             guard let name = params["name"] as? String else {
                 return responseIfNeeded(
@@ -219,7 +242,7 @@ public final class MCPServer {
         [
             "resultType": "complete",
             "supportedVersions": supportedProtocolVersions,
-            "capabilities": ["tools": ["listChanged": false]],
+            "capabilities": capabilities,
             "_meta": [
                 "io.modelcontextprotocol/serverInfo": [
                     "name": "SQLite Graph Studio",
@@ -232,8 +255,18 @@ public final class MCPServer {
         ]
     }
 
+    /// Tools, the MCP Apps views they render, and the UI extension that lets
+    /// supporting hosts show those views inside the conversation.
+    static var capabilities: [String: Any] {
+        [
+            "tools": ["listChanged": false],
+            "resources": ["listChanged": false],
+            "extensions": [MCPAppResources.extensionIdentifier: [String: Any]()],
+        ]
+    }
+
     private static var instructions: String {
-        "Use studio_status before offering or opening a visualization; it never launches the app. Call studio_launch only for an explicit visualization request. Connect each coding task with studio_connect_context, then include its exact context_id on every app-bound call so parallel tasks stay isolated. Return source choices when the context is ambiguous. Results are bounded and MCP database access is read-only."
+        "Use studio_status before offering or opening a visualization; it never launches the app. To show a saved schema comparison (.sgreview) or proposal (.sgpreview), prefer studio_show_review_inline: it renders inside the conversation without launching the app. Call studio_launch only for an explicit visualization request. Connect each coding task with studio_connect_context, then include its exact context_id on every app-bound call so parallel tasks stay isolated. Return source choices when the context is ambiguous. Results are bounded and MCP database access is read-only."
     }
 
     private func initialize(params: [String: Any], id: Any?, isNotification: Bool) -> Data? {
@@ -262,7 +295,7 @@ public final class MCPServer {
         clientVersion = info?["version"] as? String
         let result: [String: Any] = [
             "protocolVersion": requestedVersion,
-            "capabilities": ["tools": ["listChanged": false]],
+            "capabilities": Self.capabilities,
             "serverInfo": ["name": "SQLite Graph Studio", "version": Self.serverVersion],
             "instructions": Self.instructions,
         ]

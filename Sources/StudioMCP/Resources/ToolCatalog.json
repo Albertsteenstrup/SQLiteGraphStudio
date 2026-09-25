@@ -2791,6 +2791,43 @@
     }
   },
   {
+    "name": "studio_show_review_inline",
+    "title": "Show review inline",
+    "description": "Show a saved schema comparison (.sgreview) or proposal (.sgpreview) as an interactive view inside the conversation. It reads the file directly: Graph Studio does not need to be running, and no database, window, or tab is opened. Pass the path written by `--schema-review compare` or `--schema-review preview` (absolute, or relative to the project). Hosts that support MCP Apps show changed tables, fields, and relations with their related tables; other hosts get a text summary. Use studio_show_artifact instead only when the user wants the review in the Graph Studio app.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Path to a .sgreview comparison or .sgpreview proposal file."
+        },
+        "context_id": {
+          "type": "string",
+          "description": "Optional; this tool does not use a coding-task context."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Show review inline",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "resourceUri": "ui://sqlite-graph-studio/schema-review.html"
+      },
+      "ui/resourceUri": "ui://sqlite-graph-studio/schema-review.html"
+    }
+  },
+  {
     "name": "studio_save_explanation",
     "title": "Save Explanation",
     "description": "Save only points that have actually appeared in the live presentation, and only when the user requests a saved explanation. The artifact captures a credential-free schema snapshot, captions and saved words, point timing/actions/evidence references, and only rows named in included_result_scope. Set result_ids to query-result IDs whose current displayed page was used; set table_pages to already loaded table pages with exact table_id/offset/limit. This build captures at most 1,000 rows, clips long cell text, records omissions, and never stores SQL or a source locator. The artifact is atomic and never overwrites an existing file. Offline replay applies saved graph/layout/table selections and shows captured table/query pages referenced by each point; unreferenced saved pages remain available in the manual historical view. Replay never contacts the original source.",

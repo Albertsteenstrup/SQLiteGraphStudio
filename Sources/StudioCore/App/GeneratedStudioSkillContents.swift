@@ -300,15 +300,20 @@ extension StudioSkills {
       --base-ref "$base_sha" --head-ref "$head_sha" --title "Database changes" \
       --note "Exact source revisions; schema only, no row data." \
       --agent claude --session "$session_name"
-    open -a /path/to/SQLiteGraphStudio.app change.sgreview
     ```
+
+    Show the result in the conversation with the Graph Studio MCP tool
+    `studio_show_review_inline`, passing the `.sgreview` path. It reads the file
+    directly, so no app window, database, or tab opens; hosts without inline views get
+    a text summary instead. Open the app only when the user asks for it or the tool is
+    unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
 
     Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
     `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
     `--session` takes the human-readable name of the current chat or session. The
     review header then leads with the tool's mark, for example `Claude · Table diff
-    visualization clarity`. Graph Studio replaces the tab of an earlier review from the
-    same tool and session, so an updated diff does not open another tab; reviews from
+    visualization clarity`. In the app, Graph Studio replaces the tab of an earlier review
+    from the same tool and session, so an updated diff does not open another tab; reviews from
     other sessions open in their own tabs. Omit `--session` when you don't know the session's name,
     and omit both when you may not disclose them; never invent either. The session
     name travels with the review file, so leave it out when it holds anything that
@@ -334,7 +339,7 @@ extension StudioSkills {
 
     ## Review and handoff
 
-    Open the `.sgreview` file and inspect changed tables and their relationships.
+    Look at the shown review and inspect changed tables and their relationships.
     Blue solid inner borders and `+`/`~` labels indicate additions/changes. Red dashed
     inner borders and `−` labels indicate removals. The existing outer group colour is
     preserved. Removed tables remain faded with a Removed badge. Modified relations
@@ -404,8 +409,12 @@ extension StudioSkills {
     # Write plan.json, then project it without SQL, a server, or migration replay.
     "$studio" --schema-review preview "$baseline" plan.json changes.sgpreview \
       --agent claude --session "$session_name"
-    open -a "$bundle" changes.sgpreview
     ```
+
+    Show the preview in the conversation with the Graph Studio MCP tool
+    `studio_show_review_inline`, passing the `.sgpreview` path; no app window opens.
+    Open the app only when the user asks for it or the tool is unavailable:
+    `open -a "$bundle" changes.sgpreview`.
 
     When your instructions allow you to name yourself, pass `--agent` (`claude`,
     `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
@@ -421,8 +430,9 @@ extension StudioSkills {
     needed. Raw snapshot metadata need not pass through the agent.
 
     For each iteration, edit the small plan and rerun only `preview` to the **same
-    output file**. The open preview reloads automatically, keeping selection and
-    the overview camera. Don't reopen windows, recapture, restore backups, replay
+    output file**, then show it again with `studio_show_review_inline`. A preview
+    already open in the app reloads automatically, keeping selection and the overview
+    camera. Don't reopen windows, recapture, restore backups, replay
     migrations, or rewrite complete before/after schemas on each iteration. The CLI
     prints a short summary; inspect the visual result when a change affects the design.
 
@@ -498,9 +508,9 @@ extension StudioSkills {
     """#
 
     static let knownManagedHashes: [String: Set<String>] = [
-        "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877", "92a1bc97cc3b7e6561a663cc9aa615b1901ceadb88da47c92f38ba9b811b9419"],
+        "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877", "92a1bc97cc3b7e6561a663cc9aa615b1901ceadb88da47c92f38ba9b811b9419", "9076bbe8af3324dafc63ef8456d8d77cc9e3f54b06d3ae5ee1d7549b6096065f"],
         "database-explore": ["b9d635243780070b8083dd1d0b1305a3f474f67e70f537de649f5dd52191935d", "2d3fd74135fd38d8c9442220f0e9afc1061c5f542b41d762be059cc4ab669fb6", "580f50bbb7157869e4f973c2efba2149978e67d43c1b4a3416ac41444a2d845a", "f3d00e24454a36b4c77d19918ebe0dd8cfd6cfdbea7b6fb8aa263a9639b0c89f", "421cbceee6bc59db488d17a3973b7c98baf4701d264e4dbd8d639219b7f35bc6", "35cbf93c3fbd0ae880d95ee3e75b841cddaceb0f18609d32a0cb74a8e9609954", "ba6441b6732a7531e37ad37fcb98991ae2e38a5f3e78994587777e1148ee9a17"],
-        "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388", "885b33b70f2f31322a8723ab822e1cb92fc58b8546d05acf8cfb5308ff823063"],
+        "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388", "885b33b70f2f31322a8723ab822e1cb92fc58b8546d05acf8cfb5308ff823063", "a0c5fde5d6016aaa9744f525d39dbd6f35e6ad881a8e855f39f917105021a73b"],
         "graph-clusters": ["0a7091b32ae03d1b229e4581ae174404493eaaeaea100ab9fea5513672d0a68c", "ee97e6f72efb08efc52b15dcab494524559b9ed92c9ee6eacca42303fc6db8b1", "a5955fb18a7f27d77b2a926a22a101ee24769ebf8ca20fe2a3b12f50459d5f26", "217cda60b500d45d9430947345f92a9fa7189beb9050e51791cc519f0b95c5c0", "5cac1ae166a7ac30a5b925da54c58ae4b7906648ab4ec0d3e35925a4d3d93f49"],
         "schema-descriptions": ["1b0514eecb66d32e85f34e3c5f7bde441a39971dd2e1499031cd1ec7482c430b", "5597c5dc512b3d28027c15c40ed1aefb5ee6c71175ac4a6531bdca5842594cee"],
         "story-flows": ["2dec3cc7b479343a6f2b40547bcddc5390f6435762046cf8ccfd08bf4075abe1", "4771c1c0fc2389911a97ed8e99dfd3858b055b8bd2b0d43bed4be2d84f6132db", "98af44e239d2326b74a1b2c94fdfb3912be6b21be6aba413709534f6910b5957"],

@@ -38,6 +38,12 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
                 timeoutMilliseconds: min(max(wait, 1_000), 30_000),
                 foreground: foreground
             )
+        case SchemaReviewInlineView.toolName:
+            // Rendered by the host from the file alone; the app is never contacted.
+            return SchemaReviewInlineView.result(
+                path: call.arguments["path"] as? String ?? "",
+                workingDirectory: call.workingDirectory
+            )
         default:
             var arguments = call.arguments
             if call.name == "studio_connect_context", arguments["project_path"] == nil {
