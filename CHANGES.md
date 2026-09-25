@@ -4,9 +4,10 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 
 ## One Graph Studio Window for Coding Agents
 
-- The app uses one main window with workspace tabs and prohibits multiple app instances. Launch scripts and bundled skills reuse the running app instead of requesting a new copy.
+- The app uses one main window with workspace tabs. A user-wide process lock prevents separate worktree builds from opening extra app copies; a new build also defers to a running older copy. Launch scripts and bundled skills reuse the running app instead of requesting a new copy.
 - `studio_launch` reuses a paired running app. Reopening the same source in one coding task returns its bound workspace; `studio_refresh_source` reloads it when needed.
-- MCP-created workspaces are bounded to 12 owned tabs and 32 total tabs. At the limit, the tool returns a recoverable error instead of continuing to allocate database sessions and graph canvases.
+- The development launcher never terminates Graph Studio processes by name and refuses to replace a bundle while its app or MCP helper is running. Swift build parallelism defaults to four jobs so simultaneous worktrees create less memory pressure.
+- At most four documents are loaded across the app, including in-progress opens from separate coding tasks. Saved background tabs restore their source when selected instead of reopening every database at startup. MCP-created workspaces remain bounded to 12 owned tabs and 32 total tabs. At a limit, the tool returns a recoverable error instead of continuing to allocate database sessions and graph canvases.
 
 ## PostgreSQL Read-Only Connections
 

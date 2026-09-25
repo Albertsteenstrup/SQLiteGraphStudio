@@ -6,6 +6,52 @@ import Testing
 @Suite(.serialized)
 struct WorkspaceOwnershipTests {
     @Test @MainActor
+    func concurrentCodingTasksCannotLoadMoreThanFourDocuments() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sgs-shared-budget-\(UUID().uuidString).sqlite")
+        try SampleFixtureBuilder.buildFixture(at: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        defer { Task { @MainActor in await coordinator.close(); await tabs.closeAllAndWait() } }
+
+        var contexts: [(id: String, client: String)] = []
+        for index in 0..<5 {
+            let client = "budget-client-\(index)"
+            let connection = try await call(coordinator, "studio_connect_context",
+                                            ["client_task_id": "budget-task-\(index)"], client: client)
+            contexts.append((try #require(content(connection)["context_id"] as? String), client))
+        }
+        for index in 0..<5 {
+            let context = contexts[index]
+            let result = try await call(coordinator, "studio_open_source", [
+                "context_id": context.id, "request_id": UUID().uuidString,
+                "source_path": fixture.path,
+            ], client: context.client, context: context.id)
+            #expect(errorCode(result) == (index == 4 ? "WORKSPACE_LIMIT_REACHED" : nil))
+        }
+        #expect(tabs.liveDocumentCount == 4)
+        #expect(tabs.tabs.count == 5)
+
+        let first = contexts[0]
+        let close = try await call(coordinator, "studio_close_workspace", [
+            "context_id": first.id, "request_id": UUID().uuidString,
+        ], client: first.client, context: first.id)
+        #expect(close["isError"] as? Bool == false)
+        let fifth = contexts[4]
+        let retried = try await call(coordinator, "studio_open_source", [
+            "context_id": fifth.id, "request_id": UUID().uuidString,
+            "source_path": fixture.path,
+        ], client: fifth.client, context: fifth.id)
+        #expect(retried["isError"] as? Bool == false)
+        #expect(tabs.liveDocumentCount == 4)
+
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
     func openingTheSameSourceAgainReusesTheBoundWorkspace() async throws {
         let fixture = FileManager.default.temporaryDirectory
             .appendingPathComponent("sgs-workspace-reuse-\(UUID().uuidString).sqlite")

@@ -145,7 +145,8 @@ import Testing
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let original = WorkspaceTabController(initialSession: AppSession(userDefaults: defaults))
-        let tab = await original.openDocument(url, activate: true)
+        let openedTab = await original.openDocument(url, activate: true)
+        let tab = try #require(openedTab)
         let savedState = original.makeRestorationSnapshot()
         let savedExplanation = try #require(savedState.tabs.first(where: { $0.id == tab.id }))
         #expect(savedExplanation.kind == .explanation)

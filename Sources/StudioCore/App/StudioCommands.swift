@@ -26,8 +26,11 @@ public struct StudioCommands: Commands {
             .keyboardShortcut("o")
 
             Button("New Workspace Tab") {
-                workspaceTabs.createTab()
+                if workspaceTabs.tabs.count < WorkspaceTabController.maximumTabs {
+                    workspaceTabs.createTab()
+                }
             }
+            .disabled(workspaceTabs.tabs.count >= WorkspaceTabController.maximumTabs)
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button("Open Project Folder…") {

@@ -51,6 +51,7 @@ public final class WorkspaceTab: Identifiable {
     public let kind: WorkspaceTabKind
     public let session: AppSession
     private let explicitTitle: String?
+    @ObservationIgnored var deferredRestoration: WorkspaceTabRestorationState?
 
     public init(
         id: UUID = UUID(),
@@ -77,11 +78,19 @@ public final class WorkspaceTab: Identifiable {
 @MainActor
 @Observable
 public final class WorkspaceTabController {
+    public static let maximumTabs = 32
+    /// A database graph can be large even when its tab is in the background.
+    /// Keep the live-document budget independent of the number of lightweight tabs.
+    public static let maximumLiveDocuments = 4
     public private(set) var tabs: [WorkspaceTab]
     public private(set) var activeTabID: UUID? {
         didSet {
             guard oldValue != activeTabID else { return }
             onActiveTabChanged?(activeTabID)
+            if let id = activeTabID,
+               tabs.first(where: { $0.id == id })?.deferredRestoration != nil {
+                Task { await restoreDeferredTab(id) }
+            }
         }
     }
 
@@ -93,6 +102,7 @@ public final class WorkspaceTabController {
     @ObservationIgnored private var restorationObservationToken = UUID()
     @ObservationIgnored private var lastSavedRestorationSnapshot: WorkspaceRestorationSnapshot?
     @ObservationIgnored private var isRestoringSnapshot = false
+    @ObservationIgnored private var openingDocumentTabIDs = Set<UUID>()
 
     public init(
         initialSession: AppSession = AppSession(),
@@ -110,6 +120,36 @@ public final class WorkspaceTabController {
 
     public var activeSession: AppSession? {
         activeTab?.session
+    }
+
+    public var liveDocumentCount: Int {
+        tabs.filter { tab in
+            openingDocumentTabIDs.contains(tab.id) || tab.session.databaseURL != nil ||
+                tab.session.historicalExplanationArtifact != nil || tab.session.projectScan != nil
+        }.count
+    }
+
+    /// Reserve before an asynchronous open so concurrent coding tasks cannot
+    /// each pass a stale count while earlier sources are still loading.
+    public func reserveDocumentOpening(for id: UUID) -> Bool {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return false }
+        if !openingDocumentTabIDs.contains(id), tab.session.databaseURL == nil,
+           tab.session.historicalExplanationArtifact == nil, tab.session.projectScan == nil,
+           liveDocumentCount >= Self.maximumLiveDocuments { return false }
+        openingDocumentTabIDs.insert(id)
+        return true
+    }
+
+    public func finishDocumentOpening(for id: UUID) {
+        openingDocumentTabIDs.remove(id)
+    }
+
+    private func showDocumentLimit() {
+        activeSession?.presentedError = SQLiteUserError(
+            kind: .busy,
+            message: "Graph Studio has four loaded documents open.",
+            recoverySuggestion: "Close a source tab, then open this document again."
+        )
     }
 
     @discardableResult
@@ -137,35 +177,66 @@ public final class WorkspaceTabController {
 
     public func activate(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
+        let wasAlreadyActive = activeTabID == id
         activeTabID = id
+        if wasAlreadyActive, tabs.first(where: { $0.id == id })?.deferredRestoration != nil {
+            Task { await restoreDeferredTab(id) }
+        }
     }
 
     /// Opens one document in a new tab, preserving every existing workspace.
     @discardableResult
-    public func openDocument(_ url: URL, activate shouldActivate: Bool = true) async -> WorkspaceTab {
-        let tab = createTab(kind: .inferred(for: url), activate: shouldActivate)
-        await tab.session.openDocument(url: url)
-        return tab
+    public func openDocument(_ url: URL, activate shouldActivate: Bool = true) async -> WorkspaceTab? {
+        await openDocuments([url], activate: shouldActivate).first
     }
 
     /// Opens each incoming document in its own tab. The first new tab remains active.
     @discardableResult
     public func openDocuments(_ urls: [URL], activate shouldActivate: Bool = true) async -> [WorkspaceTab] {
         guard !urls.isEmpty else { return [] }
-        let newTabs = urls.map { createTab(kind: .inferred(for: $0), activate: false) }
-        if shouldActivate, let first = newTabs.first {
-            activeTabID = first.id
-        }
-        for (tab, url) in zip(newTabs, urls) {
+        var opened: [WorkspaceTab] = []
+        for url in urls {
+            let normalized = url.resolvingSymlinksInPath().standardizedFileURL
+            if let existing = tabs.first(where: { tab in
+                tab.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == normalized ||
+                    tab.session.historicalExplanationURL?.resolvingSymlinksInPath().standardizedFileURL == normalized ||
+                    tab.deferredRestoration?.sourceDocumentPath == normalized.path
+            }) {
+                if shouldActivate, opened.isEmpty { activate(existing.id) }
+                opened.append(existing)
+                continue
+            }
+            guard liveDocumentCount < Self.maximumLiveDocuments else {
+                showDocumentLimit()
+                break
+            }
+            guard tabs.count < Self.maximumTabs else {
+                activeSession?.presentedError = SQLiteUserError(
+                    kind: .busy,
+                    message: "Graph Studio has too many open tabs.",
+                    recoverySuggestion: "Close unused tabs before opening another document."
+                )
+                break
+            }
+            let tab = createTab(kind: .inferred(for: url), activate: false)
+            guard reserveDocumentOpening(for: tab.id) else {
+                await closeAndWait(tab.id)
+                showDocumentLimit()
+                break
+            }
+            if shouldActivate, opened.isEmpty { activeTabID = tab.id }
             await tab.session.openDocument(url: url)
+            finishDocumentOpening(for: tab.id)
+            opened.append(tab)
         }
-        return newTabs
+        return opened
     }
 
     /// Removes a tab and waits for its database and query work to close before returning.
     public func closeAndWait(_ id: UUID) async {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let closingTab = tabs.remove(at: index)
+        openingDocumentTabIDs.remove(id)
 
         if activeTabID == id {
             if tabs.isEmpty {
@@ -184,6 +255,7 @@ public final class WorkspaceTabController {
     public func closeAllAndWait() async {
         let existingTabs = tabs
         tabs = []
+        openingDocumentTabIDs.removeAll()
         activeTabID = nil
         for tab in existingTabs {
             onTabClosed?(tab.id)
@@ -197,7 +269,8 @@ public final class WorkspaceTabController {
     /// executed as part of a later restore.
     public func makeRestorationSnapshot() -> WorkspaceRestorationSnapshot {
         let states = tabs.map { tab in
-            WorkspaceTabRestorationState(
+            if let deferred = tab.deferredRestoration { return deferred }
+            return WorkspaceTabRestorationState(
                 id: tab.id,
                 kind: tab.kind,
                 title: tab.title,
@@ -245,37 +318,63 @@ public final class WorkspaceTabController {
         activeTabID = snapshot.activeTabID.flatMap { resolvedIDs[$0] } ?? restoredTabs.first?.id
 
         for (tab, savedTab) in zip(restoredTabs, snapshot.tabs.prefix(restoredTabs.count)) {
-            if let path = savedTab.sourceDocumentPath, !path.isEmpty {
-                let sourceURL = URL(fileURLWithPath: path).standardizedFileURL
-                var isDirectory: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
-                let isMigrationSource = isDirectory.boolValue || sourceURL.pathExtension.lowercased() == "sql"
-                guard DatabaseDocument.supportedExtensions.contains(sourceURL.pathExtension.lowercased()) || isMigrationSource else {
-                    tab.session.presentedError = SQLiteUserError(
-                        kind: .invalidInput,
-                        message: "This saved tab points to an unsupported document.",
-                        recoverySuggestion: "Choose File > Open Database to select a supported database or workspace document."
-                    )
-                    await restore(savedTab.session, in: tab.session)
-                    continue
-                }
-                guard exists else {
-                    tab.session.presentedError = SQLiteUserError(
-                        kind: .notFound,
-                        message: "The saved source \(sourceURL.lastPathComponent) is unavailable.",
-                        recoverySuggestion: "Reconnect the drive or choose File > Open Database to locate the source again."
-                    )
-                    await restore(savedTab.session, in: tab.session)
-                    continue
-                }
-                if isMigrationSource {
-                    await tab.session.openMigrations(at: sourceURL, version: savedTab.session.selectedMigrationVersion)
-                } else {
-                    await tab.session.openDocument(url: sourceURL)
-                }
+            if tab.id != activeTabID {
+                tab.deferredRestoration = savedTab
+                continue
             }
-            await restore(savedTab.session, in: tab.session)
+            await restoreSavedTab(savedTab, in: tab)
         }
+    }
+
+    func restoreDeferredTab(_ id: UUID) async {
+        guard let tab = tabs.first(where: { $0.id == id }),
+              let savedTab = tab.deferredRestoration,
+              !openingDocumentTabIDs.contains(id) else { return }
+        if savedTab.sourceDocumentPath != nil,
+           !reserveDocumentOpening(for: id) {
+            showDocumentLimit()
+            return
+        }
+        await restoreSavedTab(savedTab, in: tab)
+        finishDocumentOpening(for: id)
+        guard tabs.contains(where: { $0 === tab }) else {
+            await tab.session.closeAndWait()
+            return
+        }
+        tab.deferredRestoration = nil
+    }
+
+    private func restoreSavedTab(_ savedTab: WorkspaceTabRestorationState, in tab: WorkspaceTab) async {
+        if let path = savedTab.sourceDocumentPath, !path.isEmpty {
+            let sourceURL = URL(fileURLWithPath: path).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
+            let isMigrationSource = isDirectory.boolValue || sourceURL.pathExtension.lowercased() == "sql"
+            guard DatabaseDocument.supportedExtensions.contains(sourceURL.pathExtension.lowercased()) || isMigrationSource else {
+                tab.session.presentedError = SQLiteUserError(
+                    kind: .invalidInput,
+                    message: "This saved tab points to an unsupported document.",
+                    recoverySuggestion: "Choose File > Open Database to select a supported database or workspace document."
+                )
+                await restore(savedTab.session, in: tab.session)
+                return
+            }
+            guard exists else {
+                tab.session.presentedError = SQLiteUserError(
+                    kind: .notFound,
+                    message: "The saved source \(sourceURL.lastPathComponent) is unavailable.",
+                    recoverySuggestion: "Reconnect the drive or choose File > Open Database to locate the source again."
+                )
+                await restore(savedTab.session, in: tab.session)
+                return
+            }
+            if isMigrationSource {
+                await tab.session.openMigrations(at: sourceURL, version: savedTab.session.selectedMigrationVersion)
+            } else {
+                await tab.session.openDocument(url: sourceURL)
+            }
+        }
+        await restore(savedTab.session, in: tab.session)
     }
 
     /// Starts observation-based, debounced autosaving. Call after launch restoration

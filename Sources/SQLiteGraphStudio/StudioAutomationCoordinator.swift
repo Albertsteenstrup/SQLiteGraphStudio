@@ -836,15 +836,20 @@ final class StudioAutomationCoordinator {
                 if bool(args, "activate") == true { workspaces.activate(bound.id) }
                 return workspacePayload(bound).merging(["reused": true]) { _, new in new }
             }
-            try requireAutomationWorkspaceCapacity()
+            try requireAutomationWorkspaceCapacity(openingDocument: true)
             let tab = workspaces.createTab(kind: inferredWorkspaceKind(for: url),
                                            activate: bool(args, "activate") ?? false)
             try claimWorkspace(tab.id, for: context.id)
+            guard workspaces.reserveDocumentOpening(for: tab.id) else {
+                await workspaces.closeAndWait(tab.id)
+                throw documentLimitFailure()
+            }
             if migrationSource {
                 await tab.session.openMigrations(at: url, version: string(args, "migration_version"))
             } else {
                 await openDocument(tab.session, url)
             }
+            workspaces.finishDocumentOpening(for: tab.id)
             guard workspaces.tabs.contains(where: { $0 === tab }) else {
                 await tab.session.closeAndWait()
                 throw Failure(code: "STALE_VIEW", detail: "The source tab closed while its document was opening.")
@@ -882,15 +887,20 @@ final class StudioAutomationCoordinator {
                     migrationVersion = source.session.selectedMigrationVersion
                 }
             }
-            try requireAutomationWorkspaceCapacity()
+            try requireAutomationWorkspaceCapacity(openingDocument: sourceURL != nil)
             let tab = workspaces.createTab(kind: kind, title: string(args, "title"), activate: activate)
             try claimWorkspace(tab.id, for: context.id)
             if let url = sourceURL {
+                guard workspaces.reserveDocumentOpening(for: tab.id) else {
+                    await workspaces.closeAndWait(tab.id)
+                    throw documentLimitFailure()
+                }
                 if sourceIsMigration {
                     await tab.session.openMigrations(at: url, version: migrationVersion)
                 } else {
                     await openDocument(tab.session, url)
                 }
+                workspaces.finishDocumentOpening(for: tab.id)
                 guard workspaces.tabs.contains(where: { $0 === tab }) else {
                     await tab.session.closeAndWait()
                     throw Failure(code: "STALE_VIEW", detail: "The new workspace closed while its source was opening.")
@@ -2033,11 +2043,16 @@ final class StudioAutomationCoordinator {
             guard ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) else {
                 throw Failure(code: "UNSUPPORTED_ARTIFACT", detail: "Open a comparison or proposal artifact; a raw snapshot can be inspected or compared first.")
             }
-            try requireAutomationWorkspaceCapacity()
+            try requireAutomationWorkspaceCapacity(openingDocument: true)
             let tab = workspaces.createTab(kind: inferredWorkspaceKind(for: url),
                                            activate: bool(args, "activate") ?? true)
             try claimWorkspace(tab.id, for: context.id)
+            guard workspaces.reserveDocumentOpening(for: tab.id) else {
+                await workspaces.closeAndWait(tab.id)
+                throw documentLimitFailure()
+            }
             await openDocument(tab.session, url)
+            workspaces.finishDocumentOpening(for: tab.id)
             guard workspaces.tabs.contains(where: { $0 === tab }) else {
                 await tab.session.closeAndWait()
                 throw Failure(code: "STALE_VIEW", detail: "The artifact tab closed while its document was opening.")
@@ -2123,7 +2138,7 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "Historical explanations open in a dedicated offline workspace so they cannot replace or query a live source.")
             }
             let returnWorkspaceID = workspaces.activeTabID
-            try requireAutomationWorkspaceCapacity()
+            try requireAutomationWorkspaceCapacity(openingDocument: true)
             let tab = workspaces.createTab(kind: .explanation, title: artifact.title, activate: true)
             try claimWorkspace(tab.id, for: context.id)
             tab.session.openHistoricalExplanation(artifact, from: url)
@@ -3049,13 +3064,20 @@ final class StudioAutomationCoordinator {
     /// Automation can be driven by several coding tasks at once. Bound the tabs it
     /// creates so repeated source changes cannot restore or keep opening an
     /// unbounded number of database connections and graph canvases.
-    private func requireAutomationWorkspaceCapacity() throws {
+    private func requireAutomationWorkspaceCapacity(openingDocument: Bool = false) throws {
         let ownedCount = workspaces.tabs.reduce(into: 0) { count, tab in
             if workspaceOwners[tab.id] != nil { count += 1 }
         }
         guard ownedCount < 12, workspaces.tabs.count < 32 else {
             throw Failure(code: "WORKSPACE_LIMIT_REACHED", detail: "Graph Studio has too many open workspaces for another automated tab. Reuse the current workspace or close unused tabs before opening another source.")
         }
+        if openingDocument, workspaces.liveDocumentCount >= WorkspaceTabController.maximumLiveDocuments {
+            throw documentLimitFailure()
+        }
+    }
+
+    private func documentLimitFailure() -> Failure {
+        Failure(code: "WORKSPACE_LIMIT_REACHED", detail: "Graph Studio already has four loaded documents across coding tasks. Reuse a source tab or close an unused source tab before opening another.")
     }
 
     private func workspace(_ args: [String: Any], context: Context) throws -> WorkspaceTab {

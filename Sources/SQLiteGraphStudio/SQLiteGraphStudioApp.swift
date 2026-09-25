@@ -162,6 +162,8 @@ final class StudioAppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 struct StudioLauncher {
+    @MainActor private static var instanceLock: StudioApplicationInstanceLock?
+
     @MainActor static func main() {
         if SchemaReviewCommand.isRequested {
             Task.detached { exit(await SchemaReviewCommand.run()) }
@@ -170,7 +172,28 @@ struct StudioLauncher {
         // AppKit must own the ordinary synchronous main entrypoint. Nesting its
         // event loop inside an async main-actor job starves later UI tasks.
         guard PostgresRuntimeSupervisor.isRequested else {
+            do {
+                guard let lock = try StudioApplicationInstanceLock.acquire() else {
+                    NSRunningApplication.runningApplications(withBundleIdentifier: MCPBridgePaths.appBundleIdentifier)
+                        .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }?
+                        .activate(options: [.activateAllWindows])
+                    return
+                }
+                let otherCopies = NSRunningApplication.runningApplications(
+                    withBundleIdentifier: MCPBridgePaths.appBundleIdentifier
+                ).filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+                if StudioApplicationInstanceLock.existingBridgeIsListening() ||
+                    otherCopies.contains(where: { ($0.launchDate ?? .distantPast) < Date().addingTimeInterval(-2) }) {
+                    otherCopies.first?.activate(options: [.activateAllWindows])
+                    return
+                }
+                instanceLock = lock
+            } catch {
+                NSLog("SQLite Graph Studio could not establish its single-instance lock: %@", error.localizedDescription)
+                return
+            }
             SQLiteGraphStudioApp.main()
+            instanceLock = nil
             return
         }
         Task.detached { exit(await PostgresRuntimeSupervisor.runIfRequested() ?? 2) }

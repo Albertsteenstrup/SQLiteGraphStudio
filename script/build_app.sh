@@ -24,6 +24,11 @@ ARCHS=("arm64" "x86_64")
 UNIVERSAL_BINARY="$DIST_DIR/$APP_NAME.universal"
 UNIVERSAL_MCP_BINARY="$DIST_DIR/StudioMCP.universal"
 POCKET_TTS_REQUIRED="${SGS_POCKET_TTS_RUNTIME_REQUIRED:-0}"
+SGS_BUILD_JOBS="${SGS_BUILD_JOBS:-4}"
+if [[ ! "$SGS_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SGS_BUILD_JOBS must be a positive integer." >&2
+    exit 2
+fi
 if [[ "$POCKET_TTS_REQUIRED" != "0" && "$POCKET_TTS_REQUIRED" != "1" ]]; then
     echo "SGS_POCKET_TTS_RUNTIME_REQUIRED must be 0 or 1." >&2
     exit 2
@@ -41,6 +46,7 @@ if [[ -n "${SGS_POCKET_TTS_RUNTIME:-}" ]]; then
         "$SGS_POCKET_TTS_RUNTIME" "$APP_BUNDLE" "${ARCHS[@]}")"
 fi
 
+sgs_assert_bundle_not_running "$APP_BUNDLE"
 echo "==> Building universal release binary (${ARCHS[*]})..."
 cd "$PROJECT_DIR"
 
@@ -56,8 +62,8 @@ for arch in "${ARCHS[@]}"; do
     triple="$arch-apple-macosx$MIN_MACOS_VERSION"
 
     echo "    Building $arch ($triple)..."
-    swift build -c release --product "$APP_NAME" --triple "$triple"
-    swift build -c release --product StudioMCP --triple "$triple"
+    swift build -j "$SGS_BUILD_JOBS" -c release --product "$APP_NAME" --triple "$triple"
+    swift build -j "$SGS_BUILD_JOBS" -c release --product StudioMCP --triple "$triple"
 
     build_dir="$(swift build -c release --triple "$triple" --show-bin-path)"
     binary_path="$build_dir/$APP_NAME"
@@ -93,6 +99,7 @@ fi
 echo "    Architectures: $(lipo -archs "$UNIVERSAL_BINARY")"
 
 echo "==> Assembling .app bundle..."
+sgs_assert_bundle_not_running "$APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"

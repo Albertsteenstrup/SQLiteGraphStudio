@@ -4,6 +4,39 @@ import Testing
 
 @MainActor
 struct WorkspaceRestorationTests {
+    @Test
+    func restoredTabsLoadOnlyWhenNeededAndPreserveDeferredSources() async throws {
+        let url = try TestSupport.createFixture(named: "lazy-workspace-restore")
+        let ids = (0..<6).map { _ in UUID() }
+        let snapshot = WorkspaceRestorationSnapshot(
+            tabs: ids.map { id in
+                WorkspaceTabRestorationState(id: id, kind: .workspace, title: "Saved source",
+                                             sourceDocumentPath: url.path,
+                                             session: WorkspaceSessionRestorationState())
+            },
+            activeTabID: ids[0]
+        )
+        let controller = WorkspaceTabController(initialSession: AppSession())
+        await controller.restoreWorkspace(from: snapshot)
+
+        #expect(controller.tabs.count == 6)
+        #expect(controller.liveDocumentCount == 1)
+        #expect(controller.makeRestorationSnapshot().tabs.map(\.sourceDocumentPath) == Array(repeating: url.path, count: 6))
+
+        for id in ids[1...3] { await controller.restoreDeferredTab(id) }
+        #expect(controller.liveDocumentCount == 4)
+        await controller.restoreDeferredTab(ids[4])
+        #expect(controller.liveDocumentCount == 4)
+        #expect(controller.tabs.first(where: { $0.id == ids[4] })?.session.databaseURL == nil)
+        #expect(controller.makeRestorationSnapshot().tabs[4].sourceDocumentPath == url.path)
+
+        await controller.closeAndWait(ids[1])
+        await controller.restoreDeferredTab(ids[4])
+        #expect(controller.liveDocumentCount == 4)
+        #expect(controller.tabs.first(where: { $0.id == ids[4] })?.session.databaseURL == url.standardizedFileURL)
+        await controller.closeAllAndWait()
+    }
+
     private func makeIsolatedDefaults() throws -> (UserDefaults, String) {
         let suiteName = "SQLiteGraphStudioTests.workspace-restoration.\(UUID().uuidString)"
         return (try #require(UserDefaults(suiteName: suiteName)), suiteName)

@@ -63,11 +63,17 @@ elif name == "otool":
         print(f"Load command {i}\\n          cmd {command}\\n      cmdsize 72\\n         {field} {value} (offset 24)")
 elif name == "hdiutil":
     pathlib.Path(args[-1]).write_text("fixture dmg")
+elif name == "pgrep":
+    if os.environ.get("SGS_TEST_RUNNING_EXE"):
+        print("4242")
+elif name == "ps":
+    if os.environ.get("SGS_TEST_RUNNING_EXE"):
+        print(os.environ["SGS_TEST_RUNNING_EXE"])
 if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
     sys.exit(1)
 ''')
         driver.chmod(0o755)
-        for name in ["swift", "lipo", "otool", "pkill", "codesign", "hdiutil", "xcrun", "spctl"]:
+        for name in ["swift", "lipo", "otool", "pkill", "pgrep", "ps", "codesign", "hdiutil", "xcrun", "spctl"]:
             (self.tools / name).symlink_to(driver)
         self.env = dict(os.environ, PATH=f"{self.tools}:{os.environ['PATH']}",
                         SGS_TEST_LOG=str(self.root / "commands.log"), SGS_TEST_BIN=str(self.bin))
@@ -151,6 +157,20 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.assertEqual(helper.read_text(), "fixture MCP helper")
         self.assertNotIn("pkill", self.log())
         self.assertNotIn("hdiutil", self.log())
+
+    def test_build_refuses_to_replace_a_bundle_used_by_another_session(self):
+        bundle = self.root / "dist/SQLiteGraphStudio.app"
+        bundle.mkdir(parents=True)
+        marker = bundle / "keep-me"
+        marker.write_text("running session")
+        self.env["SGS_TEST_RUNNING_EXE"] = str(bundle / "Contents/MacOS/SQLiteGraphStudio")
+
+        for script, args in [("build_and_run.sh", ["--build-only"]), ("build_app.sh", [])]:
+            result = self.run_script(script, *args)
+            self.assertNotEqual(result.returncode, 0, script)
+            self.assertIn("Cannot replace", result.stderr)
+            self.assertEqual(marker.read_text(), "running session")
+        self.assertNotIn("pkill", self.log())
 
     def test_release_bundles_mcp_helper(self):
         result = self.run_script("build_app.sh")

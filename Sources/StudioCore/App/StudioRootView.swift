@@ -84,7 +84,9 @@ private struct WorkspaceTabBar: View {
             .scrollIndicators(.hidden)
 
             Button {
-                controller.createTab()
+                if controller.tabs.count < WorkspaceTabController.maximumTabs {
+                    controller.createTab()
+                }
             } label: {
                 Image(systemName: "plus")
                     .font(.caption.weight(.bold))
@@ -93,6 +95,7 @@ private struct WorkspaceTabBar: View {
                     .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
             }
             .buttonStyle(.plain)
+            .disabled(controller.tabs.count >= WorkspaceTabController.maximumTabs)
             .help("New workspace tab")
             .accessibilityLabel("New workspace tab")
 

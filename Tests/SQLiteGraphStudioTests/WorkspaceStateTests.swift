@@ -5,6 +5,17 @@ import Testing
 
 @MainActor
 struct WorkspaceStateTests {
+    @Test
+    func sourceReservationsCountWhileAsynchronousOpensAreStillPending() {
+        let controller = WorkspaceTabController(initialSession: AppSession())
+        let tabs = (0..<5).map { _ in controller.createTab(activate: false) }
+        for tab in tabs.prefix(4) { #expect(controller.reserveDocumentOpening(for: tab.id)) }
+        #expect(controller.liveDocumentCount == 4)
+        #expect(!controller.reserveDocumentOpening(for: tabs[4].id))
+        controller.finishDocumentOpening(for: tabs[0].id)
+        #expect(controller.reserveDocumentOpening(for: tabs[4].id))
+    }
+
     /// A defaults domain of this test's own, so a session that persists recents
     /// cannot reach the developer's real ones. Callers clear it with `defer`.
     private func makeIsolatedDefaults() throws -> (UserDefaults, String) {

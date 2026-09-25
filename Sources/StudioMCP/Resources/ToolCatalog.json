@@ -123,7 +123,7 @@
   {
     "name": "studio_open_source",
     "title": "Open Source",
-    "description": "Open one exact local SQLite database, PostgreSQL connection or custom backup, supported schema artifact, migration-set folder, or SQL schema script at source_path. Reuses this coding task's bound workspace when it already shows the same source and migration version; use studio_refresh_source to reload it. A different source opens a new tab, subject to the app's workspace limit. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows and queries do not. A PostgreSQL backup opens for schema exploration, but this bridge cannot read its restored rows. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
+    "description": "Open one exact local SQLite database, PostgreSQL connection or custom backup, supported schema artifact, migration-set folder, or SQL schema script at source_path. Reuses this coding task's bound workspace when it already shows the same source and migration version; use studio_refresh_source to reload it. A different source opens a new tab. Four loaded documents are allowed across all coding tasks; if WORKSPACE_LIMIT_REACHED is returned, close a tab this task no longer needs or ask the user which tab to close, then retry. Do not repeatedly launch the app or retry the same open while capacity is full. To choose from a project folder with several models, call studio_scan_project first and pass the intended candidate's exact source_path; a general project folder is rejected instead of silently choosing one. A migration model is structure-only: graph and schema discovery work, while rows and queries do not. A PostgreSQL backup opens for schema exploration, but this bridge cannot read its restored rows. Optionally set migration_version to replay a migration set through that exact version. Set activate only when this workspace should become foreground.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -176,7 +176,7 @@
   {
     "name": "studio_create_workspace",
     "title": "Create Workspace",
-    "description": "Create a new workspace tab, optionally opening the live source_id already loaded in this coding task's bound tab. It cannot copy a source from another task's workspace. The new tab starts with its own view and stays in the background unless activation is explicitly requested; the task context then binds to the new tab.",
+    "description": "Create a new workspace tab, optionally opening the live source_id already loaded in this coding task's bound tab. It cannot copy a source from another task's workspace. A source-backed tab counts toward the four loaded documents shared across coding tasks; reuse the bound tab when a separate view is unnecessary. The new tab starts with its own view and stays in the background unless activation is explicitly requested; the task context then binds to the new tab.",
     "inputSchema": {
       "type": "object",
       "properties": {
