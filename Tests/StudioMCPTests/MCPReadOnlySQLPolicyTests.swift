@@ -41,8 +41,43 @@ final class MCPReadOnlySQLPolicyTests: XCTestCase {
     }
 
     func testIgnoresForbiddenWordsInsideQuotedValuesAndComments() throws {
-        try MCPReadOnlySQLPolicy.validate("SELECT 'ATTACH; UPDATE'; /* nested /* DELETE */ comment */ 2")
+        try MCPReadOnlySQLPolicy.validate("SELECT 'ATTACH; UPDATE' AS note /* DELETE; DROP */ FROM items; -- INSERT")
         try MCPReadOnlySQLPolicy.validate("SELECT \"DROP\" FROM items")
+    }
+
+    /// Each rejected query hides a disallowed call from a scanner that follows
+    /// one dialect while the other dialect would run it.
+    func testRejectsLexicalFormsWhereSQLiteAndPostgreSQLDisagree() {
+        let rejected = [
+            // PostgreSQL nests comments; SQLite ends this one at the first */.
+            "SELECT 1 /* /* */, custom_side_effect() -- */",
+            // SQLite keeps a CR-only line in the comment; PostgreSQL ends it.
+            "SELECT 1 --\r, pg_sleep(10)\n",
+            "SELECT 1 --\r'\n, custom_side_effect() --'",
+            // PostgreSQL dollar quoting and positional parameters.
+            "SELECT $$'$$, pg_sleep(10) --'",
+            "SELECT $1",
+            // PostgreSQL E-strings end at a different quote than SQLite strings.
+            "SELECT E'\\'', pg_sleep(10) --'",
+            // PostgreSQL reads [ as a subscript or ARRAY constructor, not an identifier.
+            "SELECT ARRAY[pg_read_file('/etc/passwd')]",
+            "SELECT [a'], custom_side_effect(), ['] FROM items",
+            "SELECT tags[1 --] '\n + length(pg_read_file('/etc/passwd'))] --' FROM posts",
+            "SELECT `a'`, custom_side_effect() FROM items",
+            // A combining mark must not merge with the closing quote.
+            "SELECT 'abc'\u{301}, custom_side_effect() --'",
+        ]
+        for sql in rejected {
+            XCTAssertThrowsError(try MCPReadOnlySQLPolicy.validate(sql), "Expected rejection for: \(sql.debugDescription)")
+        }
+    }
+
+    func testAcceptsPortableFormsOfTheRejectedLexicalRegions() throws {
+        try MCPReadOnlySQLPolicy.validate("SELECT tags[1], tags[1:2], ARRAY[1, 2] FROM posts")
+        try MCPReadOnlySQLPolicy.validate("SELECT [order items], `name` FROM [line items]")
+        try MCPReadOnlySQLPolicy.validate("-- Windows line ending\r\nSELECT 1 /**/ FROM items")
+        try MCPReadOnlySQLPolicy.validate("SELECT E'plain', 'C:\\path', regexp_replace(name, '\\d+', '') FROM items")
+        try MCPReadOnlySQLPolicy.validate("SELECT 'café\u{301}' AS name, json_extract(payload, '$.kind') FROM items")
     }
 
     func testRejectsMalformedSQLLexicalRegionsAndOversizedText() {

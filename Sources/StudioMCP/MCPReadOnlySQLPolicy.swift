@@ -197,121 +197,175 @@ public enum MCPReadOnlySQLPolicyError: Error, Equatable, LocalizedError {
 private enum MCPReadOnlySQLToken: Equatable {
     case word(String)
     case quotedIdentifier(String)
-    case symbol(Character)
+    case symbol(Unicode.Scalar)
     case literal
 }
 
+/// The same SQL text is sent to SQLite or PostgreSQL, so every lexical region
+/// the scanner skips must end at the same place in both dialects. Where they
+/// disagree (nested comments, dollar quoting, backslash escapes, `[`), the
+/// scanner rejects the form rather than guess which engine will run it. It
+/// walks Unicode scalars, not grapheme clusters, because both engines see a
+/// quote followed by a combining mark as a quote.
 private struct MCPReadOnlySQLScanner {
-    private let characters: [Character]
+    private let scalars: [Unicode.Scalar]
     private var index = 0
 
     init(_ sql: String) {
-        characters = Array(sql)
+        scalars = Array(sql.unicodeScalars)
     }
 
     mutating func scan() throws -> [MCPReadOnlySQLToken] {
         var tokens: [MCPReadOnlySQLToken] = []
-        while index < characters.count {
-            let character = characters[index]
-            if character.isWhitespace {
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar.properties.isWhitespace {
                 index += 1
-            } else if character == "-", peek(1) == "-" {
-                skipLineComment()
-            } else if character == "/", peek(1) == "*" {
+            } else if scalar == "-", peek(1) == "-" {
+                try skipLineComment()
+            } else if scalar == "/", peek(1) == "*" {
                 try skipBlockComment()
-            } else if character == "'" {
-                try skipStringLiteral()
+            } else if scalar == "'" {
+                let containsBackslash = try skipStringLiteral()
+                if containsBackslash, tokens.last == .word("E") {
+                    throw MCPReadOnlySQLPolicyError.rejected(
+                        "E'...' strings with backslash escapes are not allowed in MCP queries; use a standard string."
+                    )
+                }
                 tokens.append(.literal)
-            } else if character == "\"" || character == "`" || character == "[" {
-                tokens.append(.quotedIdentifier(try readQuotedIdentifier(opening: character)))
-            } else if isIdentifierStart(character) {
+            } else if scalar == "\"" {
+                tokens.append(.quotedIdentifier(try readQuotedIdentifier()))
+            } else if scalar == "`" || scalar == "[" {
+                tokens.append(.quotedIdentifier(try readPlainQuotedIdentifier(opening: scalar)))
+            } else if scalar == "$" {
+                throw MCPReadOnlySQLPolicyError.rejected(
+                    "Dollar-quoted strings and $ parameters are not allowed in MCP queries."
+                )
+            } else if isIdentifierStart(scalar) {
                 tokens.append(.word(readWord()))
             } else {
-                tokens.append(.symbol(character))
+                tokens.append(.symbol(scalar))
                 index += 1
             }
         }
         return tokens
     }
 
-    private func peek(_ distance: Int) -> Character? {
+    private func peek(_ distance: Int) -> Unicode.Scalar? {
         let target = index + distance
-        return characters.indices.contains(target) ? characters[target] : nil
+        return scalars.indices.contains(target) ? scalars[target] : nil
     }
 
-    private func isIdentifierStart(_ character: Character) -> Bool {
-        character == "_" || character.isLetter
+    private func isIdentifierStart(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == "_" || scalar.properties.isAlphabetic
+    }
+
+    private func isNameCharacter(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == "_" || scalar.properties.isAlphabetic || scalar.properties.numericType != nil
     }
 
     private mutating func readWord() -> String {
         let start = index
-        while index < characters.count {
-            let character = characters[index]
-            guard character == "_" || character == "$" || character.isLetter || character.isNumber else { break }
+        while index < scalars.count, isNameCharacter(scalars[index]) || scalars[index] == "$" {
             index += 1
         }
-        return String(characters[start..<index]).uppercased()
+        return String(String.UnicodeScalarView(scalars[start..<index])).uppercased()
     }
 
-    private mutating func skipLineComment() {
+    /// PostgreSQL ends a line comment at CR or LF and SQLite only at LF, so a
+    /// lone CR would leave the rest of that line as code in one dialect only.
+    private mutating func skipLineComment() throws {
         index += 2
-        while index < characters.count, characters[index] != "\n", characters[index] != "\r" {
+        while index < scalars.count, scalars[index] != "\n" {
+            if scalars[index] == "\r" {
+                guard peek(1) == "\n" else {
+                    throw MCPReadOnlySQLPolicyError.rejected("Line comments may not contain a bare carriage return.")
+                }
+                return
+            }
             index += 1
         }
     }
 
+    /// PostgreSQL nests block comments and SQLite does not, so any inner `/*`
+    /// would make the two disagree about where the comment ends.
     private mutating func skipBlockComment() throws {
         index += 2
-        var depth = 1
-        while index < characters.count {
-            if characters[index] == "/", peek(1) == "*" {
-                depth += 1
+        while index < scalars.count {
+            if scalars[index] == "*", peek(1) == "/" {
                 index += 2
-            } else if characters[index] == "*", peek(1) == "/" {
-                depth -= 1
-                index += 2
-                if depth == 0 { return }
-            } else {
-                index += 1
+                return
             }
+            if scalars[index] == "/", peek(1) == "*" {
+                throw MCPReadOnlySQLPolicyError.rejected("Nested block comments are not allowed in MCP queries.")
+            }
+            index += 1
         }
         throw MCPReadOnlySQLPolicyError.malformed("The query contains an unterminated comment.")
     }
 
-    private mutating func skipStringLiteral() throws {
+    /// Returns whether the literal contained a backslash, which only changes
+    /// its extent for PostgreSQL E'...' strings.
+    private mutating func skipStringLiteral() throws -> Bool {
         index += 1
-        while index < characters.count {
-            if characters[index] == "'" {
+        var containsBackslash = false
+        while index < scalars.count {
+            if scalars[index] == "'" {
                 if peek(1) == "'" {
                     index += 2
                 } else {
                     index += 1
-                    return
+                    return containsBackslash
                 }
             } else {
+                if scalars[index] == "\\" { containsBackslash = true }
                 index += 1
             }
         }
         throw MCPReadOnlySQLPolicyError.malformed("The query contains an unterminated string literal.")
     }
 
-    private mutating func readQuotedIdentifier(opening: Character) throws -> String {
-        let closing: Character = opening == "[" ? "]" : opening
+    private mutating func readQuotedIdentifier() throws -> String {
         index += 1
-        var value = ""
-        while index < characters.count {
-            if characters[index] == closing {
-                if opening != "[", peek(1) == closing {
-                    value.append(closing)
+        var value = String.UnicodeScalarView()
+        while index < scalars.count {
+            if scalars[index] == "\"" {
+                if peek(1) == "\"" {
+                    value.append("\"")
                     index += 2
                 } else {
                     index += 1
-                    return value.uppercased()
+                    return String(value).uppercased()
                 }
             } else {
-                value.append(characters[index])
+                value.append(scalars[index])
                 index += 1
             }
+        }
+        throw MCPReadOnlySQLPolicyError.malformed("The query contains an unterminated quoted identifier.")
+    }
+
+    /// SQLite reads `[...]` and backticks as quoted identifiers; PostgreSQL
+    /// reads `[` as an array subscript or ARRAY constructor and the contents as
+    /// code. Content limited to names, numbers and simple separators means the
+    /// same thing in both and cannot hide a call, string or comment.
+    private mutating func readPlainQuotedIdentifier(opening: Unicode.Scalar) throws -> String {
+        let closing: Unicode.Scalar = opening == "[" ? "]" : opening
+        index += 1
+        var value = String.UnicodeScalarView()
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar == closing {
+                index += 1
+                return String(value).uppercased()
+            }
+            guard isNameCharacter(scalar) || scalar == " " || scalar == "," || scalar == "." || scalar == ":" else {
+                throw MCPReadOnlySQLPolicyError.rejected(
+                    "\(opening)...\(closing) may only contain letters, digits, underscores, spaces, commas, periods, or colons in MCP queries; use double-quoted identifiers instead."
+                )
+            }
+            value.append(scalar)
+            index += 1
         }
         throw MCPReadOnlySQLPolicyError.malformed("The query contains an unterminated quoted identifier.")
     }

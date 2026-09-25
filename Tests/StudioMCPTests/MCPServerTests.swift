@@ -81,7 +81,7 @@ final class MCPServerTests: XCTestCase {
 
         let getJobDescription = MCPToolCatalog.tool(named: "studio_get_job")?.json["description"] as? String
         let cancelJobDescription = MCPToolCatalog.tool(named: "studio_cancel_job")?.json["description"] as? String
-        XCTAssertTrue(getJobDescription?.contains("studio_export") == true)
+        XCTAssertTrue(getJobDescription?.contains("Export and speech jobs include progress and errors") == true)
         XCTAssertTrue(getJobDescription?.contains("speech-asset install") == true)
         XCTAssertTrue(cancelJobDescription?.contains("speech-test job") == true)
 
@@ -113,7 +113,7 @@ final class MCPServerTests: XCTestCase {
         let recordGraphProperties = recordGraphSchema?["properties"] as? [String: Any]
         let seeds = recordGraphProperties?["seed_records"] as? [String: Any]
         XCTAssertFalse(recordGraphDescription?.hasPrefix("Unavailable in this app build") == true)
-        XCTAssertTrue(recordGraphDescription?.contains("does not inspect arbitrary seed records") == true)
+        XCTAssertTrue(recordGraphDescription?.contains("arbitrary seeds and multi-hop traversal are unavailable") == true)
         XCTAssertEqual(seeds?["maxItems"] as? Int, 1)
         XCTAssertNil(recordGraphProperties?["max_hops"])
         XCTAssertNil(recordGraphProperties?["node_budget"])
@@ -132,7 +132,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(speechDescription?.contains("completed asset download is not a successful model startup") == true)
         let configureSpeechDescription = MCPToolCatalog.tool(named: "studio_configure_speech")?.json["description"] as? String
         XCTAssertTrue(configureSpeechDescription?.contains("Enable or disable Graph Studio narration") == true)
-        XCTAssertTrue(configureSpeechDescription?.contains("voice, provider, or speed selection") == true)
+        XCTAssertTrue(configureSpeechDescription?.contains("Voice, provider, and speed selection return TOOL_UNAVAILABLE") == true)
 
         let manageSpeechTool = MCPToolCatalog.tool(named: "studio_manage_speech_assets")?.json
         let manageSpeechDescription = manageSpeechTool?["description"] as? String
@@ -270,6 +270,9 @@ final class MCPServerTests: XCTestCase {
             ]) { _, new in new }, "/split_fraction", "type"),
             ("studio_set_camera", appContext.merging([
                 "workspace_id": "workspace:test", "request_id": "camera-half-pan", "pan_x": 12,
+            ]) { _, new in new }, "/pan_y", "dependentRequired"),
+            ("studio_set_camera", appContext.merging([
+                "workspace_id": "workspace:test", "request_id": "camera-no-target",
             ]) { _, new in new }, "/", "anyOf"),
             ("studio_update_workspace", appContext.merging([
                 "workspace_id": "workspace:test", "request_id": "workspace-background",

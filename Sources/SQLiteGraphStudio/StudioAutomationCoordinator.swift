@@ -2257,7 +2257,7 @@ final class StudioAutomationCoordinator {
             }
             if string(args, "activation_intent") == "foreground" || bool(args, "activate") == true {
                 workspaces.activate(tab.id)
-                NSApp.activate(ignoringOtherApps: true)
+                NSApp?.activate(ignoringOtherApps: true)
             }
             presentations[state.id] = state
             currentPresentationIDByWorkspace[tab.id] = state.id

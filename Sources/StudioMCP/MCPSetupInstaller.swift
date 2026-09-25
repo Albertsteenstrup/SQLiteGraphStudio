@@ -1551,9 +1551,25 @@ public enum MCPSetupInstaller {
         return String(value.dropFirst().dropLast())
     }
 
+    /// TOML basic strings share most escapes with JSON but not `\/`, which
+    /// JSONEncoder emits for every slash and TOML parsers reject.
     private static func tomlBasicString(_ value: String) -> String {
-        let data = try? JSONEncoder().encode(value)
-        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+        var escaped = String.UnicodeScalarView()
+        escaped.append("\"")
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\"": escaped.append(contentsOf: "\\\"".unicodeScalars)
+            case "\\": escaped.append(contentsOf: "\\\\".unicodeScalars)
+            case "\n": escaped.append(contentsOf: "\\n".unicodeScalars)
+            case "\r": escaped.append(contentsOf: "\\r".unicodeScalars)
+            case "\t": escaped.append(contentsOf: "\\t".unicodeScalars)
+            case _ where scalar.value < 0x20 || scalar.value == 0x7F:
+                escaped.append(contentsOf: String(format: "\\u%04X", scalar.value).unicodeScalars)
+            default: escaped.append(scalar)
+            }
+        }
+        escaped.append("\"")
+        return String(escaped)
     }
 
     private static func ensureDirectory(_ directory: URL, under home: URL, fileManager: FileManager) throws {
@@ -1778,36 +1794,45 @@ public enum MCPSetupInstaller {
         return arguments.isEmpty
     }
 
+    /// Replaces the machine-wide client locations: package-manager prefixes
+    /// from the process environment, Homebrew, /usr/local and /Applications.
+    /// Tests set it so a CLI installed on the host cannot leak into results
+    /// that should depend only on the injected search path and home directory.
+    @TaskLocal static var hostSearchDirectoriesOverride: [String]?
+
     private static func findExecutable(named name: String, searchPath: String, homeDirectory: URL) -> String? {
+        let isCodex = name == MCPSetupClient.codex.rawValue
+        let hostOverride = hostSearchDirectoriesOverride
         var directories = searchPath.split(separator: ":", omittingEmptySubsequences: true).map(String.init)
-        if let npmPrefix = ProcessInfo.processInfo.environment["NPM_CONFIG_PREFIX"], !npmPrefix.isEmpty {
-            directories.append(URL(fileURLWithPath: npmPrefix, isDirectory: true).appendingPathComponent("bin").path)
-        }
-        if let npmPrefix = ProcessInfo.processInfo.environment["npm_config_prefix"], !npmPrefix.isEmpty {
-            directories.append(URL(fileURLWithPath: npmPrefix, isDirectory: true).appendingPathComponent("bin").path)
-        }
-        if let nodeBin = ProcessInfo.processInfo.environment["NVM_BIN"], !nodeBin.isEmpty {
-            directories.append(nodeBin)
-        }
-        if let voltaHome = ProcessInfo.processInfo.environment["VOLTA_HOME"], !voltaHome.isEmpty {
-            directories.append(URL(fileURLWithPath: voltaHome, isDirectory: true).appendingPathComponent("bin").path)
-        }
-        if let asdfData = ProcessInfo.processInfo.environment["ASDF_DATA_DIR"], !asdfData.isEmpty {
-            directories.append(URL(fileURLWithPath: asdfData, isDirectory: true).appendingPathComponent("shims").path)
+        if hostOverride == nil {
+            let environment = ProcessInfo.processInfo.environment
+            if let npmPrefix = environment["NPM_CONFIG_PREFIX"], !npmPrefix.isEmpty {
+                directories.append(URL(fileURLWithPath: npmPrefix, isDirectory: true).appendingPathComponent("bin").path)
+            }
+            if let npmPrefix = environment["npm_config_prefix"], !npmPrefix.isEmpty {
+                directories.append(URL(fileURLWithPath: npmPrefix, isDirectory: true).appendingPathComponent("bin").path)
+            }
+            if let nodeBin = environment["NVM_BIN"], !nodeBin.isEmpty {
+                directories.append(nodeBin)
+            }
+            if let voltaHome = environment["VOLTA_HOME"], !voltaHome.isEmpty {
+                directories.append(URL(fileURLWithPath: voltaHome, isDirectory: true).appendingPathComponent("bin").path)
+            }
+            if let asdfData = environment["ASDF_DATA_DIR"], !asdfData.isEmpty {
+                directories.append(URL(fileURLWithPath: asdfData, isDirectory: true).appendingPathComponent("shims").path)
+            }
         }
         directories.append(contentsOf: [
             homeDirectory.appendingPathComponent(".local/bin", isDirectory: true).path,
             homeDirectory.appendingPathComponent(".npm-global/bin", isDirectory: true).path,
             homeDirectory.appendingPathComponent(".volta/bin", isDirectory: true).path,
             homeDirectory.appendingPathComponent(".asdf/shims", isDirectory: true).path,
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
         ])
-        if name == MCPSetupClient.codex.rawValue {
-            directories.append(contentsOf: [
-                "/Applications/ChatGPT.app/Contents/Resources",
-                homeDirectory.appendingPathComponent("Applications/ChatGPT.app/Contents/Resources").path,
-            ])
+        directories.append(contentsOf: hostOverride ?? (
+            ["/opt/homebrew/bin", "/usr/local/bin"] + (isCodex ? ["/Applications/ChatGPT.app/Contents/Resources"] : [])
+        ))
+        if isCodex {
+            directories.append(homeDirectory.appendingPathComponent("Applications/ChatGPT.app/Contents/Resources").path)
         }
 
         for directory in directories {

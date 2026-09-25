@@ -47,14 +47,21 @@ final class MCPSetupInstallerTests: XCTestCase {
         ])
     }
 
-    func testReportsMissingClientWithoutAttemptingConfiguration() {
+    func testReportsMissingClientWithoutAttemptingConfiguration() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
         let runner = FakeCommandRunner(responses: [])
-        let outcomes = MCPSetupInstaller.install(
-            clients: [.claude],
-            executablePath: "/path/StudioMCP",
-            searchPath: "/definitely/missing",
-            runner: runner
-        )
+        // Without the override, a claude CLI in Homebrew, /usr/local or an
+        // npm/nvm prefix on the host running the tests would be found.
+        let outcomes = MCPSetupInstaller.$hostSearchDirectoriesOverride.withValue([]) {
+            MCPSetupInstaller.install(
+                clients: [.claude],
+                executablePath: "/path/StudioMCP",
+                searchPath: "/definitely/missing",
+                homeDirectory: home,
+                runner: runner
+            )
+        }
         XCTAssertEqual(outcomes.first?.state, .unavailable)
         XCTAssertTrue(runner.invocations.isEmpty)
     }
@@ -250,8 +257,8 @@ final class MCPSetupInstallerTests: XCTestCase {
         let runner = FakeCommandRunner(responses: [
             MCPSetupCommandResult(status: 0, stdout: "codex 0.1"),
             MCPSetupCommandResult(status: 0, stdout: "{\"command\":\"\(helper.path)\",\"args\":[]}"),
-            MCPSetupCommandResult(status: 1, stderr: "not configured"),
             MCPSetupCommandResult(status: 0, stdout: "claude 1.2"),
+            MCPSetupCommandResult(status: 1, stderr: "not configured"),
         ])
         let preview = MCPSetupInstaller.previewFromAppBundle(
             appBundle: appBundle,
