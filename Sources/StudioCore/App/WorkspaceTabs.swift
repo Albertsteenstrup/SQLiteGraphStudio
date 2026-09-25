@@ -191,13 +191,18 @@ public final class WorkspaceTabController {
     }
 
     /// Opens each incoming document in its own tab. The first new tab remains active.
+    /// A schema review or preview instead replaces the tab showing the same file,
+    /// or the earlier artifact of its kind from the same named agent session, so
+    /// repeated agent runs update one tab rather than piling up new ones.
     @discardableResult
     public func openDocuments(_ urls: [URL], activate shouldActivate: Bool = true) async -> [WorkspaceTab] {
         guard !urls.isEmpty else { return [] }
         var opened: [WorkspaceTab] = []
         for url in urls {
             let normalized = url.resolvingSymlinksInPath().standardizedFileURL
-            if let existing = tabs.first(where: { tab in
+            let kind = WorkspaceTabKind.inferred(for: url)
+            let replaced = kind == .comparison || kind == .preview ? reviewTab(replacedBy: normalized, kind: kind) : nil
+            if replaced == nil, let existing = tabs.first(where: { tab in
                 tab.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == normalized ||
                     tab.session.historicalExplanationURL?.resolvingSymlinksInPath().standardizedFileURL == normalized ||
                     tab.deferredRestoration?.sourceDocumentPath == normalized.path
@@ -206,11 +211,11 @@ public final class WorkspaceTabController {
                 opened.append(existing)
                 continue
             }
-            guard liveDocumentCount < Self.maximumLiveDocuments else {
+            guard replaced != nil || liveDocumentCount < Self.maximumLiveDocuments else {
                 showDocumentLimit()
                 break
             }
-            guard tabs.count < Self.maximumTabs else {
+            guard replaced != nil || tabs.count < Self.maximumTabs else {
                 activeSession?.presentedError = SQLiteUserError(
                     kind: .busy,
                     message: "Graph Studio has too many open tabs.",
@@ -218,7 +223,16 @@ public final class WorkspaceTabController {
                 )
                 break
             }
-            let tab = createTab(kind: .inferred(for: url), activate: false)
+            let tab = createTab(kind: kind, activate: false)
+            if let replaced {
+                // Take the old tab's place before closing it, so closing the last
+                // tab does not leave an empty workspace behind.
+                if let index = tabs.firstIndex(where: { $0.id == replaced.id }) {
+                    tabs.insert(tabs.removeLast(), at: index)
+                }
+                if activeTabID == replaced.id { activeTabID = tab.id }
+                await closeAndWait(replaced.id)
+            }
             guard reserveDocumentOpening(for: tab.id) else {
                 await closeAndWait(tab.id)
                 showDocumentLimit()
@@ -230,6 +244,23 @@ public final class WorkspaceTabController {
             opened.append(tab)
         }
         return opened
+    }
+
+    /// The open review or preview tab that `url` supersedes: the same file, or an
+    /// artifact of the same kind from the same agent and named session. Artifacts
+    /// without a session name only replace their own file, and other sessions
+    /// always get their own tab.
+    private func reviewTab(replacedBy url: URL, kind: WorkspaceTabKind) -> WorkspaceTab? {
+        let author = SchemaReviewDocument.author(at: url)
+        return tabs.first { tab in
+            guard tab.kind == kind else { return false }
+            if tab.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == url ||
+                tab.deferredRestoration?.sourceDocumentPath == url.path {
+                return true
+            }
+            guard let author, author.session != nil else { return false }
+            return tab.session.schemaReview?.author == author
+        }
     }
 
     /// Removes a tab and waits for its database and query work to close before returning.

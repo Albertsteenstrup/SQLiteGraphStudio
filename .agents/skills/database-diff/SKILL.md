@@ -1,6 +1,6 @@
 ---
 name: database-diff
-description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite Graph Studio for a PR, a local integration, or two database versions. Use after the existing code review finishes when database definitions or migrations changed.
+description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite Graph Studio for a PR, a local integration, or two database versions. Use only when the user explicitly asks for a visual schema diff; never start it automatically after a code review, push, fetch, or merge.
 ---
 
 # Database diff
@@ -10,6 +10,10 @@ SQLite Graph Studio. The app shows added/removed tables, field changes, and
 foreign-key changes in both the graph and a table comparison. This is schema
 evidence, not proof that data migrations or deployment are safe.
 
+Run this only when the user asks for it. Each run can create disposable databases
+and open Graph Studio, and many coding sessions on one machine may be reviewing at
+once, so never trigger it on your own after a review, push, fetch, or merge.
+
 ## Choose the comparison
 
 Keep exact immutable before/after revisions and explain their meaning:
@@ -18,12 +22,12 @@ Keep exact immutable before/after revisions and explain their meaning:
   when reviewing the resulting integration instead.
 - Push: actual remote main SHA to the exact outgoing SHA.
 - Local fetch/integrate: current local SHA to the fetched incoming SHA before a
-  fast-forward, or the final resolved tree for a merge. Git's pre-merge-commit hook
-  does not cover fast-forward merges; run this skill explicitly after code review.
+  fast-forward, or the final resolved tree for a merge.
 - Two files: label the selected before and after versions by filename.
 
-Run the repository's existing code-review rounds first. Do not emit a schema
-review pass or launch the visual follow-up until the first review has completed.
+When the user has asked for a diff, run the repository's existing code-review
+rounds first. Do not emit a schema review pass or launch the visual follow-up until
+the first review has completed.
 Use the repository's database-review hook/adapter when installed; preserve its
 exact-tree receipt and artifact hash checks. A new head, base, merge resolution,
 or artifact invalidates that receipt. Never mark an unseen artifact as presented.
@@ -49,7 +53,9 @@ Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`
 `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
 `--session` takes the human-readable name of the current chat or session. The
 review header then leads with the tool's mark, for example `Claude · Table diff
-visualization clarity`. Omit `--session` when you don't know the session's name,
+visualization clarity`. Graph Studio replaces the tab of an earlier review from the
+same tool and session, so an updated diff does not open another tab; reviews from
+other sessions open in their own tabs. Omit `--session` when you don't know the session's name,
 and omit both when you may not disclose them; never invent either. The session
 name travels with the review file, so leave it out when it holds anything that
 should not be shared. This records where the review came from, not an approval.

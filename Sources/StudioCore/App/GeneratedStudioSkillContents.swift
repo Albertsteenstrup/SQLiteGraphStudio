@@ -254,7 +254,7 @@ extension StudioSkills {
     static let databaseDiffContent = #"""
     ---
     name: database-diff
-    description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite Graph Studio for a PR, a local integration, or two database versions. Use after the existing code review finishes when database definitions or migrations changed.
+    description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite Graph Studio for a PR, a local integration, or two database versions. Use only when the user explicitly asks for a visual schema diff; never start it automatically after a code review, push, fetch, or merge.
     ---
 
     # Database diff
@@ -264,6 +264,10 @@ extension StudioSkills {
     foreign-key changes in both the graph and a table comparison. This is schema
     evidence, not proof that data migrations or deployment are safe.
 
+    Run this only when the user asks for it. Each run can create disposable databases
+    and open Graph Studio, and many coding sessions on one machine may be reviewing at
+    once, so never trigger it on your own after a review, push, fetch, or merge.
+
     ## Choose the comparison
 
     Keep exact immutable before/after revisions and explain their meaning:
@@ -272,12 +276,12 @@ extension StudioSkills {
       when reviewing the resulting integration instead.
     - Push: actual remote main SHA to the exact outgoing SHA.
     - Local fetch/integrate: current local SHA to the fetched incoming SHA before a
-      fast-forward, or the final resolved tree for a merge. Git's pre-merge-commit hook
-      does not cover fast-forward merges; run this skill explicitly after code review.
+      fast-forward, or the final resolved tree for a merge.
     - Two files: label the selected before and after versions by filename.
 
-    Run the repository's existing code-review rounds first. Do not emit a schema
-    review pass or launch the visual follow-up until the first review has completed.
+    When the user has asked for a diff, run the repository's existing code-review
+    rounds first. Do not emit a schema review pass or launch the visual follow-up until
+    the first review has completed.
     Use the repository's database-review hook/adapter when installed; preserve its
     exact-tree receipt and artifact hash checks. A new head, base, merge resolution,
     or artifact invalidates that receipt. Never mark an unseen artifact as presented.
@@ -303,7 +307,9 @@ extension StudioSkills {
     `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
     `--session` takes the human-readable name of the current chat or session. The
     review header then leads with the tool's mark, for example `Claude · Table diff
-    visualization clarity`. Omit `--session` when you don't know the session's name,
+    visualization clarity`. Graph Studio replaces the tab of an earlier review from the
+    same tool and session, so an updated diff does not open another tab; reviews from
+    other sessions open in their own tabs. Omit `--session` when you don't know the session's name,
     and omit both when you may not disclose them; never invent either. The session
     name travels with the review file, so leave it out when it holds anything that
     should not be shared. This records where the review came from, not an approval.
@@ -356,7 +362,7 @@ extension StudioSkills {
     static let databasePreviewContent = #"""
     ---
     name: database-preview
-    description: Show proposed SQLite or PostgreSQL table, field and relation changes in SQLite Graph Studio before implementing them. Use a compact change plan and cached schema metadata for quick design iterations without executing migrations.
+    description: Show proposed SQLite or PostgreSQL table, field and relation changes in SQLite Graph Studio before implementing them. Use only when the user explicitly asks to preview schema changes visually; uses a compact change plan and cached schema metadata without executing migrations.
     ---
 
     # Database preview
@@ -365,6 +371,11 @@ extension StudioSkills {
     Create a `.sgpreview` from one captured baseline and a small JSON plan. The app
     uses the same blue/red borders, field counts, New/Removed badges and relation
     diffs as schema review, with a persistent **Proposed · not applied** label.
+
+    Run this only when the user asks for a visual preview; it opens Graph Studio, and
+    many coding sessions on one machine may be working at once. Graph Studio replaces
+    the tab of an earlier preview from the same tool and `--session`, so iterating on a
+    plan updates one tab instead of opening another.
 
     ## Keep iterations cheap
 
@@ -487,9 +498,9 @@ extension StudioSkills {
     """#
 
     static let knownManagedHashes: [String: Set<String>] = [
-        "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877"],
+        "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877", "92a1bc97cc3b7e6561a663cc9aa615b1901ceadb88da47c92f38ba9b811b9419"],
         "database-explore": ["b9d635243780070b8083dd1d0b1305a3f474f67e70f537de649f5dd52191935d", "2d3fd74135fd38d8c9442220f0e9afc1061c5f542b41d762be059cc4ab669fb6", "580f50bbb7157869e4f973c2efba2149978e67d43c1b4a3416ac41444a2d845a", "f3d00e24454a36b4c77d19918ebe0dd8cfd6cfdbea7b6fb8aa263a9639b0c89f", "421cbceee6bc59db488d17a3973b7c98baf4701d264e4dbd8d639219b7f35bc6", "35cbf93c3fbd0ae880d95ee3e75b841cddaceb0f18609d32a0cb74a8e9609954", "ba6441b6732a7531e37ad37fcb98991ae2e38a5f3e78994587777e1148ee9a17"],
-        "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388"],
+        "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388", "885b33b70f2f31322a8723ab822e1cb92fc58b8546d05acf8cfb5308ff823063"],
         "graph-clusters": ["0a7091b32ae03d1b229e4581ae174404493eaaeaea100ab9fea5513672d0a68c", "ee97e6f72efb08efc52b15dcab494524559b9ed92c9ee6eacca42303fc6db8b1", "a5955fb18a7f27d77b2a926a22a101ee24769ebf8ca20fe2a3b12f50459d5f26", "217cda60b500d45d9430947345f92a9fa7189beb9050e51791cc519f0b95c5c0", "5cac1ae166a7ac30a5b925da54c58ae4b7906648ab4ec0d3e35925a4d3d93f49"],
         "schema-descriptions": ["1b0514eecb66d32e85f34e3c5f7bde441a39971dd2e1499031cd1ec7482c430b", "5597c5dc512b3d28027c15c40ed1aefb5ee6c71175ac4a6531bdca5842594cee"],
         "story-flows": ["2dec3cc7b479343a6f2b40547bcddc5390f6435762046cf8ccfd08bf4075abe1", "4771c1c0fc2389911a97ed8e99dfd3858b055b8bd2b0d43bed4be2d84f6132db", "98af44e239d2326b74a1b2c94fdfb3912be6b21be6aba413709534f6910b5957"],

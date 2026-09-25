@@ -353,6 +353,47 @@ struct WorkspaceStateTests {
     }
 
     @Test
+    func agentReviewsReplaceTheirSessionsTabAndOtherSessionsGetTheirOwn() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("review-tabs-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let empty = SchemaReviewSnapshot(engine: "sqlite", tables: [], relations: [])
+        func review(_ name: String, title: String, session: String?) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            let author = SchemaReviewDocument.Author(tool: "claude", session: session)
+            try SchemaReviewDocument(title: title, baseRef: "a", headRef: "b", before: empty, after: empty, author: author)
+                .write(to: url)
+            return url
+        }
+        let controller = WorkspaceTabController(initialSession: AppSession(databaseService: DatabaseService()))
+        let workspaceTabID = controller.activeTabID
+
+        let first = try #require(await controller.openDocument(try review("a1.sgreview", title: "A v1", session: "Session A")))
+        let other = try #require(await controller.openDocument(try review("b1.sgreview", title: "B v1", session: "Session B")))
+        #expect(controller.tabs.map(\.id) == [workspaceTabID, first.id, other.id])
+
+        // An updated review from the same session, even at a new path, takes over its tab's place.
+        controller.activate(first.id)
+        let updated = try #require(await controller.openDocument(try review("a2.sgreview", title: "A v2", session: "Session A")))
+        #expect(updated.id != first.id)
+        #expect(controller.tabs.map(\.id) == [workspaceTabID, updated.id, other.id])
+        #expect(controller.activeTabID == updated.id)
+        #expect(updated.session.schemaReview?.title == "A v2")
+        #expect(other.session.schemaReview?.title == "B v1")
+
+        // Rewriting the same file reloads it instead of just re-activating stale content.
+        let rewritten = try review("b1.sgreview", title: "B v2", session: "Session B")
+        let reloaded = try #require(await controller.openDocument(rewritten))
+        #expect(controller.tabs.map(\.id) == [workspaceTabID, updated.id, reloaded.id])
+        #expect(reloaded.session.schemaReview?.title == "B v2")
+
+        // Without a session name there is no identity to match, so only the same file is replaced.
+        let unnamed = try #require(await controller.openDocument(try review("c1.sgreview", title: "C v1", session: nil)))
+        let secondUnnamed = try #require(await controller.openDocument(try review("c2.sgreview", title: "C v2", session: nil)))
+        #expect(controller.tabs.map(\.id) == [workspaceTabID, updated.id, reloaded.id, unnamed.id, secondUnnamed.id])
+    }
+
+    @Test
     func openingSeveralDocumentsCreatesIndependentTabsAndKeepsFirstActive() async {
         let controller = WorkspaceTabController(initialSession: AppSession(databaseService: DatabaseService()))
         let initialTabID = controller.activeTabID

@@ -228,6 +228,16 @@ public struct SchemaReviewDocument: Codable, Sendable {
         try value.validate()
         return value
     }
+
+    /// Reads only the author of a saved review or preview, without building or
+    /// validating its snapshots. Nil when the file is unreadable or has no author.
+    public static func author(at url: URL) -> Author? {
+        struct AuthorOnly: Decodable { var author: Author? }
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 64 * 1024 * 1024,
+              let data = try? Data(contentsOf: url)
+        else { return nil }
+        return (try? JSONDecoder().decode(AuthorOnly.self, from: data))?.author
+    }
     public var changes: [SchemaTableChange] {
         let old = Dictionary(uniqueKeysWithValues: before.tables.map { ($0.id, $0) })
         let new = Dictionary(uniqueKeysWithValues: after.tables.map { ($0.id, $0) })
