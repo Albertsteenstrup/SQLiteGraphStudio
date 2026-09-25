@@ -1436,10 +1436,13 @@ public final class AppSession {
         graphGrouping.group(for: tableName)?.colorHex
     }
 
-    public func refreshSchema() {
-        if schemaReview?.proposal != nil { refreshSchemaPreviewIfChanged(force: true); return }
-        if schemaReview != nil, let databaseURL { Task { await openSchemaReview(url: databaseURL) }; return }
-        guard let target = databaseTarget else { return }
+    /// Returns the task that reloads the schema, or nil when the refresh
+    /// finishes synchronously or there is nothing open to refresh.
+    @discardableResult
+    public func refreshSchema() -> Task<Void, Never>? {
+        if schemaReview?.proposal != nil { refreshSchemaPreviewIfChanged(force: true); return nil }
+        if schemaReview != nil, let databaseURL { return Task { await openSchemaReview(url: databaseURL) } }
+        guard let target = databaseTarget else { return nil }
         let baseline = SchemaRefreshSnapshot(
             descriptors: tableDescriptors,
             graph: graph,
@@ -1448,13 +1451,13 @@ public final class AppSession {
         persistCurrentGraphLayout()
         switch target {
         case .sqlite(let databaseURL):
-            Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
+            return Task { await openDatabase(url: databaseURL, changeBaseline: baseline) }
         case .migrations(let url):
-            Task { await openMigrations(at: url, version: selectedMigrationVersion, changeBaseline: baseline) }
+            return Task { await openMigrations(at: url, version: selectedMigrationVersion, changeBaseline: baseline) }
         case .postgres, .postgresDump:
             let generation = openGeneration
             let documentURL = databaseURL
-            Task {
+            return Task {
                 guard openGeneration == generation, databaseTarget == target, databaseURL == documentURL else { return }
                 isRefreshing = true
                 defer {

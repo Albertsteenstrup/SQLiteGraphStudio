@@ -184,7 +184,8 @@ struct GraphCanvasPerformanceTests {
         }
         #expect(hitChecksum > 0)
 
-        let publisher = GraphInputPublisher<GraphPointerSample>(interval: .milliseconds(4))
+        let scheduler = ManualPublicationScheduler()
+        let publisher = GraphInputPublisher<GraphPointerSample>(interval: .milliseconds(4), scheduler: scheduler)
         var delivered: [GraphPointerSample] = []
         var publicationTimes: [Double] = []
         var enqueuedSamples = 0
@@ -205,10 +206,7 @@ struct GraphCanvasPerformanceTests {
             }
             // No suspension occurs inside the burst, so only its newest sample can publish.
             #expect(delivered.count == expectedCount - 1)
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while delivered.count < expectedCount, ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(2))
-            }
+            scheduler.elapse()
             #expect(delivered.count == expectedCount)
             #expect(delivered.last == GraphPointerSample(point: finalPoint, geometryRevision: snapshot.revision))
         }
@@ -222,7 +220,7 @@ struct GraphCanvasPerformanceTests {
         #expect(deliveredQueries == 13)
         publisher.enqueue(GraphPointerSample(point: nil, geometryRevision: snapshot.revision + 1), publish: receive)
         publisher.cancel()
-        try await Task.sleep(for: .milliseconds(16))
+        scheduler.elapse()
         #expect(deliveredQueries == 13)
 
         report([

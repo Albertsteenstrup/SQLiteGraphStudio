@@ -18,15 +18,11 @@ struct AppSessionSmokeTests {
         await tab.reload()
         #expect(tab.chunk.totalRowCount == 8)
 
-        tab.commitEdit(row: 0, columnName: "name", rawValue: "Smoke Test Author")
-        try await waitFor {
-            tab.row(at: 0)?.values[1] == .text("Smoke Test Author")
-        }
+        await tab.commitEdit(row: 0, columnName: "name", rawValue: "Smoke Test Author")?.value
+        #expect(tab.row(at: 0)?.values[1] == .text("Smoke Test Author"))
 
-        tab.commitEdit(row: 0, columnName: "email", rawValue: "author2@example.com")
-        try await waitFor {
-            (tab.inlineErrorMessage ?? "").contains("UNIQUE")
-        }
+        await tab.commitEdit(row: 0, columnName: "email", rawValue: "author2@example.com")?.value
+        #expect((tab.inlineErrorMessage ?? "").contains("UNIQUE"))
     }
 
     @Test
@@ -264,12 +260,10 @@ struct AppSessionSmokeTests {
         )
         try JSONEncoder().encode(updatedSidecar).write(to: sidecarURL, options: .atomic)
 
-        session.refreshSchema()
+        await session.refreshSchema()?.value
 
-        try await waitFor {
-            session.tableDescription(for: "authors") == "Updated author note."
-                && session.refreshToast?.message == "Updated: notes changed"
-        }
+        #expect(session.tableDescription(for: "authors") == "Updated author note.")
+        #expect(session.refreshToast?.message == "Updated: notes changed")
     }
 
     @Test
@@ -286,9 +280,9 @@ struct AppSessionSmokeTests {
         #expect(session.queryWorkspace.activeQuery?.sqlText.contains("LIMIT 10") == true)
         #expect(session.queryWorkspace.activeQuery?.title == "authors Top 10")
 
-        try await waitFor {
-            (session.queryWorkspace.activeQuery?.result.rows.count ?? 0) > 0
-        }
+        let queryID = try #require(session.queryWorkspace.activeQuery?.id)
+        await session.queryWorkspace.executionTask(for: queryID)?.value
+        #expect((session.queryWorkspace.activeQuery?.result.rows.count ?? 0) > 0)
     }
 
     @Test
@@ -308,21 +302,5 @@ struct AppSessionSmokeTests {
         }
 
         userDefaults.removePersistentDomain(forName: defaultsSuiteName)
-    }
-
-    private func waitFor(
-        timeoutNanoseconds: UInt64 = 2_000_000_000,
-        stepNanoseconds: UInt64 = 50_000_000,
-        condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
-        while DispatchTime.now().uptimeNanoseconds < deadline {
-            if condition() {
-                return
-            }
-            try await Task.sleep(nanoseconds: stepNanoseconds)
-        }
-        Issue.record("Timed out waiting for condition")
-        throw CancellationError()
     }
 }

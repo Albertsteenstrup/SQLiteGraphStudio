@@ -63,92 +63,107 @@ struct GraphInputPublisherTests {
     }
 
     @MainActor
-    @Test func schedulerPublishesLatestValuesWhileInputContinues() async {
-        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(30))
+    @Test func schedulerPublishesLatestValuesWhileInputContinues() {
+        let scheduler = ManualPublicationScheduler()
+        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(30), scheduler: scheduler)
         var latestEnqueued = 0
         var deliveries: [(value: Int, latestAtDelivery: Int)] = []
-        let producer = Task { @MainActor in
-            while !Task.isCancelled {
+        for _ in 0..<3 {
+            for _ in 0..<6 {
                 latestEnqueued += 1
                 publisher.enqueue(latestEnqueued) { value in
                     deliveries.append((value, latestEnqueued))
                 }
-                try? await Task.sleep(for: .milliseconds(5))
+                // Continuing input keeps the one pending window instead of
+                // postponing it, which a trailing debounce would do.
+                #expect(scheduler.openWindowCount == 1)
             }
-        }
-        defer {
-            producer.cancel()
-            publisher.cancel()
+            scheduler.elapse()
         }
 
-        // The producer deliberately stays active until we observe delivery.
-        // A trailing debounce would time out instead of publishing two samples.
-        let publishedDuringStream = await waitForPublication { deliveries.count >= 2 }
-        producer.cancel()
-        await producer.value
-        publisher.cancel()
-
-        #expect(publishedDuringStream)
-        #expect(deliveries.count >= 2)
+        #expect(deliveries.map(\.value) == [6, 12, 18])
         #expect(deliveries.allSatisfy { $0.value == $0.latestAtDelivery })
-        #expect(Set(deliveries.map(\.value)).count == deliveries.count)
+        #expect(scheduler.requestedIntervals == Array(repeating: .milliseconds(30), count: 3))
     }
 
     @MainActor
-    @Test func schedulerFlushPublishesFinalValueOnceAndCancelsPendingDelivery() async throws {
-        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20))
-        defer { publisher.cancel() }
+    @Test func schedulerFlushPublishesFinalValueOnceAndCancelsPendingDelivery() {
+        let scheduler = ManualPublicationScheduler()
+        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20), scheduler: scheduler)
         var received: [Int] = []
         publisher.enqueue(1) { received.append($0) }
         publisher.enqueue(2) { received.append($0) }
         publisher.flush(3) { received.append($0) }
         publisher.flush(3) { received.append($0) }
         #expect(received == [3])
+        #expect(scheduler.openWindowCount == 0)
 
-        // Allow several complete publication windows for any stale task to run.
-        try await Task.sleep(for: .milliseconds(120))
+        scheduler.elapse()
         #expect(received == [3])
     }
 
     @MainActor
-    @Test func schedulerCancelSuppressesPendingCallbackAndAllowsLaterInput() async throws {
-        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20))
-        defer { publisher.cancel() }
+    @Test func schedulerCancelSuppressesPendingCallbackAndAllowsLaterInput() {
+        let scheduler = ManualPublicationScheduler()
+        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20), scheduler: scheduler)
         var received: [Int] = []
         publisher.enqueue(1) { received.append($0) }
         publisher.cancel()
-        try await Task.sleep(for: .milliseconds(120))
+        #expect(scheduler.openWindowCount == 0)
+        scheduler.elapse()
         #expect(received.isEmpty)
 
         publisher.enqueue(2) { received.append($0) }
-        let resumed = await waitForPublication { received == [2] }
-        #expect(resumed)
+        #expect(scheduler.openWindowCount == 1)
+        scheduler.elapse()
         #expect(received == [2])
     }
 
     @MainActor
-    @Test func schedulerDoesNotPublishUnchangedSamples() async throws {
-        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20))
-        defer { publisher.cancel() }
+    @Test func schedulerDoesNotPublishUnchangedSamples() {
+        let scheduler = ManualPublicationScheduler()
+        let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20), scheduler: scheduler)
         var received: [Int] = []
         publisher.enqueue(7) { received.append($0) }
-        let firstDelivered = await waitForPublication { received == [7] }
-        #expect(firstDelivered)
+        scheduler.elapse()
+        #expect(received == [7])
 
         for _ in 0..<100 {
             publisher.enqueue(7) { received.append($0) }
         }
-        try await Task.sleep(for: .milliseconds(120))
+        #expect(scheduler.openWindowCount == 0)
+        scheduler.elapse()
         #expect(received == [7])
     }
 
     @MainActor
-    private func waitForPublication(_ condition: @MainActor () -> Bool) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(3))
-        while !condition(), clock.now < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(5))
+    @Test func publisherReleasesItsPendingWindowOnDeinit() {
+        let scheduler = ManualPublicationScheduler()
+        var received: [Int] = []
+        do {
+            let publisher = GraphInputPublisher<Int>(interval: .milliseconds(20), scheduler: scheduler)
+            publisher.enqueue(1) { received.append($0) }
+            #expect(scheduler.openWindowCount == 1)
         }
-        return condition()
+        #expect(scheduler.openWindowCount == 0)
+        scheduler.elapse()
+        #expect(received.isEmpty)
+    }
+
+    /// The app's scheduler, awaited to completion rather than polled against a
+    /// deadline, so a busy main actor delays the test but cannot fail it. No
+    /// time limit: the full suite has kept the main actor busy for over a minute.
+    @MainActor
+    @Test func taskSchedulerDeliversAfterItsIntervalUnlessCancelled() async {
+        let scheduler = TaskPublicationScheduler()
+        var delivered: [String] = []
+        scheduler.schedule(after: .milliseconds(1)) { delivered.append("cancelled") }.cancel()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            _ = scheduler.schedule(after: .milliseconds(1)) {
+                delivered.append("delivered")
+                continuation.resume()
+            }
+        }
+        #expect(delivered == ["delivered"])
     }
 }

@@ -66,21 +66,19 @@ struct QueryWorkspaceTests {
             workspace.loadSavedQueries(for: url)
             workspace.updateActiveTitle("Authors")
             workspace.updateActiveSQL("SELECT id, name FROM authors ORDER BY id LIMIT 2")
-            workspace.run()
+            await workspace.run()?.value
 
-            try await waitFor {
-                workspace.history.count == 1 && (workspace.activeQuery?.result.rows.count ?? 0) == 2
-            }
+            #expect(workspace.history.count == 1)
+            #expect(workspace.activeQuery?.result.rows.count == 2)
 
             let entry = try #require(workspace.history.first)
             #expect(entry.title == "Authors")
             #expect(entry.rowCount == 2)
             #expect(entry.succeeded)
 
-            workspace.explain()
-            try await waitFor {
-                workspace.activeQuery?.selectedOutput == .plan && !(workspace.activeQuery?.explainPlan.isEmpty ?? true)
-            }
+            await workspace.explain()?.value
+            #expect(workspace.activeQuery?.selectedOutput == .plan)
+            #expect(workspace.activeQuery?.explainPlan.isEmpty == false)
 
             let nextWorkspace = QueryWorkspaceModel(databaseService: service, userDefaults: userDefaults)
             nextWorkspace.loadSavedQueries(for: url)
@@ -106,10 +104,8 @@ struct QueryWorkspaceTests {
             for index in 1...9 {
                 workspace.updateActiveTitle("Query \(index)")
                 workspace.updateActiveSQL("SELECT \(index) AS value")
-                workspace.run()
-                try await waitFor {
-                    workspace.history.first?.title == "Query \(index)"
-                }
+                await workspace.run()?.value
+                #expect(workspace.history.first?.title == "Query \(index)")
             }
 
             #expect(workspace.history.count == 7)
@@ -126,21 +122,5 @@ struct QueryWorkspaceTests {
         }
 
         userDefaults.removePersistentDomain(forName: defaultsSuiteName)
-    }
-
-    private func waitFor(
-        timeoutNanoseconds: UInt64 = 6_000_000_000,
-        stepNanoseconds: UInt64 = 50_000_000,
-        condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
-        while DispatchTime.now().uptimeNanoseconds < deadline {
-            if condition() {
-                return
-            }
-            try await Task.sleep(nanoseconds: stepNanoseconds)
-        }
-        Issue.record("Timed out waiting for condition")
-        throw CancellationError()
     }
 }

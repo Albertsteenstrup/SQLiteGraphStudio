@@ -223,14 +223,24 @@ public final class QueryWorkspaceModel {
         persistSavedQueries()
     }
 
-    public func run() {
-        guard let queryID = activeQuery?.id else { return }
-        run(queryID: queryID)
+    /// Returns the execution task, which finishes after its result or error is
+    /// published (or discarded as superseded).
+    @discardableResult
+    public func run() -> Task<Void, Never>? {
+        guard let queryID = activeQuery?.id else { return nil }
+        return run(queryID: queryID)
     }
 
-    public func explain() {
-        guard let queryID = activeQuery?.id else { return }
-        explain(queryID: queryID)
+    @discardableResult
+    public func explain() -> Task<Void, Never>? {
+        guard let queryID = activeQuery?.id else { return nil }
+        return explain(queryID: queryID)
+    }
+
+    /// The in-flight run or explain for a query, for callers that started it
+    /// indirectly (for example through `createQuery(runImmediately:)`).
+    func executionTask(for queryID: UUID) -> Task<Void, Never>? {
+        runningTasks[queryID]
     }
 
     public func stop() {
@@ -277,8 +287,9 @@ public final class QueryWorkspaceModel {
         persistHistory()
     }
 
-    private func run(queryID: UUID) {
-        guard let queryIndex = index(for: queryID) else { return }
+    @discardableResult
+    private func run(queryID: UUID) -> Task<Void, Never>? {
+        guard let queryIndex = index(for: queryID) else { return nil }
 
         cancelExecution(for: queryID)
         let requestToken = UUID()
@@ -292,7 +303,7 @@ public final class QueryWorkspaceModel {
         let startedAt = clock.now
 
         let timeout = timeoutSeconds
-        runningTasks[queryID] = Task { [weak self, databaseService] in
+        let task = Task { [weak self, databaseService] in
             do {
                 let result = try await databaseService.executeReadOnlyQuery(sql: sqlText, timeoutSeconds: timeout)
                 let elapsed = startedAt.duration(to: clock.now).milliseconds
@@ -339,10 +350,12 @@ public final class QueryWorkspaceModel {
                 )
             }
         }
+        runningTasks[queryID] = task
+        return task
     }
 
-    private func explain(queryID: UUID) {
-        guard let queryIndex = index(for: queryID) else { return }
+    private func explain(queryID: UUID) -> Task<Void, Never>? {
+        guard let queryIndex = index(for: queryID) else { return nil }
 
         cancelExecution(for: queryID)
         let requestToken = UUID()
@@ -353,7 +366,7 @@ public final class QueryWorkspaceModel {
         let sqlText = queries[queryIndex].sqlText
 
         let timeout = timeoutSeconds
-        runningTasks[queryID] = Task { [weak self, databaseService] in
+        let task = Task { [weak self, databaseService] in
             do {
                 let plan = try await databaseService.explainQueryPlan(sql: sqlText, timeoutSeconds: timeout)
                 guard let self, self.requestTokens[queryID] == requestToken,
@@ -376,6 +389,8 @@ public final class QueryWorkspaceModel {
                 queries[queryIndex].isRunning = false
             }
         }
+        runningTasks[queryID] = task
+        return task
     }
 
     private var activeQueryIndex: Int? {

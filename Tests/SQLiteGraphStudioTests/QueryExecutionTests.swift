@@ -48,8 +48,7 @@ struct QueryExecutionWorkspaceTests {
         let workspace = QueryWorkspaceModel(databaseService: service)
         workspace.loadSavedQueries(for: url)
         workspace.updateActiveSQL("SELECT 42")
-        workspace.run()
-        try await waitUntilIdle(workspace)
+        await finish(workspace.run(), in: workspace)
         #expect(workspace.activeQuery?.executedSQL == "SELECT 42")
         workspace.updateActiveSQL("SELECT 43")
         #expect(workspace.activeQuery?.executedSQL == "SELECT 42")
@@ -61,8 +60,7 @@ struct QueryExecutionWorkspaceTests {
         #expect(workspace.activeQuery?.result.rows.first?.values == [.integer(42)])
         #expect(workspace.activeQuery?.executedSQL == "SELECT 42")
         workspace.updateActiveSQL("SELECT 44")
-        workspace.run()
-        try await waitUntilIdle(workspace)
+        await finish(workspace.run(), in: workspace)
         #expect(workspace.activeQuery?.result.rows.first?.values == [.integer(44)])
         #expect(workspace.activeQuery?.executedSQL == "SELECT 44")
         await service.close()
@@ -85,31 +83,28 @@ struct QueryExecutionWorkspaceTests {
         workspace.updateActiveSQL("SELECT 99")
         workspace.run()
         workspace.explain()
-        workspace.run()
-        try await waitUntilIdle(workspace)
+        await finish(workspace.run(), in: workspace)
         #expect(workspace.activeQuery?.executedSQL == "SELECT 99")
         #expect(workspace.history.count == 1)
         #expect(workspace.activeQuery?.result.rows.first?.values == [.integer(99)])
         let id = try #require(workspace.activeQueryID)
         workspace.updateActiveSQL("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000000) SELECT sum(x) FROM n")
-        workspace.run()
+        let superseded = workspace.run()
         workspace.closeQuery(id: id)
         workspace.reset()
-        try await Task.sleep(for: .milliseconds(100))
+        // The closed query's cancelled run must finish without publishing.
+        await superseded?.value
         #expect(workspace.queries.isEmpty)
         #expect(workspace.history.isEmpty)
         await service.close()
     }
 
-    private func waitUntilIdle(_ workspace: QueryWorkspaceModel) async throws {
-        let start = ContinuousClock.now
-        while workspace.activeQuery?.isRunning == true {
-            guard start.duration(to: .now) < .seconds(3) else {
-                Issue.record("Query did not finish")
-                throw CancellationError()
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+    /// Awaits the execution itself rather than polling `isRunning` against a
+    /// deadline, so parallel suites on the main actor cannot time it out.
+    private func finish(_ execution: Task<Void, Never>?, in workspace: QueryWorkspaceModel) async {
+        #expect(execution != nil)
+        await execution?.value
+        #expect(workspace.activeQuery?.isRunning == false)
         #expect(workspace.activeQuery?.errorMessage == nil)
     }
 }

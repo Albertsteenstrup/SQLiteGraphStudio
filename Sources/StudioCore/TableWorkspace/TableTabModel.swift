@@ -286,19 +286,22 @@ public final class TableTabModel: Identifiable {
         Task { await reload() }
     }
 
-    public func commitEdit(row absoluteRow: Int, columnName: String, rawValue: String) {
-        guard let row = row(at: absoluteRow) else { return }
+    /// Returns the task that saves the edit and reloads the grid, or nil when
+    /// the edit is rejected before any database work starts.
+    @discardableResult
+    public func commitEdit(row absoluteRow: Int, columnName: String, rawValue: String) -> Task<Void, Never>? {
+        guard let row = row(at: absoluteRow) else { return nil }
         guard let columnIndex = descriptor.columns.firstIndex(where: { $0.name == columnName }) else {
             inlineErrorMessage = "This table is read-only."
-            return
+            return nil
         }
         guard !row.omittedColumnIndices.contains(columnIndex) else {
             inlineErrorMessage = "Large values are read-only in the grid. Inspect them in slices."
-            return
+            return nil
         }
         guard canEditCell(row: absoluteRow, column: columnIndex) else {
             inlineErrorMessage = "This table is read-only."
-            return
+            return nil
         }
         let change = CellEditChange(
             descriptor: descriptor,
@@ -307,7 +310,7 @@ public final class TableTabModel: Identifiable {
             rawValue: rawValue
         )
 
-        Task {
+        return Task {
             do {
                 try await databaseService.commitEdit(change)
                 inlineErrorMessage = nil
