@@ -70,6 +70,8 @@ final class MCPAppTests: XCTestCase {
         for forbidden in ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "fetch(", "XMLHttpRequest", "WebSocket", "<script src", "<link", "@import", "eval("] {
             XCTAssertFalse(html.contains(forbidden), forbidden)
         }
+        // `hidden` is an HTML element property; on the SVG graph only the attribute hides it.
+        XCTAssertFalse(html.contains(#"$("graph").hidden"#), "Toggle the graph's hidden attribute instead")
 
         let missing = try object(server.handleMessage(json([
             "jsonrpc": "2.0", "id": 5, "method": "resources/read", "params": ["uri": "ui://sqlite-graph-studio/other.html"],
@@ -95,9 +97,25 @@ final class MCPAppTests: XCTestCase {
         XCTAssertTrue(text.contains("users (+1 −1 ~1 ↔)"))
         XCTAssertTrue(text.contains("Author: Claude · Review session."))
 
-        let view = try XCTUnwrap(result["structuredContent"] as? [String: Any])
-        XCTAssertEqual(view["format"] as? String, "sqlite-graph-studio/schema-review-view")
-        XCTAssertEqual(view["artifact"] as? String, "comparison")
+        let overview = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+        XCTAssertEqual(overview["format"] as? String, "sqlite-graph-studio/schema-review-view")
+        XCTAssertEqual(overview["artifact"] as? String, "comparison")
+        XCTAssertEqual(overview["overview"] as? String, text, "Claude Code shows the model structuredContent, so it carries the summary too")
+        let sets = try XCTUnwrap(overview["changeSets"] as? [[String: Any]])
+        XCTAssertEqual(sets.count, 1)
+        XCTAssertEqual(sets.first?["label"] as? String, "legacy_tokens")
+        XCTAssertEqual(sets.first?["tables"] as? Int, 3)
+        XCTAssertEqual(sets.first?["kind"] as? String, "modified", "A set of mixed changes reads as changed")
+        XCTAssertNil(overview["tables"], "The view fetches tables and fields itself")
+
+        // The view asks for what it draws with a tool the model never sees.
+        let detailResponse = try object(server.handleMessage(json([
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": ["name": SchemaReviewAppTools.detailToolName, "arguments": ["path": "change.sgreview"]],
+        ])))
+        let view = try XCTUnwrap((detailResponse["result"] as? [String: Any])?["structuredContent"] as? [String: Any])
+        XCTAssertEqual(view["format"] as? String, "sqlite-graph-studio/schema-review-detail")
+        XCTAssertEqual(transport.calls, 0)
         let tables = try XCTUnwrap(view["tables"] as? [[String: Any]])
         let kinds = Dictionary(uniqueKeysWithValues: tables.map { ($0["id"] as! String, $0["kind"] as! String) })
         XCTAssertEqual(kinds, ["legacy_tokens": "removed", "sessions": "added", "users": "modified", "teams": "unchanged"])
@@ -139,12 +157,14 @@ final class MCPAppTests: XCTestCase {
         document["after"] = after
         try write(document, to: "plan.sgpreview")
 
-        let result = SchemaReviewInlineView.result(path: directory.appendingPathComponent("plan.sgpreview").path, workingDirectory: "/")
-        let view = try XCTUnwrap(result["structuredContent"] as? [String: Any])
-        XCTAssertEqual(view["artifact"] as? String, "proposal")
+        let path = directory.appendingPathComponent("plan.sgpreview").path
+        let result = SchemaReviewInlineView.result(path: path, workingDirectory: "/")
+        let overview = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+        XCTAssertEqual(overview["artifact"] as? String, "proposal")
         let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String
         XCTAssertTrue(text?.hasPrefix("Proposed schema changes \"Sessions\" are shown inline (not applied; based on base).") == true)
 
+        let view = try XCTUnwrap(SchemaReviewInlineView.detail(path: path, workingDirectory: "/")["structuredContent"] as? [String: Any])
         let wide = try XCTUnwrap((view["tables"] as? [[String: Any]])?.first { $0["id"] as? String == "wide" })
         let names = (wide["columns"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
         XCTAssertEqual(names.count, SchemaReviewInlineView.maximumColumnsPerTable)
@@ -206,8 +226,14 @@ final class MCPAppTests: XCTestCase {
             "after": ["version": 1, "engine": "postgresql", "tables": [hubAfter] + readers + auditedAfter, "relations": readerLinks + auditLinks],
         ], to: "hub.sgreview")
 
-        let result = SchemaReviewInlineView.result(path: directory.appendingPathComponent("hub.sgreview").path, workingDirectory: "/")
-        let view = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+        let path = directory.appendingPathComponent("hub.sgreview").path
+        let result = SchemaReviewInlineView.result(path: path, workingDirectory: "/")
+        let view = try XCTUnwrap(SchemaReviewInlineView.detail(path: path, workingDirectory: "/")["structuredContent"] as? [String: Any])
+        // Hosts that show the model structuredContent get the summary, not the hub's links.
+        let overview = try JSONSerialization.data(withJSONObject: try XCTUnwrap(result["structuredContent"]))
+        let detail = try JSONSerialization.data(withJSONObject: view)
+        XCTAssertLessThan(overview.count, 2_000, String(decoding: overview, as: UTF8.self))
+        XCTAssertGreaterThan(detail.count, overview.count * 3)
         let tables = try XCTUnwrap(view["tables"] as? [[String: Any]])
         XCTAssertEqual(Set(tables.compactMap { $0["id"] as? String }), Set(["app_user"] + (0..<4).map { "audited_\($0)" }),
                        "Only changed tables are drawn once related tables exceed the limit")
@@ -223,10 +249,6 @@ final class MCPAppTests: XCTestCase {
         XCTAssertEqual(first["direction"] as? String, "referencedBy")
         XCTAssertEqual(first["columns"] as? [String], ["user_id"])
 
-        let groups = try XCTUnwrap(view["changeGroups"] as? [[String: Any]])
-        XCTAssertEqual(groups.count, 1)
-        XCTAssertEqual(groups.first?["summary"] as? String, "+ updated_by_user_id bigint · + → app_user")
-        XCTAssertEqual(groups.first?["tables"] as? [String], (0..<4).map { "audited_\($0)" })
         let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
         XCTAssertTrue(text.contains("4 tables share one change: + updated_by_user_id bigint · + → app_user."), text)
         XCTAssertTrue(text.contains("20 related unchanged tables are summarized"), text)
@@ -341,7 +363,7 @@ final class MCPAppTests: XCTestCase {
         XCTAssertNil(original["author"], "Without an author the original can't replace the review's tab")
         XCTAssertNil(original["proposal"])
         XCTAssertEqual(original["after"] as? NSDictionary, original["before"] as? NSDictionary)
-        let shown = SchemaReviewInlineView.result(path: urls[1].path, workingDirectory: "/")
+        let shown = SchemaReviewInlineView.detail(path: urls[1].path, workingDirectory: "/")
         XCTAssertEqual(shown["isError"] as? Bool, false)
         XCTAssertEqual(((shown["structuredContent"] as? [String: Any])?["tables"] as? [Any])?.count, 0, "Nothing changes in the original")
 

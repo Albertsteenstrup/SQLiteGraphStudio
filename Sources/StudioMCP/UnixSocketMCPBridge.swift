@@ -57,6 +57,9 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
             // Drawn by a hidden renderer process, never by the reader's running app.
             return SchemaReviewAppTools.frame(arguments: call.arguments, workingDirectory: call.workingDirectory,
                                               renderer: renderer)
+        case SchemaReviewAppTools.detailToolName:
+            return SchemaReviewInlineView.detail(path: call.arguments["path"] as? String ?? "",
+                                                 workingDirectory: call.workingDirectory)
         case SchemaReviewAppTools.openToolName:
             return SchemaReviewAppTools.openInApp(arguments: call.arguments, workingDirectory: call.workingDirectory,
                                                   open: openDocuments)

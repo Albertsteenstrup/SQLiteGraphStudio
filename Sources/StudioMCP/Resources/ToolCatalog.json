@@ -2793,7 +2793,7 @@
   {
     "name": "studio_show_review_inline",
     "title": "Show review inline",
-    "description": "Show a saved schema comparison (.sgreview) or proposal (.sgpreview) as an interactive view inside the conversation. It reads the file directly: Graph Studio does not need to be running, and no database, window, or tab is opened. Pass the path written by `--schema-review compare` or `--schema-review preview` (absolute, or relative to the project). Hosts that support MCP Apps show changed tables, fields, and relations with their related tables; other hosts get a text summary. Use studio_show_artifact instead only when the user wants the review in the Graph Studio app.",
+    "description": "Show a saved schema comparison (.sgreview) or proposal (.sgpreview) as an interactive view inside the conversation. It reads the file directly: Graph Studio does not need to be running, and no database, window, or tab is opened. Pass the path written by `--schema-review compare` or `--schema-review preview` (absolute, or relative to the project). Hosts that support MCP Apps show Graph Studio's own graph of the changes, one connected set at a time; the result itself is a short summary. Use studio_show_artifact instead only when the user wants the review in the Graph Studio app.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2944,6 +2944,44 @@
       "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "visibility": [
+          "app"
+        ]
+      }
+    }
+  },
+  {
+    "name": "studio_review_detail",
+    "title": "Read review detail",
+    "description": "Called by the inline schema review view, not by the model: returns the changed tables, fields, relations, and related tables the view draws when Graph Studio's renderer is unavailable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Path to a .sgreview comparison or .sgpreview proposal file."
+        },
+        "context_id": {
+          "type": "string",
+          "description": "Optional; this tool does not use a coding-task context."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Read review detail",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
       "openWorldHint": false
     },
     "_meta": {

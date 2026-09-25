@@ -26,20 +26,31 @@ public enum SchemaReviewInlineView {
     static let maximumContextColumns = 20
     static let maximumDefinitionCharacters = 500
     static let maximumSummaryNames = 20
+    static let maximumListedChangeSets = 40
 
-    /// Returns an MCP CallToolResult. `content` is a short summary for the model;
-    /// `structuredContent` carries the view data, which MCP Apps hosts hand to the
-    /// view without adding it to the model's context.
+    /// Returns an MCP CallToolResult. `content` is a short summary for the model and
+    /// `structuredContent` a small overview the view starts from. Both stay small: Claude
+    /// Code shows the model `structuredContent` rather than `content`. The view fetches
+    /// the tables and fields it draws itself with `studio_review_detail`.
     public static func result(path: String, workingDirectory: String) -> [String: Any] {
+        loadResult(path: path, workingDirectory: workingDirectory) { view in
+            ["content": [["type": "text", "text": view.summary]], "structuredContent": view.overview, "isError": false]
+        }
+    }
+
+    /// Everything the view's simplified graph draws: changed tables with their fields and
+    /// links, related tables, and relations.
+    public static func detail(path: String, workingDirectory: String) -> [String: Any] {
+        loadResult(path: path, workingDirectory: workingDirectory) { view in
+            ["content": [["type": "text", "text": "Schema review detail for the inline view."]],
+             "structuredContent": view.detail, "isError": false]
+        }
+    }
+
+    private static func loadResult(path: String, workingDirectory: String, _ body: (View) -> [String: Any]) -> [String: Any] {
         do {
             let url = try resolve(path, workingDirectory: workingDirectory)
-            let document = try load(url)
-            let view = try build(document, path: url.path)
-            return [
-                "content": [["type": "text", "text": view.summary]],
-                "structuredContent": view.model,
-                "isError": false,
-            ]
+            return body(try build(try load(url), path: url.path))
         } catch let error as InlineReviewError {
             return errorResult(error)
         } catch {
@@ -332,7 +343,10 @@ public enum SchemaReviewInlineView {
     // MARK: View data
 
     struct View {
-        let model: [String: Any]
+        /// What the tool returns, small enough for a model's context.
+        let overview: [String: Any]
+        /// What the simplified graph draws, fetched by the view when it needs it.
+        let detail: [String: Any]
         let summary: String
     }
 
@@ -382,9 +396,8 @@ public enum SchemaReviewInlineView {
             if let previous = change.previous { model["previousDefinition"] = truncated(previous.definition) }
             return model
         }
-        let sets = changeSets(changes, relations: relations)
-            .map { $0.filter(shownChangedIDs.contains) }
-            .filter { !$0.isEmpty }
+        let allSets = changeSets(changes, relations: relations)
+        let sets = allSets.map { $0.filter(shownChangedIDs.contains) }.filter { !$0.isEmpty }
 
         let groups = changeGroups(changed, relations: relations)
         let addedCount = changed.filter { $0.kind == .added }.count
@@ -394,19 +407,23 @@ public enum SchemaReviewInlineView {
         let relationsAdded = relations.filter { $0.kind == .added }.count
         let relationsRemoved = relations.filter { $0.kind == .removed }.count
         let relationsModified = relations.filter { $0.kind == .modified }.count
-        let isProposal = document.proposal != nil
+        let summary = summaryText(document, changed: changed, unchanged: unchangedCount,
+                                  relationsAdded: relationsAdded, relationsRemoved: relationsRemoved,
+                                  relationsModified: relationsModified,
+                                  summarizedRelated: drawContext ? 0 : contextIDs.count, groups: groups)
+        let changedByID = Dictionary(uniqueKeysWithValues: changed.map { ($0.id, $0) })
 
-        let model: [String: Any] = [
+        let overview: [String: Any] = [
             "format": "sqlite-graph-studio/schema-review-view",
-            "version": 1,
-            "artifact": isProposal ? "proposal" : "comparison",
+            "version": 2,
+            "artifact": document.proposal != nil ? "proposal" : "comparison",
             "title": document.title,
             "baseRef": document.baseRef,
             "headRef": document.headRef,
             "engine": document.after.engine,
-            "notes": Array(document.notes.prefix(20)),
             "author": document.author.map { $0.summary as Any } ?? NSNull(),
             "path": path,
+            "overview": summary,
             "summary": [
                 "addedTables": addedCount,
                 "removedTables": removedCount,
@@ -416,19 +433,36 @@ public enum SchemaReviewInlineView {
                 "removedRelations": relationsRemoved,
                 "modifiedRelations": relationsModified,
             ],
+            // In the app's order, so the renderer's set numbers index into this list.
+            "changeSets": allSets.prefix(maximumListedChangeSets).map { setSummary($0, changes: changedByID) },
+            "moreChangeSets": max(0, allSets.count - maximumListedChangeSets),
+        ]
+        let detail: [String: Any] = [
+            "format": "sqlite-graph-studio/schema-review-detail",
+            "version": 2,
             "tables": tables,
             "relations": relationModels,
             "changeSets": sets,
-            "changeGroups": groups.map { ["summary": $0.summary, "tables": $0.tables, "count": $0.tables.count] as [String: Any] },
             "omitted": [
                 "changedTables": changed.count - shownChanged.count,
                 "relatedTables": drawContext ? 0 : contextIDs.count,
             ],
         ]
-        return View(model: model, summary: summaryText(document, changed: changed, unchanged: unchangedCount,
-                                                         relationsAdded: relationsAdded, relationsRemoved: relationsRemoved,
-                                                         relationsModified: relationsModified,
-                                                         summarizedRelated: drawContext ? 0 : contextIDs.count, groups: groups))
+        return View(overview: overview, detail: detail, summary: summary)
+    }
+
+    /// A connected set as the view lists it: its first table's name, its size, and one
+    /// kind for all of it.
+    private static func setSummary(_ ids: [String], changes: [String: TableChange]) -> [String: Any] {
+        let members = ids.compactMap { changes[$0] }
+        let kinds = Set(members.map(\.kind))
+        var entry: [String: Any] = [
+            "label": members.first?.table.displayName ?? ids.first ?? "",
+            "tables": ids.count,
+            "kind": (kinds.count == 1 ? kinds.first! : ChangeKind.modified).rawValue,
+        ]
+        if members.count == 1 { entry["badge"] = members[0].badge }
+        return entry
     }
 
     struct ChangeGroup {

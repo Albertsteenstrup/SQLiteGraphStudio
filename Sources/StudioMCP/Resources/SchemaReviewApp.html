@@ -238,7 +238,9 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
     }
   });
 
-  const state = { model: null, tables: new Map(), sets: [], set: null, mode: null };
+  // `model` is the tool's small overview; `detail` (tables, fields, relations) is fetched only
+  // for the simplified graph. `labels` name the connected sets for the chips.
+  const state = { model: null, detail: null, tables: new Map(), labels: [], idSets: [], setCount: 0, set: null, mode: null };
 
   function applyHostContext(context) {
     if (!context || typeof context !== "object") return;
@@ -308,7 +310,10 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
 
   function render(model) {
     state.model = model;
-    state.tables = new Map((Array.isArray(model.tables) ? model.tables : []).map((table) => [table.id, table]));
+    state.detail = null;
+    state.tables = new Map();
+    state.idSets = [];
+    state.labels = Array.isArray(model.changeSets) ? model.changeSets : [];
     $("status").hidden = true;
     $("view").hidden = false;
     $("artifact").hidden = model.artifact !== "proposal";
@@ -321,60 +326,62 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
     if (summary.modifiedTables) legend.append(chip("modified", summary.modifiedTables + " changed"));
     if (summary.removedTables) legend.append(chip("removed", summary.removedTables + " removed"));
 
-    const hasChanges = state.tables.size > 0;
+    const hasChanges = (summary.addedTables || 0) + (summary.modifiedTables || 0) + (summary.removedTables || 0) > 0;
     $("canvas").hidden = !hasChanges;
     $("empty").hidden = hasChanges;
     $("detail").hidden = true;
-    setSets(Array.isArray(model.changeSets) ? model.changeSets : [], hasChanges ? 0 : null);
+    setSets(state.labels.length + (model.moreChangeSets || 0), hasChanges ? 0 : null);
     sizeCanvas();
-    if (hasChanges) {
-      if (model.path) exact.start(); else simple.start();
-    }
+    if (hasChanges) exact.start();
     requestAnimationFrame(reportSize);
   }
 
   // ---- Connected change sets ----
   // Each set is changes joined by relations; one set is in view at a time. Previous and
   // Next move between sets, and the sets not connected to the one in view are listed.
-  function setSets(sets, current) {
-    state.sets = sets;
-    state.set = Number.isInteger(current) && current >= 0 && current < sets.length ? current : null;
-    $("sets").hidden = sets.length <= 1;
+  function setSets(count, current) {
+    state.setCount = count;
+    state.set = Number.isInteger(current) && current >= 0 && current < count ? current : null;
+    $("sets").hidden = count <= 1;
     $("prev").disabled = state.set === 0;
-    $("next").disabled = state.set !== null && state.set + 1 >= sets.length;
-    $("position").textContent = state.set === null ? `${sets.length} sets of changes` : `Changes ${state.set + 1} of ${sets.length}`;
+    $("next").disabled = state.set !== null && state.set + 1 >= count;
+    $("position").textContent = state.set === null ? `${count} sets of changes` : `Changes ${state.set + 1} of ${count}`;
     renderOthers();
   }
   function tableName(id) {
     const table = state.tables.get(id);
     return table ? table.name : String(id).replace(/^public\./, "");
   }
-  function setKind(ids) {
-    const kinds = new Set(ids.map((id) => kindOf((state.tables.get(id) || {}).kind)));
-    return kinds.size === 1 ? [...kinds][0] : "modified";
+  /// A set as the chips name it: its first table, its size, and one kind for all of it.
+  function labelFor(ids) {
+    const tables = ids.map((id) => state.tables.get(id)).filter(Boolean);
+    const kinds = new Set(tables.map((table) => kindOf(table.kind)));
+    return { label: tables.length ? tables[0].name : String(ids[0] || ""), tables: ids.length,
+             kind: kinds.size === 1 ? [...kinds][0] : "modified", badge: tables.length === 1 ? tables[0].badge : undefined };
   }
   function renderOthers() {
     const box = $("others");
     box.replaceChildren();
-    const others = state.sets.map((ids, index) => ({ ids, index })).filter((entry) => entry.index !== state.set);
-    box.hidden = state.sets.length <= 1 || !others.length;
+    const others = state.labels.map((label, index) => ({ label, index })).filter((entry) => entry.index !== state.set);
+    box.hidden = state.setCount <= 1 || !others.length;
     if (box.hidden) { requestAnimationFrame(reportSize); return; }
     box.append(el("span", { class: "caption" }, "Not connected"));
-    for (const { ids, index } of others) {
-      const title = ids.map(tableName).join(", ");
-      const table = ids.length === 1 ? state.tables.get(ids[0]) : null;
+    for (const { label, index } of others) {
+      const size = label.tables || 1;
+      const title = size > 1 ? `${label.label} and ${size - 1} more connected ${size === 2 ? "table" : "tables"}` : label.label;
       box.append(el("button", { type: "button", title, onclick: () => showSet(index) },
-        el("span", { class: "dot " + setKind(ids) }),
-        clip(tableName(ids[0]), 36) + (ids.length > 1 ? ` +${ids.length - 1}` : ""),
-        table && table.badge ? el("span", { class: "badge" }, table.badge) : null));
+        el("span", { class: "dot " + kindOf(label.kind) }),
+        clip(label.label, 36) + (size > 1 ? ` +${size - 1}` : ""),
+        label.badge ? el("span", { class: "badge" }, label.badge) : null));
     }
+    if (state.setCount > state.labels.length) box.append(el("span", { class: "caption" }, `+${state.setCount - state.labels.length} more`));
     requestAnimationFrame(reportSize);
   }
   function step(direction) {
-    if (state.sets.length <= 1) return;
+    if (state.setCount <= 1) return;
     if (state.mode === exact) { exact.act({ type: "step", direction }); return; }
-    const target = state.set === null ? (direction > 0 ? 0 : state.sets.length - 1) : state.set + direction;
-    if (target >= 0 && target < state.sets.length) showSet(target);
+    const target = state.set === null ? (direction > 0 ? 0 : state.setCount - 1) : state.set + direction;
+    if (target >= 0 && target < state.setCount) showSet(target);
   }
   function showSet(index) {
     if (state.mode === exact) exact.act({ type: "set", index });
@@ -397,7 +404,7 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
     function start() {
       state.mode = exact;
       failures = 0;
-      $("graph").hidden = true;
+      $("graph").toggleAttribute("hidden", true);
       $("loading").hidden = !!image;
       $("note").hidden = true;
       again = true;
@@ -475,16 +482,18 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
       image = next;
       applyPreview();
       $("loading").hidden = true;
-      setSets(Array.isArray(info.setTables) ? info.setTables : state.sets, info.set);
+      setSets(Array.isArray(info.setTables) ? info.setTables.length : state.setCount, info.set);
       resized();
     }
     function fallBack(error) {
       if (image) { image.remove(); image = null; }
-      $("loading").hidden = true;
       const reason = error && error.code === "RENDERER_BUSY"
         ? "Graph Studio is drawing reviews for other sessions, so this is a simplified view."
         : "Graph Studio's renderer is unavailable, so this is a simplified view." + (error && error.message ? " " + error.message : "");
-      simple.start(reason);
+      // The tool result leaves out the tables and fields the simplified graph draws.
+      callTool("studio_review_detail", { path: state.model.path }, 20000)
+        .then((result) => simple.start(reason, result.structuredContent || {}))
+        .catch(() => showStatus(state.model.overview || "The review could not be drawn here."));
     }
     return {
       start, act, refresh, resized,
@@ -500,20 +509,25 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
     const NODE_WIDTH = 236, HEADER = 32, ROW = 18, GRAPH_ROWS = 7, GAP_X = 70, GAP_Y = 54;
     let nodes = new Map(), bounds = null, vb = null, selected = null, shown = [];
 
-    function start(reason) {
+    function start(reason, detail) {
       state.mode = simple;
-      $("graph").hidden = false;
+      state.detail = detail;
+      state.tables = new Map((Array.isArray(detail.tables) ? detail.tables : []).map((table) => [table.id, table]));
+      state.idSets = Array.isArray(detail.changeSets) ? detail.changeSets : [];
+      state.labels = state.idSets.map(labelFor);
+      $("graph").toggleAttribute("hidden", false);
       $("loading").hidden = true;
-      $("note").hidden = !reason;
-      $("note").textContent = reason ? "Simplified view" : "";
+      const notDrawn = (detail.omitted || {}).changedTables || 0;
+      $("note").hidden = false;
+      $("note").textContent = notDrawn ? `Simplified view · ${notDrawn} changed tables not drawn` : "Simplified view";
       $("note").title = reason || "";
-      showSet(state.sets.length ? 0 : null);
+      showSet(state.idSets.length ? 0 : null);
     }
     function showSet(index) {
       const all = [...state.tables.values()];
-      const members = index === null ? all.filter((table) => !table.context).map((table) => table.id) : state.sets[index] || [];
+      const members = index === null ? all.filter((table) => !table.context).map((table) => table.id) : state.idSets[index] || [];
       const keep = new Set(members);
-      const relations = Array.isArray(state.model.relations) ? state.model.relations : [];
+      const relations = Array.isArray(state.detail.relations) ? state.detail.relations : [];
       // Related unchanged tables that the review draws come along with their set.
       for (const relation of relations) {
         for (const [near, far] of [[relation.source, relation.target], [relation.target, relation.source]]) {
@@ -523,7 +537,7 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
       }
       shown = all.filter((table) => keep.has(table.id));
       selected = null;
-      setSets(state.sets, index);
+      setSets(state.idSets.length, index);
       draw(shown, relations.filter((relation) => keep.has(relation.source) && keep.has(relation.target)));
       renderDetail(null);
       fit();
@@ -744,7 +758,7 @@ button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px 
         if (links.more) box.append(el("div", { class: "was" }, `+${links.more} more`));
         detail.append(box);
       }
-      const relations = (Array.isArray(state.model.relations) ? state.model.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
+      const relations = (state.detail && Array.isArray(state.detail.relations) ? state.detail.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
       if (relations.length) {
         const box = el("div", { class: "defs" }, el("div", {}, "Relations"));
         for (const relation of relations) {

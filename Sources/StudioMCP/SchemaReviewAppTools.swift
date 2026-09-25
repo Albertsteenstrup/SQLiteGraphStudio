@@ -6,8 +6,9 @@ import Foundation
 /// client's capabilities can't tell whether its views will call them.
 public enum SchemaReviewAppTools {
     public static let frameToolName = "studio_review_frame"
+    public static let detailToolName = "studio_review_detail"
     public static let openToolName = "studio_open_review_in_app"
-    public static let names: Set<String> = [frameToolName, openToolName]
+    public static let names: Set<String> = [frameToolName, detailToolName, openToolName]
 
     /// Draws the review with Graph Studio's own graph view after applying the reader's
     /// clicks, pans, zooms and change-set steps, and returns the frame as an image.

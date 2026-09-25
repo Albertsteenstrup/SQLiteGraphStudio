@@ -12,7 +12,7 @@ struct SchemaReviewInlineParityTests {
         defer { try? FileManager.default.removeItem(at: url) }
         try review.write(to: url)
 
-        let result = SchemaReviewInlineView.result(path: url.path, workingDirectory: "/")
+        let result = SchemaReviewInlineView.detail(path: url.path, workingDirectory: "/")
         #expect(result["isError"] as? Bool == false)
         let view = try #require(result["structuredContent"] as? [String: Any])
         let tables = try #require(view["tables"] as? [[String: Any]])
@@ -33,8 +33,12 @@ struct SchemaReviewInlineParityTests {
                 #expect(column["foreignKey"] as? Bool == foreignKeys.contains(name), "\(change.id).\(name)")
             }
         }
-        let summary = try #require(view["summary"] as? [String: Any])
+        let overview = try #require(SchemaReviewInlineView.result(path: url.path, workingDirectory: "/")["structuredContent"] as? [String: Any])
+        let summary = try #require(overview["summary"] as? [String: Any])
         #expect(summary["unchangedTables"] as? Int == review.changes.filter { $0.kind == .unchanged }.count)
+        // The renderer numbers sets in the app's order; the overview names them in the same order.
+        let labels = (overview["changeSets"] as? [[String: Any]] ?? []).compactMap { $0["tables"] as? Int }
+        #expect(labels == review.changeSets.map(\.count))
 
         let relations = try #require(view["relations"] as? [[String: Any]])
         let shownIDs = Set(shown.keys)
@@ -62,7 +66,7 @@ struct SchemaReviewInlineParityTests {
         let url = directory.appendingPathComponent("change.sgreview")
         try review.write(to: url)
 
-        let result = SchemaReviewInlineView.result(path: url.path, workingDirectory: "/")
+        let result = SchemaReviewInlineView.detail(path: url.path, workingDirectory: "/")
         #expect(result["isError"] as? Bool == false)
         let tables = (result["structuredContent"] as? [String: Any])?["tables"] as? [[String: Any]] ?? []
         let kinds = Dictionary(uniqueKeysWithValues: tables.map { ($0["id"] as! String, $0["kind"] as! String) })
