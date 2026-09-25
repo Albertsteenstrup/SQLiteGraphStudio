@@ -39,10 +39,34 @@ public struct AutomationGraphFocusCommand: Identifiable, Sendable, Equatable {
 public struct GraphRevealRequest: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let tableID: String
+    /// Every table to bring into view; a connected set of review changes has several.
+    public let tableIDs: [String]
+    /// Frame exactly these tables, zooming in if needed, rather than moving the camera as
+    /// little as possible to include them.
+    public let fits: Bool
 
     public init(id: UUID = UUID(), tableID: String) {
+        self.init(id: id, tableIDs: [tableID], fits: false)
+    }
+
+    public init(id: UUID = UUID(), tableIDs: [String], fits: Bool) {
         self.id = id
-        self.tableID = tableID
+        self.tableID = tableIDs.first ?? ""
+        self.tableIDs = tableIDs
+        self.fits = fits
+    }
+}
+
+/// A click on the graph from a reader who is not at this window, such as the review view
+/// shown in a conversation. The graph resolves it with its own hit-testing and taps.
+public struct GraphTapRequest: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    /// In the graph view's coordinates, from its top-left corner.
+    public let point: CGPoint
+
+    public init(id: UUID = UUID(), point: CGPoint) {
+        self.id = id
+        self.point = point
     }
 }
 
@@ -107,6 +131,19 @@ public final class AppSession {
     public private(set) var schemaReviewRevision = 0
     /// The latest request to bring a table into view, from outside the graph itself.
     public private(set) var graphRevealRequest: GraphRevealRequest?
+    /// The latest click on the graph from outside the window.
+    public private(set) var graphTapRequest: GraphTapRequest?
+    /// Changed tables in connected sets, largest first. A review shows one set at a time.
+    public private(set) var schemaReviewChangeSets: [[String]] = []
+    /// Rows a changed table's card always lists in a review: its keys, then every changed
+    /// field. New and removed tables, where every field changed, list their first twelve.
+    public private(set) var schemaReviewCardColumns: [String: Set<String>] = [:]
+    /// The set a newly opened review frames once the graph has laid out and fitted.
+    private(set) var pendingReviewChangeSetReveal: [String]?
+    /// The graph is being rendered offscreen for a snapshot: no animation, so a frame
+    /// never waits for a transition, and no floating controls, whose popovers cannot
+    /// appear in a captured frame.
+    public var rendersOffscreen = false
     private var schemaComparisonTask: Task<Void, Never>?
     private var schemaComparisonID: UUID?
     public private(set) var schemaPreviewReloadError: String?
@@ -1283,8 +1320,12 @@ public final class AppSession {
         historicalExplanationURL = nil
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
+        schemaReviewChangeSets = []
+        schemaReviewCardColumns = [:]
+        pendingReviewChangeSetReveal = nil
         schemaReviewRevision &+= 1
         graphRevealRequest = nil
+        graphTapRequest = nil
         clearGraphFilter()
         graphRowCounts = [:]
         graphRelationCounts = [:]
@@ -1619,6 +1660,39 @@ public final class AppSession {
     public func clearGraphSelection() {
         selectedGraphNodeID = nil
         selectedGraphNodeIDs = []
+    }
+
+    /// The connected set of review changes currently shown, if the selection is one.
+    public var currentReviewChangeSetIndex: Int? {
+        schemaReviewChangeSets.firstIndex { Set($0) == selectedGraphNodeIDs }
+            ?? schemaReviewChangeSets.firstIndex { !selectedGraphNodeIDs.isDisjoint(with: $0) }
+    }
+
+    /// Shows one connected set of review changes: selects it, which isolates it, and frames it.
+    public func revealReviewChangeSet(at index: Int) {
+        guard schemaReviewChangeSets.indices.contains(index) else { return }
+        let ids = schemaReviewChangeSets[index]
+        setGraphSelection(Set(ids))
+        pendingReviewChangeSetReveal = nil
+        graphRevealRequest = GraphRevealRequest(tableIDs: ids, fits: true)
+    }
+
+    /// Steps to the previous or next connected set of review changes.
+    public func stepReviewChangeSet(by offset: Int) {
+        guard !schemaReviewChangeSets.isEmpty else { return }
+        let target = currentReviewChangeSetIndex.map { $0 + offset } ?? (offset >= 0 ? 0 : schemaReviewChangeSets.count - 1)
+        revealReviewChangeSet(at: target)
+    }
+
+    /// Hands the graph the set a newly opened review should frame after its first fit.
+    func consumePendingReviewChangeSetReveal() -> [String]? {
+        defer { pendingReviewChangeSetReveal = nil }
+        return pendingReviewChangeSetReveal
+    }
+
+    /// Clicks the graph at `point` as a reader at the window would.
+    public func requestGraphTap(at point: CGPoint) {
+        graphTapRequest = GraphTapRequest(point: point)
     }
 
     /// Selects a table and asks the graph to bring it into view — for choices made
@@ -2152,6 +2226,9 @@ public final class AppSession {
         historicalExplanationURL = nil
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
+        schemaReviewChangeSets = []
+        schemaReviewCardColumns = [:]
+        pendingReviewChangeSetReveal = nil
         schemaReviewRevision &+= 1
         records.reset()
         records.catalog = snapshot
@@ -2338,8 +2415,18 @@ public final class AppSession {
         schemaReviewEdgeChanges = Dictionary(uniqueKeysWithValues: relations.flatMap { change in
             change.relation.sourceColumns.indices.map { (change.graphID + ":\($0)", change.kind) }
         })
+        schemaReviewChangeSets = review.changeSets
         schemaReviewRevision &+= 1
-        tableDescriptors = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0.unionTable.descriptor) })
+        // Keys first, then changed fields, so a card's first rows show what changed.
+        let foreignKeys = review.foreignKeyColumns
+        tableDescriptors = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0.reviewTable(foreignKeys: foreignKeys[$0.id] ?? []).descriptor) })
+        schemaReviewCardColumns = changes.filter { $0.kind != .unchanged }.reduce(into: [:]) { rows, change in
+            let keys = foreignKeys[change.id] ?? []
+            let listed = change.reviewColumns(foreignKeys: keys).filter {
+                $0.primaryKeyOrdinal > 0 || keys.contains($0.name) || change.columnKind($0.name) != .unchanged
+            }
+            rows[change.id] = Set((change.kind == .modified ? listed : Array(listed.prefix(12))).map(\.name))
+        }
         tables = changes.map { $0.unionTable.descriptor.summary }
         let newGraph = review.graph
         if graph != newGraph { graph = newGraph }
@@ -2355,10 +2442,14 @@ public final class AppSession {
         let ids = Set(changes.map(\.id))
         expandedGraphNodeIDs.formIntersection(ids)
         selectedGraphNodeIDs.formIntersection(ids)
-        // A review opens on every change at once; choosing a table narrows it. A preview
-        // reload keeps the reader's choice while that table still exists.
+        // A review opens on its first connected set of changes; Previous and Next step
+        // between sets. A preview reload keeps the reader's choice while that table exists.
         if !preservingContext || (selectedGraphNodeID.map({ !ids.contains($0) }) ?? false) {
             clearGraphSelection()
+            if let first = schemaReviewChangeSets.first {
+                setGraphSelection(Set(first))
+                pendingReviewChangeSetReveal = first
+            }
         }
         // Row bounds are unavailable; recompute existing field/relation filters.
         if graphTableFilter.isActive { Task { await applyGraphFilter(graphTableFilter) } }

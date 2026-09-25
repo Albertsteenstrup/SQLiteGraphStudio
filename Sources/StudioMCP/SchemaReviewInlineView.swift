@@ -5,8 +5,8 @@ import Foundation
 /// directly, so showing a review needs no running app, database, or window.
 ///
 /// The helper does not link StudioCore, so the change rules below mirror
-/// `SchemaReviewDocument.changes` and `relationChanges` there. The parity test in
-/// StudioAutomationTests keeps the two in step.
+/// `SchemaReviewDocument.changes`, `relationChanges`, `changeSets` and the review field
+/// order there. The parity test in StudioAutomationTests keeps the two in step.
 public enum SchemaReviewInlineView {
     public static let toolName = "studio_show_review_inline"
 
@@ -21,6 +21,8 @@ public enum SchemaReviewInlineView {
     static let minimumGroupSize = 3
     static let maximumGroups = 20
     static let maximumColumnsPerTable = 60
+    /// Rows a table card shows before scrolling, as in the app's graph.
+    static let visibleCardRows = 7
     static let maximumContextColumns = 20
     static let maximumDefinitionCharacters = 500
     static let maximumSummaryNames = 20
@@ -225,6 +227,8 @@ public enum SchemaReviewInlineView {
         let relation: Relation
         let kind: ChangeKind
         let graphID: String
+        /// The earlier definition of an edited relation, which kept both endpoints.
+        var previous: Relation?
     }
 
     struct TableChange {
@@ -254,6 +258,25 @@ public enum SchemaReviewInlineView {
         }
         /// The current fields followed by removed ones, as the app shows them.
         var unionColumns: [Column] { after == nil ? table.columns : table.columns + removed }
+
+        /// Primary keys, then foreign keys (changed ones first), then other changed fields,
+        /// then the rest. When keys and changes would not all fit in a card's visible rows,
+        /// changed fields move up to follow the primary key.
+        func reviewColumns(foreignKeys: Set<String>, visibleRows: Int = SchemaReviewInlineView.visibleCardRows) -> [Column] {
+            let columns = Array(unionColumns.enumerated())
+            let isChanged = { (column: Column) in columnKind(column.name) != .unchanged }
+            let primary = columns.filter { $0.element.primaryKeyOrdinal > 0 }
+                .sorted { $0.element.primaryKeyOrdinal < $1.element.primaryKeyOrdinal }
+            let foreign = columns.filter { $0.element.primaryKeyOrdinal == 0 && foreignKeys.contains($0.element.name) }
+                .sorted { (isChanged($0.element) ? 0 : 1, $0.offset) < (isChanged($1.element) ? 0 : 1, $1.offset) }
+            let keyNames = Set((primary + foreign).map(\.element.name))
+            let changed = columns.filter { !keyNames.contains($0.element.name) && isChanged($0.element) }
+            let rest = columns.filter { !keyNames.contains($0.element.name) && !isChanged($0.element) }
+            let ordered = primary.count + foreign.count + changed.count > visibleRows
+                ? primary + changed + foreign + rest
+                : primary + foreign + changed + rest
+            return ordered.map(\.element)
+        }
     }
 
     static func relationChanges(_ document: Document) -> [RelationChange] {
@@ -262,11 +285,39 @@ public enum SchemaReviewInlineView {
         return Set(old.keys).union(new.keys).sorted().flatMap { id -> [RelationChange] in
             if let a = old[id], let b = new[id] {
                 if a == b { return [.init(relation: b, kind: .unchanged, graphID: id)] }
+                // Same endpoints: one edited relation. Moved endpoints: removed and added.
+                if a.source == b.source, a.target == b.target {
+                    return [.init(relation: b, kind: .modified, graphID: id, previous: a)]
+                }
                 return [.init(relation: a, kind: .removed, graphID: "before:" + id),
                         .init(relation: b, kind: .added, graphID: "after:" + id)]
             }
             return [.init(relation: new[id] ?? old[id]!, kind: new[id] == nil ? .removed : .added, graphID: id)]
         }
+    }
+
+    /// Source columns of every foreign key a table has in either version.
+    static func foreignKeyColumns(_ document: Document) -> [String: Set<String>] {
+        (document.before.relations + document.after.relations)
+            .reduce(into: [:]) { $0[$1.source, default: []].formUnion($1.sourceColumns) }
+    }
+
+    /// Changed tables grouped into connected sets, largest first. Any relation between two
+    /// changed tables joins their sets, whether or not the relation itself changed.
+    static func changeSets(_ changes: [TableChange], relations: [RelationChange]) -> [[String]] {
+        let changedIDs = changes.filter { $0.kind != .unchanged }.map(\.id)
+        var parent = Dictionary(uniqueKeysWithValues: changedIDs.map { ($0, $0) })
+        func root(_ id: String) -> String {
+            var current = id
+            while let next = parent[current], next != current { current = next }
+            return current
+        }
+        for change in relations where parent[change.relation.source] != nil && parent[change.relation.target] != nil {
+            let (a, b) = (root(change.relation.source), root(change.relation.target))
+            if a != b { parent[max(a, b)] = min(a, b) }
+        }
+        return Dictionary(grouping: changedIDs, by: root).values.map { $0.sorted() }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0[0] < $1[0] }
     }
 
     static func tableChanges(_ document: Document, relationChanges: [RelationChange]) -> [TableChange] {
@@ -311,14 +362,15 @@ public enum SchemaReviewInlineView {
         let shownContext = drawContext ? contextIDs.sorted().compactMap { unchangedByID[$0] } : []
         let shownIDs = shownChangedIDs.union(shownContext.map(\.id))
 
+        let foreignKeys = foreignKeyColumns(document)
         let tables = shownChanged.map { change in
-            var model = tableModel(change, context: false)
+            var model = tableModel(change, context: false, foreignKeys: foreignKeys[change.id] ?? [])
             model["unchangedLinks"] = linksModel(links[change.id] ?? [], drawn: drawContext, names: unchangedByID)
             return model
-        } + shownContext.map { tableModel($0, context: true) }
+        } + shownContext.map { tableModel($0, context: true, foreignKeys: foreignKeys[$0.id] ?? []) }
         let shownRelations = relations.filter { shownIDs.contains($0.relation.source) && shownIDs.contains($0.relation.target) }
         let relationModels: [[String: Any]] = shownRelations.map { change in
-            [
+            var model: [String: Any] = [
                 "id": change.graphID,
                 "source": change.relation.source,
                 "target": change.relation.target,
@@ -327,7 +379,12 @@ public enum SchemaReviewInlineView {
                 "kind": change.kind.rawValue,
                 "definition": truncated(change.relation.definition),
             ]
+            if let previous = change.previous { model["previousDefinition"] = truncated(previous.definition) }
+            return model
         }
+        let sets = changeSets(changes, relations: relations)
+            .map { $0.filter(shownChangedIDs.contains) }
+            .filter { !$0.isEmpty }
 
         let groups = changeGroups(changed, relations: relations)
         let addedCount = changed.filter { $0.kind == .added }.count
@@ -336,6 +393,7 @@ public enum SchemaReviewInlineView {
         let unchangedCount = changes.count - changed.count
         let relationsAdded = relations.filter { $0.kind == .added }.count
         let relationsRemoved = relations.filter { $0.kind == .removed }.count
+        let relationsModified = relations.filter { $0.kind == .modified }.count
         let isProposal = document.proposal != nil
 
         let model: [String: Any] = [
@@ -356,9 +414,11 @@ public enum SchemaReviewInlineView {
                 "unchangedTables": unchangedCount,
                 "addedRelations": relationsAdded,
                 "removedRelations": relationsRemoved,
+                "modifiedRelations": relationsModified,
             ],
             "tables": tables,
             "relations": relationModels,
+            "changeSets": sets,
             "changeGroups": groups.map { ["summary": $0.summary, "tables": $0.tables, "count": $0.tables.count] as [String: Any] },
             "omitted": [
                 "changedTables": changed.count - shownChanged.count,
@@ -367,6 +427,7 @@ public enum SchemaReviewInlineView {
         ]
         return View(model: model, summary: summaryText(document, changed: changed, unchanged: unchangedCount,
                                                          relationsAdded: relationsAdded, relationsRemoved: relationsRemoved,
+                                                         relationsModified: relationsModified,
                                                          summarizedRelated: drawContext ? 0 : contextIDs.count, groups: groups))
     }
 
@@ -396,7 +457,8 @@ public enum SchemaReviewInlineView {
                 let outgoing = relation.relation.source == change.id
                 let other = outgoing ? relation.relation.target : relation.relation.source
                 let label = names[other] ?? other
-                parts.append("\(relation.kind == .added ? "+" : "−") \(outgoing ? "→" : "←") \(label)")
+                let mark = relation.kind == .added ? "+" : relation.kind == .removed ? "−" : "~"
+                parts.append("\(mark) \(outgoing ? "→" : "←") \(label)")
             }
             if let before = change.before, let after = change.after, before.metadata != after.metadata {
                 parts.append("~ definitions")
@@ -442,8 +504,8 @@ public enum SchemaReviewInlineView {
         ]
     }
 
-    private static func tableModel(_ change: TableChange, context: Bool) -> [String: Any] {
-        let columns = change.unionColumns
+    private static func tableModel(_ change: TableChange, context: Bool, foreignKeys: Set<String>) -> [String: Any] {
+        let columns = change.reviewColumns(foreignKeys: foreignKeys)
         let limit = context ? maximumContextColumns : maximumColumnsPerTable
         var shown: [Column]
         if columns.count <= limit {
@@ -467,6 +529,7 @@ public enum SchemaReviewInlineView {
                 "description": column.description,
                 "kind": kind.rawValue,
                 "primaryKey": column.primaryKeyOrdinal > 0,
+                "foreignKey": foreignKeys.contains(column.name),
             ]
             if kind == .modified, let previous = beforeColumns[column.name] {
                 model["before"] = previous.description
@@ -522,19 +585,20 @@ public enum SchemaReviewInlineView {
     }
 
     private static func summaryText(_ document: Document, changed: [TableChange], unchanged: Int,
-                                    relationsAdded: Int, relationsRemoved: Int, summarizedRelated: Int,
-                                    groups: [ChangeGroup]) -> String {
+                                    relationsAdded: Int, relationsRemoved: Int, relationsModified: Int,
+                                    summarizedRelated: Int, groups: [ChangeGroup]) -> String {
         let isProposal = document.proposal != nil
         let heading = isProposal
             ? "Proposed schema changes \"\(document.title)\" are shown inline (not applied; based on \(document.baseRef))."
             : "Schema review \"\(document.title)\" is shown inline (\(document.baseRef) → \(document.headRef))."
-        guard !changed.isEmpty || relationsAdded + relationsRemoved > 0 else {
+        guard !changed.isEmpty || relationsAdded + relationsRemoved + relationsModified > 0 else {
             return heading + " No table, field, or relation changes. \(unchanged) tables unchanged."
         }
         func count(_ kind: ChangeKind) -> Int { changed.filter { $0.kind == kind }.count }
         var lines = [heading,
                      "\(changed.count) changed tables: \(count(.added)) new, \(count(.removed)) removed, \(count(.modified)) changed; "
-                        + "\(relationsAdded) relations added, \(relationsRemoved) removed; \(unchanged) tables unchanged."]
+                        + "\(relationsAdded) relations added, \(relationsRemoved) removed, \(relationsModified) changed; "
+                        + "\(unchanged) tables unchanged."]
         for group in groups.prefix(2) {
             lines.append("\(group.tables.count) tables share one change: \(group.summary).")
         }

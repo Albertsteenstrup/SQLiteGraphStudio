@@ -145,6 +145,34 @@ public struct SchemaTableChange: Sendable, Identifiable {
         if after != nil { value.columns += removed }
         return value
     }
+
+    /// The table's fields in review reading order: primary keys, then foreign keys, then
+    /// every other changed field, then the rest, each group keeping its own order. Changed
+    /// foreign keys lead their group. When keys and changes would not all fit in `visibleRows`
+    /// (a card's visible rows), changed fields move up to follow the primary key so they
+    /// always stay in view.
+    func reviewColumns(foreignKeys: Set<String>, visibleRows: Int = 7) -> [SchemaReviewSnapshot.Column] {
+        let columns = Array(unionTable.columns.enumerated())
+        let isChanged = { (column: SchemaReviewSnapshot.Column) in columnKind(column.name) != .unchanged }
+        let primary = columns.filter { $0.element.primaryKeyOrdinal > 0 }
+            .sorted { $0.element.primaryKeyOrdinal < $1.element.primaryKeyOrdinal }
+        let foreign = columns.filter { $0.element.primaryKeyOrdinal == 0 && foreignKeys.contains($0.element.name) }
+            .sorted { (isChanged($0.element) ? 0 : 1, $0.offset) < (isChanged($1.element) ? 0 : 1, $1.offset) }
+        let keyNames = Set((primary + foreign).map(\.element.name))
+        let changed = columns.filter { !keyNames.contains($0.element.name) && isChanged($0.element) }
+        let rest = columns.filter { !keyNames.contains($0.element.name) && !isChanged($0.element) }
+        let ordered = primary.count + foreign.count + changed.count > visibleRows
+            ? primary + changed + foreign + rest
+            : primary + foreign + changed + rest
+        return ordered.map(\.element)
+    }
+
+    /// `unionTable` with its fields in review reading order.
+    func reviewTable(foreignKeys: Set<String>) -> SchemaReviewSnapshot.Table {
+        var value = unionTable
+        value.columns = reviewColumns(foreignKeys: foreignKeys)
+        return value
+    }
 }
 
 public struct SchemaReviewDocument: Codable, Sendable {
@@ -249,17 +277,52 @@ public struct SchemaReviewDocument: Codable, Sendable {
         public let relation: SchemaReviewSnapshot.Relation
         public let kind: SchemaChangeKind
         public let graphID: String
+        /// The earlier definition of an edited relation, which kept both endpoints.
+        public let previous: SchemaReviewSnapshot.Relation?
+
+        init(relation: SchemaReviewSnapshot.Relation, kind: SchemaChangeKind, graphID: String,
+             previous: SchemaReviewSnapshot.Relation? = nil) {
+            self.relation = relation; self.kind = kind; self.graphID = graphID; self.previous = previous
+        }
     }
+    /// A relation that keeps its endpoints but changes columns or definition is one edited
+    /// relation; one that moves to other tables is a removed relation and an added one.
     public var relationChanges: [RelationChange] {
         let old = Dictionary(uniqueKeysWithValues: before.relations.map { ($0.id, $0) })
         let new = Dictionary(uniqueKeysWithValues: after.relations.map { ($0.id, $0) })
         return Set(old.keys).union(new.keys).sorted().flatMap { id -> [RelationChange] in
             if let a = old[id], let b = new[id] {
                 if a == b { return [.init(relation: b, kind: .unchanged, graphID: id)] }
+                if a.source == b.source, a.target == b.target {
+                    return [.init(relation: b, kind: .modified, graphID: id, previous: a)]
+                }
                 return [.init(relation: a, kind: .removed, graphID: "before:" + id), .init(relation: b, kind: .added, graphID: "after:" + id)]
             }
             return [.init(relation: new[id] ?? old[id]!, kind: new[id] == nil ? .removed : .added, graphID: id)]
         }
+    }
+
+    /// Source columns of every foreign key a table has in either version.
+    public var foreignKeyColumns: [String: Set<String>] {
+        (before.relations + after.relations).reduce(into: [:]) { $0[$1.source, default: []].formUnion($1.sourceColumns) }
+    }
+
+    /// Changed tables grouped into connected sets, largest first. Any relation between two
+    /// changed tables joins their sets, whether or not the relation itself changed.
+    public var changeSets: [[String]] {
+        let changedIDs = changes.filter { $0.kind != .unchanged }.map(\.id)
+        var parent = Dictionary(uniqueKeysWithValues: changedIDs.map { ($0, $0) })
+        func root(_ id: String) -> String {
+            var current = id
+            while let next = parent[current], next != current { current = next }
+            return current
+        }
+        for change in relationChanges where parent[change.relation.source] != nil && parent[change.relation.target] != nil {
+            let (a, b) = (root(change.relation.source), root(change.relation.target))
+            if a != b { parent[max(a, b)] = min(a, b) }
+        }
+        return Dictionary(grouping: changedIDs, by: root).values.map { $0.sorted() }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0[0] < $1[0] }
     }
     var graph: SchemaGraph {
         SchemaGraph(nodes: changes.map { GraphNode(id: $0.id, title: $0.table.displayName, isEditable: false) },

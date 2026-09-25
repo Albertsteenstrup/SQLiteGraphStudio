@@ -15,12 +15,21 @@ public extension MCPBridgeTransport {
 
 public final class LocalMCPToolDispatcher: MCPToolDispatcher {
     private let transport: MCPBridgeTransport
+    private let renderer: SchemaReviewRenderer
+    private let openDocuments: ([URL]) throws -> Void
 
-    public init(transport: MCPBridgeTransport = UnixSocketMCPBridge()) {
+    public convenience init(transport: MCPBridgeTransport = UnixSocketMCPBridge()) {
+        self.init(transport: transport, renderer: .shared, openDocuments: SchemaReviewAppTools.openInGraphStudio)
+    }
+
+    init(transport: MCPBridgeTransport, renderer: SchemaReviewRenderer, openDocuments: @escaping ([URL]) throws -> Void) {
         self.transport = transport
+        self.renderer = renderer
+        self.openDocuments = openDocuments
     }
 
     public func clientDisconnected(clientID: String) {
+        renderer.stop()
         transport.disconnect(clientID: clientID)
     }
 
@@ -44,6 +53,13 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
                 path: call.arguments["path"] as? String ?? "",
                 workingDirectory: call.workingDirectory
             )
+        case SchemaReviewAppTools.frameToolName:
+            // Drawn by a hidden renderer process, never by the reader's running app.
+            return SchemaReviewAppTools.frame(arguments: call.arguments, workingDirectory: call.workingDirectory,
+                                              renderer: renderer)
+        case SchemaReviewAppTools.openToolName:
+            return SchemaReviewAppTools.openInApp(arguments: call.arguments, workingDirectory: call.workingDirectory,
+                                                  open: openDocuments)
         default:
             var arguments = call.arguments
             if call.name == "studio_connect_context", arguments["project_path"] == nil {
@@ -93,9 +109,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
 
     public func status(clientID: String) -> [String: Any] {
         let appURL = applicationURLProvider()
-        let runningCopies = NSRunningApplication.runningApplications(
-            withBundleIdentifier: MCPBridgePaths.appBundleIdentifier
-        )
+        let runningCopies = MCPBridgePaths.runningApplications()
         let isRunning = runningCopies.contains { runningApplication in
             guard let appURL, let runningURL = runningApplication.bundleURL else { return false }
             return runningURL.resolvingSymlinksInPath().standardizedFileURL ==
@@ -165,9 +179,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
             )
         }
 
-        let runningCopies = NSRunningApplication.runningApplications(
-            withBundleIdentifier: MCPBridgePaths.appBundleIdentifier
-        )
+        let runningCopies = MCPBridgePaths.runningApplications()
         let pairedCopy = runningCopies.first {
             $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL ==
                 appURL.resolvingSymlinksInPath().standardizedFileURL
@@ -419,7 +431,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
         }
     }
 
-    private static func findApplication() -> URL? {
+    static func findApplication() -> URL? {
         // A bundled helper must launch the app that contains it. Launch Services
         // may otherwise resolve this bundle identifier to an older installed copy.
         if let executable = Bundle.main.executableURL {

@@ -1,7 +1,15 @@
 import SwiftUI
 
 extension SchemaChangeKind {
-    var tint: Color { self == .removed ? .red : .blue }
+    /// Green for added, blue for edited, red for removed — for tables, fields and relations.
+    var tint: Color {
+        switch self {
+        case .added: .green
+        case .modified: .blue
+        case .removed: .red
+        case .unchanged: .secondary
+        }
+    }
     var symbol: String { self == .removed ? "−" : self == .added ? "+" : self == .modified ? "~" : "" }
 }
 
@@ -12,11 +20,11 @@ struct SchemaChangeBadge: View {
             HStack(spacing: 5) {
                 if change.kind == .added || change.kind == .removed { Text(change.kind.label).foregroundStyle(change.kind.tint) }
                 else {
-                    if !change.added.isEmpty { Text("+\(change.added.count)").foregroundStyle(.blue) }
-                    if !change.removed.isEmpty { Text("−\(change.removed.count)").foregroundStyle(.red) }
-                    if !change.modified.isEmpty { Text("~\(change.modified.count)").foregroundStyle(.blue) }
-                    if change.relationChanged { Text("↔").foregroundStyle(.blue) }
-                    if change.badge.isEmpty { Text("Changed").foregroundStyle(.blue) }
+                    if !change.added.isEmpty { Text("+\(change.added.count)").foregroundStyle(SchemaChangeKind.added.tint) }
+                    if !change.removed.isEmpty { Text("−\(change.removed.count)").foregroundStyle(SchemaChangeKind.removed.tint) }
+                    if !change.modified.isEmpty { Text("~\(change.modified.count)").foregroundStyle(SchemaChangeKind.modified.tint) }
+                    if change.relationChanged { Text("↔").foregroundStyle(SchemaChangeKind.modified.tint) }
+                    if change.badge.isEmpty { Text("Changed").foregroundStyle(SchemaChangeKind.modified.tint) }
                 }
             }
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -114,8 +122,9 @@ struct SchemaReviewWorkspaceView: View {
                     Label("Offline snapshot", systemImage: "clock.arrow.circlepath").foregroundStyle(.secondary)
                 } else {
                     changeSummary(order).font(.callout)
-                    Label("Added / changed", systemImage: "plus.square").foregroundStyle(.blue)
-                    Label("Removed", systemImage: "minus.square").foregroundStyle(.red)
+                    Label("Added", systemImage: "plus.square").foregroundStyle(SchemaChangeKind.added.tint)
+                    Label("Changed", systemImage: "square.and.pencil").foregroundStyle(SchemaChangeKind.modified.tint)
+                    Label("Removed", systemImage: "minus.square").foregroundStyle(SchemaChangeKind.removed.tint)
                 }
             }
             .padding(.horizontal, 16)
@@ -142,10 +151,12 @@ struct SchemaReviewWorkspaceView: View {
                                                         replayView: session.historicalReplayView,
                                                         currentLeftPane: session.leftPane.kind,
                                                         currentRightPane: session.rightPane.kind)
-                    } else if let selected {
-                        focusBar(for: selected, changed: order.changed)
+                    } else if selected != nil {
+                        changeSetBar()
+                    }
+                    if historicalArtifact == nil, let selected {
                         SchemaReviewTableDetail(change: selected, relations: review.relationChanges, isPreview: review.proposal != nil)
-                    } else { allChangesSummary(order.changed) }
+                    } else if historicalArtifact == nil { allChangesSummary(order.changed) }
                 }
                 .padding(16)
                 .frame(width: geometry.size.width * 0.44 - 1)
@@ -156,7 +167,7 @@ struct SchemaReviewWorkspaceView: View {
             HStack {
                 Text(isHistoricalExplanation
                     ? "Historical schema and explicitly saved rows · no live source or queries · values may be truncated"
-                    : review.proposal == nil ? "Schema comparison · no row data · solid blue = added/changed · dashed red = removed · unchanged relations appear when zoomed in"
+                    : review.proposal == nil ? "Schema comparison · no row data · solid green = added · solid blue = changed · dashed red = removed · unchanged relations appear when zoomed in"
                     : "Preview · no SQL executed · updates automatically")
                     .font(.caption).foregroundStyle(.secondary)
                 if let error = session.schemaPreviewReloadError {
@@ -245,22 +256,24 @@ struct SchemaReviewWorkspaceView: View {
         .help(isSelected ? "Show all changes" : "Show only this table's changes")
     }
 
-    /// Stepping through changes one at a time, the way a code diff is read hunk by hunk.
-    private func focusBar(for selected: SchemaTableChange, changed: [SchemaTableChange]) -> some View {
-        let index = changed.firstIndex { $0.id == selected.id }
-        let previous = index.flatMap { $0 > 0 ? changed[$0 - 1] : nil }
-        let next = index.map { $0 + 1 < changed.count ? changed[$0 + 1] : nil } ?? changed.first
+    /// Stepping through connected sets of changes, one set per view, the way a code diff
+    /// is read hunk by hunk. A review whose changes are all connected has one set.
+    private func changeSetBar() -> some View {
+        let sets = session.schemaReviewChangeSets
+        let index = session.currentReviewChangeSetIndex
         return HStack(spacing: 6) {
-            Button { previous.map { session.revealGraphNode($0.id) } } label: { Image(systemName: "chevron.up") }
-                .disabled(previous == nil)
-                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                .help("Previous change (⌥⌘↑)")
-            Button { next.map { session.revealGraphNode($0.id) } } label: { Image(systemName: "chevron.down") }
-                .disabled(next == nil)
-                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                .help("Next change (⌥⌘↓)")
-            Text(index.map { "Change \($0 + 1) of \(changed.count)" } ?? "Unchanged table")
-                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            if sets.count > 1 {
+                Button { session.stepReviewChangeSet(by: -1) } label: { Image(systemName: "chevron.up") }
+                    .disabled(index == 0)
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                    .help("Previous connected changes (⌥⌘↑)")
+                Button { session.stepReviewChangeSet(by: 1) } label: { Image(systemName: "chevron.down") }
+                    .disabled(index.map { $0 + 1 >= sets.count } ?? false)
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                    .help("Next connected changes (⌥⌘↓)")
+                Text(index.map { "Changes \($0 + 1) of \(sets.count)" } ?? "\(sets.count) sets of changes")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
             Spacer()
             Button("Show All Changes") { session.clearGraphSelection() }
                 .controlSize(.small)
@@ -274,9 +287,9 @@ struct SchemaReviewWorkspaceView: View {
                 Text("Showing all \(changed.count) changed \(changed.count == 1 ? "table" : "tables")").font(.headline)
                 Text("Choose a table to see only its changes in the graph and compare its fields here.")
                     .foregroundStyle(.secondary)
-                Button("Review First Change") { session.revealGraphNode(first.id) }
+                Button("Review Changes") { session.revealReviewChangeSet(at: 0) }
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                    .help("Start with \(first.table.displayName) (⌥⌘↓)")
+                    .help("Start with the changes connected to \(first.table.displayName) (⌥⌘↓)")
             }
         } else {
             Text("No schema changes. Select a table to see its fields.").foregroundStyle(.secondary)
@@ -466,7 +479,12 @@ private struct SchemaReviewTableDetail: View {
     let change: SchemaTableChange
     let relations: [SchemaReviewDocument.RelationChange]
     let isPreview: Bool
-    private var fields: [String] { (change.after?.columns.map(\.name) ?? []) + change.removed.map(\.name) }
+    /// Keys first, then changed fields, then the rest, as the graph cards show them.
+    private var fields: [String] {
+        let keys = relations.filter { $0.relation.source == change.id || $0.previous?.source == change.id }
+            .reduce(into: Set<String>()) { $0.formUnion($1.relation.sourceColumns + ($1.previous?.sourceColumns ?? [])) }
+        return change.reviewColumns(foreignKeys: keys).map(\.name)
+    }
     private var metadataKeys: [String] { Set(change.before?.metadata.keys.map { $0 } ?? []).union(change.after?.metadata.keys.map { $0 } ?? []).sorted() }
 
     var body: some View {
@@ -499,8 +517,8 @@ private struct SchemaReviewTableDetail: View {
                     ForEach(isPreview ? [] : metadataKeys.filter { change.before?.metadata[$0] != change.after?.metadata[$0] }, id: \.self) { key in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(metadataTitle(key)).font(.caption.bold())
-                            if let value = change.before?.metadata[key] { Text("− " + value).foregroundStyle(.red) }
-                            if let value = change.after?.metadata[key] { Text("+ " + value).foregroundStyle(.blue) }
+                            if let value = change.before?.metadata[key] { Text("− " + value).foregroundStyle(SchemaChangeKind.removed.tint) }
+                            if let value = change.after?.metadata[key] { Text("+ " + value).foregroundStyle(SchemaChangeKind.added.tint) }
                         }.font(.caption.monospaced()).textSelection(.enabled)
                     }
                 }.frame(width: 640, alignment: .leading)

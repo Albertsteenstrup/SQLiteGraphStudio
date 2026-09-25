@@ -1,0 +1,81 @@
+import AppKit
+import Foundation
+@testable import StudioCore
+@testable import StudioMCP
+import Testing
+
+/// Drives Graph Studio's real renderer process the way the inline review view does: the
+/// helper starts it from a clone of the app executable and sends the reader's input.
+struct SchemaReviewRendererTests {
+    @Test func drawsTheAppsGraphAndAnswersReaderInput() throws {
+        let executable = try #require(Self.appExecutable(), "The SQLiteGraphStudio product is built for this test target")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("renderer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let review = Self.review()
+        let url = folder.appendingPathComponent("change.sgreview")
+        try review.write(to: url)
+        let renderer = SchemaReviewRenderer(executableProvider: { executable },
+                                            slotDirectory: folder.appendingPathComponent("slots", isDirectory: true),
+                                            cloneDirectory: folder.appendingPathComponent("clones", isDirectory: true),
+                                            idleTimeout: 60)
+        defer { renderer.stop() }
+
+        func frame(_ actions: [[String: Any]] = []) throws -> (image: NSBitmapImageRep, state: [String: Any]) {
+            let result = SchemaReviewAppTools.frame(arguments: ["path": url.path, "width": 480, "height": 320, "scale": 1,
+                                                                "actions": actions],
+                                                    workingDirectory: "/", renderer: renderer)
+            try #require(result["isError"] as? Bool == false, "\(result["structuredContent"] ?? result)")
+            let content = try #require((result["content"] as? [[String: Any]])?.first)
+            let data = try #require(Data(base64Encoded: content["data"] as? String ?? ""))
+            let image = try #require(NSBitmapImageRep(data: data))
+            return (image, result["structuredContent"] as? [String: Any] ?? [:])
+        }
+
+        let opened = try frame()
+        #expect(opened.image.pixelsWide == 480 && opened.image.pixelsHigh == 320)
+        #expect(opened.state["setTables"] as? [[String]] == review.changeSets)
+        #expect(opened.state["set"] as? Int == 0, "A review opens on its first connected set")
+        #expect(Set(opened.state["selection"] as? [String] ?? []) == Set(review.changeSets[0]))
+
+        let stepped = try frame([["type": "step", "direction": 1]])
+        #expect(stepped.state["set"] as? Int == 1)
+
+        // An empty corner is canvas: the app's own tap handling shows every change again.
+        let cleared = try frame([["type": "click", "x": 4, "y": 316]])
+        #expect(cleared.state["set"] is NSNull)
+        #expect((cleared.state["selection"] as? [String])?.isEmpty == true)
+
+        let jumped = try frame([["type": "set", "index": 0], ["type": "transform", "scale": 1.5, "tx": -120, "ty": -80]])
+        #expect(jumped.state["set"] as? Int == 0)
+        #expect(renderer.isRunning)
+    }
+
+    private final class Marker {}
+
+    /// The app executable sits beside this test bundle in the build products.
+    private static func appExecutable() -> URL? {
+        let candidate = Bundle(for: Marker.self).bundleURL.deletingLastPathComponent().appendingPathComponent("SQLiteGraphStudio")
+        return FileManager.default.isExecutableFile(atPath: candidate.path) ? candidate : nil
+    }
+
+    /// Two connected sets: users with its team, and an unrelated new audit table.
+    private static func review() -> SchemaReviewDocument {
+        func column(_ name: String, _ type: String = "TEXT", notNull: Bool = false, pk: Int = 0) -> SchemaReviewSnapshot.Column {
+            .init(name: name, type: type, notNull: notNull, defaultSQL: nil, primaryKeyOrdinal: pk, generated: 0, identity: "")
+        }
+        func table(_ id: String, _ columns: [SchemaReviewSnapshot.Column]) -> SchemaReviewSnapshot.Table {
+            .init(id: id, schema: nil, name: id, kind: "table", columns: [column("id", "INTEGER", pk: 1)] + columns, metadata: [:])
+        }
+        let relation = SchemaReviewSnapshot.Relation(id: "fk_team", source: "users", target: "teams", sourceColumns: ["team_id"],
+                                                     targetColumns: ["id"], definition: "FOREIGN KEY (team_id) REFERENCES teams(id)")
+        return SchemaReviewDocument(title: "Renderer", baseRef: "a", headRef: "b",
+            before: SchemaReviewSnapshot(engine: "sqlite", tables: [
+                table("teams", [column("name")]), table("users", [column("team_id", "INTEGER"), column("email")]),
+            ], relations: [relation]),
+            after: SchemaReviewSnapshot(engine: "sqlite", tables: [
+                table("teams", [column("name", notNull: true)]), table("users", [column("team_id", "INTEGER"), column("email"), column("active")]),
+                table("audits", [column("action")]),
+            ], relations: [relation]))
+    }
+}

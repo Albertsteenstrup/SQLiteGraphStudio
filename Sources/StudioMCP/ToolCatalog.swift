@@ -8,6 +8,11 @@ public struct MCPToolDefinition: @unchecked Sendable {
         name = json["name"] as? String ?? ""
         self.json = json
     }
+
+    /// Called only by an MCP Apps view, never by the model (`_meta.ui.visibility: ["app"]`).
+    public var isAppOnly: Bool {
+        ((json["_meta"] as? [String: Any])?["ui"] as? [String: Any])?["visibility"] as? [String] == ["app"]
+    }
 }
 
 public enum MCPToolCatalog {
@@ -25,7 +30,9 @@ public enum MCPToolCatalog {
             var entry = original
             let name = entry["name"] as? String ?? ""
             // Tools answered by the helper itself need no coding-task context.
-            if !["studio_status", "studio_launch", "studio_connect_context", SchemaReviewInlineView.toolName].contains(name) {
+            let helperTools = ["studio_status", "studio_launch", "studio_connect_context", SchemaReviewInlineView.toolName]
+                + SchemaReviewAppTools.names
+            if !helperTools.contains(name) {
                 var schema = entry["inputSchema"] as? [String: Any] ?? [:]
                 var properties = schema["properties"] as? [String: Any] ?? [:]
                 properties["context_id"] = [

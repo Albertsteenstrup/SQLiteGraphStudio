@@ -2828,6 +2828,171 @@
     }
   },
   {
+    "name": "studio_review_frame",
+    "title": "Draw review frame",
+    "description": "Called by the inline schema review view, not by the model: draws the review with Graph Studio's own graph after the reader's clicks, pans, zooms and change-set steps, and returns the frame as an image. A hidden renderer draws it; no window opens.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Path to a .sgreview comparison or .sgpreview proposal file."
+        },
+        "width": {
+          "type": "number",
+          "minimum": 120,
+          "maximum": 2400,
+          "description": "Frame width in points."
+        },
+        "height": {
+          "type": "number",
+          "minimum": 120,
+          "maximum": 2400,
+          "description": "Frame height in points."
+        },
+        "scale": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Pixels per point."
+        },
+        "appearance": {
+          "type": "string",
+          "enum": [
+            "light",
+            "dark"
+          ],
+          "description": "Overrides the system appearance, which Graph Studio follows."
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "Reader input applied in order before drawing.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "click",
+                  "pan",
+                  "zoom",
+                  "transform",
+                  "step",
+                  "set",
+                  "fit"
+                ]
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              },
+              "dx": {
+                "type": "number"
+              },
+              "dy": {
+                "type": "number"
+              },
+              "magnification": {
+                "type": "number",
+                "minimum": -0.95,
+                "maximum": 10
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 100
+              },
+              "tx": {
+                "type": "number"
+              },
+              "ty": {
+                "type": "number"
+              },
+              "direction": {
+                "type": "integer",
+                "minimum": -1,
+                "maximum": 1
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "context_id": {
+          "type": "string",
+          "description": "Optional; this tool does not use a coding-task context."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Draw review frame",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "visibility": [
+          "app"
+        ]
+      }
+    }
+  },
+  {
+    "name": "studio_open_review_in_app",
+    "title": "Open review in Graph Studio",
+    "description": "Called by the inline schema review view when the reader clicks Graph Studio, not by the model: opens the review in the Graph Studio app with the schema before the changes in a second tab.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Path to a .sgreview comparison or .sgpreview proposal file."
+        },
+        "context_id": {
+          "type": "string",
+          "description": "Optional; this tool does not use a coding-task context."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Open review in Graph Studio",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "visibility": [
+          "app"
+        ]
+      }
+    }
+  },
+  {
     "name": "studio_save_explanation",
     "title": "Save Explanation",
     "description": "Save only points that have actually appeared in the live presentation, and only when the user requests a saved explanation. The artifact captures a credential-free schema snapshot, captions and saved words, point timing/actions/evidence references, and only rows named in included_result_scope. Set result_ids to query-result IDs whose current displayed page was used; set table_pages to already loaded table pages with exact table_id/offset/limit. This build captures at most 1,000 rows, clips long cell text, records omissions, and never stores SQL or a source locator. The artifact is atomic and never overwrites an existing file. Offline replay applies saved graph/layout/table selections and shows captured table/query pages referenced by each point; unreferenced saved pages remain available in the manual historical view. Replay never contacts the original source.",

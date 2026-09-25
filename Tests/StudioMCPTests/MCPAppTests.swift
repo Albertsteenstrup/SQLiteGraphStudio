@@ -106,9 +106,11 @@ final class MCPAppTests: XCTestCase {
 
         let users = try XCTUnwrap(tables.first { $0["id"] as? String == "users" })
         let columns = try XCTUnwrap(users["columns"] as? [[String: Any]])
-        // Current fields first, then removed ones, as the app lists them.
+        // Keys first, then changed fields with removed ones last, as the app's cards list them.
         XCTAssertEqual(columns.map { $0["name"] as? String }, ["id", "team_id", "email", "active", "nickname"])
         XCTAssertEqual(columns.map { $0["kind"] as? String }, ["unchanged", "unchanged", "modified", "added", "removed"])
+        XCTAssertEqual(columns.map { $0["foreignKey"] as? Bool }, [false, true, false, false, false])
+        XCTAssertEqual(view["changeSets"] as? [[String]], [["legacy_tokens", "sessions", "users"]])
         XCTAssertEqual(columns[2]["before"] as? String, "TEXT · NULL")
         XCTAssertEqual(columns[2]["description"] as? String, "TEXT · NOT NULL · DEFAULT ''")
         let definitions = try XCTUnwrap(users["definitionChanges"] as? [[String: Any]])
@@ -230,6 +232,146 @@ final class MCPAppTests: XCTestCase {
         XCTAssertTrue(text.contains("20 related unchanged tables are summarized"), text)
     }
 
+    // MARK: App-only tools
+
+    func testAppOnlyToolsReachOnlyHostsThatRenderViews() throws {
+        func names(_ response: [String: Any]) -> Set<String> {
+            Set(((response["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
+        }
+        let list: [String: Any] = ["jsonrpc": "2.0", "id": 9, "method": "tools/list"]
+        let plain = names(object(try initializedServer().handleMessage(json(list))))
+        XCTAssertTrue(plain.contains(SchemaReviewInlineView.toolName))
+        XCTAssertTrue(plain.isDisjoint(with: SchemaReviewAppTools.names), "A host without views never sees their tools")
+
+        let apps = names(object(try initializedServer(capabilities: ["extensions": [
+            MCPAppResources.extensionIdentifier: ["mimeTypes": [MCPAppResources.mimeType]],
+        ]]).handleMessage(json(list))))
+        XCTAssertTrue(apps.isSuperset(of: SchemaReviewAppTools.names))
+
+        let otherViews = names(object(try initializedServer(capabilities: ["extensions": [
+            MCPAppResources.extensionIdentifier: ["mimeTypes": ["text/html"]],
+        ]]).handleMessage(json(list))))
+        XCTAssertTrue(otherViews.isDisjoint(with: SchemaReviewAppTools.names))
+
+        // The modern protocol declares client capabilities on each request.
+        let modern = MCPServer(dispatcher: LocalMCPToolDispatcher(transport: UnusedTransport()))
+        let modernNames = names(object(try modern.handleMessage(json([
+            "jsonrpc": "2.0", "id": 10, "method": "tools/list",
+            "params": ["_meta": [
+                "io.modelcontextprotocol/protocolVersion": MCPServer.modernProtocolVersion,
+                "io.modelcontextprotocol/clientCapabilities": ["extensions": [MCPAppResources.extensionIdentifier: [String: Any]()]],
+            ]],
+        ]))))
+        XCTAssertTrue(modernNames.isSuperset(of: SchemaReviewAppTools.names))
+    }
+
+    func testAppOnlyToolsAreKeptFromTheModelAndNeedNoCodingTaskContext() throws {
+        for name in SchemaReviewAppTools.names {
+            let tool = try XCTUnwrap(MCPToolCatalog.tool(named: name), name)
+            XCTAssertTrue(tool.isAppOnly, name)
+            XCTAssertEqual((tool.json["inputSchema"] as? [String: Any])?["required"] as? [String], ["path"], name)
+        }
+        XCTAssertFalse(try XCTUnwrap(MCPToolCatalog.tool(named: SchemaReviewInlineView.toolName)).isAppOnly)
+    }
+
+    func testFramesExplainAMissingOrBusyRenderer() throws {
+        try write(review(), to: "change.sgreview")
+        let arguments: [String: Any] = ["path": "change.sgreview"]
+        let missing = renderer(executable: nil)
+        XCTAssertEqual(errorCode(SchemaReviewAppTools.frame(arguments: arguments, workingDirectory: directory.path, renderer: missing)),
+                       "RENDERER_UNAVAILABLE")
+
+        // Other sessions hold every slot on the machine.
+        let slots = directory.appendingPathComponent("busy", isDirectory: true)
+        let held = (0..<SchemaReviewRenderer.slotCount).compactMap { _ in RendererSlot.acquire(in: slots, count: SchemaReviewRenderer.slotCount) }
+        defer { held.forEach { $0.release() } }
+        XCTAssertEqual(held.count, SchemaReviewRenderer.slotCount)
+        let busy = renderer(executable: try fakeRenderer(), slots: slots)
+        XCTAssertEqual(errorCode(SchemaReviewAppTools.frame(arguments: arguments, workingDirectory: directory.path, renderer: busy)),
+                       "RENDERER_BUSY")
+        XCTAssertFalse(busy.isRunning)
+    }
+
+    func testRendererStartsOnDemandStopsWhenIdleAndFreesItsSlot() throws {
+        try write(review(), to: "change.sgreview")
+        let slots = directory.appendingPathComponent("slots", isDirectory: true)
+        let renderer = renderer(executable: try fakeRenderer(), slots: slots, idleTimeout: 0.3)
+        let arguments: [String: Any] = ["path": "change.sgreview", "width": 640, "height": 400, "actions": [["type": "step", "direction": 1]]]
+        let result = SchemaReviewAppTools.frame(arguments: arguments, workingDirectory: directory.path, renderer: renderer)
+        XCTAssertEqual(result["isError"] as? Bool, false)
+        let image = try XCTUnwrap((result["content"] as? [[String: Any]])?.first)
+        XCTAssertEqual(image["type"] as? String, "image")
+        XCTAssertEqual(image["mimeType"] as? String, "image/jpeg")
+        XCTAssertEqual(image["data"] as? String, "AAAA")
+        let state = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+        XCTAssertEqual(state["sets"] as? Int, 2)
+        XCTAssertEqual(state["setTables"] as? [[String]], [["users"], ["teams"]])
+        XCTAssertTrue(renderer.isRunning)
+        let spare = RendererSlot.acquire(in: slots, count: SchemaReviewRenderer.slotCount)
+        XCTAssertNotNil(spare, "One renderer holds one slot")
+        spare?.release()
+
+        // The idle timer runs on the renderer's own queue; the long bound only matters on failure.
+        let deadline = Date().addingTimeInterval(30)
+        while renderer.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertFalse(renderer.isRunning, "An idle renderer stops")
+        let freed = (0..<SchemaReviewRenderer.slotCount).compactMap { _ in RendererSlot.acquire(in: slots, count: SchemaReviewRenderer.slotCount) }
+        XCTAssertEqual(freed.count, SchemaReviewRenderer.slotCount, "A stopped renderer frees its slot")
+        freed.forEach { $0.release() }
+
+        XCTAssertEqual(SchemaReviewAppTools.frame(arguments: arguments, workingDirectory: directory.path, renderer: renderer)["isError"] as? Bool, false)
+        let dispatcher = LocalMCPToolDispatcher(transport: UnusedTransport(), renderer: renderer, openDocuments: { _ in })
+        dispatcher.clientDisconnected(clientID: "client")
+        XCTAssertFalse(renderer.isRunning, "The renderer stops with the client that started it")
+    }
+
+    func testRendererRunsFromAReusedCloneOfTheAppExecutable() throws {
+        let source = directory.appendingPathComponent("SQLiteGraphStudio")
+        try Data("#!/bin/sh\n".utf8).write(to: source)
+        let clones = directory.appendingPathComponent("clones", isDirectory: true)
+        let clone = try SchemaReviewRenderer.clone(of: source, in: clones)
+        XCTAssertEqual(clone.lastPathComponent, SchemaReviewRenderer.rendererName)
+        XCTAssertNotEqual(try inode(clone), try inode(source), "A separate file keeps macOS from taking the renderer for the app")
+        XCTAssertEqual(try SchemaReviewRenderer.clone(of: source, in: clones), clone)
+
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: source)
+        let rebuilt = try SchemaReviewRenderer.clone(of: source, in: clones)
+        XCTAssertNotEqual(rebuilt, clone)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: clone.path), "Clones of earlier builds are removed")
+    }
+
+    func testOpensTheReviewInGraphStudioBesideItsOriginalSchema() throws {
+        try write(review(), to: "change.sgreview")
+        var opened: [[URL]] = []
+        let dispatcher = LocalMCPToolDispatcher(transport: UnusedTransport(), renderer: renderer(executable: nil),
+                                                openDocuments: { opened.append($0) })
+        let call = MCPToolCall(name: SchemaReviewAppTools.openToolName, arguments: ["path": "change.sgreview"], contextID: nil,
+                               clientID: "client", clientName: nil, clientVersion: nil, workingDirectory: directory.path)
+        XCTAssertEqual(dispatcher.dispatch(call)["isError"] as? Bool, false)
+        let urls = try XCTUnwrap(opened.first)
+        XCTAssertEqual(urls.count, 2)
+        defer { try? FileManager.default.removeItem(at: urls[1].deletingLastPathComponent()) }
+        XCTAssertEqual(urls[0].path, directory.appendingPathComponent("change.sgreview").standardizedFileURL.path,
+                       "The review comes first, so Graph Studio keeps it as the active tab")
+
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: urls[1])) as? [String: Any])
+        XCTAssertEqual(original["title"] as? String, "Original · Sessions")
+        XCTAssertEqual(original["headRef"] as? String, "base")
+        XCTAssertNil(original["author"], "Without an author the original can't replace the review's tab")
+        XCTAssertNil(original["proposal"])
+        XCTAssertEqual(original["after"] as? NSDictionary, original["before"] as? NSDictionary)
+        let shown = SchemaReviewInlineView.result(path: urls[1].path, workingDirectory: "/")
+        XCTAssertEqual(shown["isError"] as? Bool, false)
+        XCTAssertEqual(((shown["structuredContent"] as? [String: Any])?["tables"] as? [Any])?.count, 0, "Nothing changes in the original")
+
+        XCTAssertEqual(dispatcher.dispatch(call)["isError"] as? Bool, false)
+        XCTAssertEqual(opened.last, urls, "Opening again reuses the same files, so Graph Studio replaces both tabs")
+        XCTAssertEqual(errorCode(dispatcher.dispatch(MCPToolCall(
+            name: SchemaReviewAppTools.openToolName, arguments: ["path": "missing.sgreview"], contextID: nil,
+            clientID: "client", clientName: nil, clientVersion: nil, workingDirectory: directory.path))), "OBJECT_NOT_FOUND")
+        XCTAssertEqual(opened.count, 2)
+    }
+
     func testDefinitionLabelsHideContentHashes() {
         XCTAssertEqual(SchemaReviewInlineView.definitionLabel("index:users_email"), "Index users_email")
         XCTAssertEqual(SchemaReviewInlineView.definitionLabel("constraint:" + String(repeating: "ab", count: 32)), "Constraint")
@@ -282,14 +424,46 @@ final class MCPAppTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: document).write(to: directory.appendingPathComponent(name))
     }
 
-    private func initializedServer(transport: UnusedTransport = UnusedTransport(), workingDirectory: String = "/tmp") throws -> MCPServer {
+    private func initializedServer(transport: UnusedTransport = UnusedTransport(), workingDirectory: String = "/tmp",
+                                   capabilities: [String: Any] = [:]) throws -> MCPServer {
         let server = MCPServer(dispatcher: LocalMCPToolDispatcher(transport: transport), workingDirectory: workingDirectory)
         _ = try server.handleMessage(json([
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": ["protocolVersion": "2025-11-25", "clientInfo": ["name": "test", "version": "1"]],
+            "params": ["protocolVersion": "2025-11-25", "capabilities": capabilities, "clientInfo": ["name": "test", "version": "1"]],
         ]))
         _ = try server.handleMessage(json(["jsonrpc": "2.0", "method": "notifications/initialized"]))
         return server
+    }
+
+    private func renderer(executable: URL?, slots: URL? = nil, idleTimeout: TimeInterval = 60) -> SchemaReviewRenderer {
+        SchemaReviewRenderer(executableProvider: { executable },
+                             slotDirectory: slots ?? directory.appendingPathComponent("slots", isDirectory: true),
+                             cloneDirectory: directory.appendingPathComponent("clones", isDirectory: true),
+                             idleTimeout: idleTimeout)
+    }
+
+    /// Answers every request like Graph Studio's renderer, without drawing anything.
+    private func fakeRenderer() throws -> URL {
+        let url = directory.appendingPathComponent("fake-renderer")
+        try """
+        #!/bin/sh
+        while IFS= read -r line; do
+          id=$(printf '%s' "$line" | sed -E 's/.*"id":([0-9]+).*/\\1/')
+          printf '{"id":%s,"ok":true,"image":"AAAA","mimeType":"image/jpeg","width":640,"height":400,"sets":2,"setTables":[["users"],["teams"]],"set":1,"selection":["teams"]}\\n' "$id"
+        done
+
+        """.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    private func inode(_ url: URL) throws -> UInt64 {
+        ((try FileManager.default.attributesOfItem(atPath: url.path))[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    private func errorCode(_ result: [String: Any]) -> String? {
+        XCTAssertEqual(result["isError"] as? Bool, true)
+        return ((result["structuredContent"] as? [String: Any])?["error"] as? [String: Any])?["code"] as? String
     }
 
     private func json(_ value: [String: Any]) throws -> Data {

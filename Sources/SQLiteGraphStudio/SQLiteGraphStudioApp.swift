@@ -165,6 +165,11 @@ struct StudioLauncher {
     @MainActor private static var instanceLock: StudioApplicationInstanceLock?
 
     @MainActor static func main() {
+        // Offscreen renderer for the MCP helper's inline review: no window, no Dock icon,
+        // and never the single-instance lock, so it cannot stand in for the app.
+        if SchemaReviewRenderSession.isRequested {
+            SchemaReviewRenderSession.run()
+        }
         if SchemaReviewCommand.isRequested {
             Task.detached { exit(await SchemaReviewCommand.run()) }
             dispatchMain()
@@ -174,14 +179,13 @@ struct StudioLauncher {
         guard PostgresRuntimeSupervisor.isRequested else {
             do {
                 guard let lock = try StudioApplicationInstanceLock.acquire() else {
-                    NSRunningApplication.runningApplications(withBundleIdentifier: MCPBridgePaths.appBundleIdentifier)
+                    MCPBridgePaths.runningApplications()
                         .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }?
                         .activate(options: [.activateAllWindows])
                     return
                 }
-                let otherCopies = NSRunningApplication.runningApplications(
-                    withBundleIdentifier: MCPBridgePaths.appBundleIdentifier
-                ).filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+                let otherCopies = MCPBridgePaths.runningApplications()
+                    .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
                 if StudioApplicationInstanceLock.existingBridgeIsListening() ||
                     otherCopies.contains(where: { ($0.launchDate ?? .distantPast) < Date().addingTimeInterval(-2) }) {
                     otherCopies.first?.activate(options: [.activateAllWindows])

@@ -25,10 +25,12 @@ struct SchemaReviewInlineParityTests {
             #expect(table["kind"] as? String == change.kind.rawValue, "\(change.id)")
             #expect(table["badge"] as? String == change.badge, "\(change.id)")
             let columns = table["columns"] as? [[String: Any]] ?? []
-            #expect(columns.compactMap { $0["name"] as? String } == change.unionTable.columns.map(\.name), "\(change.id)")
+            let foreignKeys = review.foreignKeyColumns[change.id] ?? []
+            #expect(columns.compactMap { $0["name"] as? String } == change.reviewColumns(foreignKeys: foreignKeys).map(\.name), "\(change.id)")
             for column in columns {
                 let name = column["name"] as! String
                 #expect(column["kind"] as? String == change.columnKind(name).rawValue, "\(change.id).\(name)")
+                #expect(column["foreignKey"] as? Bool == foreignKeys.contains(name), "\(change.id).\(name)")
             }
         }
         let summary = try #require(view["summary"] as? [String: Any])
@@ -41,6 +43,9 @@ struct SchemaReviewInlineParityTests {
             .filter { shownIDs.contains($0.relation.source) && shownIDs.contains($0.relation.target) }
             .map { "\($0.graphID)|\($0.kind.rawValue)" })
         #expect(inline == app)
+        #expect(relations.contains { $0["id"] as? String == "fk_owner_team" && $0["kind"] as? String == "modified" },
+                "A relation that keeps its tables is one edited relation")
+        #expect(view["changeSets"] as? [[String]] == review.changeSets)
     }
 
     @Test func inlineViewReadsWhatTheSchemaReviewCommandWrites() async throws {

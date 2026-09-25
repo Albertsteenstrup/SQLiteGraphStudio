@@ -2,7 +2,9 @@ import AppKit
 import SwiftUI
 
 public struct SchemaGraphView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// Offscreen renders skip every transition so a snapshot shows the settled view.
+    private var reduceMotion: Bool { systemReduceMotion || session.rendersOffscreen }
     @Environment(\.controlActiveState) private var controlActiveState
     @Bindable private var session: AppSession
     @State private var zoom: CGFloat = 1.0
@@ -208,7 +210,9 @@ public struct SchemaGraphView: View {
                         .padding(20)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                     }
-                    graphOverlayControls(size: geometry.size)
+                    if !session.rendersOffscreen {
+                        graphOverlayControls(size: geometry.size)
+                    }
                 }
             }
             .onAppear {
@@ -356,7 +360,11 @@ public struct SchemaGraphView: View {
             }
             .onChange(of: session.graphRevealRequest?.id) { _, _ in
                 guard let request = session.graphRevealRequest else { return }
-                revealChosenTable(request.tableID, in: geometry.size)
+                if request.fits {
+                    frameTables(request.tableIDs, in: geometry.size, animated: !reduceMotion)
+                } else {
+                    revealChosenTable(request.tableID, in: geometry.size)
+                }
             }
             .onDisappear {
                 isGraphViewVisible = false
@@ -429,37 +437,48 @@ public struct SchemaGraphView: View {
                                                       hoverTarget: currentHoverTarget, edgeLookup: edgeLookup)
         let renderedNodes = graph.nodes.filter { renderPlan.detailIDs.contains($0.id) }
         let _ = layoutRevision
+        let tapCanvas: (CGPoint) -> Void = { point in
+            if let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup),
+               renderPlan.markerIDs.contains(card.tableID) {
+                if session.schemaReview != nil {
+                    // A review is read in place: choosing a table narrows the view
+                    // to its changes and fills the details panel. Pulling its
+                    // neighbours into a ring would rearrange the layout being compared.
+                    chooseReviewTable(card.tableID)
+                } else {
+                    revealTable(card.tableID, in: size)
+                }
+                return
+            }
+            let changesView = graphFocusTableRelation != nil
+                || !pulledGraphPositions.isEmpty
+                || manuallyExpandedNodeID != nil
+                || !session.selectedGraphNodeIDs.isEmpty
+                || session.selectedGraphNodeID != nil
+            if changesView { session.notifyManualGraphInteraction() }
+            if graphFocusTableRelation != nil || !pulledGraphPositions.isEmpty {
+                clearGraphFocusSession()
+            }
+            if let expandedID = manuallyExpandedNodeID {
+                toggleExpandedState(for: expandedID, in: viewportSize)
+            }
+            session.clearGraphSelection()
+        }
 
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(backgroundPanGesture)
-                .onTapGesture { point in
+                .onTapGesture(perform: tapCanvas)
+                .onChange(of: session.graphTapRequest?.id) { _, _ in
+                    guard let point = session.graphTapRequest?.point else { return }
+                    // A drawn card takes its own clicks; marks and empty canvas are the canvas's.
                     if let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup),
-                       renderPlan.markerIDs.contains(card.tableID) {
-                        if session.schemaReview != nil {
-                            // A review is read in place: choosing a table narrows the view
-                            // to its changes and fills the details panel. Pulling its
-                            // neighbours into a ring would rearrange the layout being compared.
-                            chooseReviewTable(card.tableID)
-                        } else {
-                            revealTable(card.tableID, in: size)
-                        }
-                        return
+                       renderPlan.detailIDs.contains(card.tableID), !renderPlan.markerIDs.contains(card.tableID) {
+                        selectCard(card.tableID)
+                    } else {
+                        tapCanvas(point)
                     }
-                    let changesView = graphFocusTableRelation != nil
-                        || !pulledGraphPositions.isEmpty
-                        || manuallyExpandedNodeID != nil
-                        || !session.selectedGraphNodeIDs.isEmpty
-                        || session.selectedGraphNodeID != nil
-                    if changesView { session.notifyManualGraphInteraction() }
-                    if graphFocusTableRelation != nil || !pulledGraphPositions.isEmpty {
-                        clearGraphFocusSession()
-                    }
-                    if let expandedID = manuallyExpandedNodeID {
-                        toggleExpandedState(for: expandedID, in: viewportSize)
-                    }
-                    session.clearGraphSelection()
                 }
 
             GraphTrackpadInputSurface(
@@ -596,19 +615,7 @@ public struct SchemaGraphView: View {
                     highlightState: relationHighlight.highlightState(for: node.id),
                     keepsTextReadableWhenZoomed: isOverviewAnchor || focusPlan != nil || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
                     schemaChange: session.schemaReviewChanges[node.id],
-                    selectNode: {
-                        if session.schemaReview != nil {
-                            chooseReviewTable(node.id, togglesChosenTable: zoom < GraphExploration.detailZoom)
-                            return
-                        }
-                        session.notifyManualGraphInteraction()
-                        if tableFocusNodeID == nil && graphFocusTableRelation == nil {
-                            clearGraphFocusSession()
-                        }
-                        withAnimation(.snappy(duration: 0.16)) {
-                            session.selectGraphNode(node.id)
-                        }
-                    },
+                    selectNode: { selectCard(node.id) },
                     toggleExpanded: {
                         session.notifyManualGraphInteraction()
                         toggleExpandedState(for: node.id, in: size)
@@ -893,11 +900,26 @@ public struct SchemaGraphView: View {
         openExpandedNode(nodeID, in: size)
     }
 
+    /// A click on a drawn table card.
+    private func selectCard(_ nodeID: String) {
+        if session.schemaReview != nil {
+            chooseReviewTable(nodeID, togglesChosenTable: zoom < GraphExploration.detailZoom)
+            return
+        }
+        session.notifyManualGraphInteraction()
+        if tableFocusNodeID == nil && graphFocusTableRelation == nil {
+            clearGraphFocusSession()
+        }
+        withAnimation(.snappy(duration: 0.16)) {
+            session.selectGraphNode(nodeID)
+        }
+    }
+
     /// Choosing a table in a review isolates its changes; choosing it again returns to
     /// every change, the same as in the review's table list.
     private func chooseReviewTable(_ nodeID: String, togglesChosenTable: Bool = true) {
         clearGraphFocusSession()
-        withAnimation(.snappy(duration: 0.16)) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.16)) {
             if togglesChosenTable, session.selectedGraphNodeIDs == [nodeID] {
                 session.clearGraphSelection()
             } else {
@@ -917,6 +939,22 @@ public struct SchemaGraphView: View {
         guard let transform = GraphViewportTransform.reveal(contentBounds: bounds, in: size,
                                                             from: GraphViewportTransform(zoom: zoom, pan: pan)) else { return }
         setViewport(transform, animated: !reduceMotion)
+    }
+
+    /// Frames a connected set of review changes: its tables fill the view, zooming in
+    /// or out as needed, so one set of related changes is read at a time.
+    private func frameTables(_ nodeIDs: [String], in size: CGSize, animated: Bool) {
+        if graphFocusPlan != nil { clearGraphFocusSession(animated: false, restoreViewport: false) }
+        let bounds = nodeIDs.compactMap { graphFrame(for: $0) }.reduce(CGRect.null) { $0.union($1) }
+        guard !bounds.isNull, size.width > 0, size.height > 0 else { return }
+        let largeOverview = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold
+        // Leave room for table names drawn beside overview marks and for the floating controls.
+        let topInset: CGFloat = session.rendersOffscreen ? 0 : min(graphControlsHeight + 20, size.height * 0.25)
+        var transform = GraphViewportTransform.fit(contentBounds: bounds,
+                                                   in: CGSize(width: size.width, height: max(100, size.height - topInset)),
+                                                   padding: 200, minZoom: largeOverview ? 0.005 : 0.12)
+        transform.pan.height += topInset / 2
+        setViewport(transform, animated: animated)
     }
 
     private func fitTable(_ nodeID: String, in size: CGSize) {
@@ -2032,6 +2070,10 @@ public struct SchemaGraphView: View {
     }
 
     private func previewColumns(for nodeID: String) -> [TableColumn] {
+        // In a review, a changed table's card always lists its keys and then what changed.
+        if let reviewRows = session.schemaReviewCardColumns[nodeID], let descriptor = session.descriptor(named: nodeID) {
+            return descriptor.columns.filter { reviewRows.contains($0.name) }
+        }
         guard let descriptor = session.descriptor(named: nodeID),
               let preview = relatedPreviewByNode[nodeID]
         else {
@@ -2501,6 +2543,10 @@ public struct SchemaGraphView: View {
                 performInitialLayout(in: currentSize)
             }
             initialViewport.didFit(request: request)
+            // A newly opened review frames its first connected set of changes.
+            if let changeSet = session.consumePendingReviewChangeSetReveal() {
+                frameTables(changeSet, in: currentSize, animated: false)
+            }
             session.initializedGraphViewportDocument = initialViewportDocumentKey
             flushViewportSessionSync()
             initialViewportTask = nil

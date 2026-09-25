@@ -9,21 +9,21 @@
   color-scheme: light dark;
   --fb-bg: #ffffff; --fb-bg-2: #f6f5f1; --fb-text: #1f1e1c; --fb-text-2: #5f5e5a; --fb-text-3: #8a8983;
   --fb-border: rgba(31, 30, 28, 0.16); --fb-border-2: rgba(31, 30, 28, 0.08);
-  --add: #2563eb; --add-bg: rgba(37, 99, 235, 0.09); --del: #dc2626; --del-bg: rgba(220, 38, 38, 0.08);
+  --add: #16a34a; --mod: #2563eb; --del: #dc2626;
   --warn: #92400e; --warn-bg: rgba(245, 158, 11, 0.16);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --fb-bg: #1f1f1e; --fb-bg-2: #262624; --fb-text: #f2f1ed; --fb-text-2: #b7b5ad; --fb-text-3: #8f8d86;
     --fb-border: rgba(242, 241, 237, 0.18); --fb-border-2: rgba(242, 241, 237, 0.09);
-    --add: #7aa7ff; --add-bg: rgba(122, 167, 255, 0.13); --del: #f38b8b; --del-bg: rgba(243, 139, 139, 0.12);
+    --add: #4ade80; --mod: #7aa7ff; --del: #f38b8b;
     --warn: #f7c56b; --warn-bg: rgba(247, 197, 107, 0.14);
   }
 }
 :root[data-theme="dark"] {
   --fb-bg: #1f1f1e; --fb-bg-2: #262624; --fb-text: #f2f1ed; --fb-text-2: #b7b5ad; --fb-text-3: #8f8d86;
   --fb-border: rgba(242, 241, 237, 0.18); --fb-border-2: rgba(242, 241, 237, 0.09);
-  --add: #7aa7ff; --add-bg: rgba(122, 167, 255, 0.13); --del: #f38b8b; --del-bg: rgba(243, 139, 139, 0.12);
+  --add: #4ade80; --mod: #7aa7ff; --del: #f38b8b;
   --warn: #f7c56b; --warn-bg: rgba(247, 197, 107, 0.14);
 }
 :root {
@@ -40,32 +40,49 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: transparent; color: var(--text); font-family: var(--font); font-size: 13px; line-height: 1.45; }
-body { padding: 12px 14px 14px; }
-h1 { font-size: 15px; font-weight: 600; margin: 0; }
-button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px; cursor: pointer; }
+body { padding: 10px 12px 12px; }
+button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 3px 10px; cursor: pointer; }
 button:hover { background: var(--bg-2); }
-button:focus-visible, .node:focus-visible { outline: 2px solid var(--add); outline-offset: 2px; }
-.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.meta { color: var(--text-2); margin-top: 2px; }
-.mono { font-family: var(--mono); font-size: 12px; }
+button:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px solid var(--mod); outline-offset: 2px; }
+.bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.spacer { flex: 1; }
+.brand { display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent; padding: 2px 6px 2px 2px; font-size: 14px; font-weight: 600; }
+.brand img { width: 22px; height: 22px; display: block; }
+.brand:hover { background: var(--bg-2); }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg-2); color: var(--text-2); white-space: nowrap; }
 .badge.warn { background: var(--warn-bg); color: var(--warn); }
-.chips { margin: 10px 0 8px; }
-.chip { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
-.dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
-.dot.added, .dot.modified { border: 2px solid var(--add); }
+.legend { display: inline-flex; gap: 10px; color: var(--text-2); font-size: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; flex: none; }
+.dot.added { border: 2px solid var(--add); }
+.dot.modified { border: 2px solid var(--mod); }
 .dot.removed { border: 2px dashed var(--del); }
-.dot.unchanged { border: 1px solid var(--border); }
-.toolbar { margin: 4px 0 8px; }
-.toolbar .spacer { flex: 1; }
-.hint { color: var(--text-3); font-size: 12px; }
-.canvas { position: relative; height: 440px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--bg-2); overflow: hidden; touch-action: none; cursor: grab; }
+.sets { display: inline-flex; align-items: center; gap: 8px; }
+.position { color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.toast { color: var(--text-2); font-size: 12px; margin: -2px 0 6px; }
+.toast.error { color: var(--del); }
+.canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--bg-2); overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
 .canvas.panning { cursor: grabbing; }
-svg { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-select: none; }
+.canvas img.frame { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.canvas svg { display: block; width: 100%; height: 100%; }
+.loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 12.5px; }
+.loading::before { content: ""; width: 12px; height: 12px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--text-2); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.zoom { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 4px; }
+.zoom button { padding: 1px 8px; background: var(--bg); opacity: 0.92; }
+.note { position: absolute; left: 8px; bottom: 8px; font-size: 11px; color: var(--text-3); background: var(--bg); border-radius: 6px; padding: 1px 6px; opacity: 0.92; }
+.others { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.others .caption { color: var(--text-3); font-size: 12px; margin-right: 2px; }
+.others button { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; font-size: 12px; }
+.empty { color: var(--text-2); padding: 14px 2px; }
+.status { color: var(--text-2); padding: 18px 2px; }
+.status.error { color: var(--del); }
+/* Simplified graph, drawn when Graph Studio's renderer is unavailable. */
 .node { cursor: pointer; transition: opacity 0.15s; }
 .node .frame { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
 .node .inner { fill: none; stroke-width: 2; }
-.node.added .inner, .node.modified .inner { stroke: var(--add); }
+.node.added .inner { stroke: var(--add); }
+.node.modified .inner { stroke: var(--mod); }
 .node.removed .inner { stroke: var(--del); stroke-dasharray: 5 4; }
 .node.removed { opacity: 0.74; }
 .node.context .frame { stroke-dasharray: 2 3; }
@@ -74,83 +91,83 @@ svg { display: block; width: 100%; height: 100%; user-select: none; -webkit-user
 .node .title { font-size: 12.5px; font-weight: 600; }
 .node.context .title { fill: var(--text-2); font-weight: 500; }
 .node .tag { font-size: 10.5px; }
-.node .tag.added, .node .tag.modified { fill: var(--add); }
+.node .tag.added { fill: var(--add); }
+.node .tag.modified { fill: var(--mod); }
 .node .tag.removed { fill: var(--del); }
 .node .tag.unchanged { fill: var(--text-3); }
 .node .field { font-size: 11.5px; }
+.node .field.added { fill: var(--add); }
+.node .field.modified { fill: var(--mod); }
+.node .field.removed { fill: var(--del); text-decoration: line-through; }
 .node .ftype { font-size: 10.5px; fill: var(--text-3); font-family: var(--mono); }
 .node .mark { font-size: 11.5px; font-weight: 600; fill: var(--text-3); }
-.node .mark.added, .node .mark.modified { fill: var(--add); }
+.node .mark.added { fill: var(--add); }
+.node .mark.modified { fill: var(--mod); }
 .node .mark.removed { fill: var(--del); }
-.node .field.removed { text-decoration: line-through; fill: var(--text-2); }
-.node .more { font-size: 10.5px; fill: var(--text-3); }
-.node .links { font-size: 10.5px; fill: var(--text-2); }
+.node .more, .node .links { font-size: 10.5px; fill: var(--text-3); }
 .edge { fill: none; transition: opacity 0.15s; }
-.edge.unchanged { stroke: var(--text-3); stroke-width: 1; opacity: 0.55; display: none; }
-svg.show-unchanged .edge.unchanged, .edge-group.touching .edge.unchanged { display: inline; }
-.groups { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0 2px; }
-.groups button { text-align: left; }
+.edge.unchanged { stroke: var(--text-3); stroke-width: 1; opacity: 0.55; }
 .edge.added { stroke: var(--add); stroke-width: 1.8; }
+.edge.modified { stroke: var(--mod); stroke-width: 1.8; }
 .edge.removed { stroke: var(--del); stroke-width: 1.8; stroke-dasharray: 6 4; }
 .faded { opacity: 0.12 !important; }
 .detail { margin-top: 10px; border: 1px solid var(--border-2); border-radius: var(--radius); padding: 10px 12px; background: var(--bg); }
 .detail h2 { font-size: 13.5px; margin: 0; font-weight: 600; }
+.detail .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .fields { width: 100%; border-collapse: collapse; margin-top: 8px; table-layout: fixed; }
 .fields td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid var(--border-2); overflow-wrap: anywhere; }
 .fields td.m { width: 18px; font-weight: 600; color: var(--text-3); }
 .fields td.n { width: 34%; }
+.mono { font-family: var(--mono); font-size: 12px; }
 .k-added { color: var(--add) !important; }
+.k-modified { color: var(--mod) !important; }
 .k-removed { color: var(--del) !important; }
-.k-modified { color: var(--add) !important; }
 .was { color: var(--text-3); font-size: 12px; }
 .defs { margin-top: 8px; }
 .defs pre { margin: 2px 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11.5px; color: var(--text-2); background: var(--bg-2); border-radius: 6px; padding: 5px 7px; }
-.list { margin-top: 10px; }
-.list summary { cursor: pointer; color: var(--text-2); }
-.list .items { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.list button { display: inline-flex; gap: 6px; align-items: center; padding: 3px 9px; }
-.list button[aria-pressed="true"] { border-color: var(--text-2); background: var(--bg-2); }
-.footer { margin-top: 10px; color: var(--text-3); font-size: 12px; }
-.footer p { margin: 3px 0; }
-.status { color: var(--text-2); padding: 18px 2px; }
-.status.error { color: var(--del); }
 [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <div id="status" class="status">Waiting for the review…</div>
 <main id="view" hidden>
-  <header>
-    <div class="row"><h1 id="title"></h1><span id="artifact" class="badge warn" hidden>Proposed · not applied</span></div>
-    <div id="meta" class="meta"></div>
-    <div id="chips" class="row chips"></div>
-  </header>
-  <div id="toolbar" class="row toolbar">
-    <button id="prev" type="button" aria-label="Previous change">‹ Previous</button>
-    <button id="next" type="button" aria-label="Next change">Next ›</button>
-    <span id="position" class="hint"></span>
+  <header class="bar">
+    <button id="open-app" class="brand" type="button" title="Open in Graph Studio, with the schema before these changes in a second tab">
+      <img alt="" src="data:image/png;base64,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">GraphStudio
+    </button>
+    <span id="artifact" class="badge warn" hidden>Proposed · not applied</span>
+    <span id="legend" class="legend"></span>
     <span class="spacer"></span>
-    <span class="hint">⌘ + scroll to zoom · drag to pan</span>
-    <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
-    <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
-    <button id="fit" type="button">Fit</button>
-    <button id="expand" type="button" hidden>Expand</button>
-  </div>
+    <span id="sets" class="sets" hidden>
+      <button id="prev" type="button" aria-label="Previous connected changes" title="Previous changes (⌥⌘↑)">‹ Previous</button>
+      <span id="position" class="position"></span>
+      <button id="next" type="button" aria-label="Next connected changes" title="Next changes (⌥⌘↓)">Next ›</button>
+    </span>
+  </header>
+  <div id="toast" class="toast" hidden></div>
   <div id="canvas" class="canvas" tabindex="0" aria-label="Schema change graph">
-    <svg id="graph" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Changed tables and their relations"></svg>
+    <svg id="graph" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Changed tables and their relations" hidden></svg>
+    <div id="loading" class="loading" hidden>Drawing with Graph Studio…</div>
+    <div id="note" class="note" hidden></div>
+    <div class="zoom">
+      <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+      <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+      <button id="fit" type="button">Fit</button>
+    </div>
   </div>
+  <div id="empty" class="empty" hidden>No table, field, or relation changes.</div>
+  <section id="others" class="others" hidden></section>
   <section id="detail" class="detail" hidden></section>
-  <section id="list" class="list"></section>
-  <div id="footer" class="footer"></div>
 </main>
 <script>
 (() => {
   "use strict";
   const SVG = "http://www.w3.org/2000/svg";
-  const NODE_WIDTH = 236, HEADER = 32, ROW = 18, GRAPH_ROWS = 8, GAP_X = 70, GAP_Y = 54;
   const MARK = { added: "+", removed: "−", modified: "~", unchanged: "·" };
   const LABEL = { added: "New", removed: "Removed", modified: "Changed", unchanged: "Unchanged" };
+  const KINDS = ["added", "modified", "removed"];
   const $ = (id) => document.getElementById(id);
+  const kindOf = (kind) => (KINDS.includes(kind) ? kind : "unchanged");
 
   function el(tag, props, ...children) {
     const node = document.createElement(tag);
@@ -180,12 +197,23 @@ svg.show-unchanged .edge.unchanged, .edge-group.touching .edge.unchanged { displ
   const pending = new Map();
   const post = (message) => window.parent.postMessage(message, "*");
   const notify = (method, params) => post({ jsonrpc: "2.0", method, params: params || {} });
-  function request(method, params) {
+  function request(method, params, timeout) {
     const id = nextID++;
     post({ jsonrpc: "2.0", id, method, params: params || {} });
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      setTimeout(() => { if (pending.delete(id)) reject(new Error(method + " timed out")); }, 15000);
+      setTimeout(() => { if (pending.delete(id)) reject(new Error(method + " timed out")); }, timeout || 15000);
+    });
+  }
+  function callTool(name, args, timeout) {
+    return request("tools/call", { name, arguments: args }, timeout).then((result) => {
+      if (!result || result.isError) {
+        const error = (result && result.structuredContent && result.structuredContent.error) || {};
+        const failure = new Error(error.message || textOf(result || {}) || name + " failed");
+        failure.code = error.code;
+        throw failure;
+      }
+      return result;
     });
   }
   window.addEventListener("message", (event) => {
@@ -210,7 +238,7 @@ svg.show-unchanged .edge.unchanged, .edge-group.touching .edge.unchanged { displ
     }
   });
 
-  const state = { model: null, nodes: new Map(), order: [], selected: null, vb: null, bounds: null, displayMode: "inline", modes: [], hostHeight: null };
+  const state = { model: null, tables: new Map(), sets: [], set: null, mode: null };
 
   function applyHostContext(context) {
     if (!context || typeof context !== "object") return;
@@ -221,18 +249,12 @@ svg.show-unchanged .edge.unchanged, .edge-group.touching .edge.unchanged { displ
         if (key.startsWith("--") && typeof value === "string") document.documentElement.style.setProperty(key, value);
       }
     }
-    if (Array.isArray(context.availableDisplayModes)) state.modes = context.availableDisplayModes;
-    if (typeof context.displayMode === "string") state.displayMode = context.displayMode;
-    const dimensions = context.containerDimensions;
-    if (dimensions && typeof dimensions.height === "number") state.hostHeight = dimensions.height;
-    updateExpandButton();
-    sizeCanvas();
   }
 
   request("ui/initialize", {
     protocolVersion: "2026-01-26",
-    clientInfo: { name: "SQLite Graph Studio schema review", version: "1.0.0" },
-    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+    clientInfo: { name: "SQLite Graph Studio schema review", version: "2.0.0" },
+    appCapabilities: { availableDisplayModes: ["inline"] },
   }).then((result) => applyHostContext(result && result.hostContext))
     .catch(() => {})
     .finally(() => notify("ui/notifications/initialized"));
@@ -273,468 +295,548 @@ svg.show-unchanged .edge.unchanged, .edge-group.touching .edge.unchanged { displ
     render(data);
   }
 
-  // ---- Rendering ----
+  let toastTimer = 0;
+  function toast(text, isError) {
+    const box = $("toast");
+    box.textContent = text;
+    box.className = isError ? "toast error" : "toast";
+    box.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { box.hidden = true; requestAnimationFrame(reportSize); }, isError ? 7000 : 3500);
+    requestAnimationFrame(reportSize);
+  }
+
   function render(model) {
     state.model = model;
-    state.selected = null;
-    const summary = model.summary || {};
+    state.tables = new Map((Array.isArray(model.tables) ? model.tables : []).map((table) => [table.id, table]));
     $("status").hidden = true;
     $("view").hidden = false;
-    $("title").textContent = model.title || "Database changes";
     $("artifact").hidden = model.artifact !== "proposal";
 
-    const meta = $("meta");
-    meta.replaceChildren();
-    const refs = model.artifact === "proposal"
-      ? [el("span", {}, "Based on "), el("span", { class: "mono" }, clip(model.baseRef, 60))]
-      : [el("span", { class: "mono" }, clip(model.baseRef, 40)), el("span", {}, " → "), el("span", { class: "mono" }, clip(model.headRef, 40))];
-    meta.append(...refs);
-    if (model.author) meta.append(el("span", {}, " · " + model.author));
-    if (model.engine) meta.append(el("span", {}, " · " + (model.engine === "postgresql" ? "PostgreSQL" : "SQLite")));
-
-    const chips = $("chips");
-    chips.replaceChildren();
+    const summary = model.summary || {};
+    const legend = $("legend");
+    legend.replaceChildren();
     const chip = (kind, text) => el("span", { class: "chip" }, el("span", { class: "dot " + kind }), text);
-    if (summary.addedTables) chips.append(chip("added", summary.addedTables + " new"));
-    if (summary.removedTables) chips.append(chip("removed", summary.removedTables + " removed"));
-    if (summary.modifiedTables) chips.append(chip("modified", summary.modifiedTables + " changed"));
-    const relationCount = (summary.addedRelations || 0) + (summary.removedRelations || 0);
-    if (relationCount) chips.append(chip("unchanged", "↔ " + (summary.addedRelations || 0) + " relations added, " + (summary.removedRelations || 0) + " removed"));
-    chips.append(chip("unchanged", (summary.unchangedTables || 0) + " tables unchanged"));
+    if (summary.addedTables) legend.append(chip("added", summary.addedTables + " new"));
+    if (summary.modifiedTables) legend.append(chip("modified", summary.modifiedTables + " changed"));
+    if (summary.removedTables) legend.append(chip("removed", summary.removedTables + " removed"));
 
-    const tables = Array.isArray(model.tables) ? model.tables : [];
-    state.order = tables.filter((table) => !table.context).map((table) => table.id);
-    const hasGraph = tables.length > 0;
-    $("toolbar").hidden = !hasGraph;
-    $("canvas").hidden = !hasGraph;
+    const hasChanges = state.tables.size > 0;
+    $("canvas").hidden = !hasChanges;
+    $("empty").hidden = hasChanges;
     $("detail").hidden = true;
-    if (hasGraph) drawGraph(tables, Array.isArray(model.relations) ? model.relations : []);
-    renderList(tables);
-    renderFooter(model);
-    updatePosition();
-    updateExpandButton();
+    setSets(Array.isArray(model.changeSets) ? model.changeSets : [], hasChanges ? 0 : null);
     sizeCanvas();
-    fit(false);
-    requestAnimationFrame(reportSize);
-  }
-
-  function layout(tables, relations) {
-    const byID = new Map(tables.map((table) => [table.id, table]));
-    const neighbors = new Map(tables.map((table) => [table.id, new Set()]));
-    for (const relation of relations) {
-      if (byID.has(relation.source) && byID.has(relation.target) && relation.source !== relation.target) {
-        neighbors.get(relation.source).add(relation.target);
-        neighbors.get(relation.target).add(relation.source);
-      }
-    }
-    // Breadth-first from the most connected table, so a hub comes first and its
-    // neighbours right after it; related tables then land near each other.
-    const degree = (id) => neighbors.get(id).size;
-    const byDegree = (a, b) => degree(b) - degree(a) || (a < b ? -1 : a > b ? 1 : 0);
-    const ordered = [];
-    const seen = new Set();
-    const starts = tables.filter((table) => !table.context).map((table) => table.id).sort(byDegree)
-      .concat(tables.filter((table) => table.context).map((table) => table.id).sort());
-    for (const start of starts) {
-      if (seen.has(start)) continue;
-      const queue = [start];
-      seen.add(start);
-      while (queue.length) {
-        const id = queue.shift();
-        ordered.push(byID.get(id));
-        for (const next of [...neighbors.get(id)].sort(byDegree)) {
-          if (!seen.has(next)) { seen.add(next); queue.push(next); }
-        }
-      }
-    }
-    // Fill grid cells from the centre outwards: the hub sits in the middle with its
-    // neighbours around it instead of trailing off from a corner.
-    const columns = Math.max(1, Math.min(ordered.length, Math.round(Math.sqrt(ordered.length * 1.9))));
-    const rows = Math.ceil(ordered.length / columns);
-    const cells = [];
-    for (let row = 0; row < rows; row += 1) for (let column = 0; column < columns; column += 1) cells.push({ row, column });
-    const middleRow = (rows - 1) / 2, middleColumn = (columns - 1) / 2;
-    const distance = (cell) => Math.hypot((cell.row - middleRow) * 1.25, cell.column - middleColumn);
-    cells.sort((a, b) => distance(a) - distance(b) || a.row - b.row || a.column - b.column);
-    const heights = ordered.map((table) => nodeHeight(table));
-    const rowHeights = new Array(rows).fill(0);
-    ordered.forEach((table, index) => { rowHeights[cells[index].row] = Math.max(rowHeights[cells[index].row], heights[index]); });
-    const rowTops = [];
-    let y = 0;
-    for (let row = 0; row < rows; row += 1) { rowTops.push(y); y += (rowHeights[row] || 0) + GAP_Y; }
-    const placed = new Map();
-    ordered.forEach((table, index) => {
-      const cell = cells[index];
-      placed.set(table.id, { x: cell.column * (NODE_WIDTH + GAP_X), y: rowTops[cell.row], width: NODE_WIDTH, height: heights[index], table });
-    });
-    return placed;
-  }
-  /// The fields a graph box has room for: changed fields and keys first, then the
-  /// rest in order, shown in the table's own field order.
-  function graphColumns(columns) {
-    if (columns.length <= GRAPH_ROWS) return columns;
-    const rank = (column) => (column.kind && column.kind !== "unchanged" ? 0 : column.primaryKey ? 1 : 2);
-    const picked = new Set(columns.map((column, index) => ({ column, index }))
-      .sort((a, b) => rank(a.column) - rank(b.column) || a.index - b.index)
-      .slice(0, GRAPH_ROWS).map((entry) => entry.index));
-    return columns.filter((_, index) => picked.has(index));
-  }
-  function summarizedLinks(table) {
-    const links = table.unchangedLinks;
-    return links && !links.drawn && links.relations > 0 ? links : null;
-  }
-  function nodeHeight(table) {
-    const columns = Array.isArray(table.columns) ? table.columns : [];
-    const shown = Math.min(columns.length, GRAPH_ROWS);
-    const hidden = columns.length - shown + (table.hiddenColumns || 0);
-    return HEADER + shown * ROW + (hidden > 0 ? ROW : 0) + (summarizedLinks(table) ? ROW : 0) + 8;
-  }
-
-  function drawGraph(tables, relations) {
-    const graph = $("graph");
-    graph.replaceChildren();
-    const defs = svg("defs", {}, graph);
-    for (const kind of ["added", "removed", "unchanged"]) {
-      const marker = svg("marker", { id: "arrow-" + kind, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, defs);
-      svg("path", { d: "M0,0 L10,5 L0,10 z", fill: kind === "added" ? "var(--add)" : kind === "removed" ? "var(--del)" : "var(--text-3)" }, marker);
-    }
-    const placed = layout(tables, relations);
-    state.nodes = placed;
-    const edgeLayer = svg("g", {}, graph);
-    const nodeLayer = svg("g", {}, graph);
-
-    const pairs = new Map();
-    for (const relation of relations) {
-      if (!placed.has(relation.source) || !placed.has(relation.target)) continue;
-      const key = [relation.source, relation.target].sort().join("\u0000");
-      if (!pairs.has(key)) pairs.set(key, []);
-      pairs.get(key).push(relation);
-    }
-    for (const group of pairs.values()) {
-      group.forEach((relation, index) => drawEdge(edgeLayer, placed, relation, (index - (group.length - 1) / 2) * 9));
-    }
-    for (const node of placed.values()) drawNode(nodeLayer, node);
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of placed.values()) {
-      minX = Math.min(minX, node.x); minY = Math.min(minY, node.y);
-      maxX = Math.max(maxX, node.x + node.width); maxY = Math.max(maxY, node.y + node.height);
-    }
-    state.bounds = { x: minX - 30, y: minY - 30, w: maxX - minX + 60, h: maxY - minY + 60 };
-  }
-
-  function center(node) { return { x: node.x + node.width / 2, y: node.y + node.height / 2 }; }
-  function border(node, toward) {
-    const c = center(node);
-    const dx = toward.x - c.x, dy = toward.y - c.y;
-    if (dx === 0 && dy === 0) return c;
-    const scale = Math.min(node.width / 2 / Math.abs(dx || 1e-9), node.height / 2 / Math.abs(dy || 1e-9));
-    return { x: c.x + dx * scale, y: c.y + dy * scale };
-  }
-  function drawEdge(layer, placed, relation, offset) {
-    const source = placed.get(relation.source), target = placed.get(relation.target);
-    const kind = ["added", "removed"].includes(relation.kind) ? relation.kind : "unchanged";
-    const g = svg("g", { class: "edge-group", "data-source": relation.source, "data-target": relation.target, "data-kind": kind }, layer);
-    let d;
-    if (source === target) {
-      const x = source.x + source.width, y = source.y + HEADER / 2;
-      d = `M${x},${y} C${x + 46},${y - 30} ${x + 46},${y + 40} ${x},${y + 22}`;
-    } else {
-      const a = center(source), b = center(target);
-      const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-      const nx = -(b.y - a.y) / length * offset, ny = (b.x - a.x) / length * offset;
-      const start = border(source, { x: b.x + nx, y: b.y + ny });
-      const end = border(target, { x: a.x + nx, y: a.y + ny });
-      d = `M${start.x + nx},${start.y + ny} L${end.x + nx},${end.y + ny}`;
-    }
-    const path = svg("path", { class: "edge " + kind, d, "marker-end": `url(#arrow-${kind})` }, g);
-    svg("title", {}, path, `${relation.source} (${(relation.sourceColumns || []).join(", ")}) → ${relation.target} (${(relation.targetColumns || []).join(", ")}) · ${LABEL[kind]}`);
-  }
-
-  function drawNode(layer, node) {
-    const table = node.table;
-    const kind = LABEL[table.kind] ? table.kind : "unchanged";
-    const classes = ["node", kind];
-    if (table.context) classes.push("context");
-    const g = svg("g", { class: classes.join(" "), "data-id": table.id, tabindex: 0, role: "button", "aria-label": `${table.name}, ${table.context ? "related, unchanged" : LABEL[kind]}` }, layer);
-    svg("rect", { class: "frame", x: node.x, y: node.y, width: node.width, height: node.height, rx: 8 }, g);
-    if (kind !== "unchanged") svg("rect", { class: "inner", x: node.x + 3, y: node.y + 3, width: node.width - 6, height: node.height - 6, rx: 6 }, g);
-    svg("title", {}, g, table.name + (table.badge ? " · " + table.badge : ""));
-    svg("text", { class: "title", x: node.x + 12, y: node.y + 21 }, g, clip(table.name, 23));
-    const tag = table.context ? "Related" : (kind === "modified" ? (table.badge || "Changed") : LABEL[kind]);
-    svg("text", { class: "tag " + kind, x: node.x + node.width - 12, y: node.y + 21, "text-anchor": "end" }, g, clip(tag, 12));
-    const columns = Array.isArray(table.columns) ? table.columns : [];
-    graphColumns(columns).forEach((column, index) => {
-      const y = node.y + HEADER + 12 + index * ROW;
-      const columnKind = LABEL[column.kind] ? column.kind : "unchanged";
-      svg("text", { class: "mark " + columnKind, x: node.x + 12, y }, g, MARK[columnKind]);
-      svg("text", { class: "field " + columnKind, x: node.x + 26, y }, g, clip(column.name, 20));
-      const type = String(column.description || "").split(" · ")[0];
-      svg("text", { class: "ftype", x: node.x + node.width - 12, y, "text-anchor": "end" }, g, clip((column.primaryKey ? "PK " : "") + type, 15));
-    });
-    const hidden = columns.length - Math.min(columns.length, GRAPH_ROWS) + (table.hiddenColumns || 0);
-    let footerRow = Math.min(columns.length, GRAPH_ROWS);
-    if (hidden > 0) { svg("text", { class: "more", x: node.x + 26, y: node.y + HEADER + 12 + footerRow * ROW }, g, `+${hidden} more fields`); footerRow += 1; }
-    const links = summarizedLinks(table);
-    if (links) {
-      const text = `↔ ${links.relations} unchanged ${links.relations === 1 ? "link" : "links"} · ${links.tables} ${links.tables === 1 ? "table" : "tables"}`;
-      svg("text", { class: "links", x: node.x + 12, y: node.y + HEADER + 12 + footerRow * ROW }, g, text);
-    }
-    g.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(table.id, true); } });
-  }
-
-  function renderList(tables) {
-    const list = $("list");
-    list.replaceChildren();
-    const changed = tables.filter((table) => !table.context);
-    if (!changed.length) {
-      list.append(el("p", { class: "status" }, "No table, field, or relation changes."));
-      return;
-    }
-    const groups = Array.isArray(state.model.changeGroups) ? state.model.changeGroups : [];
-    if (groups.length) {
-      const box = el("div", { class: "groups" }, el("div", { class: "hint" }, "Shared changes"));
-      groups.forEach((group, index) => box.append(el("button", { type: "button", "data-group": index, "aria-pressed": "false", onclick: () => selectGroup(index) },
-        el("span", { class: "badge" }, `${group.count} tables`), group.summary)));
-      list.append(box);
-    }
-    const details = el("details", changed.length <= 12 ? { open: true } : {});
-    details.append(el("summary", {}, `All changes (${changed.length})`));
-    const items = el("div", { class: "items" });
-    for (const table of changed) {
-      items.append(el("button", { type: "button", "data-id": table.id, "aria-pressed": "false", onclick: () => select(table.id, true) },
-        el("span", { class: "dot " + table.kind }), table.name, el("span", { class: "badge" }, table.badge || LABEL[table.kind])));
-    }
-    details.append(items);
-    list.append(details);
-  }
-
-  function renderFooter(model) {
-    const footer = $("footer");
-    footer.replaceChildren();
-    for (const note of (Array.isArray(model.notes) ? model.notes : []).slice(0, 20)) footer.append(el("p", {}, note));
-    const omitted = model.omitted || {};
-    if (omitted.changedTables) footer.append(el("p", {}, `${omitted.changedTables} more changed tables are not shown here. Open the file in Graph Studio to see every change.`));
-    if (omitted.relatedTables) footer.append(el("p", {}, `${omitted.relatedTables} related unchanged tables are summarized on the changed tables instead of drawn. Select a changed table to list them.`));
-    footer.append(el("p", {}, "Schema evidence only: row data, grants, and deployment effects are not part of this review."));
-    if (model.path) footer.append(el("p", { class: "mono" }, model.path));
-  }
-
-  function renderDetail(table) {
-    const detail = $("detail");
-    detail.replaceChildren();
-    if (!table) { detail.hidden = true; requestAnimationFrame(reportSize); return; }
-    detail.hidden = false;
-    const kind = LABEL[table.kind] ? table.kind : "unchanged";
-    detail.append(el("div", { class: "row" },
-      el("h2", {}, table.name),
-      el("span", { class: "badge" }, table.context ? "Related, unchanged" : LABEL[kind]),
-      table.kind === "modified" && table.badge ? el("span", { class: "badge" }, table.badge) : null,
-      table.objectKind && table.objectKind !== "table" ? el("span", { class: "badge" }, table.objectKind) : null));
-    const rows = (Array.isArray(table.columns) ? table.columns : []).map((column) => {
-      const columnKind = LABEL[column.kind] ? column.kind : "unchanged";
-      return el("tr", {},
-        el("td", { class: "m k-" + columnKind }, MARK[columnKind]),
-        el("td", { class: "n" + (columnKind === "unchanged" ? "" : " k-" + columnKind) }, column.name),
-        el("td", { class: "mono" }, column.description || "", column.before ? el("div", { class: "was" }, "was " + column.before) : null));
-    });
-    if (rows.length) detail.append(el("table", { class: "fields" }, el("tbody", {}, rows)));
-    if (table.hiddenColumns) detail.append(el("p", { class: "was" }, `${table.hiddenColumns} unchanged fields are not listed.`));
-    const definitions = Array.isArray(table.definitionChanges) ? table.definitionChanges : [];
-    if (definitions.length) {
-      const box = el("div", { class: "defs" }, el("div", {}, "Definition changes"));
-      for (const change of definitions) {
-        const changeKind = LABEL[change.kind] ? change.kind : "modified";
-        box.append(el("div", { class: "k-" + changeKind }, `${MARK[changeKind]} ${change.label || change.key}`));
-        if (change.before) box.append(el("pre", {}, (change.after ? "was: " : "") + change.before));
-        if (change.after) box.append(el("pre", {}, change.after));
-      }
-      detail.append(box);
-    }
-    const links = summarizedLinks(table);
-    if (links) {
-      const box = el("div", { class: "defs" }, el("div", {}, `Unchanged links (${links.relations}, not drawn)`));
-      for (const item of Array.isArray(links.items) ? links.items : []) {
-        const columns = (item.columns || []).join(", ");
-        box.append(el("div", { class: "was" }, item.direction === "referencedBy"
-          ? `← ${item.name} (${columns}) references ${table.name}`
-          : `→ ${table.name} references ${item.name} (${columns})`));
-      }
-      if (links.more) box.append(el("div", { class: "was" }, `+${links.more} more`));
-      detail.append(box);
-    }
-    const relations = (Array.isArray(state.model.relations) ? state.model.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
-    if (relations.length) {
-      const box = el("div", { class: "defs" }, el("div", {}, "Relations"));
-      for (const relation of relations) {
-        const relationKind = ["added", "removed"].includes(relation.kind) ? relation.kind : "unchanged";
-        box.append(el("div", { class: relationKind === "unchanged" ? "" : "k-" + relationKind },
-          `${MARK[relationKind]} ${relation.source} (${(relation.sourceColumns || []).join(", ")}) → ${relation.target} (${(relation.targetColumns || []).join(", ")})`));
-      }
-      detail.append(box);
+    if (hasChanges) {
+      if (model.path) exact.start(); else simple.start();
     }
     requestAnimationFrame(reportSize);
   }
 
-  // ---- Selection ----
-  function select(id, reveal) {
-    state.group = null;
-    state.selected = id && state.nodes.has(id) ? id : null;
-    const keep = new Set();
-    if (state.selected) {
-      keep.add(state.selected);
-      for (const group of document.querySelectorAll(".edge-group")) {
-        if (group.dataset.source === state.selected) keep.add(group.dataset.target);
-        if (group.dataset.target === state.selected) keep.add(group.dataset.source);
-      }
-    }
-    for (const node of document.querySelectorAll(".node")) {
-      node.classList.toggle("selected", node.dataset.id === state.selected);
-      node.classList.toggle("faded", !!state.selected && !keep.has(node.dataset.id));
-    }
-    for (const group of document.querySelectorAll(".edge-group")) {
-      const touches = group.dataset.source === state.selected || group.dataset.target === state.selected;
-      group.classList.toggle("faded", !!state.selected && !touches);
-      group.classList.toggle("touching", !!state.selected && touches);
-    }
-    for (const button of document.querySelectorAll(".list button")) {
-      button.setAttribute("aria-pressed", String(button.dataset.id !== undefined && button.dataset.id === state.selected));
-    }
-    renderDetail(state.selected ? state.nodes.get(state.selected).table : null);
-    updatePosition();
-    if (state.selected && reveal) revealNode(state.nodes.get(state.selected));
+  // ---- Connected change sets ----
+  // Each set is changes joined by relations; one set is in view at a time. Previous and
+  // Next move between sets, and the sets not connected to the one in view are listed.
+  function setSets(sets, current) {
+    state.sets = sets;
+    state.set = Number.isInteger(current) && current >= 0 && current < sets.length ? current : null;
+    $("sets").hidden = sets.length <= 1;
+    $("prev").disabled = state.set === 0;
+    $("next").disabled = state.set !== null && state.set + 1 >= sets.length;
+    $("position").textContent = state.set === null ? `${sets.length} sets of changes` : `Changes ${state.set + 1} of ${sets.length}`;
+    renderOthers();
   }
-  function selectGroup(index) {
-    const group = (state.model.changeGroups || [])[index];
-    if (!group) return;
-    state.selected = null;
-    state.group = index;
-    const members = new Set(group.tables);
-    const keep = new Set(members);
-    for (const edge of document.querySelectorAll(".edge-group")) {
-      const { source, target, kind } = edge.dataset;
-      if (kind !== "unchanged" && (members.has(source) || members.has(target))) { keep.add(source); keep.add(target); }
+  function tableName(id) {
+    const table = state.tables.get(id);
+    return table ? table.name : String(id).replace(/^public\./, "");
+  }
+  function setKind(ids) {
+    const kinds = new Set(ids.map((id) => kindOf((state.tables.get(id) || {}).kind)));
+    return kinds.size === 1 ? [...kinds][0] : "modified";
+  }
+  function renderOthers() {
+    const box = $("others");
+    box.replaceChildren();
+    const others = state.sets.map((ids, index) => ({ ids, index })).filter((entry) => entry.index !== state.set);
+    box.hidden = state.sets.length <= 1 || !others.length;
+    if (box.hidden) { requestAnimationFrame(reportSize); return; }
+    box.append(el("span", { class: "caption" }, "Not connected"));
+    for (const { ids, index } of others) {
+      const title = ids.map(tableName).join(", ");
+      const table = ids.length === 1 ? state.tables.get(ids[0]) : null;
+      box.append(el("button", { type: "button", title, onclick: () => showSet(index) },
+        el("span", { class: "dot " + setKind(ids) }),
+        clip(tableName(ids[0]), 36) + (ids.length > 1 ? ` +${ids.length - 1}` : ""),
+        table && table.badge ? el("span", { class: "badge" }, table.badge) : null));
     }
-    for (const node of document.querySelectorAll(".node")) {
-      node.classList.toggle("selected", members.has(node.dataset.id));
-      node.classList.toggle("faded", !keep.has(node.dataset.id));
-    }
-    for (const edge of document.querySelectorAll(".edge-group")) {
-      const { source, target, kind } = edge.dataset;
-      const inGroup = kind !== "unchanged" && (members.has(source) || members.has(target));
-      edge.classList.toggle("faded", !inGroup);
-      edge.classList.remove("touching");
-    }
-    for (const button of document.querySelectorAll(".list button")) {
-      button.setAttribute("aria-pressed", String(button.dataset.group === String(index)));
-    }
-    const detail = $("detail");
-    detail.replaceChildren(el("div", { class: "row" }, el("h2", {}, `${group.count} tables share one change`)),
-      el("p", { class: "mono" }, group.summary),
-      el("div", { class: "items row" }, group.tables.map((id) => {
-        const node = state.nodes.get(id);
-        return el("button", { type: "button", onclick: () => select(id, true) }, node ? node.table.name : id);
-      })));
-    detail.hidden = false;
-    $("position").textContent = `${group.count} tables`;
-    fitTo([...keep]);
     requestAnimationFrame(reportSize);
-  }
-  function fitTo(ids) {
-    const nodes = ids.map((id) => state.nodes.get(id)).filter(Boolean);
-    if (!nodes.length) return;
-    const minX = Math.min(...nodes.map((n) => n.x)) - 30, minY = Math.min(...nodes.map((n) => n.y)) - 30;
-    const maxX = Math.max(...nodes.map((n) => n.x + n.width)) + 30, maxY = Math.max(...nodes.map((n) => n.y + n.height)) + 30;
-    const ratio = aspect();
-    let w = Math.max(maxX - minX, 420), h = Math.max(maxY - minY, 260);
-    if (w / h > ratio) h = w / ratio; else w = h * ratio;
-    animateTo({ x: (minX + maxX) / 2 - w / 2, y: (minY + maxY) / 2 - h / 2, w, h });
   }
   function step(direction) {
-    if (!state.order.length) return;
-    const index = state.order.indexOf(state.selected);
-    const next = index < 0 ? (direction > 0 ? 0 : state.order.length - 1) : (index + direction + state.order.length) % state.order.length;
-    select(state.order[next], true);
+    if (state.sets.length <= 1) return;
+    if (state.mode === exact) { exact.act({ type: "step", direction }); return; }
+    const target = state.set === null ? (direction > 0 ? 0 : state.sets.length - 1) : state.set + direction;
+    if (target >= 0 && target < state.sets.length) showSet(target);
   }
-  function updatePosition() {
-    const index = state.order.indexOf(state.selected);
-    $("position").textContent = state.order.length ? (index < 0 ? `${state.order.length} changes` : `${index + 1} of ${state.order.length}`) : "";
+  function showSet(index) {
+    if (state.mode === exact) exact.act({ type: "set", index });
+    else simple.showSet(index);
   }
 
-  // ---- Camera ----
-  function setViewBox(vb) {
-    state.vb = vb;
-    const graph = $("graph");
-    graph.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
-    // Like the app's diff view, unchanged relations appear once zoomed in (or for a selection).
-    graph.classList.toggle("show-unchanged", ($("canvas").clientWidth || 640) / vb.w >= 0.7);
-  }
-  function aspect() {
-    const canvas = $("canvas");
-    return Math.max(0.2, (canvas.clientWidth || 600) / (canvas.clientHeight || 440));
-  }
-  function fit(animated) {
-    if (!state.bounds) return;
-    const b = state.bounds, ratio = aspect();
-    let w = Math.max(b.w, 420), h = Math.max(b.h, 260);
-    if (w / h > ratio) h = w / ratio; else w = h * ratio;
-    const target = { x: b.x + b.w / 2 - w / 2, y: b.y + b.h / 2 - h / 2, w, h };
-    animated ? animateTo(target) : setViewBox(target);
-  }
-  function zoom(factor, point) {
-    if (!state.vb) return;
-    const vb = state.vb;
-    const limit = state.bounds ? Math.max(state.bounds.w, state.bounds.h) * 3 : 5000;
-    const w = Math.min(Math.max(vb.w * factor, 160), limit);
-    const applied = w / vb.w;
-    const p = point || { x: vb.x + vb.w / 2, y: vb.y + vb.h / 2 };
-    setViewBox({ x: p.x - (p.x - vb.x) * applied, y: p.y - (p.y - vb.y) * applied, w, h: vb.h * applied });
-  }
-  function revealNode(node) {
-    const vb = state.vb;
-    if (!vb || !node) return;
-    // Step to a readable scale (about 1:1) around the change, but never zoom
-    // out from a closer view the reader chose.
-    const readable = Math.max(node.width * 1.6, ($("canvas").clientWidth || 640) * 1.1);
-    const w = Math.max(Math.min(vb.w, readable), node.width * 1.6);
-    const h = w * vb.h / vb.w;
-    const inside = node.x >= vb.x && node.y >= vb.y && node.x + node.width <= vb.x + vb.w && node.y + node.height <= vb.y + vb.h;
-    if (inside && w === vb.w) return;
-    const c = center(node);
-    animateTo({ x: c.x - w / 2, y: c.y - h / 2, w, h });
-  }
-  let animation = 0;
-  function animateTo(target) {
-    const start = state.vb || target, began = performance.now(), id = ++animation;
-    const tick = (now) => {
-      if (id !== animation) return;
-      const t = Math.min(1, (now - began) / 220), e = 1 - Math.pow(1 - t, 3);
-      setViewBox({ x: start.x + (target.x - start.x) * e, y: start.y + (target.y - start.y) * e, w: start.w + (target.w - start.w) * e, h: start.h + (target.h - start.h) * e });
-      if (t < 1) requestAnimationFrame(tick);
+  // ---- Screen transforms: x ↦ s·x + t, used to preview gestures on the last frame ----
+  const IDENTITY = { s: 1, tx: 0, ty: 0 };
+  const compose = (a, b) => ({ s: a.s * b.s, tx: a.s * b.tx + a.tx, ty: a.s * b.ty + a.ty });
+  const inverse = (a) => ({ s: 1 / a.s, tx: -a.tx / a.s, ty: -a.ty / a.s });
+  const isIdentity = (a) => Math.abs(a.s - 1) < 1e-6 && Math.abs(a.tx) < 0.01 && Math.abs(a.ty) < 0.01;
+  const panBy = (dx, dy) => ({ s: 1, tx: dx, ty: dy });
+  const zoomAt = (factor, point) => ({ s: factor, tx: (1 - factor) * point.x, ty: (1 - factor) * point.y });
+
+  // ---- Graph Studio's own graph, drawn by its hidden renderer ----
+  const exact = (() => {
+    let image = null, inFlight = false, again = false, queued = [], local = IDENTITY, sent = IDENTITY;
+    let frameSize = null, failures = 0, resizeTimer = 0;
+
+    function start() {
+      state.mode = exact;
+      failures = 0;
+      $("graph").hidden = true;
+      $("loading").hidden = !!image;
+      $("note").hidden = true;
+      again = true;
+      flush();
+    }
+    function viewport() {
+      const canvas = $("canvas");
+      return { width: Math.round(canvas.clientWidth), height: Math.round(canvas.clientHeight) };
+    }
+    function act(action) { queued.push(action); flush(); }
+    function gesture(transform) {
+      local = compose(transform, local);
+      applyPreview();
+      flush();
+    }
+    function refresh() { again = true; flush(); }
+    function resized() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const size = viewport();
+        if (frameSize && (size.width !== frameSize.width || size.height !== frameSize.height)) refresh();
+      }, 180);
+    }
+    function applyPreview() {
+      if (image) image.style.transform = `translate(${local.tx}px, ${local.ty}px) scale(${local.s})`;
+    }
+    function flush() {
+      if (inFlight) { again = true; return; }
+      const actions = [];
+      if (!isIdentity(local)) actions.push({ type: "transform", scale: local.s, tx: local.tx, ty: local.ty });
+      actions.push(...queued.splice(0));
+      if (image && !actions.length && !again) return;
+      again = false;
+      sent = local;
+      inFlight = true;
+      const size = viewport();
+      // The frame keeps Graph Studio's own look, which follows the system appearance.
+      const args = { path: state.model.path, width: size.width, height: size.height,
+                     scale: Math.min(2, Math.max(1, window.devicePixelRatio || 1)) };
+      if (actions.length) args.actions = actions;
+      callTool("studio_review_frame", args, 40000)
+        .then((result) => show(result, size))
+        .then(() => { failures = 0; })
+        .catch((error) => {
+          // The helper restarts a renderer that stopped; the simplified graph takes over
+          // when it cannot draw at all.
+          failures += 1;
+          if (!image || failures > 1) return fallBack(error);
+          queued = actions.filter((action) => action.type !== "transform").concat(queued);
+          again = true;
+        })
+        .finally(() => {
+          inFlight = false;
+          if (state.mode === exact && (again || queued.length || !isIdentity(local))) flush();
+        });
+    }
+    async function show(result, size) {
+      const content = (Array.isArray(result.content) ? result.content : []).find((item) => item && item.type === "image");
+      if (!content) throw new Error("The renderer returned no image.");
+      const info = result.structuredContent || {};
+      const next = new Image();
+      next.className = "frame";
+      next.alt = "";
+      next.src = `data:${content.mimeType};base64,${content.data}`;
+      await next.decode();
+      if (state.mode !== exact) return;
+      frameSize = { width: info.width || size.width, height: info.height || size.height };
+      next.style.width = frameSize.width + "px";
+      next.style.height = frameSize.height + "px";
+      // Gestures made while this frame was drawn stay previewed on top of it.
+      local = compose(local, inverse(sent));
+      sent = IDENTITY;
+      const canvas = $("canvas");
+      if (image) canvas.replaceChild(next, image); else canvas.insertBefore(next, canvas.firstChild);
+      image = next;
+      applyPreview();
+      $("loading").hidden = true;
+      setSets(Array.isArray(info.setTables) ? info.setTables : state.sets, info.set);
+      resized();
+    }
+    function fallBack(error) {
+      if (image) { image.remove(); image = null; }
+      $("loading").hidden = true;
+      const reason = error && error.code === "RENDERER_BUSY"
+        ? "Graph Studio is drawing reviews for other sessions, so this is a simplified view."
+        : "Graph Studio's renderer is unavailable, so this is a simplified view." + (error && error.message ? " " + error.message : "");
+      simple.start(reason);
+    }
+    return {
+      start, act, refresh, resized,
+      pan: (dx, dy) => gesture(panBy(dx, dy)),
+      zoom: (factor, point) => gesture(zoomAt(factor, point)),
+      click: (point) => act({ type: "click", x: point.x, y: point.y }),
+      fit: () => act({ type: "fit" }),
     };
-    requestAnimationFrame(tick);
-  }
-  function toGraphPoint(event) {
-    const graph = $("graph");
-    const matrix = graph.getScreenCTM();
-    if (!matrix) return null;
-    const point = graph.createSVGPoint();
-    point.x = event.clientX; point.y = event.clientY;
-    const mapped = point.matrixTransform(matrix.inverse());
-    return { x: mapped.x, y: mapped.y };
-  }
+  })();
 
+  // ---- Simplified graph ----
+  const simple = (() => {
+    const NODE_WIDTH = 236, HEADER = 32, ROW = 18, GRAPH_ROWS = 7, GAP_X = 70, GAP_Y = 54;
+    let nodes = new Map(), bounds = null, vb = null, selected = null, shown = [];
+
+    function start(reason) {
+      state.mode = simple;
+      $("graph").hidden = false;
+      $("loading").hidden = true;
+      $("note").hidden = !reason;
+      $("note").textContent = reason ? "Simplified view" : "";
+      $("note").title = reason || "";
+      showSet(state.sets.length ? 0 : null);
+    }
+    function showSet(index) {
+      const all = [...state.tables.values()];
+      const members = index === null ? all.filter((table) => !table.context).map((table) => table.id) : state.sets[index] || [];
+      const keep = new Set(members);
+      const relations = Array.isArray(state.model.relations) ? state.model.relations : [];
+      // Related unchanged tables that the review draws come along with their set.
+      for (const relation of relations) {
+        for (const [near, far] of [[relation.source, relation.target], [relation.target, relation.source]]) {
+          const other = state.tables.get(far);
+          if (keep.has(near) && other && other.context) keep.add(far);
+        }
+      }
+      shown = all.filter((table) => keep.has(table.id));
+      selected = null;
+      setSets(state.sets, index);
+      draw(shown, relations.filter((relation) => keep.has(relation.source) && keep.has(relation.target)));
+      renderDetail(null);
+      fit();
+    }
+
+    function layout(tables, relations) {
+      const byID = new Map(tables.map((table) => [table.id, table]));
+      const neighbors = new Map(tables.map((table) => [table.id, new Set()]));
+      for (const relation of relations) {
+        if (byID.has(relation.source) && byID.has(relation.target) && relation.source !== relation.target) {
+          neighbors.get(relation.source).add(relation.target);
+          neighbors.get(relation.target).add(relation.source);
+        }
+      }
+      // Breadth-first from the most connected table, so a hub sits in the middle with its
+      // neighbours around it.
+      const degree = (id) => neighbors.get(id).size;
+      const byDegree = (a, b) => degree(b) - degree(a) || (a < b ? -1 : a > b ? 1 : 0);
+      const ordered = [];
+      const seen = new Set();
+      const starts = tables.filter((table) => !table.context).map((table) => table.id).sort(byDegree)
+        .concat(tables.filter((table) => table.context).map((table) => table.id).sort());
+      for (const first of starts) {
+        if (seen.has(first)) continue;
+        const queue = [first];
+        seen.add(first);
+        while (queue.length) {
+          const id = queue.shift();
+          ordered.push(byID.get(id));
+          for (const next of [...neighbors.get(id)].sort(byDegree)) {
+            if (!seen.has(next)) { seen.add(next); queue.push(next); }
+          }
+        }
+      }
+      const columns = Math.max(1, Math.min(ordered.length, Math.round(Math.sqrt(ordered.length * 1.9))));
+      const rows = Math.ceil(ordered.length / columns);
+      const cells = [];
+      for (let row = 0; row < rows; row += 1) for (let column = 0; column < columns; column += 1) cells.push({ row, column });
+      const middleRow = (rows - 1) / 2, middleColumn = (columns - 1) / 2;
+      const distance = (cell) => Math.hypot((cell.row - middleRow) * 1.25, cell.column - middleColumn);
+      cells.sort((a, b) => distance(a) - distance(b) || a.row - b.row || a.column - b.column);
+      const heights = ordered.map((table) => nodeHeight(table));
+      const rowHeights = new Array(rows).fill(0);
+      ordered.forEach((table, index) => { rowHeights[cells[index].row] = Math.max(rowHeights[cells[index].row], heights[index]); });
+      const rowTops = [];
+      let y = 0;
+      for (let row = 0; row < rows; row += 1) { rowTops.push(y); y += (rowHeights[row] || 0) + GAP_Y; }
+      const placed = new Map();
+      ordered.forEach((table, index) => {
+        const cell = cells[index];
+        placed.set(table.id, { x: cell.column * (NODE_WIDTH + GAP_X), y: rowTops[cell.row], width: NODE_WIDTH, height: heights[index], table });
+      });
+      return placed;
+    }
+    function summarizedLinks(table) {
+      const links = table.unchangedLinks;
+      return links && !links.drawn && links.relations > 0 ? links : null;
+    }
+    // Fields arrive in review order (keys, then changes); a card shows the first rows.
+    const cardColumns = (table) => (Array.isArray(table.columns) ? table.columns : []).slice(0, GRAPH_ROWS);
+    function hiddenCount(table) {
+      const columns = Array.isArray(table.columns) ? table.columns : [];
+      return columns.length - cardColumns(table).length + (table.hiddenColumns || 0);
+    }
+    function nodeHeight(table) {
+      return HEADER + cardColumns(table).length * ROW + (hiddenCount(table) > 0 ? ROW : 0) + (summarizedLinks(table) ? ROW : 0) + 8;
+    }
+
+    function draw(tables, relations) {
+      const graph = $("graph");
+      graph.replaceChildren();
+      const defs = svg("defs", {}, graph);
+      for (const kind of ["added", "modified", "removed", "unchanged"]) {
+        const marker = svg("marker", { id: "arrow-" + kind, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, defs);
+        svg("path", { d: "M0,0 L10,5 L0,10 z", fill: kind === "unchanged" ? "var(--text-3)" : `var(--${kind === "added" ? "add" : kind === "modified" ? "mod" : "del"})` }, marker);
+      }
+      nodes = layout(tables, relations);
+      const edgeLayer = svg("g", {}, graph);
+      const nodeLayer = svg("g", {}, graph);
+      const pairs = new Map();
+      for (const relation of relations) {
+        if (!nodes.has(relation.source) || !nodes.has(relation.target)) continue;
+        const key = [relation.source, relation.target].sort().join("\u0000");
+        if (!pairs.has(key)) pairs.set(key, []);
+        pairs.get(key).push(relation);
+      }
+      for (const group of pairs.values()) {
+        group.forEach((relation, index) => drawEdge(edgeLayer, relation, (index - (group.length - 1) / 2) * 9));
+      }
+      for (const node of nodes.values()) drawNode(nodeLayer, node);
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const node of nodes.values()) {
+        minX = Math.min(minX, node.x); minY = Math.min(minY, node.y);
+        maxX = Math.max(maxX, node.x + node.width); maxY = Math.max(maxY, node.y + node.height);
+      }
+      bounds = nodes.size ? { x: minX - 30, y: minY - 30, w: maxX - minX + 60, h: maxY - minY + 60 } : null;
+    }
+    const center = (node) => ({ x: node.x + node.width / 2, y: node.y + node.height / 2 });
+    function border(node, toward) {
+      const c = center(node);
+      const dx = toward.x - c.x, dy = toward.y - c.y;
+      if (dx === 0 && dy === 0) return c;
+      const scale = Math.min(node.width / 2 / Math.abs(dx || 1e-9), node.height / 2 / Math.abs(dy || 1e-9));
+      return { x: c.x + dx * scale, y: c.y + dy * scale };
+    }
+    function drawEdge(layer, relation, offset) {
+      const source = nodes.get(relation.source), target = nodes.get(relation.target);
+      const kind = kindOf(relation.kind);
+      const g = svg("g", { class: "edge-group", "data-source": relation.source, "data-target": relation.target }, layer);
+      let d;
+      if (source === target) {
+        const x = source.x + source.width, y = source.y + HEADER / 2;
+        d = `M${x},${y} C${x + 46},${y - 30} ${x + 46},${y + 40} ${x},${y + 22}`;
+      } else {
+        const a = center(source), b = center(target);
+        const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        const nx = -(b.y - a.y) / length * offset, ny = (b.x - a.x) / length * offset;
+        const from = border(source, { x: b.x + nx, y: b.y + ny });
+        const to = border(target, { x: a.x + nx, y: a.y + ny });
+        d = `M${from.x + nx},${from.y + ny} L${to.x + nx},${to.y + ny}`;
+      }
+      const path = svg("path", { class: "edge " + kind, d, "marker-end": `url(#arrow-${kind})` }, g);
+      svg("title", {}, path, `${relation.source} (${(relation.sourceColumns || []).join(", ")}) → ${relation.target} (${(relation.targetColumns || []).join(", ")}) · ${LABEL[kind]}`);
+    }
+    function drawNode(layer, node) {
+      const table = node.table;
+      const kind = kindOf(table.kind);
+      const classes = ["node", kind].concat(table.context ? ["context"] : []);
+      const g = svg("g", { class: classes.join(" "), "data-id": table.id, tabindex: 0, role: "button", "aria-label": `${table.name}, ${table.context ? "related, unchanged" : LABEL[kind]}` }, layer);
+      svg("rect", { class: "frame", x: node.x, y: node.y, width: node.width, height: node.height, rx: 8 }, g);
+      if (kind !== "unchanged") svg("rect", { class: "inner", x: node.x + 3, y: node.y + 3, width: node.width - 6, height: node.height - 6, rx: 6 }, g);
+      svg("title", {}, g, table.name + (table.badge ? " · " + table.badge : ""));
+      svg("text", { class: "title", x: node.x + 12, y: node.y + 21 }, g, clip(table.name, 23));
+      const tag = table.context ? "Related" : (kind === "modified" ? (table.badge || "Changed") : LABEL[kind]);
+      svg("text", { class: "tag " + kind, x: node.x + node.width - 12, y: node.y + 21, "text-anchor": "end" }, g, clip(tag, 12));
+      const columns = cardColumns(table);
+      columns.forEach((column, index) => {
+        const y = node.y + HEADER + 12 + index * ROW;
+        const columnKind = kindOf(column.kind);
+        svg("text", { class: "mark " + columnKind, x: node.x + 12, y }, g, MARK[columnKind]);
+        svg("text", { class: "field " + columnKind, x: node.x + 26, y }, g, clip(column.name, 20));
+        const keys = (column.primaryKey ? "PK " : "") + (column.foreignKey ? "FK " : "");
+        const type = String(column.description || "").split(" · ")[0];
+        svg("text", { class: "ftype", x: node.x + node.width - 12, y, "text-anchor": "end" }, g, clip(keys + type, 16));
+      });
+      let footerRow = columns.length;
+      const hidden = hiddenCount(table);
+      if (hidden > 0) { svg("text", { class: "more", x: node.x + 26, y: node.y + HEADER + 12 + footerRow * ROW }, g, `+${hidden} more fields`); footerRow += 1; }
+      const links = summarizedLinks(table);
+      if (links) {
+        const text = `↔ ${links.relations} unchanged ${links.relations === 1 ? "link" : "links"} · ${links.tables} ${links.tables === 1 ? "table" : "tables"}`;
+        svg("text", { class: "links", x: node.x + 12, y: node.y + HEADER + 12 + footerRow * ROW }, g, text);
+      }
+      g.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(table.id); } });
+    }
+
+    function select(id) {
+      selected = id && nodes.has(id) && selected !== id ? id : null;
+      const keep = new Set(selected ? [selected] : []);
+      if (selected) {
+        for (const group of document.querySelectorAll(".edge-group")) {
+          if (group.dataset.source === selected) keep.add(group.dataset.target);
+          if (group.dataset.target === selected) keep.add(group.dataset.source);
+        }
+      }
+      for (const node of document.querySelectorAll(".node")) {
+        node.classList.toggle("selected", node.dataset.id === selected);
+        node.classList.toggle("faded", !!selected && !keep.has(node.dataset.id));
+      }
+      for (const group of document.querySelectorAll(".edge-group")) {
+        const touches = group.dataset.source === selected || group.dataset.target === selected;
+        group.classList.toggle("faded", !!selected && !touches);
+      }
+      renderDetail(selected ? nodes.get(selected).table : null);
+    }
+
+    function renderDetail(table) {
+      const detail = $("detail");
+      detail.replaceChildren();
+      if (!table) { detail.hidden = true; requestAnimationFrame(reportSize); return; }
+      detail.hidden = false;
+      const kind = kindOf(table.kind);
+      detail.append(el("div", { class: "row" },
+        el("h2", {}, table.name),
+        el("span", { class: "badge" }, table.context ? "Related, unchanged" : LABEL[kind]),
+        kind === "modified" && table.badge ? el("span", { class: "badge" }, table.badge) : null,
+        table.objectKind && table.objectKind !== "table" ? el("span", { class: "badge" }, table.objectKind) : null));
+      const rows = (Array.isArray(table.columns) ? table.columns : []).map((column) => {
+        const columnKind = kindOf(column.kind);
+        const keys = [column.primaryKey ? "PK" : null, column.foreignKey ? "FK" : null].filter(Boolean).join(" ");
+        return el("tr", {},
+          el("td", { class: "m k-" + columnKind }, MARK[columnKind]),
+          el("td", { class: "n" + (columnKind === "unchanged" ? "" : " k-" + columnKind) }, column.name, keys ? el("span", { class: "was" }, " " + keys) : null),
+          el("td", { class: "mono" }, column.description || "", column.before ? el("div", { class: "was" }, "was " + column.before) : null));
+      });
+      if (rows.length) detail.append(el("table", { class: "fields" }, el("tbody", {}, rows)));
+      if (table.hiddenColumns) detail.append(el("p", { class: "was" }, `${table.hiddenColumns} unchanged fields are not listed.`));
+      const definitions = Array.isArray(table.definitionChanges) ? table.definitionChanges : [];
+      if (definitions.length) {
+        const box = el("div", { class: "defs" }, el("div", {}, "Definition changes"));
+        for (const change of definitions) {
+          const changeKind = KINDS.includes(change.kind) ? change.kind : "modified";
+          box.append(el("div", { class: "k-" + changeKind }, `${MARK[changeKind]} ${change.label || change.key}`));
+          if (change.before) box.append(el("pre", { class: change.after ? "" : "k-removed" }, (change.after ? "was: " : "") + change.before));
+          if (change.after) box.append(el("pre", {}, change.after));
+        }
+        detail.append(box);
+      }
+      const links = summarizedLinks(table);
+      if (links) {
+        const box = el("div", { class: "defs" }, el("div", {}, `Unchanged links (${links.relations}, not drawn)`));
+        for (const item of Array.isArray(links.items) ? links.items : []) {
+          const columns = (item.columns || []).join(", ");
+          box.append(el("div", { class: "was" }, item.direction === "referencedBy"
+            ? `← ${item.name} (${columns}) references ${table.name}`
+            : `→ ${table.name} references ${item.name} (${columns})`));
+        }
+        if (links.more) box.append(el("div", { class: "was" }, `+${links.more} more`));
+        detail.append(box);
+      }
+      const relations = (Array.isArray(state.model.relations) ? state.model.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
+      if (relations.length) {
+        const box = el("div", { class: "defs" }, el("div", {}, "Relations"));
+        for (const relation of relations) {
+          const relationKind = kindOf(relation.kind);
+          box.append(el("div", { class: relationKind === "unchanged" ? "" : "k-" + relationKind },
+            `${MARK[relationKind]} ${tableName(relation.source)} (${(relation.sourceColumns || []).join(", ")}) → ${tableName(relation.target)} (${(relation.targetColumns || []).join(", ")})`));
+          if (relation.previousDefinition) box.append(el("div", { class: "was" }, "was " + relation.previousDefinition));
+        }
+        detail.append(box);
+      }
+      requestAnimationFrame(reportSize);
+    }
+
+    function setViewBox(next) {
+      vb = next;
+      $("graph").setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+    }
+    function aspect() {
+      const canvas = $("canvas");
+      return Math.max(0.2, (canvas.clientWidth || 600) / (canvas.clientHeight || 440));
+    }
+    function fit() {
+      if (!bounds) return;
+      const ratio = aspect();
+      let w = Math.max(bounds.w, 420), h = Math.max(bounds.h, 260);
+      if (w / h > ratio) h = w / ratio; else w = h * ratio;
+      setViewBox({ x: bounds.x + bounds.w / 2 - w / 2, y: bounds.y + bounds.h / 2 - h / 2, w, h });
+    }
+    const unitsPerPixel = () => (vb ? vb.w / ($("canvas").clientWidth || 1) : 1);
+    function pan(dx, dy) {
+      if (!vb) return;
+      const scale = unitsPerPixel();
+      setViewBox({ ...vb, x: vb.x - dx * scale, y: vb.y - dy * scale });
+    }
+    function zoom(factor, point) {
+      if (!vb) return;
+      const limit = bounds ? Math.max(bounds.w, bounds.h) * 3 : 5000;
+      const w = Math.min(Math.max(vb.w / factor, 160), limit);
+      const applied = w / vb.w;
+      const scale = unitsPerPixel();
+      const anchor = { x: vb.x + point.x * scale, y: vb.y + point.y * scale };
+      setViewBox({ x: anchor.x - (anchor.x - vb.x) * applied, y: anchor.y - (anchor.y - vb.y) * applied, w, h: vb.h * applied });
+    }
+    function click(point, target) {
+      const node = target && target.closest ? target.closest(".node") : null;
+      select(node ? node.dataset.id : null);
+    }
+    return { start, showSet, pan, zoom, click, fit, resized: fit };
+  })();
+
+  // ---- Input: the same gestures as Graph Studio's graph ----
   const canvas = $("canvas");
+  function pointOf(event) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left - canvas.clientLeft, y: event.clientY - rect.top - canvas.clientTop };
+  }
+  function centerPoint() { return { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 }; }
   canvas.addEventListener("wheel", (event) => {
-    // Plain scrolling keeps scrolling the conversation; pinch or ⌘/Ctrl-scroll zooms.
-    if (!event.ctrlKey && !event.metaKey) return;
+    if (!state.mode) return;
     event.preventDefault();
-    zoom(Math.exp(event.deltaY * 0.0022), toGraphPoint(event));
+    const point = pointOf(event);
+    const lineScale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
+    const dx = event.deltaX * lineScale, dy = event.deltaY * lineScale;
+    // Trackpads send fractional pixel deltas, or a wheelDelta of exactly three times the
+    // delta; mouse wheels send whole notches.
+    const wheelDelta = event.wheelDeltaY || event.wheelDeltaX || 0;
+    const trackpad = event.deltaMode === 0 && (!Number.isInteger(event.deltaX) || !Number.isInteger(event.deltaY)
+      || !wheelDelta || Math.abs(wheelDelta) === Math.abs(event.deltaY || event.deltaX) * 3);
+    if (event.ctrlKey) {
+      state.mode.zoom(Math.exp(-dy * 0.01), point);                      // pinch
+    } else if (trackpad) {
+      state.mode.pan(-dx, -dy);                                            // two fingers move the canvas
+    } else if (Math.abs(dy) >= Math.abs(dx)) {
+      // A mouse wheel zooms toward the pointer, about 15% a notch; sideways it pans.
+      const notches = event.wheelDeltaY ? event.wheelDeltaY / 120 : event.deltaMode === 1 ? -event.deltaY / 3 : -dy / 100;
+      state.mode.zoom(Math.exp(Math.max(-3, Math.min(3, notches)) * 0.15), point);
+    } else {
+      state.mode.pan(-dx, 0);
+    }
   }, { passive: false });
+  let lastScale = 1;
+  canvas.addEventListener("gesturestart", (event) => { event.preventDefault(); lastScale = 1; });
+  canvas.addEventListener("gesturechange", (event) => {
+    event.preventDefault();
+    if (!state.mode) return;
+    state.mode.zoom(event.scale / lastScale, pointOf(event));
+    lastScale = event.scale;
+  });
   let drag = null;
   canvas.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || !state.vb) return;
-    drag = { x: event.clientX, y: event.clientY, vb: { ...state.vb }, moved: false, target: event.target };
+    if (event.button !== 0 || !state.mode || event.target.closest(".zoom")) return;
+    drag = { x: event.clientX, y: event.clientY, moved: false, target: event.target, point: pointOf(event) };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
@@ -743,74 +845,54 @@ svg.show-unchanged .edge.unchanged, .edge-group.touching .edge.unchanged { displ
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
     drag.moved = true;
     canvas.classList.add("panning");
-    const scale = drag.vb.w / (canvas.clientWidth || 1);
-    setViewBox({ ...drag.vb, x: drag.vb.x - dx * scale, y: drag.vb.y - dy * scale });
+    drag.x = event.clientX; drag.y = event.clientY;
+    state.mode.pan(dx, dy);
   });
   const endDrag = (event) => {
     if (!drag) return;
-    const wasClick = !drag.moved, target = drag.target;
+    // The release can land past the last move event.
+    if (drag.moved && event.type === "pointerup") state.mode.pan(event.clientX - drag.x, event.clientY - drag.y);
+    const wasClick = !drag.moved, target = drag.target, point = drag.point;
     drag = null;
     canvas.classList.remove("panning");
-    if (event.type === "pointerup" && wasClick) {
-      const node = target && target.closest ? target.closest(".node") : null;
-      select(node ? node.dataset.id : null, false);
-    }
+    if (event.type === "pointerup" && wasClick && state.mode) state.mode.click(point, target);
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
   document.addEventListener("keydown", (event) => {
-    if (!state.model || event.target instanceof HTMLButtonElement) return;
-    if (event.key === "ArrowDown" || event.key === "ArrowRight" || event.key === "j") { event.preventDefault(); step(1); }
-    else if (event.key === "ArrowUp" || event.key === "ArrowLeft" || event.key === "k") { event.preventDefault(); step(-1); }
-    else if (event.key === "Escape") select(null, false);
-    else if (event.key === "+" || event.key === "=") zoom(0.8);
-    else if (event.key === "-") zoom(1.25);
-    else if (event.key === "0") fit(true);
+    if (!state.mode || event.target instanceof HTMLButtonElement) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); step(1); }
+    else if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
+    else if (event.key === "+" || event.key === "=") state.mode.zoom(1.25, centerPoint());
+    else if (event.key === "-") state.mode.zoom(0.8, centerPoint());
+    else if (event.key === "0") state.mode.fit();
   });
   $("prev").addEventListener("click", () => step(-1));
   $("next").addEventListener("click", () => step(1));
-  $("zoom-in").addEventListener("click", () => zoom(0.8));
-  $("zoom-out").addEventListener("click", () => zoom(1.25));
-  $("fit").addEventListener("click", () => fit(true));
-
-  // ---- Display mode ----
-  function updateExpandButton() {
-    const button = $("expand");
-    button.hidden = !state.modes.includes("fullscreen");
-    button.textContent = state.displayMode === "fullscreen" ? "Collapse" : "Expand";
-  }
-  $("expand").addEventListener("click", () => {
-    const mode = state.displayMode === "fullscreen" ? "inline" : "fullscreen";
-    request("ui/request-display-mode", { mode }).then((result) => {
-      state.displayMode = (result && result.mode) || mode;
-      updateExpandButton();
-      sizeCanvas();
-      fit(true);
-    }).catch(() => {});
+  $("zoom-in").addEventListener("click", () => state.mode && state.mode.zoom(1.25, centerPoint()));
+  $("zoom-out").addEventListener("click", () => state.mode && state.mode.zoom(0.8, centerPoint()));
+  $("fit").addEventListener("click", () => state.mode && state.mode.fit());
+  $("open-app").addEventListener("click", () => {
+    if (!state.model || !state.model.path) return;
+    const button = $("open-app");
+    button.disabled = true;
+    callTool("studio_open_review_in_app", { path: state.model.path }, 20000)
+      .then(() => toast("Opened in Graph Studio, with the schema before these changes in a second tab."))
+      .catch((error) => toast(error && error.message ? error.message : "Graph Studio could not open the review.", true))
+      .finally(() => { button.disabled = false; });
   });
+
   function sizeCanvas() {
-    const canvasElement = $("canvas");
-    if (state.displayMode === "fullscreen") {
-      const available = (state.hostHeight || window.innerHeight) - canvasElement.getBoundingClientRect().top - 24;
-      canvasElement.style.height = Math.max(320, Math.round(available)) + "px";
-    } else if (state.bounds) {
-      // Inline, follow the graph's shape so small reviews don't sit in empty space.
-      const width = canvasElement.clientWidth || 640;
-      const height = width * state.bounds.h / Math.max(state.bounds.w, 420);
-      const minimum = state.nodes.size > 12 ? 380 : 220;
-      canvasElement.style.height = Math.round(Math.min(460, Math.max(minimum, height))) + "px";
-    } else {
-      canvasElement.style.height = "";
-    }
+    const width = canvas.clientWidth || 640;
+    canvas.style.height = Math.round(Math.min(520, Math.max(340, width * 0.64))) + "px";
   }
   let lastWidth = 0;
-  window.addEventListener("resize", () => {
-    // Height changes come from the host fitting this view; only width changes need a refit.
-    if (state.displayMode !== "fullscreen" && window.innerWidth === lastWidth) return;
-    lastWidth = window.innerWidth;
+  new ResizeObserver(() => {
+    if (!state.mode || canvas.clientWidth === lastWidth) return;
+    lastWidth = canvas.clientWidth;
     sizeCanvas();
-    fit(false);
-  });
+    state.mode.resized();
+  }).observe(canvas);
 })();
 </script>
 </body>

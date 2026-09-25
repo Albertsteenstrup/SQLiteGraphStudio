@@ -187,11 +187,11 @@ struct SchemaReviewLensTests {
         })
     }
 
-    @Test func aReviewOpensOnEveryChangeAndRevealsTheChosenTable() async throws {
+    @Test func aReviewOpensOnItsFirstConnectedSetAndRevealsTheChosenTable() async throws {
         let (session, cleanup) = try await openReview(); defer { cleanup() }
         #expect(session.presentedError == nil && session.schemaReview != nil)
-        // Nothing is pre-chosen, so the graph opens showing every change.
-        #expect(session.selectedGraphNodeID == nil && session.selectedGraphNodeIDs.isEmpty)
+        // The graph opens on the first connected set: the removed table and the hub it referenced.
+        #expect(session.selectedGraphNodeIDs == ["gone", "hub"] && session.currentReviewChangeSetIndex == 0)
         #expect(session.schemaReviewChanges["gone"]?.kind == .removed)
 
         session.revealGraphNode("gone")

@@ -3,9 +3,9 @@ import XCTest
 @testable import StudioMCP
 
 final class MCPServerTests: XCTestCase {
-    func testCatalogHasAllSixtyThreeUniqueDocumentedTools() {
-        XCTAssertEqual(MCPToolCatalog.tools.count, 63)
-        XCTAssertEqual(Set(MCPToolCatalog.names).count, 63)
+    func testCatalogHasAllSixtyFiveUniqueDocumentedTools() {
+        XCTAssertEqual(MCPToolCatalog.tools.count, 65)
+        XCTAssertEqual(Set(MCPToolCatalog.names).count, 65)
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_status"))
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_test_speech"))
         for tool in MCPToolCatalog.tools {

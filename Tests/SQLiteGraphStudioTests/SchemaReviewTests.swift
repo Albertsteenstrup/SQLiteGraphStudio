@@ -45,8 +45,10 @@ import Testing
         #expect(review.changes.first { $0.id == "old_audit" }?.kind == .removed)
         #expect(review.changes.first { $0.id == "sessions" }?.kind == .added)
         let fkChanges = review.relationChanges.filter { $0.relation.source == "users" }
-        #expect(Set(fkChanges.map(\.kind)) == [.removed, .added])
-        #expect(fkChanges.contains { $0.relation.definition.contains("CASCADE") })
+        // The foreign key keeps its tables, so a new ON DELETE action makes it one edited relation.
+        #expect(fkChanges.map(\.kind) == [.modified])
+        #expect(fkChanges.first?.relation.definition.contains("CASCADE") == true)
+        #expect(fkChanges.first?.previous?.definition.contains("RESTRICT") == true)
         let url = root.appendingPathComponent("review.sgreview")
         try review.write(to: url)
         let saved = try String(contentsOf: url, encoding: .utf8)
@@ -108,12 +110,14 @@ import Testing
         let before = SchemaReviewSnapshot(engine: "sqlite", tables: [], relations: [])
         let after = SchemaReviewSnapshot(engine: "postgresql", tables: [], relations: [])
         #expect(throws: SchemaReviewError.self) { try SchemaReviewDocument(title: "", baseRef: "", headRef: "", before: before, after: after).validate() }
+        let other = SchemaReviewSnapshot.Table(id: "b", name: "b", kind: "table", columns: [column], metadata: [:])
         let relation = SchemaReviewSnapshot.Relation(id: "fk", source: "a", target: "a", sourceColumns: ["id"], targetColumns: ["id"], definition: "old")
-        var edited = relation; edited.definition = "new"
+        // Moved to another table, a relation splits into `before:` and `after:` identities.
+        var moved = relation; moved.target = "b"
         var collision = relation; collision.id = "before:fk"
         let colliding = SchemaReviewDocument(title: "", baseRef: "", headRef: "",
-            before: .init(engine: "sqlite", tables: [table], relations: [relation]),
-            after: .init(engine: "sqlite", tables: [table], relations: [edited, collision]))
+            before: .init(engine: "sqlite", tables: [table, other], relations: [relation]),
+            after: .init(engine: "sqlite", tables: [table, other], relations: [moved, collision]))
         #expect(throws: SchemaReviewError.self) { try colliding.validate() }
     }
 

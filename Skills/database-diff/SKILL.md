@@ -49,10 +49,11 @@ Use the same executable for capture, comparison, and display.
 ```
 
 Show the result in the conversation with the Graph Studio MCP tool
-`studio_show_review_inline`, passing the `.sgreview` path. It reads the file
-directly, so no app window, database, or tab opens; hosts without inline views get
-a text summary instead. Open the app only when the user asks for it or the tool is
-unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
+`studio_show_review_inline`, passing the `.sgreview` path. Hosts that render MCP
+Apps show Graph Studio's own graph, drawn by a hidden renderer, so no app window,
+database, or tab opens; other hosts get a text summary instead. The reader can open
+the review in the app from that view. Open the app yourself only when the user asks
+for it or the tool is unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
 
 Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
 `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
@@ -86,15 +87,19 @@ that the schema is unchanged; data effects remain part of the original review.
 ## Review and handoff
 
 Look at the shown review and inspect changed tables and their relationships.
-Blue solid inner borders and `+`/`~` labels indicate additions/changes. Red dashed
-inner borders and `−` labels indicate removals. The existing outer group colour is
-preserved. Removed tables remain faded with a Removed badge. Modified relations
-show both their removed and added definitions. Table details show field types,
-nullability, defaults, key membership, and available definition changes.
-The graph opens on every change at once, names changed tables at a readable size,
-and hides unchanged relations until zoomed in. Choosing a table in the list or the
-graph isolates its own changes and the tables they reach, fading the rest; choose
-it again or click empty canvas to see everything. ⌥⌘↓ and ⌥⌘↑ step through changes.
+For tables, fields, and relations alike, green solid inner borders and `+` labels
+mark additions, blue solid ones and `~` labels changes, and red dashed ones and `−`
+labels removals. The existing outer group colour is preserved. Removed tables remain
+faded with a Removed badge. A relation that keeps its tables but changes columns or
+actions is one changed relation; one that moves to other tables shows as removed
+plus added. Cards list keys first, then changed fields. Table details show field
+types, nullability, defaults, key membership, and available definition changes.
+The graph opens on the first connected set of changes (changed tables joined by
+relations), names changed tables at a readable size, and hides unchanged relations
+until zoomed in. ⌥⌘↓ and ⌥⌘↑, or Next and Previous in the conversation view, step
+between connected sets. Choosing a table in the list or the graph isolates its own
+changes and the tables they reach, fading the rest; choose it again or click empty
+canvas to see every change.
 
 Report the exact base/head, affected tables, artifact path, and unsupported scope.
 No automatic rename inference is made: a rename appears as removal plus addition.

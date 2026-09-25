@@ -45,8 +45,9 @@ import Testing
         #expect(users.relationChanged)
         #expect(review.changes.first { $0.id == "approval" }?.kind == .added)
         #expect(review.changes.first { $0.id == "old_audit" }?.kind == .removed)
-        #expect(review.relationChanges.contains { $0.relation.id == "users_team" && $0.kind == .removed })
-        #expect(review.relationChanges.contains { $0.relation.definition == "ON DELETE CASCADE" && $0.kind == .added })
+        let edited = try #require(review.relationChanges.first { $0.relation.id == "users_team" })
+        #expect(edited.kind == .modified && edited.relation.definition == "ON DELETE CASCADE")
+        #expect(edited.previous != nil && edited.previous?.definition != "ON DELETE CASCADE")
         #expect(review.after.relations.first { $0.id == "approval_user" }?.definition.contains("Actions are not specified") == true)
     }
 
