@@ -345,10 +345,10 @@ public actor SQLiteDatabaseBackend {
         let plan = try Self.makeQueryPlan(query: oneRow, descriptor: descriptor,
                                           boundedCell: BoundedCellProjection(columnName: columnName, offset: offset, length: length,
                                                                             expectedRowIdentity: expectedRowIdentity))
-        guard let row = try pool.read({ db in
-            try Row.fetchOne(db, sql: plan.selectSQL, arguments: plan.selectArguments)
-        }) else { return nil }
-        return Self.boundedCellRead(from: row, offset: offset, expectedRowIdentity: expectedRowIdentity)
+        return try await pool.read { db -> BoundedCellRead? in
+            guard let row = try Row.fetchOne(db, sql: plan.selectSQL, arguments: plan.selectArguments) else { return nil }
+            return Self.boundedCellRead(from: row, offset: offset, expectedRowIdentity: expectedRowIdentity)
+        }
     }
 
     public func withBoundedCellReadSnapshot<T: Sendable>(

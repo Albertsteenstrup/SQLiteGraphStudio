@@ -485,7 +485,7 @@ final class MCPSetupInstallerTests: XCTestCase {
             "mcp", "add", "--scope", "project", "--transport", "stdio", MCPSetupInstaller.serverName, "--", helperPath,
         ])
         XCTAssertEqual(runner.invocations.first?.currentDirectory, project.standardizedFileURL)
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(from: Data(contentsOf: project.appendingPathComponent(".mcp.json"))) as? [String: Any])
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: project.appendingPathComponent(".mcp.json"))) as? [String: Any])
         XCTAssertEqual(root["teamSetting"] as? String, "keep")
         let servers = try XCTUnwrap(root["mcpServers"] as? [String: [String: Any]])
         XCTAssertEqual(servers["review"]?["command"] as? String, "review-tool")

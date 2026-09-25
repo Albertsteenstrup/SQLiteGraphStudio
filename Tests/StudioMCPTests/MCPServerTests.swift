@@ -175,7 +175,7 @@ final class MCPServerTests: XCTestCase {
         let initializeResult = object(initialize)["result"] as? [String: Any]
         XCTAssertEqual(initializeResult?["protocolVersion"] as? String, "2025-11-25")
 
-        XCTAssertNil(server.handleMessage(json(["jsonrpc": "2.0", "method": "notifications/initialized"])))
+        XCTAssertNil(try server.handleMessage(json(["jsonrpc": "2.0", "method": "notifications/initialized"])))
         let list = try server.handleMessage(json([
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": [:],
         ]))
@@ -376,7 +376,7 @@ final class MCPServerTests: XCTestCase {
             "method": "initialize",
             "params": ["protocolVersion": "2025-11-25", "clientInfo": ["name": "test", "version": "1"]],
         ]))
-        _ = server.handleMessage(json(["jsonrpc": "2.0", "method": "notifications/initialized"]))
+        _ = try server.handleMessage(json(["jsonrpc": "2.0", "method": "notifications/initialized"]))
     }
 
     private func json(_ value: [String: Any]) throws -> Data {
