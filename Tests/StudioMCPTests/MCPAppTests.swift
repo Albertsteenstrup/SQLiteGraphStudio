@@ -234,44 +234,25 @@ final class MCPAppTests: XCTestCase {
 
     // MARK: App-only tools
 
-    func testAppOnlyToolsReachOnlyHostsThatRenderViews() throws {
-        func names(_ response: [String: Any]) -> Set<String> {
-            Set(((response["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
+    func testViewToolsAreListedForEveryClientButMarkedForTheViewOnly() throws {
+        // Claude Code renders views without declaring the MCP Apps extension, so the view's
+        // tools can't depend on it; visibility keeps them out of the model's list instead.
+        let server = try initializedServer()
+        let response = object(try server.handleMessage(json(["jsonrpc": "2.0", "id": 9, "method": "tools/list"])))
+        let tools = (response["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []
+        let byName = Dictionary(uniqueKeysWithValues: tools.compactMap { tool in (tool["name"] as? String).map { ($0, tool) } })
+        for name in SchemaReviewAppTools.names {
+            let meta = try XCTUnwrap(byName[name]?["_meta"] as? [String: Any], name)
+            XCTAssertEqual((meta["ui"] as? [String: Any])?["visibility"] as? [String], ["app"], name)
         }
-        let list: [String: Any] = ["jsonrpc": "2.0", "id": 9, "method": "tools/list"]
-        let plain = names(object(try initializedServer().handleMessage(json(list))))
-        XCTAssertTrue(plain.contains(SchemaReviewInlineView.toolName))
-        XCTAssertTrue(plain.isDisjoint(with: SchemaReviewAppTools.names), "A host without views never sees their tools")
-
-        let apps = names(object(try initializedServer(capabilities: ["extensions": [
-            MCPAppResources.extensionIdentifier: ["mimeTypes": [MCPAppResources.mimeType]],
-        ]]).handleMessage(json(list))))
-        XCTAssertTrue(apps.isSuperset(of: SchemaReviewAppTools.names))
-
-        let otherViews = names(object(try initializedServer(capabilities: ["extensions": [
-            MCPAppResources.extensionIdentifier: ["mimeTypes": ["text/html"]],
-        ]]).handleMessage(json(list))))
-        XCTAssertTrue(otherViews.isDisjoint(with: SchemaReviewAppTools.names))
-
-        // The modern protocol declares client capabilities on each request.
-        let modern = MCPServer(dispatcher: LocalMCPToolDispatcher(transport: UnusedTransport()))
-        let modernNames = names(object(try modern.handleMessage(json([
-            "jsonrpc": "2.0", "id": 10, "method": "tools/list",
-            "params": ["_meta": [
-                "io.modelcontextprotocol/protocolVersion": MCPServer.modernProtocolVersion,
-                "io.modelcontextprotocol/clientCapabilities": ["extensions": [MCPAppResources.extensionIdentifier: [String: Any]()]],
-            ]],
-        ]))))
-        XCTAssertTrue(modernNames.isSuperset(of: SchemaReviewAppTools.names))
+        XCTAssertNotNil(byName[SchemaReviewInlineView.toolName])
     }
 
-    func testAppOnlyToolsAreKeptFromTheModelAndNeedNoCodingTaskContext() throws {
+    func testViewToolsNeedNoCodingTaskContext() throws {
         for name in SchemaReviewAppTools.names {
             let tool = try XCTUnwrap(MCPToolCatalog.tool(named: name), name)
-            XCTAssertTrue(tool.isAppOnly, name)
             XCTAssertEqual((tool.json["inputSchema"] as? [String: Any])?["required"] as? [String], ["path"], name)
         }
-        XCTAssertFalse(try XCTUnwrap(MCPToolCatalog.tool(named: SchemaReviewInlineView.toolName)).isAppOnly)
     }
 
     func testFramesExplainAMissingOrBusyRenderer() throws {
@@ -424,12 +405,11 @@ final class MCPAppTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: document).write(to: directory.appendingPathComponent(name))
     }
 
-    private func initializedServer(transport: UnusedTransport = UnusedTransport(), workingDirectory: String = "/tmp",
-                                   capabilities: [String: Any] = [:]) throws -> MCPServer {
+    private func initializedServer(transport: UnusedTransport = UnusedTransport(), workingDirectory: String = "/tmp") throws -> MCPServer {
         let server = MCPServer(dispatcher: LocalMCPToolDispatcher(transport: transport), workingDirectory: workingDirectory)
         _ = try server.handleMessage(json([
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": ["protocolVersion": "2025-11-25", "capabilities": capabilities, "clientInfo": ["name": "test", "version": "1"]],
+            "params": ["protocolVersion": "2025-11-25", "clientInfo": ["name": "test", "version": "1"]],
         ]))
         _ = try server.handleMessage(json(["jsonrpc": "2.0", "method": "notifications/initialized"]))
         return server

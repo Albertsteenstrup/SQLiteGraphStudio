@@ -1,8 +1,9 @@
 import Foundation
 
 /// Tools the inline review view calls on the reader's behalf. Their `_meta.ui.visibility`
-/// is `["app"]`, so hosts keep them out of the model's tool list, and the helper lists them
-/// only to hosts that render MCP Apps.
+/// is `["app"]`, so hosts that render MCP Apps keep them out of the model's tool list. They
+/// are listed for every client: Claude Code doesn't declare the MCP Apps extension, so a
+/// client's capabilities can't tell whether its views will call them.
 public enum SchemaReviewAppTools {
     public static let frameToolName = "studio_review_frame"
     public static let openToolName = "studio_open_review_in_app"

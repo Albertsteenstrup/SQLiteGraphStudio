@@ -35,7 +35,7 @@ The view shows exactly what Graph Studio's graph draws. It asks `studio_review_f
 
 A helper starts its renderer on the first frame and stops it after two idle minutes, and it exits with the helper. All helpers on a machine share at most two renderers (one lock file each under the helper's runtime directory); a view that finds both taken draws its own simplified graph instead, as it does when no renderer can start. The renderer runs from a clone of the app executable outside the bundle: macOS ties a running process to an app by its executable file, so a renderer started from the app's own executable would receive the documents meant for Graph Studio (`open -a`, a double-click in Finder). Its preferences are a copy of the app's in a private temporary file, so reviews it opens never reach the app's recent documents. Frames follow the system appearance, as the app does.
 
-The two view-only tools carry `_meta.ui.visibility: ["app"]`, so supporting hosts keep them out of the model's tool list, and the helper lists them only to clients that declare the MCP Apps extension.
+The two view-only tools carry `_meta.ui.visibility: ["app"]`, so hosts that render MCP Apps keep them out of the model's tool list. They are listed for every client: Claude Code 2.1 doesn't declare the MCP Apps extension in `initialize`, so gating on it would hide them from the views that call them.
 
 ### Effects and discoverability
 

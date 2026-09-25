@@ -19,8 +19,6 @@ public final class MCPServer {
     private var clientVersion: String?
     private var legacyProtocolVersion: String?
     private var initialized = false
-    /// Whether the client renders MCP Apps views, which call the app-only tools.
-    private var clientRendersApps = false
 
     public init(
         dispatcher: MCPToolDispatcher,
@@ -71,10 +69,6 @@ public final class MCPServer {
            let clientInfo = (params["_meta"] as? [String: Any])?["io.modelcontextprotocol/clientInfo"] as? [String: Any] {
             clientName = clientInfo["name"] as? String
             clientVersion = clientInfo["version"] as? String
-        }
-        if modernVersion != nil,
-           let capabilities = (params["_meta"] as? [String: Any])?["io.modelcontextprotocol/clientCapabilities"] as? [String: Any] {
-            clientRendersApps = Self.rendersApps(capabilities)
         }
 
         if method == "server/discover" {
@@ -143,10 +137,7 @@ public final class MCPServer {
 
         switch method {
         case "tools/list":
-            // Tools for MCP Apps views only reach hosts that render them; the view is their
-            // only caller, so tools/call still accepts them from any host.
-            let tools = MCPToolCatalog.tools.filter { clientRendersApps || !$0.isAppOnly }
-            let result: [String: Any] = ["tools": tools.map(\.json)]
+            let result: [String: Any] = ["tools": MCPToolCatalog.tools.map(\.json)]
             return responseIfNeeded(isNotification: isNotification, id: requestID, result: result)
 
         case "resources/list":
@@ -299,7 +290,6 @@ public final class MCPServer {
 
         legacyProtocolVersion = requestedVersion
         initialized = false
-        clientRendersApps = Self.rendersApps(params["capabilities"] as? [String: Any] ?? [:])
         let info = params["clientInfo"] as? [String: Any]
         clientName = info?["name"] as? String
         clientVersion = info?["version"] as? String
@@ -310,16 +300,6 @@ public final class MCPServer {
             "instructions": Self.instructions,
         ]
         return responseIfNeeded(isNotification: isNotification, id: id, result: result)
-    }
-
-    /// A client that declares the MCP Apps extension, with our view's MIME type when it
-    /// lists the types it renders.
-    static func rendersApps(_ capabilities: [String: Any]) -> Bool {
-        guard let extensions = capabilities["extensions"] as? [String: Any],
-              let apps = extensions[MCPAppResources.extensionIdentifier] as? [String: Any]
-        else { return false }
-        guard let mimeTypes = apps["mimeTypes"] as? [String] else { return true }
-        return mimeTypes.contains(MCPAppResources.mimeType)
     }
 
     private func protocolIsReady(modernVersion: String?) -> Bool {

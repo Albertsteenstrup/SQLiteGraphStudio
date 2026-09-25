@@ -181,7 +181,7 @@ final class MCPServerTests: XCTestCase {
         ]))
         let response = object(list)
         let tools = (response["result"] as? [String: Any])?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 63)
+        XCTAssertEqual(tools?.count, 65)
     }
 
     func testToolCallCarriesTaskAndSourceContext() throws {

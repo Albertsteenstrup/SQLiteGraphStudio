@@ -8,11 +8,6 @@ public struct MCPToolDefinition: @unchecked Sendable {
         name = json["name"] as? String ?? ""
         self.json = json
     }
-
-    /// Called only by an MCP Apps view, never by the model (`_meta.ui.visibility: ["app"]`).
-    public var isAppOnly: Bool {
-        ((json["_meta"] as? [String: Any])?["ui"] as? [String: Any])?["visibility"] as? [String] == ["app"]
-    }
 }
 
 public enum MCPToolCatalog {
