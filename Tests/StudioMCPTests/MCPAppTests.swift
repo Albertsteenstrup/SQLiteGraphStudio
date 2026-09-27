@@ -141,7 +141,6 @@ final class MCPAppTests: XCTestCase {
 
     func testProposalsAreLabelledAndLargeTablesKeepEveryChangedField() throws {
         var document = review()
-        document["proposal"] = ["baseFingerprint": String(repeating: "0", count: 64), "planFingerprint": String(repeating: "1", count: 64)]
         var before = document["before"] as! [String: Any]
         var after = document["after"] as! [String: Any]
         var wideBefore = table("wide", columns: [column("id", pk: 1)] + (0..<100).map { column("f\($0)") })
@@ -155,6 +154,9 @@ final class MCPAppTests: XCTestCase {
         after["tables"] = (after["tables"] as! [[String: Any]]) + [wideAfter]
         document["before"] = before
         document["after"] = after
+        let baseline = try JSONDecoder().decode(SchemaReviewInlineView.Snapshot.self, from: JSONSerialization.data(withJSONObject: before))
+        document["proposal"] = ["baseFingerprint": try SchemaReviewInlineView.fingerprint(baseline),
+                                "planFingerprint": String(repeating: "1", count: 64)]
         try write(document, to: "plan.sgpreview")
 
         let path = directory.appendingPathComponent("plan.sgpreview").path
@@ -254,6 +256,32 @@ final class MCPAppTests: XCTestCase {
         XCTAssertTrue(text.contains("20 related unchanged tables are summarized"), text)
     }
 
+    func testChangeGroupsKeepDifferentFieldAndDefinitionEditsSeparate() throws {
+        let base = (0..<9).map { table("item_\($0)", columns: [column("id", type: "INTEGER", pk: 1), column("status")],
+                                      metadata: $0 >= 6 ? ["index:status_\($0)": "CREATE INDEX status_\($0) ON item_\($0)(status)"] : [:]) }
+        let revised = base.enumerated().map { index, original -> [String: Any] in
+            var copy = original
+            if index < 6 {
+                var columns = original["columns"] as! [[String: Any]]
+                columns[1] = column("status", type: index < 3 ? "INTEGER" : ["BOOLEAN", "VARCHAR(20)", "DATE"][index - 3])
+                copy["columns"] = columns
+            } else {
+                copy["metadata"] = ["index:status_\(index)": "CREATE UNIQUE INDEX status_\(index) ON item_\(index)(status)"]
+            }
+            return copy
+        }
+        try write([
+            "version": 1, "title": "Distinct edits", "baseRef": "base", "headRef": "head", "notes": [],
+            "before": ["version": 1, "engine": "sqlite", "tables": base, "relations": []],
+            "after": ["version": 1, "engine": "sqlite", "tables": revised, "relations": []],
+        ], to: "distinct.sgreview")
+        let result = SchemaReviewInlineView.result(path: "distinct.sgreview", workingDirectory: directory.path)
+        let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+        XCTAssertTrue(text.contains("3 tables share one change: ~ status."), text)
+        XCTAssertFalse(text.contains("6 tables share one change"), text)
+        XCTAssertFalse(text.contains("3 tables share one change: ~ definitions."), text)
+    }
+
     // MARK: App-only tools
 
     func testViewToolsAreListedForEveryClientButMarkedForTheViewOnly() throws {
@@ -286,6 +314,33 @@ final class MCPAppTests: XCTestCase {
         let type = try XCTUnwrap(actionProperties["type"] as? [String: Any])
         XCTAssertTrue((type["enum"] as? [String])?.contains("select") == true)
         XCTAssertEqual((actionProperties["table"] as? [String: Any])?["type"] as? String, "string")
+    }
+
+    func testOpenViewCannotMixAnOlderSummaryWithAReplacedReview() throws {
+        let path = "change.sgreview"
+        try write(review(), to: path)
+        let original = try XCTUnwrap(SchemaReviewInlineView.result(path: path, workingDirectory: directory.path)["structuredContent"] as? [String: Any])
+        let revision = try XCTUnwrap(original["revision"] as? String)
+        XCTAssertFalse(revision.isEmpty)
+        let detail = SchemaReviewInlineView.detail(path: path, workingDirectory: directory.path, revision: revision)
+        XCTAssertEqual(detail["isError"] as? Bool, false)
+
+        var updated = review()
+        updated["title"] = "Revised review"
+        try JSONSerialization.data(withJSONObject: updated).write(to: directory.appendingPathComponent(path), options: .atomic)
+
+        XCTAssertEqual(errorCode(SchemaReviewInlineView.detail(path: path, workingDirectory: directory.path, revision: revision)),
+                       "REVIEW_CHANGED")
+        XCTAssertEqual(errorCode(SchemaReviewAppTools.frame(arguments: ["path": path, "revision": revision],
+                                                         workingDirectory: directory.path, renderer: renderer(executable: nil))),
+                       "REVIEW_CHANGED", "A stale view must fail before drawing the replacement")
+
+        let reopened = try XCTUnwrap(SchemaReviewInlineView.result(path: path, workingDirectory: directory.path)["structuredContent"] as? [String: Any])
+        let newRevision = try XCTUnwrap(reopened["revision"] as? String)
+        XCTAssertNotEqual(newRevision, revision)
+        XCTAssertEqual(reopened["title"] as? String, "Revised review")
+        XCTAssertEqual(SchemaReviewInlineView.detail(path: path, workingDirectory: directory.path,
+                                                    revision: newRevision)["isError"] as? Bool, false)
     }
 
     func testFramesExplainAMissingOrBusyRenderer() throws {

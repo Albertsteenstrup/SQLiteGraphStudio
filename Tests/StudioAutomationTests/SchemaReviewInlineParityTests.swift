@@ -73,6 +73,28 @@ struct SchemaReviewInlineParityTests {
         #expect(kinds == Dictionary(uniqueKeysWithValues: review.changes.filter { $0.kind != .unchanged }.map { ($0.id, $0.kind.rawValue) }))
     }
 
+    @Test func inlineProposalValidationMatchesTheApp() throws {
+        var review = Self.review()
+        review.proposal = .init(baseFingerprint: try SchemaPreview.fingerprint(review.before),
+                                planFingerprint: String(repeating: "a", count: 64))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("parity-\(UUID().uuidString).sgpreview")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try review.write(to: url)
+        #expect(SchemaReviewInlineView.result(path: url.path, workingDirectory: "/")["isError"] as? Bool == false)
+
+        var tampered = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var before = try #require(tampered["before"] as? [String: Any])
+        var tables = try #require(before["tables"] as? [[String: Any]])
+        tables[0]["metadata"] = ["index:altered": "CREATE INDEX altered ON teams(name)"]
+        before["tables"] = tables
+        tampered["before"] = before
+        try JSONSerialization.data(withJSONObject: tampered).write(to: url, options: .atomic)
+        #expect(throws: Error.self) { try SchemaReviewDocument.load(url) }
+        let invalid = SchemaReviewInlineView.result(path: url.path, workingDirectory: "/")
+        #expect(invalid["isError"] as? Bool == true)
+        #expect(((invalid["structuredContent"] as? [String: Any])?["error"] as? [String: Any])?["code"] as? String == "INVALID_ARTIFACT")
+    }
+
     // MARK: Fixtures
 
     private static func column(_ name: String, _ type: String = "TEXT", notNull: Bool = false, defaultSQL: String? = nil, pk: Int = 0) -> SchemaReviewSnapshot.Column {

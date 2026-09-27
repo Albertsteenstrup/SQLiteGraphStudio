@@ -5,13 +5,13 @@ description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite
 
 # Database diff
 
-Create a `.sgreview` file containing before/after schema snapshots and open it in
-SQLite Graph Studio. The app shows added/removed tables, field changes, and
-foreign-key changes in both the graph and a table comparison. This is schema
+Create a `.sgreview` file containing before/after schema snapshots and show it
+inline with SQLite Graph Studio's review view. It shows added/removed tables,
+field changes, and foreign-key changes in a graph and table details. This is schema
 evidence, not proof that data migrations or deployment are safe.
 
-Run this only when the user asks for it. Each run can create disposable databases
-and open Graph Studio, and many coding sessions on one machine may be reviewing at
+Run this only when the user asks for it. Each run can create disposable databases,
+and many coding sessions on one machine may be reviewing at
 once, so never trigger it on your own after a review, push, fetch, or merge.
 
 ## Choose the comparison

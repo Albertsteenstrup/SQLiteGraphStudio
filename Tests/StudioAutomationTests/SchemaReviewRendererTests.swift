@@ -53,6 +53,15 @@ struct SchemaReviewRendererTests {
         let jumped = try frame([["type": "set", "index": 0], ["type": "transform", "scale": 1.5, "tx": -120, "ty": -80]])
         #expect(jumped.state["set"] as? Int == 0)
         #expect(renderer.isRunning)
+
+        // Preview iteration replaces the file at the same path while the helper lives.
+        // The next frame must draw that new review instead of reusing its old session.
+        var revised = review
+        revised.after.tables.removeAll { $0.id == "audits" }
+        try revised.write(to: url)
+        let reloaded = try frame()
+        #expect(reloaded.state["setTables"] as? [[String]] == revised.changeSets)
+        #expect(reloaded.state["sets"] as? Int == 1)
     }
 
     private final class Marker {}

@@ -104,6 +104,7 @@ final class SchemaReviewRenderServer {
             recent.removeAll { $0 == path }
             return [:]
         case "render":
+            let version = try ReviewFileVersion(path: path)
             let size = CGSize(width: Self.dimension(request["width"], default: 680), height: Self.dimension(request["height"], default: 460))
             let scale = min(max((request["scale"] as? NSNumber)?.doubleValue ?? 2, 1), 3)
             // Graph Studio follows the system appearance, so frames do too unless asked otherwise.
@@ -111,11 +112,17 @@ final class SchemaReviewRenderServer {
             let clock = ContinuousClock()
             let started = clock.now
             let review: RenderedReview
-            if let existing = reviews[path] {
+            if let existing = reviews[path], existing.fileVersion == version {
                 review = existing
                 review.configure(size: size, dark: dark)
             } else {
-                review = try await RenderedReview(url: URL(fileURLWithPath: path), size: size, dark: dark)
+                reviews.removeValue(forKey: path)?.close()
+                review = try await RenderedReview(url: URL(fileURLWithPath: path), size: size, dark: dark,
+                                                  fileVersion: version)
+                guard try ReviewFileVersion(path: path) == version else {
+                    review.close()
+                    throw RenderError("The review changed while it was opening. Retry the frame.")
+                }
                 reviews[path] = review
             }
             recent.removeAll { $0 == path }
@@ -154,10 +161,30 @@ final class SchemaReviewRenderServer {
     }
 }
 
+/// A cheap per-frame identity check. Preview generation replaces files atomically, so the
+/// inode changes even if a new revision happens to have the same length and timestamp.
+struct ReviewFileVersion: Equatable {
+    let size: UInt64
+    let modified: Date
+    let fileNumber: UInt64?
+
+    init(path: String) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        guard let size = attributes[.size] as? NSNumber,
+              let modified = attributes[.modificationDate] as? Date else {
+            throw RenderError("The review file could not be inspected.")
+        }
+        self.size = size.uint64Value
+        self.modified = modified
+        fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+    }
+}
+
 /// One review shown in a hidden window, driven the way a reader drives the app.
 @MainActor
 final class RenderedReview {
     let session: AppSession
+    let fileVersion: ReviewFileVersion
     private let window: NSWindow
     private let hosting: NSHostingView<AnyView>
     /// A private plist standing in for the app's preferences, deleted on close.
@@ -165,7 +192,7 @@ final class RenderedReview {
     private var needsInitialFit = true
     private var dark: Bool?
 
-    init(url: URL, size: CGSize, dark: Bool?) async throws {
+    init(url: URL, size: CGSize, dark: Bool?, fileVersion: ReviewFileVersion) async throws {
         // Start from the reader's graph preferences, but write nothing back: opening a
         // review here must not add it to the app's recent documents. A suite named by a
         // file path keeps the copy out of ~/Library/Preferences.
@@ -177,6 +204,7 @@ final class RenderedReview {
             defaults.set(value, forKey: key)
         }
         session = AppSession(databaseService: DatabaseService(), userDefaults: defaults)
+        self.fileVersion = fileVersion
         session.rendersOffscreen = true
         await session.openDocument(url: url)
         guard session.schemaReview != nil else {

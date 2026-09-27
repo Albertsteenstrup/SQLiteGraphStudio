@@ -259,7 +259,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   // `model` is the small overview; `detail` is fetched when the reader opens the change
   // summary or when the simplified graph needs its tables, fields, and relations.
   const state = { model: null, detail: null, tables: new Map(), labels: [], idSets: [], setCount: 0, set: null, mode: null,
-                  focusTable: null, outlineAll: false, allRelations: false,
+                  focusTable: null, frameSelection: [], showGraphDetail: false, outlineAll: false, allRelations: false,
                   expandedFields: new Set(), visibleSetKey: "", detailError: null };
   let detailRequest = null;
 
@@ -330,6 +330,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   }
 
   function render(model) {
+    exact.reset();
+    drag = null;
+    $("canvas").classList.remove("panning");
     state.model = model;
     state.detail = null;
     state.detailError = null;
@@ -337,6 +340,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     state.idSets = [];
     state.mode = null;
     state.focusTable = null;
+    state.frameSelection = [];
+    state.showGraphDetail = false;
     state.visibleSetKey = "";
     state.outlineAll = false;
     state.allRelations = false;
@@ -421,12 +426,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     requestAnimationFrame(reportSize);
   }
   function step(direction) {
-    if (state.setCount <= 1) return;
+    if (!state.mode || state.setCount <= 1) return;
     if (state.mode === exact) { exact.act({ type: "step", direction }); return; }
     const target = state.set === null ? (direction > 0 ? 0 : state.setCount - 1) : state.set + direction;
     if (target >= 0 && target < state.setCount) showSet(target);
   }
   function showSet(index) {
+    if (!state.mode) return;
     if (state.mode === exact) exact.act({ type: "set", index });
     else simple.showSet(index);
   }
@@ -435,23 +441,33 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     if (state.detail) return Promise.resolve(state.detail);
     if (detailRequest) return detailRequest;
     const model = state.model;
-    detailRequest = callTool("studio_review_detail", { path: model.path }, 20000)
+    detailRequest = callTool("studio_review_detail", { path: model.path, revision: model.revision }, 20000)
       .then((result) => {
         const detail = result.structuredContent;
         if (!detail || detail.format !== "sqlite-graph-studio/schema-review-detail") throw new Error("The change details could not be read.");
+        if (model.revision && detail.revision !== model.revision) {
+          const error = new Error("The review changed on disk. Show it inline again to see the updated file.");
+          error.code = "REVIEW_CHANGED";
+          throw error;
+        }
         if (state.model === model) {
           state.detail = detail;
           state.detailError = null;
           state.tables = new Map((Array.isArray(detail.tables) ? detail.tables : []).map((table) => [table.id, table]));
           if (!state.idSets.length) state.idSets = Array.isArray(detail.changeSets) ? detail.changeSets : [];
           renderChanges();
+          if (state.mode === exact) syncExactDetail();
         }
         return detail;
       })
       .catch((error) => {
         if (state.model === model) {
+          if (error && error.code === "REVIEW_CHANGED") {
+            state.mode = null;
+            showStatus(error.message, true);
+          }
           state.detailError = error && error.message ? error.message : "The change details could not be read.";
-          renderChanges();
+          if (!error || error.code !== "REVIEW_CHANGED") renderChanges();
         }
         throw error;
       })
@@ -475,11 +491,20 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     const table = state.tables.get(tableID);
     if (!table) return;
     state.focusTable = tableID;
-    if (state.mode === exact) exact.act({ type: "select", table: tableID });
+    if (state.mode === exact) { state.showGraphDetail = true; exact.act({ type: "select", table: tableID }); }
     else if (state.mode === simple) simple.select(tableID, fieldName, false);
     if (state.mode === exact) simple.renderDetail(table, fieldName);
     const target = fieldName ? $("detail").querySelector("tr.focused") || $("detail") : $("canvas");
     requestAnimationFrame(() => target.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }
+  function syncExactDetail() {
+    if (!state.detail || !state.showGraphDetail) return;
+    const selected = state.frameSelection.length === 1 && state.tables.has(state.frameSelection[0])
+      ? state.frameSelection[0] : null;
+    if (selected !== state.focusTable) {
+      state.focusTable = selected;
+      simple.renderDetail(selected ? state.tables.get(selected) : null);
+    }
   }
   function renderChanges() {
     const box = $("changes");
@@ -565,7 +590,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   // ---- Graph Studio's own graph, drawn by its hidden renderer ----
   const exact = (() => {
     let image = null, inFlight = false, again = false, queued = [], local = IDENTITY, sent = IDENTITY;
-    let frameSize = null, failures = 0, resizeTimer = 0;
+    let frameSize = null, failures = 0, resizeTimer = 0, generation = 0;
+
+    function reset() {
+      generation += 1;
+      clearTimeout(resizeTimer);
+      if (image) image.remove();
+      image = null;
+      inFlight = false;
+      again = false;
+      queued = [];
+      local = IDENTITY;
+      sent = IDENTITY;
+      frameSize = null;
+      failures = 0;
+    }
 
     function start() {
       state.mode = exact;
@@ -598,6 +637,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       if (image) image.style.transform = `translate(${local.tx}px, ${local.ty}px) scale(${local.s})`;
     }
     function flush() {
+      if (state.mode !== exact) return;
       if (inFlight) { again = true; return; }
       const actions = [];
       if (!isIdentity(local)) actions.push({ type: "transform", scale: local.s, tx: local.tx, ty: local.ty });
@@ -606,15 +646,22 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       again = false;
       sent = local;
       inFlight = true;
+      const requestGeneration = generation;
       const size = viewport();
       // The frame keeps Graph Studio's own look, which follows the system appearance.
-      const args = { path: state.model.path, width: size.width, height: size.height,
+      const args = { path: state.model.path, revision: state.model.revision, width: size.width, height: size.height,
                      scale: Math.min(2, Math.max(1, window.devicePixelRatio || 1)) };
       if (actions.length) args.actions = actions;
       callTool("studio_review_frame", args, 40000)
-        .then((result) => show(result, size))
-        .then(() => { failures = 0; })
+        .then((result) => show(result, size, actions, requestGeneration))
+        .then(() => { if (requestGeneration === generation) failures = 0; })
         .catch((error) => {
+          if (requestGeneration !== generation) return;
+          if (error && error.code === "REVIEW_CHANGED") {
+            state.mode = null;
+            showStatus(error.message, true);
+            return;
+          }
           // The helper restarts a renderer that stopped; the simplified graph takes over
           // when it cannot draw at all.
           failures += 1;
@@ -623,11 +670,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
           again = true;
         })
         .finally(() => {
+          if (requestGeneration !== generation) return;
           inFlight = false;
           if (state.mode === exact && (again || queued.length || !isIdentity(local))) flush();
         });
     }
-    async function show(result, size) {
+    async function show(result, size, actions, requestGeneration) {
+      if (requestGeneration !== generation) return;
       const content = (Array.isArray(result.content) ? result.content : []).find((item) => item && item.type === "image");
       if (!content) throw new Error("The renderer returned no image.");
       const info = result.structuredContent || {};
@@ -636,7 +685,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       next.alt = "";
       next.src = `data:${content.mimeType};base64,${content.data}`;
       await next.decode();
-      if (state.mode !== exact) return;
+      if (requestGeneration !== generation || state.mode !== exact) return;
       frameSize = { width: info.width || size.width, height: info.height || size.height };
       next.style.width = frameSize.width + "px";
       next.style.height = frameSize.height + "px";
@@ -657,20 +706,36 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         }
       }
       setSets(Array.isArray(info.setTables) ? info.setTables.length : state.setCount, info.set);
+      if (Array.isArray(info.selection)) state.frameSelection = info.selection;
+      if (actions.some((action) => action.type === "click" || action.type === "select")) state.showGraphDetail = true;
+      if (state.showGraphDetail && !state.detail && state.frameSelection.length === 1) {
+        loadDetail().catch((error) => toast(error && error.message ? error.message : "Table details are unavailable.", true));
+      }
+      syncExactDetail();
       resized();
     }
     function fallBack(error) {
+      const model = state.model;
+      const requestGeneration = generation;
+      state.mode = null;
       if (image) { image.remove(); image = null; }
       const reason = error && error.code === "RENDERER_BUSY"
         ? "Graph Studio is drawing reviews for other sessions, so this is a simplified view."
         : "Graph Studio's renderer is unavailable, so this is a simplified view." + (error && error.message ? " " + error.message : "");
       // The tool result leaves out the tables and fields the simplified graph draws.
       loadDetail()
-        .then((detail) => simple.start(reason, detail))
-        .catch(() => showStatus(state.model.overview || "The review could not be drawn here."));
+        .then((detail) => {
+          if (requestGeneration === generation && state.model === model && state.mode === null) simple.start(reason, detail);
+        })
+        .catch((detailError) => {
+          if (requestGeneration === generation && state.model === model &&
+              (!detailError || detailError.code !== "REVIEW_CHANGED")) {
+            showStatus(state.model.overview || "The review could not be drawn here.");
+          }
+        });
     }
     return {
-      start, act, refresh, resized,
+      reset, start, act, refresh, resized,
       pan: (dx, dy) => gesture(panBy(dx, dy)),
       zoom: (factor, point) => gesture(zoomAt(factor, point)),
       click: (point) => act({ type: "click", x: point.x, y: point.y }),
@@ -1029,7 +1094,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (!drag) return;
+    if (!drag || !state.mode) return;
     const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
     drag.moved = true;
@@ -1040,7 +1105,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   const endDrag = (event) => {
     if (!drag) return;
     // The release can land past the last move event.
-    if (drag.moved && event.type === "pointerup") state.mode.pan(event.clientX - drag.x, event.clientY - drag.y);
+    if (drag.moved && event.type === "pointerup" && state.mode) state.mode.pan(event.clientX - drag.x, event.clientY - drag.y);
     const wasClick = !drag.moved, target = drag.target, point = drag.point;
     drag = null;
     canvas.classList.remove("panning");

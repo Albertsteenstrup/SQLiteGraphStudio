@@ -2840,6 +2840,10 @@
           "maxLength": 4096,
           "description": "Path to a .sgreview comparison or .sgpreview proposal file."
         },
+        "revision": {
+          "type": "string",
+          "description": "File revision from studio_show_review_inline; rejects frames after this path is replaced."
+        },
         "width": {
           "type": "number",
           "minimum": 120,
@@ -2970,6 +2974,10 @@
           "minLength": 1,
           "maxLength": 4096,
           "description": "Path to a .sgreview comparison or .sgpreview proposal file."
+        },
+        "revision": {
+          "type": "string",
+          "description": "File revision from studio_show_review_inline; rejects details after this path is replaced."
         },
         "context_id": {
           "type": "string",

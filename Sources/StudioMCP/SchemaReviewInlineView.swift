@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Builds the interactive schema-review view that MCP Apps hosts show inside the
 /// conversation. It reads a saved `.sgreview` comparison or `.sgpreview` proposal
@@ -33,24 +34,33 @@ public enum SchemaReviewInlineView {
     /// Code shows the model `structuredContent` rather than `content`. The view fetches
     /// the tables and fields it draws itself with `studio_review_detail`.
     public static func result(path: String, workingDirectory: String) -> [String: Any] {
-        loadResult(path: path, workingDirectory: workingDirectory) { view in
-            ["content": [["type": "text", "text": view.summary]], "structuredContent": view.overview, "isError": false]
+        loadResult(path: path, workingDirectory: workingDirectory) { view, revision in
+            var overview = view.overview
+            overview["revision"] = revision
+            return ["content": [["type": "text", "text": view.summary]], "structuredContent": overview, "isError": false]
         }
     }
 
     /// Everything the view's simplified graph draws: changed tables with their fields and
     /// links, related tables, and relations.
-    public static func detail(path: String, workingDirectory: String) -> [String: Any] {
-        loadResult(path: path, workingDirectory: workingDirectory) { view in
-            ["content": [["type": "text", "text": "Schema review detail for the inline view."]],
-             "structuredContent": view.detail, "isError": false]
+    public static func detail(path: String, workingDirectory: String, revision: String? = nil) -> [String: Any] {
+        loadResult(path: path, workingDirectory: workingDirectory, expectedRevision: revision) { view, actualRevision in
+            var detail = view.detail
+            detail["revision"] = actualRevision
+            return ["content": [["type": "text", "text": "Schema review detail for the inline view."]],
+                    "structuredContent": detail, "isError": false]
         }
     }
 
-    private static func loadResult(path: String, workingDirectory: String, _ body: (View) -> [String: Any]) -> [String: Any] {
+    private static func loadResult(path: String, workingDirectory: String, expectedRevision: String? = nil,
+                                   _ body: (View, String) -> [String: Any]) -> [String: Any] {
         do {
             let url = try resolve(path, workingDirectory: workingDirectory)
-            return body(try build(try load(url), path: url.path))
+            let revision = try fileRevision(at: url)
+            try requireRevision(expectedRevision, current: revision)
+            let view = try build(try load(url), path: url.path)
+            try requireRevision(revision, current: fileRevision(at: url))
+            return body(view, revision)
         } catch let error as InlineReviewError {
             return errorResult(error)
         } catch {
@@ -59,6 +69,24 @@ public enum SchemaReviewInlineView {
     }
 
     // MARK: File access
+
+    /// Preview generation writes atomically. The file number distinguishes a replacement
+    /// even when it has the same size and modification time as the previous revision.
+    static func fileRevision(at url: URL) throws -> String {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber,
+              let modified = attributes[.modificationDate] as? Date else {
+            throw InlineReviewError.invalidArtifact("The review file could not be inspected.")
+        }
+        let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        return "1:\(size.uint64Value):\(modified.timeIntervalSince1970.bitPattern):\(fileNumber.map(String.init) ?? "-")"
+    }
+
+    static func requireRevision(_ expected: String?, current: String) throws {
+        if let expected, expected != current {
+            throw InlineReviewError.changed("The review changed on disk. Show it inline again to see the updated file.")
+        }
+    }
 
     static func resolve(_ path: String, workingDirectory: String) throws -> URL {
         let expanded = NSString(string: path).expandingTildeInPath
@@ -95,6 +123,17 @@ public enum SchemaReviewInlineView {
         return document
     }
 
+    /// Match SchemaPreview.fingerprint in StudioCore without making the stdio helper link
+    /// the app: only object order is canonicalized; field order remains part of the snapshot.
+    static func fingerprint(_ snapshot: Snapshot) throws -> String {
+        var canonical = snapshot
+        canonical.tables.sort { $0.id < $1.id }
+        canonical.relations.sort { $0.id < $1.id }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return SHA256.hash(data: try encoder.encode(canonical)).map { String(format: "%02x", $0) }.joined()
+    }
+
     // MARK: File format (the parts of SchemaReviewDocument the view needs)
 
     struct Document: Decodable {
@@ -108,9 +147,11 @@ public enum SchemaReviewInlineView {
         var proposal: Proposal?
         var author: Author?
 
-        /// Presence marks a proposal. Its provenance fingerprint is verified when
-        /// the app opens the file.
-        struct Proposal: Decodable {}
+        /// Provenance is checked against the same canonical baseline as the app.
+        struct Proposal: Decodable {
+            var baseFingerprint: String
+            var planFingerprint: String
+        }
 
         struct Author: Decodable {
             var tool: String
@@ -147,6 +188,13 @@ public enum SchemaReviewInlineView {
             }
             try before.validate()
             try after.validate()
+            if let proposal {
+                guard proposal.baseFingerprint == (try SchemaReviewInlineView.fingerprint(before)),
+                      proposal.planFingerprint.count == 64,
+                      proposal.planFingerprint.allSatisfy(\.isHexDigit) else {
+                    throw InlineReviewError.invalidArtifact("Invalid proposal provenance.")
+                }
+            }
             let graphIDs = SchemaReviewInlineView.relationChanges(self).map(\.graphID)
             guard Set(graphIDs).count == graphIDs.count else {
                 throw InlineReviewError.invalidArtifact("Conflicting relation identities in the comparison.")
@@ -154,7 +202,7 @@ public enum SchemaReviewInlineView {
         }
     }
 
-    struct Snapshot: Decodable {
+    struct Snapshot: Codable {
         var version: Int
         var engine: String
         var tables: [Table]
@@ -187,7 +235,7 @@ public enum SchemaReviewInlineView {
         }
     }
 
-    struct Table: Decodable, Equatable {
+    struct Table: Codable, Equatable {
         var id: String
         var schema: String?
         var name: String
@@ -198,7 +246,7 @@ public enum SchemaReviewInlineView {
         var displayName: String { schema == "public" ? name : id }
     }
 
-    struct Column: Decodable, Equatable {
+    struct Column: Codable, Equatable {
         var name: String
         var type: String
         var notNull: Bool
@@ -215,7 +263,7 @@ public enum SchemaReviewInlineView {
         }
     }
 
-    struct Relation: Decodable, Equatable {
+    struct Relation: Codable, Equatable {
         var id: String
         var source: String
         var target: String
@@ -473,6 +521,15 @@ public enum SchemaReviewInlineView {
     /// Groups modified tables whose field and reference changes are identical, such as
     /// `+ updated_by_user_id bigint · + → app_user` added to thirty tables at once.
     static func changeGroups(_ changed: [TableChange], relations: [RelationChange]) -> [ChangeGroup] {
+        // Length-prefix values so SQL and identifiers cannot produce ambiguous signatures.
+        func part(_ values: [String?]) -> String {
+            values.map { $0.map { "\($0.utf8.count):\($0)" } ?? "-:" }.joined()
+        }
+        func column(_ value: Column) -> String {
+            part([value.name, value.type, value.notNull ? "1" : "0", value.defaultSQL,
+                  String(value.primaryKeyOrdinal), String(value.generated), value.identity])
+        }
+        func columns(_ values: [String]) -> String { part(values.map(Optional.some)) }
         let names = Dictionary(changed.map { ($0.id, $0.table.displayName) }, uniquingKeysWith: { first, _ in first })
         var byRelationTable: [String: [RelationChange]] = [:]
         for change in relations where change.kind != .unchanged {
@@ -482,29 +539,49 @@ public enum SchemaReviewInlineView {
             }
         }
         var members: [String: [String]] = [:]
+        var summaries: [String: String] = [:]
         var order: [String] = []
         for change in changed where change.kind == .modified {
             var parts = change.added.map { "+ \($0.name) \($0.type)" }
                 + change.removed.map { "− \($0.name)" }
                 + change.modified.map { "~ \($0.name)" }
+            let previousColumns = Dictionary(uniqueKeysWithValues: (change.before?.columns ?? []).map { ($0.name, $0) })
+            var identity = change.added.map { part(["field+", column($0)]) }
+                + change.removed.map { part(["field-", column($0)]) }
+                + change.modified.compactMap { current in
+                    previousColumns[current.name].map { part(["field~", column($0), column(current)]) }
+                }
             for relation in byRelationTable[change.id] ?? [] {
                 let outgoing = relation.relation.source == change.id
                 let other = outgoing ? relation.relation.target : relation.relation.source
                 let label = names[other] ?? other
                 let mark = relation.kind == .added ? "+" : relation.kind == .removed ? "−" : "~"
                 parts.append("\(mark) \(outgoing ? "→" : "←") \(label)")
+                let current = relation.relation
+                let previous = relation.previous
+                identity.append(part(["relation", relation.kind.rawValue, outgoing ? "out" : "in", other,
+                                      columns(current.sourceColumns), columns(current.targetColumns), current.definition,
+                                      previous.map { columns($0.sourceColumns) }, previous.map { columns($0.targetColumns) },
+                                      previous?.definition]))
             }
             if let before = change.before, let after = change.after, before.metadata != after.metadata {
                 parts.append("~ definitions")
+                for key in Set(before.metadata.keys).union(after.metadata.keys).sorted()
+                where before.metadata[key] != after.metadata[key] {
+                    identity.append(part(["definition", key, before.metadata[key], after.metadata[key]]))
+                }
             }
             guard !parts.isEmpty else { continue }
-            let signature = parts.sorted().joined(separator: " · ")
-            if members[signature] == nil { order.append(signature) }
+            let signature = part(identity.sorted().map(Optional.some))
+            if members[signature] == nil {
+                order.append(signature)
+                summaries[signature] = parts.sorted().joined(separator: " · ")
+            }
             members[signature, default: []].append(change.id)
         }
         return order.compactMap { signature in
             guard let tables = members[signature], tables.count >= minimumGroupSize else { return nil }
-            return ChangeGroup(summary: signature, tables: tables)
+            return ChangeGroup(summary: summaries[signature] ?? "", tables: tables)
         }
         .sorted { $0.tables.count != $1.tables.count ? $0.tables.count > $1.tables.count : $0.tables[0] < $1.tables[0] }
         .prefix(maximumGroups)
@@ -658,6 +735,7 @@ public enum SchemaReviewInlineView {
         case notFound(String)
         case tooLarge(String)
         case invalidArtifact(String)
+        case changed(String)
 
         var code: String {
             switch self {
@@ -665,12 +743,14 @@ public enum SchemaReviewInlineView {
             case .notFound: "OBJECT_NOT_FOUND"
             case .tooLarge: "LIMIT_REACHED"
             case .invalidArtifact: "INVALID_ARTIFACT"
+            case .changed: "REVIEW_CHANGED"
             }
         }
 
         var message: String {
             switch self {
-            case .invalidArgument(let message), .notFound(let message), .tooLarge(let message), .invalidArtifact(let message):
+            case .invalidArgument(let message), .notFound(let message), .tooLarge(let message),
+                 .invalidArtifact(let message), .changed(let message):
                 message
             }
         }

@@ -5,13 +5,13 @@ description: Capture and visually compare SQLite or PostgreSQL schemas in SQLite
 
 # Database diff
 
-Create a `.sgreview` file containing before/after schema snapshots and open it in
-SQLite Graph Studio. The app shows added/removed tables, field changes, and
-foreign-key changes in both the graph and a table comparison. This is schema
+Create a `.sgreview` file containing before/after schema snapshots and show it
+inline with SQLite Graph Studio's review view. It shows added/removed tables,
+field changes, and foreign-key changes in a graph and table details. This is schema
 evidence, not proof that data migrations or deployment are safe.
 
-Run this only when the user asks for it. Each run can create disposable databases
-and open Graph Studio, and many coding sessions on one machine may be reviewing at
+Run this only when the user asks for it. Each run can create disposable databases,
+and many coding sessions on one machine may be reviewing at
 once, so never trigger it on your own after a review, push, fetch, or merge.
 
 ## Choose the comparison
@@ -86,15 +86,19 @@ that the schema is unchanged; data effects remain part of the original review.
 ## Review and handoff
 
 Look at the shown review and inspect changed tables and their relationships.
-Blue solid inner borders and `+`/`~` labels indicate additions/changes. Red dashed
-inner borders and `−` labels indicate removals. The existing outer group colour is
-preserved. Removed tables remain faded with a Removed badge. Modified relations
-show both their removed and added definitions. Table details show field types,
-nullability, defaults, key membership, and available definition changes.
-The graph opens on every change at once, names changed tables at a readable size,
-and hides unchanged relations until zoomed in. Choosing a table in the list or the
-graph isolates its own changes and the tables they reach, fading the rest; choose
-it again or click empty canvas to see everything. ⌥⌘↓ and ⌥⌘↑ step through changes.
+For tables, fields, and relations alike, green solid inner borders and `+` labels
+mark additions, blue solid ones and `~` labels changes, and red dashed ones and `−`
+labels removals. The existing outer group colour is preserved. Removed tables remain
+faded with a Removed badge. A relation that keeps its tables but changes columns or
+actions is one changed relation; one that moves to other tables shows as removed
+plus added. Cards list keys first, then changed fields. Table details show field
+types, nullability, defaults, key membership, and available definition changes.
+The graph opens on the first connected set of changes (changed tables joined by
+relations), names changed tables at a readable size, and hides unchanged relations
+until zoomed in. ⌥⌘↓ and ⌥⌘↑, or Next and Previous in the conversation view, step
+between connected sets. Choosing a table in the list or the graph isolates its own
+changes and the tables they reach, fading the rest; choose it again or click empty
+canvas to see every change.
 
 Report the exact base/head, affected tables, artifact path, and unsupported scope.
 No automatic rename inference is made: a rename appears as removal plus addition.

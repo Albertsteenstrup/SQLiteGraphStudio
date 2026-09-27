@@ -6,12 +6,13 @@ description: Show proposed SQLite or PostgreSQL table, field and relation change
 # Database preview
 
 Show intended schema changes before writing migrations or changing a database.
-Create a `.sgpreview` from one captured baseline and a small JSON plan. The app
-uses the same blue/red borders, field counts, New/Removed badges and relation
-diffs as schema review, with a persistent **Proposed · not applied** label.
+Create a `.sgpreview` from one captured baseline and a small JSON plan. The inline
+view uses the same green/blue/red borders, field counts, New/Removed badges and
+relation diffs as schema review. The app shows a **Proposed · not applied** label
+when the file is opened there.
 
-Run this only when the user asks for a visual preview; it opens Graph Studio, and
-many coding sessions on one machine may be working at once. Graph Studio replaces
+Run this only when the user asks for a visual preview; many coding sessions on one
+machine may be working at once. If opened in the app, Graph Studio replaces
 the tab of an earlier preview from the same tool and `--session`, so iterating on a
 plan updates one tab instead of opening another.
 

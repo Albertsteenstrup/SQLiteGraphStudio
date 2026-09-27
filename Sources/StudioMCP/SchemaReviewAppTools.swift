@@ -15,6 +15,11 @@ public enum SchemaReviewAppTools {
     static func frame(arguments: [String: Any], workingDirectory: String, renderer: SchemaReviewRenderer) -> [String: Any] {
         do {
             let url = try SchemaReviewInlineView.resolve(arguments["path"] as? String ?? "", workingDirectory: workingDirectory)
+            let expectedRevision = arguments["revision"] as? String
+            if let expectedRevision {
+                try SchemaReviewInlineView.requireRevision(expectedRevision,
+                                                            current: SchemaReviewInlineView.fileRevision(at: url))
+            }
             var request: [String: Any] = ["cmd": "render", "path": url.path]
             // Without an appearance the frame follows the system, as Graph Studio does.
             if let appearance = arguments["appearance"] as? String { request["appearance"] = appearance }
@@ -23,6 +28,10 @@ public enum SchemaReviewAppTools {
             }
             if let actions = arguments["actions"] as? [[String: Any]] { request["actions"] = actions }
             let response = try renderer.request(request)
+            if let expectedRevision {
+                try SchemaReviewInlineView.requireRevision(expectedRevision,
+                                                            current: SchemaReviewInlineView.fileRevision(at: url))
+            }
             guard let image = response["image"] as? String, let mimeType = response["mimeType"] as? String else {
                 throw SchemaReviewRenderer.RendererError.failed("The renderer returned no image.")
             }
