@@ -15,9 +15,9 @@ public struct StudioRootView: View {
             if let activeTab = workspaceTabs.activeTab {
                 WorkspaceSessionRootView(
                     session: activeTab.session,
-                    openDocument: { workspaceTabs.presentOpenPanel() }
+                    chooseSource: { workspaceTabs.presentOpenPanel() }
                 )
-                    .id(activeTab.id)
+                .id(activeTab.id)
             } else {
                 Color.clear
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -109,8 +109,8 @@ private struct WorkspaceTabBar: View {
                     .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
             }
             .buttonStyle(.plain)
-            .help("Open database or workspace in a new tab")
-            .accessibilityLabel("Open database or workspace")
+            .help("Open files in new tabs or search a project folder")
+            .accessibilityLabel("Choose files or search a project folder")
         }
         .padding(.horizontal, 16)
         .background(StudioPalette.chromeFill.opacity(0.76))
@@ -122,16 +122,16 @@ private struct WorkspaceTabBar: View {
 
 private struct WorkspaceSessionRootView: View {
     @Bindable private var session: AppSession
-    private let openDocument: () -> Void
+    private let chooseSource: () -> Void
     @State private var isMinimapHovered = false
     @State private var skillsToastVisible = false
     @State private var skillsRepeatTask: Task<Void, Never>? = nil
     @State private var skillsToastDismissedForURL: URL? = nil
     @State private var refreshToastTask: Task<Void, Never>? = nil
 
-    init(session: AppSession, openDocument: @escaping () -> Void) {
+    init(session: AppSession, chooseSource: @escaping () -> Void) {
         self.session = session
-        self.openDocument = openDocument
+        self.chooseSource = chooseSource
     }
 
     private var schemaIsVisible: Bool {
@@ -163,7 +163,7 @@ private struct WorkspaceSessionRootView: View {
                 WorkspaceLayoutView(session: session)
                     .padding(WorkspaceCompactLayout.workspaceInset)
             } else {
-                EmptyDatabaseView(session: session, openDocument: openDocument)
+                EmptyDatabaseView(session: session, chooseSource: chooseSource)
                     .padding(24)
             }
 
@@ -1248,7 +1248,7 @@ private struct OpenTablePickerView: View {
 
 private struct EmptyDatabaseView: View {
     @Bindable var session: AppSession
-    let openDocument: () -> Void
+    let chooseSource: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -1266,24 +1266,14 @@ private struct EmptyDatabaseView: View {
                 }
 
                 VStack(spacing: 10) {
-                    HStack(spacing: 10) {
-                        Button {
-                            openDocument()
-                        } label: {
-                            Label("Choose Database File", systemImage: "folder")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(StudioPalette.accent)
-                        .controlSize(.large)
-
-                        Button {
-                            session.presentOpenProjectFolderPanel()
-                        } label: {
-                            Label("Search Project Folder", systemImage: "magnifyingglass")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
+                    Button {
+                        chooseSource()
+                    } label: {
+                        Label("Choose file/folder", systemImage: "folder")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(StudioPalette.accent)
+                    .controlSize(.large)
 
                     Text(DatabaseDocument.supportedFormatsDescription
                          + "\nMigrations: a folder of versioned .sql files")

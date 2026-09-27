@@ -13,6 +13,19 @@ import Testing
         #expect(!filter.panel(NSNull(), shouldEnable: URL(fileURLWithPath: "/tmp/test.txt")))
         #expect(filter.panel(NSNull(), shouldEnable: FileManager.default.temporaryDirectory))
     }
+
+    @Test func openPanelSelectionSeparatesFilesFromProjectFolders() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("sample.sqlite")
+        try Data().write(to: database)
+
+        #expect(WorkspaceTabOpenSelection.resolve([database]) == .documents([database]))
+        #expect(WorkspaceTabOpenSelection.resolve([root]) == .projectFolder(root))
+        #expect(WorkspaceTabOpenSelection.resolve([database, root]) == .invalidCombination)
+    }
+
     @Test func staleImportTargetCannotWriteToDifferentDatabase() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
