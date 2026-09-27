@@ -41,6 +41,10 @@ struct SchemaReviewRendererTests {
         let stepped = try frame([["type": "step", "direction": 1]])
         #expect(stepped.state["set"] as? Int == 1)
 
+        let linked = try frame([["type": "select", "table": "users"]])
+        #expect(linked.state["set"] as? Int == 0)
+        #expect(linked.state["selection"] as? [String] == ["users"])
+
         // An empty corner is canvas: the app's own tap handling shows every change again.
         let cleared = try frame([["type": "click", "x": 4, "y": 316]])
         #expect(cleared.state["set"] is NSNull)

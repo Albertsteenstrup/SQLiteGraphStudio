@@ -11,8 +11,8 @@ import SwiftUI
 /// "actions"?, "format"?}` applies the actions in order and returns a JPEG (or PNG) frame;
 /// `{"id", "cmd": "close", "path"}` releases a review.
 /// Actions reuse the app's own code: clicks go through the graph's hit-testing and tap
-/// handling, camera moves through its viewport transform, and stepping through the
-/// session's connected-change sets. The helper that started the renderer stops it when
+/// handling, linked tables use the graph's own reveal action, camera moves through its
+/// viewport transform, and stepping through connected-change sets. The helper stops it when
 /// idle; the renderer also exits on its own after ten quiet minutes.
 public enum SchemaReviewRenderSession {
     public static let flag = "--render-review-session"
@@ -225,6 +225,8 @@ final class RenderedReview {
         switch action["type"] as? String {
         case "click":
             session.requestGraphTap(at: point)
+        case "select":
+            if let table = action["table"] as? String { session.revealGraphNode(table) }
         case "pan":
             moveCamera(to: GraphViewportTransform(
                 zoom: session.graphZoom,

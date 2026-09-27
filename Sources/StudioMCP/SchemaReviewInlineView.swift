@@ -109,7 +109,7 @@ public enum SchemaReviewInlineView {
         var author: Author?
 
         /// Presence marks a proposal. Its provenance fingerprint is verified when
-        /// the app opens the file; the inline view only labels it as not applied.
+        /// the app opens the file.
         struct Proposal: Decodable {}
 
         struct Author: Decodable {

@@ -277,6 +277,17 @@ final class MCPAppTests: XCTestCase {
         }
     }
 
+    func testFrameToolAllowsLinkedTableSelection() throws {
+        let schema = try XCTUnwrap(MCPToolCatalog.tool(named: SchemaReviewAppTools.frameToolName)?.json["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let actions = try XCTUnwrap(properties["actions"] as? [String: Any])
+        let item = try XCTUnwrap(actions["items"] as? [String: Any])
+        let actionProperties = try XCTUnwrap(item["properties"] as? [String: Any])
+        let type = try XCTUnwrap(actionProperties["type"] as? [String: Any])
+        XCTAssertTrue((type["enum"] as? [String])?.contains("select") == true)
+        XCTAssertEqual((actionProperties["table"] as? [String: Any])?["type"] as? String, "string")
+    }
+
     func testFramesExplainAMissingOrBusyRenderer() throws {
         try write(review(), to: "change.sgreview")
         let arguments: [String: Any] = ["path": "change.sgreview"]
