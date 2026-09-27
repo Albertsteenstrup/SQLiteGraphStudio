@@ -3007,7 +3007,7 @@
   {
     "name": "studio_open_review_in_app",
     "title": "Open review in Graph Studio",
-    "description": "Called by the inline schema review view when the reader clicks Graph Studio, not by the model: opens the review in the Graph Studio app with the schema before the changes in a second tab.",
+    "description": "Called by the inline schema review view when the reader clicks Graph Studio, not by the model: sends the review and the schema before the changes to Graph Studio. The app may decline either tab if its document limit is full, so the reader should confirm both tabs opened.",
     "inputSchema": {
       "type": "object",
       "properties": {

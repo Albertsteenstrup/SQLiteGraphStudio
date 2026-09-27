@@ -845,7 +845,6 @@ public final class AppSession {
         let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.supportedExtensions)
         panel.delegate = documentFilter
         panel.title = "Open Database File"
-        panel.message = DatabaseDocument.supportedFormatsDescription
         panel.prompt = "Open"
 
         let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }

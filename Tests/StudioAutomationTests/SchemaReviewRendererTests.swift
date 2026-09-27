@@ -38,6 +38,11 @@ struct SchemaReviewRendererTests {
         #expect(opened.state["set"] as? Int == 0, "A review opens on its first connected set")
         #expect(Set(opened.state["selection"] as? [String] ?? []) == Set(review.changeSets[0]))
 
+        // Exercise the merged graph gesture path with a real synthetic click on the
+        // visible users marker, rather than only selecting a table by ID.
+        let clicked = try frame([["type": "click", "x": 240, "y": 227]])
+        #expect(clicked.state["selection"] as? [String] == ["users"])
+
         let stepped = try frame([["type": "step", "direction": 1]])
         #expect(stepped.state["set"] as? Int == 1)
 

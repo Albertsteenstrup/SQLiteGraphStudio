@@ -7,7 +7,7 @@ description: Add table and column descriptions to a SQLite Graph Studio sidecar 
 
 You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
-Descriptions are intentionally sidecar metadata so users can edit them directly without changing the database schema. When Graph Studio MCP is available, use `studio_get_annotations` and `studio_update_annotations` to read and save requested descriptions with immediate refresh; the file workflow below remains available offline.
+Descriptions are intentionally sidecar metadata so users can edit them directly without changing the database schema. When Graph Studio MCP is available, use `studio_get_annotations` to read the current `metadata_revision`, then pass it as `expected_metadata_revision` to `studio_update_annotations` when saving requested descriptions with immediate refresh. On `METADATA_CONFLICT`, read again, merge the user's intended descriptions, and retry with a new `request_id`. The file workflow below remains available offline.
 
 ## Database documents and read-only discovery
 
@@ -67,7 +67,7 @@ Field rules:
 2. List the schema using read-only schema discovery or existing schema docs.
 3. Draft concise table and column descriptions.
 4. Write the sidecar JSON, preserving unrelated fields such as `clusters`.
-5. If MCP is connected, save through `studio_update_annotations` and confirm the refreshed view. For offline sidecar edits, tell the user to click **Relayout** in the running app. Query headers match full table IDs such as `public.orders.total`; unqualified column notes appear only when the column can be resolved unambiguously.
+5. If MCP is connected, fetch the latest revision with `studio_get_annotations`, save through `studio_update_annotations` using that revision, and confirm the refreshed view. For offline sidecar edits, tell the user to click **Relayout** in the running app. Query headers match full table IDs such as `public.orders.total`; unqualified column notes appear only when the column can be resolved unambiguously.
 
 ## Writing good descriptions
 

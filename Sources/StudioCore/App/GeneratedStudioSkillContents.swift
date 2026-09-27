@@ -67,14 +67,12 @@ extension StudioSkills {
         {
           "id": "auth",
           "label": "Authentication & Users",
-          "tables": ["users", "sessions", "password_resets", "auth_tokens"],
-          "color": "#7CC3FF"
+          "tables": ["users", "sessions", "password_resets", "auth_tokens"]
         },
         {
           "id": "billing",
           "label": "Billing",
-          "tables": ["customers", "subscriptions", "invoices", "payments", "refunds"],
-          "color": "#F8B26A"
+          "tables": ["customers", "subscriptions", "invoices", "payments", "refunds"]
         },
         {
           "id": "content",
@@ -89,7 +87,7 @@ extension StudioSkills {
     - `id` — short, lowercase, no spaces. Used internally and in error messages.
     - `label` — human-readable name shown on graph groups, in the table picker, and in table tooltips (e.g. "Authentication & Users").
     - `tables` — exact case-sensitive table IDs; PostgreSQL uses schema-qualified IDs such as `public.orders`. Names not in the schema are skipped.
-    - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. The app provides a stable colour when omitted.
+    - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. Omit it by default to use the app's muted, stable palette; include it only for a requested custom colour.
     - `overviewTables` — optional ordered list of at most 16 distinct, exact table IDs. PostgreSQL uses schema-qualified IDs. Unknown IDs are ignored when drawing so the sidecar can survive schema changes; check against the current catalog before saving.
 
     ## Workflow
@@ -259,13 +257,13 @@ extension StudioSkills {
 
     # Database diff
 
-    Create a `.sgreview` file containing before/after schema snapshots and open it in
-    SQLite Graph Studio. The app shows added/removed tables, field changes, and
-    foreign-key changes in both the graph and a table comparison. This is schema
+    Create a `.sgreview` file containing before/after schema snapshots and show it
+    inline with SQLite Graph Studio's review view. It shows added/removed tables,
+    field changes, and foreign-key changes in a graph and table details. This is schema
     evidence, not proof that data migrations or deployment are safe.
 
-    Run this only when the user asks for it. Each run can create disposable databases
-    and open Graph Studio, and many coding sessions on one machine may be reviewing at
+    Run this only when the user asks for it. Each run can create disposable databases,
+    and many coding sessions on one machine may be reviewing at
     once, so never trigger it on your own after a review, push, fetch, or merge.
 
     ## Choose the comparison
@@ -378,12 +376,13 @@ extension StudioSkills {
     # Database preview
 
     Show intended schema changes before writing migrations or changing a database.
-    Create a `.sgpreview` from one captured baseline and a small JSON plan. The app
-    uses the same green/blue/red borders, field counts, New/Removed badges and relation
-    diffs as schema review, with a persistent **Proposed · not applied** label.
+    Create a `.sgpreview` from one captured baseline and a small JSON plan. The inline
+    view uses the same green/blue/red borders, field counts, New/Removed badges and
+    relation diffs as schema review. The app shows a **Proposed · not applied** label
+    when the file is opened there.
 
-    Run this only when the user asks for a visual preview; it opens Graph Studio, and
-    many coding sessions on one machine may be working at once. Graph Studio replaces
+    Run this only when the user asks for a visual preview; many coding sessions on one
+    machine may be working at once. If opened in the app, Graph Studio replaces
     the tab of an earlier preview from the same tool and `--session`, so iterating on a
     plan updates one tab instead of opening another.
 

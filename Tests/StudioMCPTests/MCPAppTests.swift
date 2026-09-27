@@ -416,8 +416,11 @@ final class MCPAppTests: XCTestCase {
                                                 openDocuments: { opened.append($0) })
         let call = MCPToolCall(name: SchemaReviewAppTools.openToolName, arguments: ["path": "change.sgreview"], contextID: nil,
                                clientID: "client", clientName: nil, clientVersion: nil, workingDirectory: directory.path)
-        XCTAssertEqual(dispatcher.dispatch(call)["isError"] as? Bool, false)
+        let firstRequest = dispatcher.dispatch(call)
+        XCTAssertEqual(firstRequest["isError"] as? Bool, false)
         let urls = try XCTUnwrap(opened.first)
+        XCTAssertEqual((firstRequest["structuredContent"] as? [String: Any])?["requested"] as? [String], urls.map(\.path))
+        XCTAssertNil((firstRequest["structuredContent"] as? [String: Any])?["opened"])
         XCTAssertEqual(urls.count, 2)
         defer { try? FileManager.default.removeItem(at: urls[1].deletingLastPathComponent()) }
         XCTAssertEqual(urls[0].path, directory.appendingPathComponent("change.sgreview").standardizedFileURL.path,

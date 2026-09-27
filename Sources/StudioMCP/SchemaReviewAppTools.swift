@@ -53,9 +53,8 @@ public enum SchemaReviewAppTools {
         }
     }
 
-    /// Opens the review in Graph Studio next to a second tab showing the schema before the
-    /// changes. Graph Studio keeps the review's tab active and, on a later click, replaces
-    /// both tabs rather than adding more.
+    /// Sends the review and its original schema to Graph Studio. macOS acknowledges the
+    /// open request, but the app can still decline a tab when its document limit is full.
     static func openInApp(arguments: [String: Any], workingDirectory: String, open: ([URL]) throws -> Void) -> [String: Any] {
         do {
             let url = try SchemaReviewInlineView.resolve(arguments["path"] as? String ?? "", workingDirectory: workingDirectory)
@@ -63,8 +62,8 @@ public enum SchemaReviewAppTools {
             let original = try writeOriginal(of: url)
             try open([url, original])
             return [
-                "content": [["type": "text", "text": "Opened \(url.lastPathComponent) in Graph Studio, with the schema before the changes in a second tab."]],
-                "structuredContent": ["opened": [url.path, original.path]],
+                "content": [["type": "text", "text": "Sent \(url.lastPathComponent) and its original schema to Graph Studio. Check the app to confirm both tabs opened."]],
+                "structuredContent": ["requested": [url.path, original.path]],
                 "isError": false,
             ]
         } catch let error as SchemaReviewInlineView.InlineReviewError {

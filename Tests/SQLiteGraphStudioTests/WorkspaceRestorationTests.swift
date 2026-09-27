@@ -64,7 +64,7 @@ struct WorkspaceRestorationTests {
         originalSession.setPaneContent(.query, for: .left)
         originalSession.activePaneSide = .left
         originalSession.maximizedPaneSide = .right
-        originalSession.workspaceSplitFraction = 0.37
+        originalSession.workspaceSplitFraction = 0.15
         originalSession.graphZoom = 1.7
         originalSession.graphPan = CGSize(width: 120, height: -45)
         originalSession.selectedGraphNodeIDs = ["authors"]
@@ -111,7 +111,7 @@ struct WorkspaceRestorationTests {
         #expect(session.rightPane.kind == .tables)
         #expect(session.activePaneSide == .left)
         #expect(session.maximizedPaneSide == .right)
-        #expect(abs(session.workspaceSplitFraction - 0.37) < 0.001)
+        #expect(abs(session.workspaceSplitFraction - 0.15) < 0.001)
         #expect(session.graphZoom == 1.7)
         #expect(session.graphPan == CGSize(width: 120, height: -45))
         #expect(session.selectedGraphNodeIDs == ["authors"])

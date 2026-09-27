@@ -109,6 +109,15 @@ struct GraphInteractionGeometry {
         return best?.id
     }
 
+    /// Canvas markers have no SwiftUI hit view, so their drag starts on the background.
+    func markerDragNodeID(at point: CGPoint, zIndexForNode: (String) -> Double,
+                          nodeIndexForNode: (String) -> Int?) -> String? {
+        guard let id = topmostHit(at: point, zIndexForNode: zIndexForNode,
+                                  nodeIndexForNode: nodeIndexForNode),
+              renderPlan.markerIDs.contains(id) else { return nil }
+        return id
+    }
+
     static func worldFrames(
         nodeIDs: [String],
         positionForNode: (String) -> CGPoint,

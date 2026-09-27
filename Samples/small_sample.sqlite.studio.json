@@ -114,19 +114,19 @@
       "id": "authoring",
       "label": "Authoring",
       "tables": ["authors", "author_profiles", "posts", "comments", "attachments"],
-      "color": "#7CC3FF"
+      "color": "#426B93"
     },
     {
       "id": "taxonomy",
       "label": "Taxonomy",
       "tables": ["tags", "categories", "post_tags", "post_categories"],
-      "color": "#A8E6A3"
+      "color": "#497556"
     },
     {
       "id": "ops",
       "label": "Ops & Sync",
       "tables": ["event_log", "sync_markers"],
-      "color": "#F8B26A"
+      "color": "#8C6139"
     }
   ]
 }

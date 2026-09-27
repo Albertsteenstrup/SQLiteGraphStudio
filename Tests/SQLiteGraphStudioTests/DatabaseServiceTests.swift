@@ -24,6 +24,9 @@ struct DatabaseServiceTests {
         #expect(!authorProfiles.isEditable)
         #expect(authorProfiles.rowIdentityStrategy == .readOnly)
         #expect(authorProfiles.rowCount == 8)
+        #expect(snapshot.graph.node(id: "author_profiles") == GraphNode(
+            id: "author_profiles", title: "author_profiles", isEditable: false
+        ))
 
         let syncMarkers = try #require(descriptors["sync_markers"])
         #expect(syncMarkers.isWithoutRowID)
@@ -38,6 +41,19 @@ struct DatabaseServiceTests {
 
         let generatedMetrics = try #require(descriptors["generated_metrics"])
         #expect(generatedMetrics.generatedColumns.map(\.name) == ["doubled_value"])
+    }
+
+    @MainActor
+    @Test
+    func sqliteViewIsVisibleInTheGraphAndOpensReadOnly() async throws {
+        let url = try TestSupport.createFixture(named: "sqlite-view-graph")
+        let session = AppSession(databaseService: DatabaseService())
+        await session.openDatabase(url: url)
+
+        #expect(session.graphVisibleTableIDs.contains("author_profiles"))
+        let tab = try #require(session.openTable(named: "author_profiles", autoLoad: false))
+        #expect(tab.descriptor.objectType == .view)
+        #expect(!tab.descriptor.isEditable)
     }
 
     @Test

@@ -35,28 +35,9 @@ public struct WorkspaceCompactLayout: Equatable, Sendable {
     /// falls under `collapseWidth`, hiding the very narrowness this type detects.
     public static let splitPaneMinimumWidth: CGFloat = 320
 
-    /// Floor for the one pane a compact workspace shows. Lower than
-    /// `splitPaneMinimumWidth` because it has no neighbour to leave room for.
-    public static let singlePaneMinimumWidth: CGFloat = 240
-
     /// The least width the workspace can ever be given.
     public static var narrowestWorkspaceWidth: CGFloat {
         windowMinimumWidth - 2 * workspaceInset
-    }
-
-    /// Width bounds for one pane of the workspace split.
-    ///
-    /// While both panes share the workspace they each keep a hand-drag floor.
-    /// While one pane owns it the other is held shut rather than merely hidden:
-    /// the divider stays draggable in that layout, and a pane that can still be
-    /// given width gets peeled open into a blank strip, since it is transparent
-    /// and takes no clicks.
-    public static func paneWidthBounds(
-        for side: WorkspacePaneSide,
-        fullscreenSide: WorkspacePaneSide?
-    ) -> (minimum: CGFloat, maximum: CGFloat) {
-        guard let fullscreenSide else { return (splitPaneMinimumWidth, .infinity) }
-        return fullscreenSide == side ? (singlePaneMinimumWidth, .infinity) : (0, 0)
     }
 
     public private(set) var isCompact: Bool
@@ -74,5 +55,39 @@ public struct WorkspaceCompactLayout: Equatable, Sendable {
         guard next != isCompact else { return false }
         isCompact = next
         return true
+    }
+}
+
+/// One source of pane widths for dragging, restoration, and single-pane mode.
+/// The layout never feeds measured intermediate widths back into the saved split.
+public struct WorkspaceSplitGeometry: Equatable, Sendable {
+    public static let standardDividerWidth: CGFloat = 10
+
+    public let leftWidth: CGFloat
+    public let rightWidth: CGFloat
+    public let dividerWidth: CGFloat
+
+    public init(width: CGFloat, fraction: CGFloat, fullscreenSide: WorkspacePaneSide?) {
+        let totalWidth = width.isFinite ? max(0, width) : 0
+        if let fullscreenSide {
+            leftWidth = fullscreenSide == .left ? totalWidth : 0
+            rightWidth = fullscreenSide == .right ? totalWidth : 0
+            dividerWidth = 0
+            return
+        }
+
+        dividerWidth = min(Self.standardDividerWidth, totalWidth)
+        let availableWidth = totalWidth - dividerWidth
+        let minimum = min(WorkspaceCompactLayout.splitPaneMinimumWidth, availableWidth / 2)
+        let requestedFraction = fraction.isFinite ? fraction : 0.6
+        leftWidth = min(availableWidth - minimum, max(minimum, availableWidth * requestedFraction))
+        rightWidth = availableWidth - leftWidth
+    }
+
+    public func fraction(placingDividerAt leftWidth: CGFloat) -> CGFloat {
+        let availableWidth = self.leftWidth + rightWidth
+        guard availableWidth > 0, leftWidth.isFinite else { return 0.5 }
+        let minimum = min(WorkspaceCompactLayout.splitPaneMinimumWidth, availableWidth / 2)
+        return min(availableWidth - minimum, max(minimum, leftWidth)) / availableWidth
     }
 }

@@ -1131,7 +1131,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     const button = $("open-app");
     button.disabled = true;
     callTool("studio_open_review_in_app", { path: state.model.path }, 20000)
-      .then(() => toast("Opened in Graph Studio, with the schema before these changes in a second tab."))
+      .then(() => toast("Sent to Graph Studio. Check the app for both tabs."))
       .catch((error) => toast(error && error.message ? error.message : "Graph Studio could not open the review.", true))
       .finally(() => { button.disabled = false; });
   });

@@ -18,6 +18,25 @@ struct GraphInteractionGeometryTests {
                                    nodeIndexForNode: { $0 == "marker" ? 99 : 0 }) == "detail")
     }
 
+    @Test func markerDragHitOnlySelectsExposedMarkers() {
+        let snapshot = GraphInteractionGeometryCache().snapshot(
+            frames: ["detail": CGRect(x: 20, y: 20, width: 60, height: 60),
+                     "coveredMarker": CGRect(x: 20, y: 20, width: 60, height: 60),
+                     "freeMarker": CGRect(x: 120, y: 120, width: 12, height: 12)],
+            viewport: viewport, zoom: 0.1, isLarge: true, emphasized: ["detail"], contentRevision: 0,
+            roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil }
+        )
+        let zIndex: (String) -> Double = { _ in 0 }
+        let index: (String) -> Int? = { ["detail": 0, "coveredMarker": 1, "freeMarker": 2][$0] }
+
+        #expect(snapshot.markerDragNodeID(at: CGPoint(x: 126, y: 126),
+                                          zIndexForNode: zIndex, nodeIndexForNode: index) == "freeMarker")
+        #expect(snapshot.markerDragNodeID(at: CGPoint(x: 40, y: 40),
+                                          zIndexForNode: zIndex, nodeIndexForNode: index) == nil)
+        #expect(snapshot.markerDragNodeID(at: CGPoint(x: 250, y: 250),
+                                          zIndexForNode: zIndex, nodeIndexForNode: index) == nil)
+    }
+
     @Test func overlappingDetailHitsFollowVisualZIndexThenGraphOrder() {
         let snapshot = GraphInteractionGeometryCache().snapshot(
             frames: ["a": CGRect(x: 20, y: 20, width: 60, height: 60),

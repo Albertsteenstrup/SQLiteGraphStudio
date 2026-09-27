@@ -49,10 +49,11 @@ Use the same executable for capture, comparison, and display.
 ```
 
 Show the result in the conversation with the Graph Studio MCP tool
-`studio_show_review_inline`, passing the `.sgreview` path. It reads the file
-directly, so no app window, database, or tab opens; hosts without inline views get
-a text summary instead. Open the app only when the user asks for it or the tool is
-unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
+`studio_show_review_inline`, passing the `.sgreview` path. Hosts that render MCP
+Apps show Graph Studio's own graph, drawn by a hidden renderer, so no app window,
+database, or tab opens; other hosts get a text summary instead. The reader can open
+the review in the app from that view. Open the app yourself only when the user asks
+for it or the tool is unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
 
 Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
 `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;

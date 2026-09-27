@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/bundle_metadata.sh"
+SWIFT_SCRATCH_PATH="$(sgs_swift_scratch_path "$PROJECT_DIR")"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
 NOTARYTOOL_PROFILE="${NOTARYTOOL_PROFILE:-}"
 if [[ -n "$NOTARYTOOL_PROFILE" && "$SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
@@ -49,6 +50,7 @@ fi
 sgs_assert_bundle_not_running "$APP_BUNDLE"
 echo "==> Building universal release binary (${ARCHS[*]})..."
 cd "$PROJECT_DIR"
+mkdir -p "$SWIFT_SCRATCH_PATH"
 
 rm -f "$UNIVERSAL_BINARY"
 rm -f "$UNIVERSAL_MCP_BINARY"
@@ -62,10 +64,10 @@ for arch in "${ARCHS[@]}"; do
     triple="$arch-apple-macosx$MIN_MACOS_VERSION"
 
     echo "    Building $arch ($triple)..."
-    swift build -j "$SGS_BUILD_JOBS" -c release --product "$APP_NAME" --triple "$triple"
-    swift build -j "$SGS_BUILD_JOBS" -c release --product StudioMCP --triple "$triple"
+    swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" -c release --product "$APP_NAME" --triple "$triple"
+    swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" -c release --product StudioMCP --triple "$triple"
 
-    build_dir="$(swift build -c release --triple "$triple" --show-bin-path)"
+    build_dir="$(swift build --scratch-path "$SWIFT_SCRATCH_PATH" -c release --triple "$triple" --show-bin-path)"
     binary_path="$build_dir/$APP_NAME"
     mcp_binary_path="$build_dir/StudioMCP"
 

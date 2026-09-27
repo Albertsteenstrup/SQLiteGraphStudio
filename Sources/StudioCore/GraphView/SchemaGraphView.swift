@@ -468,7 +468,7 @@ public struct SchemaGraphView: View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
-                .gesture(backgroundPanGesture)
+                .gesture(backgroundPanGesture(in: size, geometry: geometry, edgeLookup: edgeLookup))
                 .onTapGesture(perform: tapCanvas)
                 .onChange(of: session.graphTapRequest?.id) { _, _ in
                     guard let point = session.graphTapRequest?.point else { return }
@@ -1183,8 +1183,7 @@ public struct SchemaGraphView: View {
                     .font(.system(size: labelFontSize, weight: .bold, design: .rounded))
                     // A group's own tint, unless the reader switched group colour off — in
                     // which case the name still belongs on screen, just in plain ink.
-                    .foregroundStyle((shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
-                        .opacity(inFocusLayout ? 0.96 : 0.85))
+                    .foregroundStyle(shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
             )
             var drawPoint = labelPoint
             if isOverview {
@@ -1909,10 +1908,28 @@ public struct SchemaGraphView: View {
         return 12
     }
 
-    private var backgroundPanGesture: some Gesture {
+    private func backgroundPanGesture(
+        in canvasSize: CGSize,
+        geometry: GraphInteractionGeometry,
+        edgeLookup: GraphTopologyIndex
+    ) -> some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .named("graphViewport"))
             .onChanged { value in
-                guard draggedNodeID == nil else { return }
+                if let draggedNodeID {
+                    updateNodeDrag(nodeID: draggedNodeID, startLocation: value.startLocation,
+                                   location: value.location, in: canvasSize)
+                    return
+                }
+                if !isViewportPanning, selectionRectStart == nil,
+                   !NSEvent.modifierFlags.contains(.shift),
+                   let nodeID = geometry.markerDragNodeID(
+                       at: value.startLocation, zIndexForNode: zIndex,
+                       nodeIndexForNode: edgeLookup.nodeIndex(for:)
+                   ) {
+                    updateNodeDrag(nodeID: nodeID, startLocation: value.startLocation,
+                                   location: value.location, in: canvasSize)
+                    return
+                }
                 if !isViewportPanning { session.notifyManualGraphInteraction() }
                 isViewportPanning = true
                 
@@ -1932,7 +1949,10 @@ public struct SchemaGraphView: View {
                 }
             }
             .onEnded { _ in
-                guard draggedNodeID == nil else { return }
+                if draggedNodeID != nil {
+                    finishNodeDrag()
+                    return
+                }
                 isViewportPanning = false
                 
                 if selectionRectStart != nil {
@@ -1966,80 +1986,92 @@ public struct SchemaGraphView: View {
     private func nodeDragGesture(nodeID: String, in canvasSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("graphViewport"))
             .onChanged { value in
-                if draggedNodeID != nodeID {
-                    session.notifyManualGraphInteraction()
-                    draggedNodeID = nodeID
-                    let currentGraphPoint = graphNodePoint(for: nodeID)
-                    nodeDragOrigin = currentGraphPoint
-                    let startGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
-                        .graphPoint(for: value.startLocation, in: canvasSize)
-                    nodeDragPointerOffset = CGSize(
-                        width: startGraphPoint.x - currentGraphPoint.x,
-                        height: startGraphPoint.y - currentGraphPoint.y
-                    )
-                    draggedNodeUsesFocusPull = isFocusRelatedTable(nodeID)
-                    hoveredNodeID = nil
-                    clearRelationHoverState()
-                    if !draggedNodeUsesFocusPull {
-                        if !pulledGraphPositions.isEmpty {
-                            clearGraphFocusSession(restoreViewport: false)
-                        } else {
-                            tappedRelationTarget = nil
-                        }
-                    }
+                updateNodeDrag(nodeID: nodeID, startLocation: value.startLocation,
+                               location: value.location, in: canvasSize)
+            }
+            .onEnded { _ in finishNodeDrag() }
+    }
 
-                    if !session.selectedGraphNodeIDs.contains(nodeID) {
-                        session.selectGraphNode(nodeID)
-                    }
-                    multiNodeDragOrigins = Dictionary(
-                        uniqueKeysWithValues: session.selectedGraphNodeIDs.map { ($0, graphNodePoint(for: $0)) }
-                    )
-                }
-
-                guard draggedNodeID == nodeID else { return }
-                let currentGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
-                    .graphPoint(for: value.location, in: canvasSize)
-                let moved = CGPoint(
-                    x: currentGraphPoint.x - (nodeDragPointerOffset?.width ?? 0),
-                    y: currentGraphPoint.y - (nodeDragPointerOffset?.height ?? 0)
-                )
-
-                if session.selectedGraphNodeIDs.count > 1, !draggedNodeUsesFocusPull {
-                    let delta = CGPoint(
-                        x: moved.x - (nodeDragOrigin?.x ?? moved.x),
-                        y: moved.y - (nodeDragOrigin?.y ?? moved.y)
-                    )
-
-                    for selectedNodeID in session.selectedGraphNodeIDs {
-                        let originalPos = multiNodeDragOrigins[selectedNodeID] ?? graphNodePoint(for: selectedNodeID)
-                        let newPos = CGPoint(
-                            x: originalPos.x + delta.x,
-                            y: originalPos.y + delta.y
-                        )
-                        session.graphLayout.pin(nodeID: selectedNodeID, at: newPos)
-                    }
-                } else if draggedNodeUsesFocusPull {
-                    pulledGraphPositions[nodeID] = moved
+    private func updateNodeDrag(
+        nodeID: String,
+        startLocation: CGPoint,
+        location: CGPoint,
+        in canvasSize: CGSize
+    ) {
+        if draggedNodeID != nodeID {
+            session.notifyManualGraphInteraction()
+            draggedNodeID = nodeID
+            let currentGraphPoint = graphNodePoint(for: nodeID)
+            nodeDragOrigin = currentGraphPoint
+            let startGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
+                .graphPoint(for: startLocation, in: canvasSize)
+            nodeDragPointerOffset = CGSize(
+                width: startGraphPoint.x - currentGraphPoint.x,
+                height: startGraphPoint.y - currentGraphPoint.y
+            )
+            draggedNodeUsesFocusPull = isFocusRelatedTable(nodeID)
+            hoveredNodeID = nil
+            clearRelationHoverState()
+            if !draggedNodeUsesFocusPull {
+                if !pulledGraphPositions.isEmpty {
+                    clearGraphFocusSession(restoreViewport: false)
                 } else {
-                    session.graphLayout.pin(nodeID: nodeID, at: moved)
+                    tappedRelationTarget = nil
                 }
+            }
 
-                layoutRevision &+= 1
+            if !session.selectedGraphNodeIDs.contains(nodeID) {
+                session.selectGraphNode(nodeID)
             }
-            .onEnded { _ in
-                if draggedNodeUsesFocusPull, let draggedNodeID {
-                    session.graphLayout.pin(nodeID: draggedNodeID, at: graphNodePoint(for: draggedNodeID))
-                }
-                draggedNodeID = nil
-                nodeDragOrigin = nil
-                nodeDragPointerOffset = nil
-                draggedNodeUsesFocusPull = false
-                multiNodeDragOrigins = [:]
-                layoutRevision &+= 1
-                if !session.showAllGraphTableCards {
-                    session.persistCurrentGraphLayout()
-                }
+            multiNodeDragOrigins = Dictionary(
+                uniqueKeysWithValues: session.selectedGraphNodeIDs.map { ($0, graphNodePoint(for: $0)) }
+            )
+        }
+
+        guard draggedNodeID == nodeID else { return }
+        let currentGraphPoint = GraphViewportTransform(zoom: zoom, pan: pan)
+            .graphPoint(for: location, in: canvasSize)
+        let moved = CGPoint(
+            x: currentGraphPoint.x - (nodeDragPointerOffset?.width ?? 0),
+            y: currentGraphPoint.y - (nodeDragPointerOffset?.height ?? 0)
+        )
+
+        if session.selectedGraphNodeIDs.count > 1, !draggedNodeUsesFocusPull {
+            let delta = CGPoint(
+                x: moved.x - (nodeDragOrigin?.x ?? moved.x),
+                y: moved.y - (nodeDragOrigin?.y ?? moved.y)
+            )
+
+            for selectedNodeID in session.selectedGraphNodeIDs {
+                let originalPos = multiNodeDragOrigins[selectedNodeID] ?? graphNodePoint(for: selectedNodeID)
+                let newPos = CGPoint(
+                    x: originalPos.x + delta.x,
+                    y: originalPos.y + delta.y
+                )
+                session.graphLayout.pin(nodeID: selectedNodeID, at: newPos)
             }
+        } else if draggedNodeUsesFocusPull {
+            pulledGraphPositions[nodeID] = moved
+        } else {
+            session.graphLayout.pin(nodeID: nodeID, at: moved)
+        }
+
+        layoutRevision &+= 1
+    }
+
+    private func finishNodeDrag() {
+        if draggedNodeUsesFocusPull, let draggedNodeID {
+            session.graphLayout.pin(nodeID: draggedNodeID, at: graphNodePoint(for: draggedNodeID))
+        }
+        draggedNodeID = nil
+        nodeDragOrigin = nil
+        nodeDragPointerOffset = nil
+        draggedNodeUsesFocusPull = false
+        multiNodeDragOrigins = [:]
+        layoutRevision &+= 1
+        if !session.showAllGraphTableCards {
+            session.persistCurrentGraphLayout()
+        }
     }
 
     private func graphNodePoint(for nodeID: String) -> CGPoint {
@@ -3163,6 +3195,19 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .background {
             ZStack {
                 backgroundShape.fill(backgroundFill)
+                // Keep the light card surface under the group tint at overview zoom.
+                if let clusterColor, clusterFillOpacity > 0 {
+                    backgroundShape.fill(
+                        LinearGradient(
+                            colors: [
+                                clusterColor.opacity(clusterFillOpacity),
+                                clusterColor.opacity(clusterFillOpacity * 0.74),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                }
                 let strokeWidth = borderLineWidth
                 let strokeColor = isMultiSelected ? StudioPalette.accent : borderColor
                 backgroundShape.strokeBorder(strokeColor, lineWidth: strokeWidth)
@@ -3316,19 +3361,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var backgroundFill: AnyShapeStyle {
-        if let clusterColor, clusterFillOpacity > 0 {
-            return AnyShapeStyle(
-                LinearGradient(
-                    colors: [
-                        clusterColor.opacity(clusterFillOpacity),
-                        clusterColor.opacity(clusterFillOpacity * 0.74),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-        }
-
         return AnyShapeStyle(
             LinearGradient(
                 colors: isSelected
@@ -3353,7 +3385,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         guard viewportZoom < fillStartZoom else { return 0 }
         let zoom = max(min(viewportZoom, fillStartZoom), fullFillZoom)
         let progress = (fillStartZoom - zoom) / (fillStartZoom - fullFillZoom)
-        return Double(max(0, min(0.78, progress * 0.78)))
+        return Double(max(0, min(0.18, progress * 0.18)))
     }
 
     private var nameZoomOpacity: Double {
@@ -3378,7 +3410,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var borderColor: Color {
-        if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 1.0 : 0.9) }
+        if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 0.9 : 0.62) }
         if isHovered                { return Color.black.opacity(0.26) }
         if highlightState != .empty { return Color.black.opacity(0.22) }
         if isSelected               { return Color.black.opacity(0.20) }
@@ -3388,12 +3420,12 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     private var borderLineWidth: CGFloat {
         let zoom = max(viewportZoom, 0.2)
         let zoomOutEmphasis = max(pow(zoom, 1.45), 0.16)
-        let filledClusterCap: CGFloat = clusterFillOpacity > 0 ? 9 : .greatestFiniteMagnitude
+        let filledClusterCap: CGFloat = clusterFillOpacity > 0 ? 6 : .greatestFiniteMagnitude
         if isMultiSelected {
             return min(3.2 / zoomOutEmphasis, filledClusterCap)
         }
         if clusterColor != nil {
-            return min((isHovered || isSelected ? 3.0 : 2.5) / zoomOutEmphasis, filledClusterCap)
+            return min((isHovered || isSelected ? 2.5 : 1.6) / zoomOutEmphasis, filledClusterCap)
         }
         return (isSelected || isHovered ? 1.5 : 1.0) / zoomOutEmphasis
     }

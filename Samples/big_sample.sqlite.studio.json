@@ -546,7 +546,7 @@
         "oauth_tokens",
         "login_attempts"
       ],
-      "color": "#7CC3FF"
+      "color": "#426B93"
     },
     {
       "id": "hr",
@@ -563,7 +563,7 @@
         "benefits",
         "employee_benefits"
       ],
-      "color": "#B8A7FF"
+      "color": "#735794"
     },
     {
       "id": "crm",
@@ -580,7 +580,7 @@
         "campaign_leads",
         "notes"
       ],
-      "color": "#A8E6A3"
+      "color": "#497556"
     },
     {
       "id": "catalog",
@@ -597,7 +597,7 @@
         "price_list_items",
         "promotions"
       ],
-      "color": "#FFD166"
+      "color": "#6A6D39"
     },
     {
       "id": "fulfillment",
@@ -615,7 +615,7 @@
         "returns",
         "return_lines"
       ],
-      "color": "#5EC7C2"
+      "color": "#397178"
     },
     {
       "id": "billing",
@@ -632,7 +632,7 @@
         "refunds",
         "dunning_events"
       ],
-      "color": "#F8B26A"
+      "color": "#8C6139"
     },
     {
       "id": "support",
@@ -648,7 +648,7 @@
         "article_sections",
         "escalations"
       ],
-      "color": "#F497B8"
+      "color": "#8C4F6C"
     }
   ],
   "stories": [
