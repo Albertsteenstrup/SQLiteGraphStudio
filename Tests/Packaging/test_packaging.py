@@ -41,6 +41,9 @@ name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ["SGS_TEST_LOG"], "a") as log:
     log.write(name + " " + " ".join(args) + "\\n")
+if name == "swift" and "SGS_SWIFT_SCRATCH_PATH" in os.environ:
+    if "--scratch-path" not in args or args[args.index("--scratch-path") + 1] != os.environ["SGS_SWIFT_SCRATCH_PATH"]:
+        sys.exit(2)
 if name == "swift" and "--show-bin-path" in args:
     print(os.environ["SGS_TEST_BIN"])
 elif name == "lipo":
@@ -77,6 +80,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
             (self.tools / name).symlink_to(driver)
         self.env = dict(os.environ, PATH=f"{self.tools}:{os.environ['PATH']}",
                         SGS_TEST_LOG=str(self.root / "commands.log"), SGS_TEST_BIN=str(self.bin))
+        self.env["SGS_SWIFT_SCRATCH_PATH"] = str(self.root / "scratch with spaces")
         self.env.pop("SIGNING_IDENTITY", None)
         self.env.pop("NOTARYTOOL_PROFILE", None)
         self.env.pop("SGS_POSTGRES_RUNTIME", None)
@@ -157,6 +161,27 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.assertEqual(helper.read_text(), "fixture MCP helper")
         self.assertNotIn("pkill", self.log())
         self.assertNotIn("hdiutil", self.log())
+
+    def test_build_scripts_use_the_explicit_scratch_path_for_every_swift_command(self):
+        scratch = self.env["SGS_SWIFT_SCRATCH_PATH"]
+        for script, args in [("build_and_run.sh", ["--build-only"]), ("build_app.sh", [])]:
+            result = self.run_script(script, *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            builds = [line for line in self.log().splitlines() if line.startswith("swift build")]
+            self.assertTrue(builds, script)
+            self.assertTrue(all(f"--scratch-path {scratch}" in line for line in builds), builds)
+            (self.root / "commands.log").unlink()
+
+    def test_build_scripts_default_to_scratch_outside_the_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="sgs-packaging-home-") as home:
+            self.env.pop("SGS_SWIFT_SCRATCH_PATH")
+            self.env["HOME"] = home
+            result = self.run_script("build_and_run.sh", "--build-only")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            builds = [line for line in self.log().splitlines() if line.startswith("swift build")]
+            self.assertTrue(builds)
+            expected_prefix = f"--scratch-path {home}/Library/Developer/SQLiteGraphStudio/SwiftPM/"
+            self.assertTrue(all(expected_prefix in line for line in builds), builds)
 
     def test_build_refuses_to_replace_a_bundle_used_by_another_session(self):
         bundle = self.root / "dist/SQLiteGraphStudio.app"

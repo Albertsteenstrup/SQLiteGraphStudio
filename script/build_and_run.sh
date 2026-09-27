@@ -7,6 +7,7 @@ APP_NAME="SQLiteGraphStudio"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/script/bundle_metadata.sh"
+SWIFT_SCRATCH_PATH="$(sgs_swift_scratch_path "$ROOT_DIR")"
 BUNDLE_ID="$(sgs_metadata CFBundleIdentifier)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -53,10 +54,11 @@ fi
 
 sgs_assert_bundle_not_running "$APP_BUNDLE"
 cd "$ROOT_DIR"
-swift build -j "$SGS_BUILD_JOBS" --product "$APP_NAME"
-swift build -j "$SGS_BUILD_JOBS" --product StudioMCP
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
-MCP_BINARY="$(swift build --show-bin-path)/StudioMCP"
+mkdir -p "$SWIFT_SCRATCH_PATH"
+swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" --product "$APP_NAME"
+swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" --product StudioMCP
+BUILD_BINARY="$(swift build --scratch-path "$SWIFT_SCRATCH_PATH" --show-bin-path)/$APP_NAME"
+MCP_BINARY="$(swift build --scratch-path "$SWIFT_SCRATCH_PATH" --show-bin-path)/StudioMCP"
 
 sgs_assert_bundle_not_running "$APP_BUNDLE"
 rm -rf "$APP_BUNDLE"

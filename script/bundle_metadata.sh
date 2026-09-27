@@ -12,6 +12,24 @@ sgs_write_metadata() {
     plutil -lint "$1" >/dev/null
 }
 
+# SwiftPM signs resource bundles in its scratch directory. Keep generated
+# bundles out of file-provider-managed checkouts, where Finder metadata can be
+# reattached between resource copying and codesign.
+sgs_swift_scratch_path() {
+    local project_root="$1"
+    if [[ -n "${SGS_SWIFT_SCRATCH_PATH:-}" ]]; then
+        if [[ "$SGS_SWIFT_SCRATCH_PATH" != /* ]]; then
+            echo "SGS_SWIFT_SCRATCH_PATH must be an absolute path." >&2
+            return 2
+        fi
+        printf '%s\n' "$SGS_SWIFT_SCRATCH_PATH"
+        return
+    fi
+    local project_key
+    project_key="$(printf '%s' "$project_root" | shasum -a 256 | cut -c1-16)"
+    printf '%s/Library/Developer/SQLiteGraphStudio/SwiftPM/%s\n' "$HOME" "$project_key"
+}
+
 # Replacing a bundle while either its UI or MCP helper is executing can break
 # other coding sessions. Check the exact bundle path; never signal processes by
 # executable name, because that would hit unrelated worktrees and /Applications.

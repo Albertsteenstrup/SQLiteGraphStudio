@@ -8,7 +8,13 @@
 bash script/build_and_run.sh --build-only
 ```
 
-This builds a debug app in `dist/SQLiteGraphStudio.app`, including SwiftPM resources and the `StudioMCP` local helper at `Contents/MacOS/StudioMCP`, without stopping or launching an app. Omit `--build-only` to build and launch during normal development. `swift run` remains available but does not have a packaged bundle identity.
+This builds a debug app in `dist/SQLiteGraphStudio.app`, including SwiftPM resources and the `StudioMCP` local helper at `Contents/MacOS/StudioMCP`, without stopping or launching an app. Omit `--build-only` to build and launch during normal development. Both build scripts keep SwiftPM's generated files in a per-checkout directory under `~/Library/Developer/SQLiteGraphStudio/SwiftPM`; this avoids macOS file providers adding Finder metadata to resource bundles before SwiftPM signs them. Set `SGS_SWIFT_SCRATCH_PATH` to another absolute, nonsynced directory if needed.
+
+`swift run` remains available but does not have a packaged bundle identity. For a checkout in iCloud Drive or another file-provider-managed folder, give direct SwiftPM commands an external scratch directory too:
+
+```bash
+swift run --scratch-path "$HOME/Library/Developer/SQLiteGraphStudio/cli-scratch" SQLiteGraphStudio
+```
 
 ```bash
 bash script/build_app.sh
