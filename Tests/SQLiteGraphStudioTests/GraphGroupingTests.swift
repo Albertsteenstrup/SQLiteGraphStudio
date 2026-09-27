@@ -87,6 +87,33 @@ struct GraphGroupingTests {
     }
 
     @Test
+    func smallMapsGiveUncolouredGroupsDistinctFallbackColours() {
+        let ids = (0..<8).map { "table\($0)" }
+        let sidecar = SchemaSidecar(clusters: ids.enumerated().map { index, table in
+            .init(id: "group\(index)", tables: [table])
+        })
+        let forward = GraphGrouping.resolve(graph: graph(ids), sidecar: sidecar)
+        let reversed = GraphGrouping.resolve(graph: graph(Array(ids.reversed())), sidecar: sidecar)
+
+        #expect(forward == reversed)
+        #expect(Set(forward.groups.map(\.colorHex)).count == ids.count)
+    }
+
+    @Test
+    func reorderingAuthoredGroupsKeepsTheirFallbackColours() {
+        let ids = (0..<16).map { "table\($0)" }
+        let hints = ids.enumerated().map { index, table in
+            SchemaSidecar.ClusterHint(id: "group\(index)", tables: [table])
+        }
+        let forward = GraphGrouping.resolve(graph: graph(ids), sidecar: SchemaSidecar(clusters: hints))
+        let reversed = GraphGrouping.resolve(graph: graph(ids), sidecar: SchemaSidecar(clusters: Array(hints.reversed())))
+
+        for hint in hints {
+            #expect(forward.group(id: hint.id)?.colorHex == reversed.group(id: hint.id)?.colorHex)
+        }
+    }
+
+    @Test
     func blankAuthoredLabelFallsBackToID() {
         let result = GraphGrouping.resolve(
             graph: graph(["a"]),

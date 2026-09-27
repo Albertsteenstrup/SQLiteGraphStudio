@@ -82,7 +82,20 @@ public struct GraphGrouping: Sendable, Hashable {
             }
         }
 
-        var groups: [Group] = authoredOrder.compactMap { id in
+        let activeAuthoredIDs = authoredOrder.filter { !(authoredMembers[$0] ?? []).isEmpty }
+        var usedFallbackColorIndices: Set<Int> = []
+        for id in activeAuthoredIDs {
+            guard let color = normalizedColor(firstHintByID[id]?.color),
+                  let index = fallbackPalette.firstIndex(of: color) else { continue }
+            usedFallbackColorIndices.insert(index)
+        }
+        var fallbackColorsByID: [String: String] = [:]
+        // Allocate fallback colours by ID so reordering sidecar groups does not
+        // change their colours when two IDs hash to the same palette slot.
+        for id in activeAuthoredIDs.sorted() where normalizedColor(firstHintByID[id]?.color) == nil {
+            fallbackColorsByID[id] = fallbackColor(for: id, used: &usedFallbackColorIndices)
+        }
+        var groups: [Group] = activeAuthoredIDs.compactMap { id in
             guard let hint = firstHintByID[id],
                   let members = authoredMembers[id],
                   !members.isEmpty
@@ -94,10 +107,13 @@ public struct GraphGrouping: Sendable, Hashable {
             } else {
                 label = id.isEmpty ? "Group" : id
             }
+            let colorHex = normalizedColor(hint.color)
+                ?? fallbackColorsByID[id]
+                ?? fallbackColor(for: id, used: &usedFallbackColorIndices)
             return Group(
                 id: id,
                 label: label,
-                colorHex: normalizedColor(hint.color) ?? fallbackColor(for: id),
+                colorHex: colorHex,
                 nodeIDs: members.sorted(),
                 isInferred: false
             )
@@ -156,7 +172,7 @@ public struct GraphGrouping: Sendable, Hashable {
                 groups.append(Group(
                     id: id,
                     label: label,
-                    colorHex: fallbackColor(for: id),
+                    colorHex: fallbackColor(for: id, used: &usedFallbackColorIndices),
                     nodeIDs: partition,
                     isInferred: true
                 ))
@@ -275,18 +291,28 @@ public struct GraphGrouping: Sendable, Hashable {
         return "#\(value.uppercased())"
     }
 
-    private static func fallbackColor(for id: String) -> String {
-        let palette = [
-            "#64B5F6", "#81C784", "#FFB74D", "#BA68C8", "#4DD0E1", "#F06292",
-            "#AED581", "#7986CB", "#FFD54F", "#4DB6AC", "#A1887F", "#90A4AE",
-        ]
+    // Low-saturation hues retain group identity on the cool gray canvas.
+    // Each is dark enough for small headings on the light graph background.
+    private static let fallbackPalette = [
+        "#56677D", "#5D706E", "#6D6578", "#706A60", "#5C6D78", "#6F696D",
+        "#65715E", "#646B75", "#596F73", "#71666A", "#606D69", "#6B6C72",
+    ]
+
+    private static func fallbackColor(for id: String, used: inout Set<Int>) -> String {
         // Swift's Hasher is deliberately randomized between processes. FNV-1a keeps
-        // a group's fallback colour stable across reloads and input order changes.
+        // the first choice stable across reloads and input order changes.
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in id.utf8 {
             hash ^= UInt64(byte)
             hash &*= 1_099_511_628_211
         }
-        return palette[Int(hash % UInt64(palette.count))]
+        let start = Int(hash % UInt64(fallbackPalette.count))
+        // Resolve hash collisions while unused colours remain, so small maps
+        // don't give separate groups the same colour by chance.
+        for offset in 0..<fallbackPalette.count {
+            let index = (start + offset) % fallbackPalette.count
+            if used.insert(index).inserted { return fallbackPalette[index] }
+        }
+        return fallbackPalette[start]
     }
 }

@@ -34,6 +34,7 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - **Storage**: one key, `SQLiteGraphStudio.graph-visuals-disabled`, holding the names of the visuals turned OFF. A visual added in a later version therefore arrives on with no migration, and a name that no longer exists is ignored rather than discarding the rest
 - **Replaces**: the unpersisted `session.showClusterHalos` and the view-local `showCardinals` state. `GraphVisualToggles` is the single definition of the list, rendered by both the menu bar and the graph's own options menu
 - **Group Colors and Group Titles are independent**: titles used to be gated on the halo flag. Now each switch does only what it says — with colours off, group names still draw, in plain ink
+- **Group colour styling**: inferred and uncoloured groups use muted slate and gray tones suited to the cool canvas. Small maps avoid fallback-colour collisions. At overview zoom, a light card surface remains visible beneath a faint group tint; group borders stay subtle until hovered or selected. Explicit sidecar colours remain available.
 - **Status**: ✅ ACTIVE
 
 ### Zoomed-Out Relations

@@ -1145,8 +1145,7 @@ public struct SchemaGraphView: View {
                     .font(.system(size: labelFontSize, weight: .bold, design: .rounded))
                     // A group's own tint, unless the reader switched group colour off — in
                     // which case the name still belongs on screen, just in plain ink.
-                    .foregroundStyle((shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
-                        .opacity(inFocusLayout ? 0.96 : 0.85))
+                    .foregroundStyle(shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
             )
             var drawPoint = labelPoint
             if isOverview {
@@ -3117,6 +3116,19 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .background {
             ZStack {
                 backgroundShape.fill(backgroundFill)
+                // Keep the light card surface under the group tint at overview zoom.
+                if let clusterColor, clusterFillOpacity > 0 {
+                    backgroundShape.fill(
+                        LinearGradient(
+                            colors: [
+                                clusterColor.opacity(clusterFillOpacity),
+                                clusterColor.opacity(clusterFillOpacity * 0.74),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                }
                 let strokeWidth = borderLineWidth
                 let strokeColor = isMultiSelected ? StudioPalette.accent : borderColor
                 backgroundShape.strokeBorder(strokeColor, lineWidth: strokeWidth)
@@ -3270,19 +3282,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var backgroundFill: AnyShapeStyle {
-        if let clusterColor, clusterFillOpacity > 0 {
-            return AnyShapeStyle(
-                LinearGradient(
-                    colors: [
-                        clusterColor.opacity(clusterFillOpacity),
-                        clusterColor.opacity(clusterFillOpacity * 0.74),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-        }
-
         return AnyShapeStyle(
             LinearGradient(
                 colors: isSelected
@@ -3307,7 +3306,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         guard viewportZoom < fillStartZoom else { return 0 }
         let zoom = max(min(viewportZoom, fillStartZoom), fullFillZoom)
         let progress = (fillStartZoom - zoom) / (fillStartZoom - fullFillZoom)
-        return Double(max(0, min(0.78, progress * 0.78)))
+        return Double(max(0, min(0.18, progress * 0.18)))
     }
 
     private var nameZoomOpacity: Double {
@@ -3332,7 +3331,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var borderColor: Color {
-        if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 1.0 : 0.9) }
+        if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 0.9 : 0.62) }
         if isHovered                { return Color.black.opacity(0.26) }
         if highlightState != .empty { return Color.black.opacity(0.22) }
         if isSelected               { return Color.black.opacity(0.20) }
@@ -3342,12 +3341,12 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     private var borderLineWidth: CGFloat {
         let zoom = max(viewportZoom, 0.2)
         let zoomOutEmphasis = max(pow(zoom, 1.45), 0.16)
-        let filledClusterCap: CGFloat = clusterFillOpacity > 0 ? 9 : .greatestFiniteMagnitude
+        let filledClusterCap: CGFloat = clusterFillOpacity > 0 ? 6 : .greatestFiniteMagnitude
         if isMultiSelected {
             return min(3.2 / zoomOutEmphasis, filledClusterCap)
         }
         if clusterColor != nil {
-            return min((isHovered || isSelected ? 3.0 : 2.5) / zoomOutEmphasis, filledClusterCap)
+            return min((isHovered || isSelected ? 2.5 : 1.6) / zoomOutEmphasis, filledClusterCap)
         }
         return (isSelected || isHovered ? 1.5 : 1.0) / zoomOutEmphasis
     }

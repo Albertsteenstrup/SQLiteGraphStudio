@@ -67,14 +67,12 @@ extension StudioSkills {
         {
           "id": "auth",
           "label": "Authentication & Users",
-          "tables": ["users", "sessions", "password_resets", "auth_tokens"],
-          "color": "#7CC3FF"
+          "tables": ["users", "sessions", "password_resets", "auth_tokens"]
         },
         {
           "id": "billing",
           "label": "Billing",
-          "tables": ["customers", "subscriptions", "invoices", "payments", "refunds"],
-          "color": "#F8B26A"
+          "tables": ["customers", "subscriptions", "invoices", "payments", "refunds"]
         },
         {
           "id": "content",
@@ -89,7 +87,7 @@ extension StudioSkills {
     - `id` — short, lowercase, no spaces. Used internally and in error messages.
     - `label` — human-readable name shown on graph groups, in the table picker, and in table tooltips (e.g. "Authentication & Users").
     - `tables` — exact case-sensitive table IDs; PostgreSQL uses schema-qualified IDs such as `public.orders`. Names not in the schema are skipped.
-    - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. The app provides a stable colour when omitted.
+    - `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. Omit it by default to use the app's muted, stable palette; include it only for a requested custom colour.
     - `overviewTables` — optional ordered list of at most 16 distinct, exact table IDs. PostgreSQL uses schema-qualified IDs. Unknown IDs are ignored when drawing so the sidecar can survive schema changes; check against the current catalog before saving.
 
     ## Workflow
