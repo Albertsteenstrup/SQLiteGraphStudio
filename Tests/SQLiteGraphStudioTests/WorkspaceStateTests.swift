@@ -249,25 +249,39 @@ struct WorkspaceStateTests {
     }
 
     @Test
-    func theSinglePaneLayoutHoldsTheOffScreenPaneShut() {
-        // The divider stays draggable when one pane owns the workspace, and the
-        // off-screen pane is transparent and takes no clicks — so if it can be
-        // given any width at all, dragging peels it open as a blank strip. Its
-        // maximum has to be zero, not just its minimum.
-        let hidden = WorkspaceCompactLayout.paneWidthBounds(for: .right, fullscreenSide: .left)
-        #expect(hidden.minimum == 0)
-        #expect(hidden.maximum == 0)
+    func splitWidthsFollowTheSavedFractionAndKeepBothPanesReadable() {
+        let standard = WorkspaceSplitGeometry(width: 1200, fraction: 0.6, fullscreenSide: nil)
+        #expect(standard.leftWidth == 714)
+        #expect(standard.rightWidth == 476)
+        #expect(standard.dividerWidth == 10)
 
-        let shown = WorkspaceCompactLayout.paneWidthBounds(for: .left, fullscreenSide: .left)
-        #expect(shown.minimum == WorkspaceCompactLayout.singlePaneMinimumWidth)
-        #expect(shown.maximum == .infinity)
+        let restored = WorkspaceSplitGeometry(width: 1200, fraction: 0.35, fullscreenSide: nil)
+        #expect(abs(restored.leftWidth - 416.5) < 0.001)
+        #expect(abs(restored.rightWidth - 773.5) < 0.001)
 
-        // Both panes on screen keep the hand-drag floor and stay resizable.
-        for side in WorkspacePaneSide.allCases {
-            let split = WorkspaceCompactLayout.paneWidthBounds(for: side, fullscreenSide: nil)
-            #expect(split.minimum == WorkspaceCompactLayout.splitPaneMinimumWidth)
-            #expect(split.maximum == .infinity)
-        }
+        let nearEdge = WorkspaceSplitGeometry(width: 1200, fraction: 0.05, fullscreenSide: nil)
+        #expect(nearEdge.leftWidth == WorkspaceCompactLayout.splitPaneMinimumWidth)
+        #expect(nearEdge.leftWidth + nearEdge.rightWidth + nearEdge.dividerWidth == 1200)
+    }
+
+    @Test
+    func eitherPaneCanFillTheWorkspaceWithoutChangingTheSavedSplit() {
+        let dragged = WorkspaceSplitGeometry(width: 1200, fraction: 0.6, fullscreenSide: nil)
+        let fraction = dragged.fraction(placingDividerAt: 470)
+        #expect(abs(fraction - 470.0 / 1190.0) < 0.001)
+
+        let left = WorkspaceSplitGeometry(width: 1200, fraction: fraction, fullscreenSide: .left)
+        #expect(left.leftWidth == 1200)
+        #expect(left.rightWidth == 0)
+        #expect(left.dividerWidth == 0)
+
+        let right = WorkspaceSplitGeometry(width: 1200, fraction: fraction, fullscreenSide: .right)
+        #expect(right.leftWidth == 0)
+        #expect(right.rightWidth == 1200)
+        #expect(right.dividerWidth == 0)
+
+        let restored = WorkspaceSplitGeometry(width: 1200, fraction: fraction, fullscreenSide: nil)
+        #expect(abs(restored.leftWidth - 470) < 0.001)
     }
 
     @Test
@@ -279,7 +293,6 @@ struct WorkspaceStateTests {
         // than the space available and the compact layout would be unreachable.
         let narrowest = WorkspaceCompactLayout.narrowestWorkspaceWidth
         #expect(WorkspaceCompactLayout.splitPaneMinimumWidth * 2 < narrowest)
-        #expect(WorkspaceCompactLayout.singlePaneMinimumWidth < narrowest)
         #expect(narrowest < WorkspaceCompactLayout.collapseWidth)
         #expect(WorkspaceCompactLayout.collapseWidth < WorkspaceCompactLayout.restoreWidth)
 

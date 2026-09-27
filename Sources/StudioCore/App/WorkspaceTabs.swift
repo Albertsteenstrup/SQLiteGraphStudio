@@ -514,7 +514,7 @@ public final class WorkspaceTabController {
         let zoom = session.graphZoom.isFinite ? min(8, max(0.1, session.graphZoom)) : 1
         let panX = session.graphPan.width.isFinite ? min(1_000_000, max(-1_000_000, session.graphPan.width)) : 0
         let panY = session.graphPan.height.isFinite ? min(1_000_000, max(-1_000_000, session.graphPan.height)) : 0
-        let split = session.workspaceSplitFraction.isFinite ? min(0.75, max(0.25, session.workspaceSplitFraction)) : 0.6
+        let split = session.workspaceSplitFraction.isFinite ? min(0.95, max(0.05, session.workspaceSplitFraction)) : 0.6
         return WorkspaceSessionRestorationState(
             leftPane: session.leftPane.kind,
             rightPane: session.rightPane.kind,
@@ -620,7 +620,7 @@ public final class WorkspaceTabController {
         }
         session.activePaneSide = WorkspacePaneSide(rawValue: saved.activePane) ?? .right
         session.maximizedPaneSide = saved.maximizedPane.flatMap(WorkspacePaneSide.init(rawValue:))
-        session.workspaceSplitFraction = CGFloat(saved.splitFraction.isFinite ? min(0.75, max(0.25, saved.splitFraction)) : 0.6)
+        session.workspaceSplitFraction = CGFloat(saved.splitFraction.isFinite ? min(0.95, max(0.05, saved.splitFraction)) : 0.6)
     }
 
     /// Opens the native picker and creates one workspace for every selected document.

@@ -205,7 +205,6 @@ public actor SQLiteDatabaseBackend {
                 }
 
                 let graphNodes = descriptors
-                    .filter { $0.objectType == .table }
                     .map { GraphNode(id: $0.name, title: $0.name, isEditable: $0.isEditable) }
                     .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
 

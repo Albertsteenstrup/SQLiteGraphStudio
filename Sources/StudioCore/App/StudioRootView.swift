@@ -423,13 +423,12 @@ private struct WorkspaceSessionRootView: View {
     }
 }
 
-/// Keeps SchemaGraphView, TableWorkspaceView, and QueryWorkspaceView alive at all times.
-/// PaneShell instances are given explicit stable `.id()` values so SwiftUI never
-/// recreates them when the surrounding layout changes between split and fullscreen.
+/// Keeps SchemaGraphView, TableWorkspaceView, and QueryWorkspaceView mounted while
+/// one session-owned split fraction controls both pane widths.
 private struct WorkspaceLayoutView: View {
     @Bindable var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var databaseNameSide: WorkspacePaneSide = .left
+    @State private var dividerDragStartWidth: CGFloat?
 
     private var fullscreenSide: WorkspacePaneSide? {
         if let side = session.maximizedPaneSide {
@@ -441,11 +440,6 @@ private struct WorkspaceLayoutView: View {
         return session.compactVisibleSide
     }
 
-    private var isFullscreen: Bool {
-        fullscreenSide != nil
-    }
-
-    /// Keeps the dock available when a narrow workspace shows one pane.
     private var isCompactSinglePane: Bool {
         session.isWorkspaceCompact
             && session.maximizedPaneSide == nil
@@ -470,261 +464,99 @@ private struct WorkspaceLayoutView: View {
     }
 
     private var splitLayout: some View {
-        ZStack(alignment: .bottom) {
-            HSplitView {
-                PaneShell(
-                    session: session,
-                    side: .left,
-                    isCompact: isCompactSinglePane,
-                    showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left
-                )
-                .id("workspace-pane-left")
-                .frame(
-                    minWidth: paneWidthBounds(for: .left).minimum,
-                    maxWidth: paneWidthBounds(for: .left).maximum
-                )
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.left: geometry.size.width])
+        GeometryReader { geometry in
+            let widths = WorkspaceSplitGeometry(
+                width: geometry.size.width,
+                fraction: session.workspaceSplitFraction,
+                fullscreenSide: fullscreenSide
+            )
+            let databaseNameSide: WorkspacePaneSide = widths.leftWidth >= widths.rightWidth ? .left : .right
+
+            ZStack(alignment: .bottom) {
+                HStack(spacing: 0) {
+                    paneShell(for: .left, width: widths.leftWidth, height: geometry.size.height,
+                              showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .left)
+
+                    if fullscreenSide == nil {
+                        workspaceDivider(widths: widths)
                     }
-                }
-                .opacity(paneOpacity(for: .left))
-                .allowsHitTesting(paneIsInteractive(.left))
-                .accessibilityHidden(!paneIsInteractive(.left))
 
-                PaneShell(
-                    session: session,
-                    side: .right,
-                    isCompact: isCompactSinglePane,
-                    showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right
-                )
-                .id("workspace-pane-right")
-                .frame(
-                    minWidth: paneWidthBounds(for: .right).minimum,
-                    maxWidth: paneWidthBounds(for: .right).maximum
-                )
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(key: WorkspacePaneWidthsKey.self, value: [.right: geometry.size.width])
+                    paneShell(for: .right, width: widths.rightWidth, height: geometry.size.height,
+                              showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+
+                if fullscreenSide == nil || isCompactSinglePane {
+                    WorkspaceDockView(session: session, visibleKinds: visiblePaneKinds)
+                        .padding(.bottom, 18)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+    }
+
+    private func paneShell(
+        for side: WorkspacePaneSide,
+        width: CGFloat,
+        height: CGFloat,
+        showsDatabaseName: Bool
+    ) -> some View {
+        PaneShell(
+            session: session,
+            side: side,
+            isCompact: isCompactSinglePane,
+            showsDatabaseName: showsDatabaseName
+        )
+        .id("workspace-pane-\(side.rawValue)")
+        .frame(width: width, height: height)
+        .accessibilityIdentifier("workspace-pane-\(side.rawValue)")
+        .clipped()
+        .opacity(fullscreenSide == nil || fullscreenSide == side ? 1 : 0)
+        .allowsHitTesting(fullscreenSide == nil || fullscreenSide == side)
+        .accessibilityHidden(fullscreenSide != nil && fullscreenSide != side)
+    }
+
+    private func workspaceDivider(widths: WorkspaceSplitGeometry) -> some View {
+        Rectangle()
+            .fill(Color.black.opacity(0.001))
+            .frame(width: widths.dividerWidth)
+            .overlay {
+                Capsule()
+                    .fill(StudioPalette.borderStrong)
+                    .frame(width: 3, height: 36)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let startWidth = dividerDragStartWidth ?? widths.leftWidth
+                        if dividerDragStartWidth == nil { dividerDragStartWidth = startWidth }
+                        session.workspaceSplitFraction = widths.fraction(
+                            placingDividerAt: startWidth + value.translation.width
+                        )
                     }
+                    .onEnded { _ in dividerDragStartWidth = nil }
+            )
+            .accessibilityElement()
+            .accessibilityIdentifier("workspace-divider")
+            .accessibilityLabel("Resize workspace panes")
+            .accessibilityValue("Left pane \(Int(widths.fraction(placingDividerAt: widths.leftWidth) * 100)) percent")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    session.workspaceSplitFraction = widths.fraction(placingDividerAt: widths.leftWidth + 40)
+                case .decrement:
+                    session.workspaceSplitFraction = widths.fraction(placingDividerAt: widths.leftWidth - 40)
+                @unknown default:
+                    break
                 }
-                .opacity(paneOpacity(for: .right))
-                .allowsHitTesting(paneIsInteractive(.right))
-                .accessibilityHidden(!paneIsInteractive(.right))
             }
-            .background(SplitViewPositioner(mode: splitMode))
-            .onPreferenceChange(WorkspacePaneWidthsKey.self) { widths in
-                guard fullscreenSide == nil,
-                      let left = widths[.left], let right = widths[.right],
-                      left > 0, right > 0,
-                      abs(left - right) > 1
-                else { return }
-                // Keep the current owner at an even split so the title cannot flicker.
-                databaseNameSide = left > right ? .left : .right
-                session.workspaceSplitFraction = min(max(left / (left + right), 0.25), 0.75)
+            .contextMenu {
+                Button("Left pane one-third") { session.workspaceSplitFraction = 1.0 / 3.0 }
+                Button("Even split") { session.workspaceSplitFraction = 0.5 }
+                Button("Left pane two-thirds") { session.workspaceSplitFraction = 2.0 / 3.0 }
             }
-
-            if !isFullscreen || isCompactSinglePane {
-                WorkspaceDockView(session: session, visibleKinds: visiblePaneKinds)
-                    .padding(.bottom, 18)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-    }
-
-    private var splitMode: SplitViewPositionMode {
-        if let fullscreenSide {
-            return .fullscreen(fullscreenSide)
-        }
-        return .split(defaultFraction: session.workspaceSplitFraction)
-    }
-
-    private func paneOpacity(for side: WorkspacePaneSide) -> Double {
-        guard let fullscreenSide else { return 1 }
-        return fullscreenSide == side ? 1 : 0
-    }
-
-    private func paneIsInteractive(_ side: WorkspacePaneSide) -> Bool {
-        fullscreenSide == nil || fullscreenSide == side
-    }
-
-    private func paneWidthBounds(for side: WorkspacePaneSide) -> (minimum: CGFloat, maximum: CGFloat) {
-        WorkspaceCompactLayout.paneWidthBounds(for: side, fullscreenSide: fullscreenSide)
-    }
-}
-
-private struct WorkspacePaneWidthsKey: PreferenceKey {
-    static let defaultValue: [WorkspacePaneSide: CGFloat] = [:]
-
-    static func reduce(value: inout [WorkspacePaneSide: CGFloat], nextValue: () -> [WorkspacePaneSide: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, width in width })
-    }
-}
-
-private enum SplitViewPositionMode: Equatable {
-    case split(defaultFraction: CGFloat)
-    case fullscreen(WorkspacePaneSide)
-}
-
-private struct SplitViewPositioner: NSViewRepresentable {
-    let mode: SplitViewPositionMode
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        view.isHidden = true
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            context.coordinator.applyPosition(from: nsView, mode: mode)
-        }
-    }
-
-    @MainActor
-    final class Coordinator {
-        private var didApplyInitialPosition = false
-        private var lastMode: SplitViewPositionMode?
-        private var savedSplitFraction: CGFloat?
-
-        @MainActor
-        func applyPosition(from view: NSView, mode: SplitViewPositionMode, attempt: Int = 0) {
-            guard let splitView = view.nearestSplitView(),
-                  splitView.arrangedSubviews.count >= 2,
-                  splitView.bounds.width > 0
-            else {
-                retry(from: view, mode: mode, attempt: attempt)
-                return
-            }
-
-            switch mode {
-            case .split(let defaultFraction):
-                applySplitMode(to: splitView, defaultFraction: defaultFraction)
-            case .fullscreen(let side):
-                applyFullscreenMode(to: splitView, side: side)
-            }
-
-            lastMode = mode
-        }
-
-        @MainActor
-        private func applySplitMode(to splitView: NSSplitView, defaultFraction: CGFloat) {
-            if !didApplyInitialPosition {
-                didApplyInitialPosition = true
-                savedSplitFraction = defaultFraction
-                setDividerPosition(
-                    splitView.bounds.width * defaultFraction,
-                    in: splitView,
-                    animated: false
-                )
-                return
-            }
-
-            if case .fullscreen = lastMode {
-                let fraction = savedSplitFraction ?? defaultFraction
-                setDividerPosition(
-                    splitView.bounds.width * fraction,
-                    in: splitView,
-                    animated: true
-                )
-                return
-            }
-
-            savedSplitFraction = currentDividerFraction(in: splitView) ?? savedSplitFraction
-        }
-
-        @MainActor
-        private func applyFullscreenMode(to splitView: NSSplitView, side: WorkspacePaneSide) {
-            if shouldCaptureSplitFraction {
-                savedSplitFraction = currentDividerFraction(in: splitView) ?? savedSplitFraction
-            }
-
-            didApplyInitialPosition = true
-            let targetPosition = side == .left ? splitView.bounds.width : 0
-            setDividerPosition(targetPosition, in: splitView, animated: true)
-        }
-
-        private var shouldCaptureSplitFraction: Bool {
-            guard let lastMode else { return true }
-            if case .split = lastMode { return true }
-            return false
-        }
-
-        @MainActor
-        private func currentDividerFraction(in splitView: NSSplitView) -> CGFloat? {
-            guard splitView.bounds.width > 0,
-                  splitView.arrangedSubviews.count >= 2
-            else {
-                return nil
-            }
-
-            let width = splitView.arrangedSubviews[0].frame.width
-            guard width.isFinite, width > 0, width < splitView.bounds.width else { return nil }
-            return width / splitView.bounds.width
-        }
-
-        @MainActor
-        private func setDividerPosition(_ position: CGFloat, in splitView: NSSplitView, animated: Bool) {
-            // This slide is what a collapse actually looks like, and a resize can
-            // now trigger it, so it answers to reduce-motion like the SwiftUI
-            // transitions around it.
-            guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-                splitView.setPosition(position, ofDividerAt: 0)
-                return
-            }
-
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.32
-                context.allowsImplicitAnimation = true
-                splitView.animator().setPosition(position, ofDividerAt: 0)
-            }
-        }
-
-        @MainActor
-        private func retry(from view: NSView, mode: SplitViewPositionMode, attempt: Int) {
-            guard attempt < 12 else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak view, weak self] in
-                guard let view, let self else { return }
-                self.applyPosition(from: view, mode: mode, attempt: attempt + 1)
-            }
-        }
-    }
-}
-
-private extension NSView {
-    @MainActor
-    func nearestSplitView() -> NSSplitView? {
-        firstSuperview(of: NSSplitView.self)
-            ?? window?.contentView?.firstDescendant(of: NSSplitView.self)
-    }
-
-    @MainActor
-    private func firstSuperview<T: NSView>(of type: T.Type) -> T? {
-        var current = superview
-        while let view = current {
-            if let match = view as? T {
-                return match
-            }
-            current = view.superview
-        }
-        return nil
-    }
-
-    @MainActor
-    private func firstDescendant<T: NSView>(of type: T.Type) -> T? {
-        for subview in subviews {
-            if let match = subview as? T {
-                return match
-            }
-            if let match = subview.firstDescendant(of: type) {
-                return match
-            }
-        }
-        return nil
+            .help("Drag to resize panes. Right-click for sizes.")
     }
 }
 
