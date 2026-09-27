@@ -20,7 +20,7 @@ public struct StudioCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("Open Database File…") {
+            Button("Choose file/folder…") {
                 workspaceTabs.presentOpenPanel()
             }
             .keyboardShortcut("o")
@@ -32,11 +32,6 @@ public struct StudioCommands: Commands {
             }
             .disabled(workspaceTabs.tabs.count >= WorkspaceTabController.maximumTabs)
             .keyboardShortcut("n", modifiers: [.command, .shift])
-
-            Button("Open Project Folder…") {
-                session.presentOpenProjectFolderPanel()
-            }
-            .keyboardShortcut("o", modifiers: [.command, .shift])
 
             Button("Compare Database Schemas…") { session.presentSchemaComparison() }
 

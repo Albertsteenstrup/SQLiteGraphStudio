@@ -623,27 +623,55 @@ public final class WorkspaceTabController {
         session.workspaceSplitFraction = CGFloat(saved.splitFraction.isFinite ? min(0.95, max(0.05, saved.splitFraction)) : 0.6)
     }
 
-    /// Opens the native picker and creates one workspace for every selected document.
+    /// Opens selected files in new workspaces, or searches one selected project folder.
     public func presentOpenPanel() {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = []
         let documentFilter = DatabaseDocumentOpenPanelDelegate(extensions: DatabaseDocument.supportedExtensions)
         panel.delegate = documentFilter
-        panel.title = "Open Database or Workspace"
-        panel.message = DatabaseDocument.supportedFormatsDescription
-        panel.prompt = "Open"
+        panel.title = "Choose file/folder"
+        panel.message = "Select one project folder to search, or choose one or more supported files to open."
+        panel.prompt = "Choose"
 
         let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
         panel.begin { [weak self, documentFilter, weak presentingWindow] response in
             withExtendedLifetime(documentFilter) {
                 presentingWindow?.makeKeyAndOrderFront(nil)
                 guard response == .OK, let self, !panel.urls.isEmpty else { return }
-                Task { await self.openDocuments(panel.urls) }
+                switch WorkspaceTabOpenSelection.resolve(panel.urls) {
+                case .documents(let urls):
+                    Task { await self.openDocuments(urls) }
+                case .projectFolder(let folder):
+                    self.activeSession?.scanProject(at: folder)
+                case .invalidCombination:
+                    self.activeSession?.presentedError = SQLiteUserError(
+                        kind: .invalidInput,
+                        message: "Choose one project folder, or choose files without folders.",
+                        recoverySuggestion: "Select a project folder by itself, or choose one or more supported files."
+                    )
+                }
             }
         }
+    }
+}
+
+enum WorkspaceTabOpenSelection: Equatable {
+    case documents([URL])
+    case projectFolder(URL)
+    case invalidCombination
+
+    static func resolve(_ urls: [URL]) -> Self {
+        let folders = urls.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+        guard !folders.isEmpty else { return .documents(urls) }
+        guard urls.count == 1, let folder = folders.first else { return .invalidCombination }
+        return .projectFolder(folder)
     }
 }
 

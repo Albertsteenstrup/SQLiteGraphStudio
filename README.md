@@ -107,7 +107,7 @@ the real schema-review hook.
 
 ## Opening a project folder
 
-Choose **Open Project Folder…** from the File menu (⇧⌘O), or **Search Project Folder** on the welcome screen, and pick a repository. Graph Studio walks it and its subfolders and reports everything it can open: SQLite databases, PostgreSQL custom-format backups, `.postgres`/`.pgstudio` connection documents, folders of versioned SQL migrations, and standalone `schema.sql`/`structure.sql` scripts. A progress panel shows folders and files searched while it runs, and Cancel stops it at any point.
+Choose **Choose file/folder…** from the File menu (⌘O), or click **Choose file/folder** on the welcome screen, then select a project folder. Graph Studio walks it and its subfolders and reports everything it can open: SQLite databases, PostgreSQL custom-format backups, `.postgres`/`.pgstudio` connection documents, folders of versioned SQL migrations, and standalone `schema.sql`/`structure.sql` scripts. A progress panel shows folders and files searched while it runs, and Cancel stops it at any point.
 
 Finding one match opens it. Finding several shows a picker grouped by kind, with each match's location inside the project and a short description (`407 migrations · PostgreSQL · 0001 → 0485`, `6.3 MB`, `db.example.test:5432/catalog`).
 
@@ -142,7 +142,7 @@ A migration set is replayed, not executed, so what a parser cannot interpret is 
 
 ## PostgreSQL connections
 
-Choose **Open Database File…** from the File menu (⌘O), or **Choose Database File** on the welcome screen. One picker accepts SQLite files (`.db`, `.sqlite`, `.sqlite-db`, `.sqlite3`, `.sqlitedb`), PostgreSQL custom-format backups (`.dump`, `.backup`), and connection documents (`.postgres`, `.pgstudio`); the app selects the appropriate backend automatically. All supported extensions appear below the welcome button and in the picker. These files also work through Finder, launch arguments and Open Recent. SQL scripts, directory archives and other database engines are not supported by this picker; a folder of SQL migrations opens through [Open Project Folder…](#opening-a-project-folder) instead.
+Choose **Choose file/folder…** from the File menu (⌘O), or **Choose file/folder** on the welcome screen. Select one or more supported files to open them in new workspaces, or select one project folder by itself to search for databases and migration sources. The picker does not display a file-extension list; supported extensions appear below the welcome-screen button. These files also work through Finder, launch arguments and Open Recent.
 
 A backup opens without connection details or a login. Graph Studio copies it into a private temporary workspace, restores it using local PostgreSQL, and opens the schema, rows, record explorer and SQL editor in read-only mode. Progress and Cancel are shown during preparation. The source backup is never modified. Closing the workspace or quitting stops its server and removes the temporary copy; reopening restores a fresh copy. A private Unix socket is used, with no TCP listener. Restore tools and the server run under a filesystem/network sandbox. Restoration is the only write phase and only affects the private copy; browsing uses a separate reader with existing read-only query restrictions.
 
