@@ -86,6 +86,34 @@ final class MCPAppTests: XCTestCase {
         XCTAssertEqual((missing["error"] as? [String: Any])?["code"] as? Int, -32002)
     }
 
+    func testSavedViewerResourceSurvivesHelperUpgrade() throws {
+        let server = try initializedServer()
+        // A saved card keeps the URI from tools/list even after a new helper starts.
+        let savedURIs = [
+            "ui://sqlite-graph-studio/schema-review.html",
+            "ui://sqlite-graph-studio/schema-review-0f35d5df75586fa11507f6fb.html",
+            MCPAppResources.reviewURI(for: "previous viewer build"),
+        ]
+        for uri in savedURIs {
+            let read = try object(server.handleMessage(json([
+                "jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": ["uri": uri],
+            ])))
+            let content = try XCTUnwrap(((read["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first,
+                                       "Previously advertised resource must still resolve: \(uri)")
+            XCTAssertEqual(content["uri"] as? String, uri)
+            XCTAssertEqual(content["text"] as? String, MCPAppResources.schemaReviewHTML)
+            XCTAssertEqual(content["mimeType"] as? String, MCPAppResources.mimeType)
+        }
+        for uri in [
+            "ui://another-server/schema-review-0f35d5df75586fa11507f6fb.html",
+            "ui://sqlite-graph-studio/other-0f35d5df75586fa11507f6fb.html",
+            "ui://sqlite-graph-studio/schema-review-invalid.html",
+            "ui://sqlite-graph-studio/schema-review-0f35d5df75586fa11507f6fb.html/extra",
+        ] {
+            XCTAssertNil(MCPAppResources.read(uri), "Only schema viewer aliases should resolve")
+        }
+    }
+
     func testShowsAReviewFromTheFileAloneWithAModelSummaryAndViewData() throws {
         try write(review(), to: "change.sgreview")
         let transport = UnusedTransport()

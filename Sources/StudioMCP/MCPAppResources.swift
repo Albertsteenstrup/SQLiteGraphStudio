@@ -28,7 +28,7 @@ public enum MCPAppResources {
 
     /// The `resources/read` result for `uri`, or nil when the helper serves no such view.
     public static func read(_ uri: String) -> [String: Any]? {
-        guard uri == schemaReviewURI || uri == legacySchemaReviewURI,
+        guard isSchemaReviewURI(uri),
               let html = schemaReviewHTML else { return nil }
         return [
             "contents": [[
@@ -40,6 +40,18 @@ public enum MCPAppResources {
                 "_meta": ["ui": ["prefersBorder": true]],
             ]],
         ]
+    }
+
+    private static func isSchemaReviewURI(_ uri: String) -> Bool {
+        if uri == legacySchemaReviewURI { return true }
+        // Saved cards and host discovery caches retain older versioned URIs after
+        // the helper upgrades. They must still load the installed viewer. Keep the
+        // requested URI in the response so the host can match its pending read.
+        let prefix = "ui://sqlite-graph-studio/schema-review-"
+        let suffix = ".html"
+        guard uri.hasPrefix(prefix), uri.hasSuffix(suffix) else { return false }
+        let revision = uri.dropFirst(prefix.count).dropLast(suffix.count)
+        return revision.count == 24 && revision.allSatisfy { "0123456789abcdef".contains($0) }
     }
 
     static let schemaReviewHTML: String? = Bundle.module
