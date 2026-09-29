@@ -67,16 +67,17 @@ and save the `.sgreview` comparison. SQLite files, PostgreSQL connection documen
 and custom-format backups are supported; both versions must use the same engine.
 Capture reads schema metadata only. Opening a saved comparison is fully offline.
 
-The graph preserves group colours on the outer border. A separate inner border
-uses solid blue for additions/changes and dashed red for removals, with explicit
-`+`, `−`, and `~` field counts. New tables have a **New** badge; removed tables stay
-visible and faded with **Removed**. Edited foreign keys show both old and new
-links. The table list carries the same badges, and table details compare field
+Unselected tables keep one quiet border. Selecting a changed table colours that
+border green for an addition, blue for an edit, or dashed red for a removal.
+Explicit `+`, `−`, and `~` field counts remain visible without a selection.
+New tables have a **New** badge; removed tables stay visible and faded with
+**Removed**. Edited foreign keys show both old and new links. The table list
+carries the same badges, and table details compare field
 definitions, relations, and available constraints/indexes/triggers. Row data,
 permissions, RLS, routines, and deployment effects still need normal code review.
 
-A comparison opens on every change at once. Changed tables are named at a readable
-size even with the whole catalog in view, and relations that did not change stay
+A comparison frames its first connected set without selecting any table. Changed
+tables are named at a readable size, and relations that did not change stay
 hidden until you zoom in. Choose a table in the list or the graph to see only its
 changes — the relations it gained or lost and the tables they reach — while the
 rest fade; choose it again, or click empty canvas, to return. ⌥⌘↓ and ⌥⌘↑ step

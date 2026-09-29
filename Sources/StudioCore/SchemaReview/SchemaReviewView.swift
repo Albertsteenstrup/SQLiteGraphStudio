@@ -38,22 +38,6 @@ struct SchemaChangeBadge: View {
     }
 }
 
-/// An inner change border stays distinct from the existing outer group colour.
-struct SchemaChangeBorder: View {
-    let change: SchemaTableChange
-    var body: some View {
-        if change.kind != .unchanged {
-            RoundedRectangle(cornerRadius: 13).inset(by: 5)
-                .stroke(.background, lineWidth: 5)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 13).inset(by: 5)
-                        .stroke(change.kind.tint, style: StrokeStyle(lineWidth: 2, dash: change.kind == .removed ? [6, 4] : []))
-                }
-                .allowsHitTesting(false)
-        }
-    }
-}
-
 struct SchemaReviewWorkspaceView: View {
     @Bindable var session: AppSession
     let review: SchemaReviewDocument
@@ -112,6 +96,17 @@ struct SchemaReviewWorkspaceView: View {
                                 .padding(.horizontal, 8).padding(.vertical, 4)
                                 .background(Color.blue.opacity(0.1), in: Capsule())
                         }
+                        if !isHistoricalExplanation && review.proposal == nil && !review.notes.isEmpty {
+                            Menu {
+                                ForEach(Array(review.notes.enumerated()), id: \.offset) { _, note in Text(note) }
+                            } label: {
+                                Image(systemName: "note.text")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .help("Review notes")
+                            .accessibilityLabel("Review notes")
+                        }
                     }
                         Text(isHistoricalExplanation ? "Historical capture · \(review.headRef)" : "\(review.baseRef) → \(review.headRef)")
                             .font(.caption.monospaced()).lineLimit(1).textSelection(.enabled)
@@ -164,21 +159,22 @@ struct SchemaReviewWorkspaceView: View {
                 .background(Color(nsColor: .windowBackgroundColor))
               }
             }
-            HStack {
-                Text(isHistoricalExplanation
-                    ? "Historical schema and explicitly saved rows · no live source or queries · values may be truncated"
-                    : review.proposal == nil ? "Schema comparison · no row data · solid green = added · solid blue = changed · dashed red = removed · unchanged relations appear when zoomed in"
-                    : "Preview · no SQL executed · updates automatically")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let error = session.schemaPreviewReloadError {
-                    Label("Preview update failed", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.red).help(error)
-                }
-                Spacer()
-                if !review.notes.isEmpty {
-                    Menu("Review notes") { ForEach(Array(review.notes.enumerated()), id: \.offset) { _, note in Text(note) } }
-                }
-            }.padding(.horizontal, 16)
+            if isHistoricalExplanation || review.proposal != nil {
+                HStack {
+                    Text(isHistoricalExplanation
+                        ? "Historical schema and explicitly saved rows · no live source or queries · values may be truncated"
+                        : "Preview · no SQL executed · updates automatically")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let error = session.schemaPreviewReloadError {
+                        Label("Preview update failed", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.red).help(error)
+                    }
+                    Spacer()
+                    if !review.notes.isEmpty {
+                        Menu("Review notes") { ForEach(Array(review.notes.enumerated()), id: \.offset) { _, note in Text(note) } }
+                    }
+                }.padding(.horizontal, 16)
+            }
         }
         .padding(.vertical, 16)
         .onAppear { if isHistoricalExplanation { onlyChanges = false } }
@@ -247,7 +243,7 @@ struct SchemaReviewWorkspaceView: View {
                 SchemaChangeBadge(change: change)
             }
             .padding(8)
-            .background(isSelected ? Color.accentColor.opacity(0.12) : kind == .unchanged ? .clear : kind.tint.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            .background(isSelected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .opacity(kind == .removed ? 0.7 : 1)
         }

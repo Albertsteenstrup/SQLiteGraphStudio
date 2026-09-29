@@ -94,13 +94,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 /* Simplified graph, drawn when Graph Studio's renderer is unavailable. */
 .node { cursor: pointer; transition: opacity 0.15s; }
 .node .frame { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
-.node .inner { fill: none; stroke-width: 2; }
-.node.added .inner { stroke: var(--add); }
-.node.modified .inner { stroke: var(--mod); }
-.node.removed .inner { stroke: var(--del); stroke-dasharray: 5 4; }
 .node.removed { opacity: 0.74; }
 .node.context .frame { stroke-dasharray: 2 3; }
-.node.selected .frame { stroke: var(--text-2); stroke-width: 1.5; }
+.node.selected .frame { stroke: var(--mod); stroke-width: 2; }
+.node.selected.added .frame { stroke: var(--add); }
+.node.selected.removed .frame { stroke: var(--del); stroke-dasharray: 5 4; }
 .node text { fill: var(--text); font-family: var(--font); }
 .node .title { font-size: 12.5px; font-weight: 600; }
 .node.context .title { fill: var(--text-2); font-weight: 500; }
@@ -908,7 +906,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       const classes = ["node", kind].concat(table.context ? ["context"] : []);
       const g = svg("g", { class: classes.join(" "), "data-id": table.id, tabindex: 0, role: "button", "aria-label": `${table.name}, ${table.context ? "related, unchanged" : LABEL[kind]}` }, layer);
       svg("rect", { class: "frame", x: node.x, y: node.y, width: node.width, height: node.height, rx: 8 }, g);
-      if (kind !== "unchanged") svg("rect", { class: "inner", x: node.x + 3, y: node.y + 3, width: node.width - 6, height: node.height - 6, rx: 6 }, g);
       svg("title", {}, g, table.name + (table.badge ? " · " + table.badge : ""));
       svg("text", { class: "title", x: node.x + 12, y: node.y + 21 }, g, clip(table.name, 23));
       const tag = table.context ? "Related" : (kind === "modified" ? (table.badge || "Changed") : LABEL[kind]);

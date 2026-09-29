@@ -87,15 +87,16 @@ that the schema is unchanged; data effects remain part of the original review.
 ## Review and handoff
 
 Look at the shown review and inspect changed tables and their relationships.
-For tables, fields, and relations alike, green solid inner borders and `+` labels
-mark additions, blue solid ones and `~` labels changes, and red dashed ones and `−`
-labels removals. The existing outer group colour is preserved. Removed tables remain
-faded with a Removed badge. A relation that keeps its tables but changes columns or
+For tables, fields, and relations alike, green `+` labels mark additions, blue
+`~` labels changes, and red `−` labels removals. Unselected table cards keep a
+single quiet border; selecting one colours that border by change kind (dashed
+red for a removal). Removed tables remain faded with a Removed badge. A relation
+that keeps its tables but changes columns or
 actions is one changed relation; one that moves to other tables shows as removed
 plus added. Cards list keys first, then changed fields. Table details show field
 types, nullability, defaults, key membership, and available definition changes.
-The graph opens on the first connected set of changes (changed tables joined by
-relations), names changed tables at a readable size, and hides unchanged relations
+The graph frames the first connected set of changes without selecting its tables,
+names changed tables at a readable size, and hides unchanged relations
 until zoomed in. ⌥⌘↓ and ⌥⌘↑, or Next and Previous in the conversation view, step
 between connected sets. Choosing a table in the list or the graph isolates its own
 changes and the tables they reach, fading the rest; choose it again or click empty

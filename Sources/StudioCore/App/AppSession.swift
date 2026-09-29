@@ -2441,12 +2441,11 @@ public final class AppSession {
         let ids = Set(changes.map(\.id))
         expandedGraphNodeIDs.formIntersection(ids)
         selectedGraphNodeIDs.formIntersection(ids)
-        // A review opens on its first connected set of changes; Previous and Next step
-        // between sets. A preview reload keeps the reader's choice while that table exists.
+        // Frame the first connected set without selecting its tables. A preview reload
+        // keeps the reader's explicit choice while that table exists.
         if !preservingContext || (selectedGraphNodeID.map({ !ids.contains($0) }) ?? false) {
             clearGraphSelection()
             if let first = schemaReviewChangeSets.first {
-                setGraphSelection(Set(first))
                 pendingReviewChangeSetReveal = first
             }
         }

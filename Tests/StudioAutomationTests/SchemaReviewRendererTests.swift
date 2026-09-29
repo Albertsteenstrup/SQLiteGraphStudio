@@ -35,8 +35,8 @@ struct SchemaReviewRendererTests {
         let opened = try frame()
         #expect(opened.image.pixelsWide == 480 && opened.image.pixelsHigh == 320)
         #expect(opened.state["setTables"] as? [[String]] == review.changeSets)
-        #expect(opened.state["set"] as? Int == 0, "A review opens on its first connected set")
-        #expect(Set(opened.state["selection"] as? [String] ?? []) == Set(review.changeSets[0]))
+        #expect(opened.state["set"] is NSNull, "Framing the first set does not select it")
+        #expect((opened.state["selection"] as? [String])?.isEmpty == true)
 
         // Exercise the merged graph gesture path with a real synthetic click on the
         // visible users marker, rather than only selecting a table by ID.

@@ -1006,6 +1006,10 @@ public struct SchemaGraphView: View {
     /// row metric would dash every table, and dashes already mean "removed" here.
     private func drawReviewMark(in context: inout GraphicsContext, id: String, path: Path,
                                 color: Color, lens: SchemaReviewLens, isPointed: Bool) {
+        if !lens.isFocused {
+            context.fill(path, with: .color(color.opacity(isPointed ? 0.5 : 0.28)))
+            return
+        }
         let kind = lens.kind(forTable: id)
         let emphasis = lens.emphasis(forTable: id)
         let fill: Double = switch emphasis {
@@ -1017,7 +1021,6 @@ public struct SchemaGraphView: View {
         let dash: [CGFloat] = kind == .removed ? [3, 2] : []
         switch emphasis {
         case .subject:
-            context.stroke(path, with: .color(.white), lineWidth: 4)
             context.stroke(path, with: .color(kind.tint), style: StrokeStyle(lineWidth: 2, dash: dash))
         case .faded:
             context.stroke(path, with: .color(kind.tint.opacity(0.4)), style: StrokeStyle(lineWidth: 1.25, dash: dash))
@@ -3208,21 +3211,27 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                         )
                     )
                 }
-                let strokeWidth = borderLineWidth
-                let strokeColor = isMultiSelected ? StudioPalette.accent : borderColor
-                backgroundShape.strokeBorder(strokeColor, lineWidth: strokeWidth)
+                let strokeWidth = schemaChange == nil ? borderLineWidth : (isSelected ? 2.5 : 1)
+                let strokeColor: Color = if let schemaChange, isSelected {
+                    schemaChange.kind == .unchanged ? StudioPalette.accent : schemaChange.kind.tint
+                } else if isMultiSelected {
+                    StudioPalette.accent
+                } else {
+                    borderColor
+                }
+                let dash: [CGFloat] = schemaChange?.kind == .removed && isSelected ? [6, 4] : []
+                backgroundShape.strokeBorder(strokeColor, style: StrokeStyle(lineWidth: strokeWidth, dash: dash))
             }
         }
         .clipShape(backgroundShape)
         .overlay {
-            if isSelected {
+            if isSelected && schemaChange == nil {
                 backgroundShape
                     .stroke(StudioPalette.accent.opacity(0.88), lineWidth: 2)
                     .padding(-5)
                     .allowsHitTesting(false)
             }
         }
-        .overlay { if let schemaChange { SchemaChangeBorder(change: schemaChange) } }
         .opacity(schemaChange?.kind == .removed ? 0.6 : 1)
         .scaleEffect(isDragging ? 1.012 : 1)
         .contentShape(backgroundShape)

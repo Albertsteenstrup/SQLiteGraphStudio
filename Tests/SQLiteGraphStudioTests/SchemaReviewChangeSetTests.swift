@@ -33,13 +33,13 @@ import Testing
         let keys = SchemaTableChange(id: "links", before: keysBefore, after: keysAfter, relationChanged: false)
         #expect(keys.reviewColumns(foreignKeys: ["f1", "f2"]).map(\.name) == ["id", "f2", "f1"])
 
-        // Too many keys to show the changes too: changes move up behind the primary key.
+        // Even on a crowded card, every foreign key stays before a changed non-key field.
         let hubColumns = (1...6).map { Self.column("ref_\($0)", "INTEGER") }
         let hubBefore = Self.table("hub", hubColumns + [Self.column("note")])
         let hubAfter = Self.table("hub", hubColumns + [Self.column("note"), Self.column("added_at"), Self.column("added_by")])
         let hub = SchemaTableChange(id: "hub", before: hubBefore, after: hubAfter, relationChanged: false)
         let ordered = hub.reviewColumns(foreignKeys: Set(hubColumns.map(\.name))).map(\.name)
-        #expect(ordered == ["id", "added_at", "added_by"] + hubColumns.map(\.name) + ["note"])
+        #expect(ordered == ["id"] + hubColumns.map(\.name) + ["added_at", "added_by", "note"])
         #expect(hub.reviewTable(foreignKeys: Set(hubColumns.map(\.name))).columns.map(\.name) == ordered)
     }
 
@@ -76,7 +76,7 @@ import Testing
         #expect(review.changeSets == [["audits", "logs"], ["teams", "users"], ["archive"], ["notes"]])
     }
 
-    @Test func aReviewOpensOnItsFirstSetAndStepsThroughTheRest() async throws {
+    @Test func aReviewFramesItsFirstSetWithoutSelectingAndStepsThroughTheRest() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("change-sets-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -91,13 +91,16 @@ import Testing
         await session.openDocument(url: url)
         #expect(session.presentedError == nil)
         #expect(session.schemaReviewChangeSets == review.changeSets)
-        #expect(session.currentReviewChangeSetIndex == 0)
-        #expect(session.selectedGraphNodeIDs == ["audits", "logs"])
+        #expect(session.currentReviewChangeSetIndex == nil)
+        #expect(session.selectedGraphNodeIDs.isEmpty)
 
         // Cards list their keys and every changed field.
         #expect(session.schemaReviewCardColumns["users"] == ["id", "team_id", "email"])
         #expect(session.schemaReviewCardColumns["logs"]?.isSuperset(of: ["id", "audit_id"]) == true)
 
+        session.stepReviewChangeSet(by: 1)
+        #expect(session.currentReviewChangeSetIndex == 0)
+        #expect(session.selectedGraphNodeIDs == ["audits", "logs"])
         session.stepReviewChangeSet(by: 1)
         #expect(session.currentReviewChangeSetIndex == 1)
         #expect(session.selectedGraphNodeIDs == ["teams", "users"])

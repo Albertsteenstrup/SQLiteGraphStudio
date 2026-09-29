@@ -190,8 +190,8 @@ struct SchemaReviewLensTests {
     @Test func aReviewOpensOnItsFirstConnectedSetAndRevealsTheChosenTable() async throws {
         let (session, cleanup) = try await openReview(); defer { cleanup() }
         #expect(session.presentedError == nil && session.schemaReview != nil)
-        // The graph opens on the first connected set: the removed table and the hub it referenced.
-        #expect(session.selectedGraphNodeIDs == ["gone", "hub"] && session.currentReviewChangeSetIndex == 0)
+        // The camera opens on the first set without making its tables look selected.
+        #expect(session.selectedGraphNodeIDs.isEmpty && session.currentReviewChangeSetIndex == nil)
         #expect(session.schemaReviewChanges["gone"]?.kind == .removed)
 
         session.revealGraphNode("gone")

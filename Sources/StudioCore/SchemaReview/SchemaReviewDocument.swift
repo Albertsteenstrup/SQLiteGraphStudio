@@ -148,10 +148,8 @@ public struct SchemaTableChange: Sendable, Identifiable {
 
     /// The table's fields in review reading order: primary keys, then foreign keys, then
     /// every other changed field, then the rest, each group keeping its own order. Changed
-    /// foreign keys lead their group. When keys and changes would not all fit in `visibleRows`
-    /// (a card's visible rows), changed fields move up to follow the primary key so they
-    /// always stay in view.
-    func reviewColumns(foreignKeys: Set<String>, visibleRows: Int = 7) -> [SchemaReviewSnapshot.Column] {
+    /// foreign keys lead their group. The same order is used in graph cards and table details.
+    func reviewColumns(foreignKeys: Set<String>) -> [SchemaReviewSnapshot.Column] {
         let columns = Array(unionTable.columns.enumerated())
         let isChanged = { (column: SchemaReviewSnapshot.Column) in columnKind(column.name) != .unchanged }
         let primary = columns.filter { $0.element.primaryKeyOrdinal > 0 }
@@ -161,10 +159,7 @@ public struct SchemaTableChange: Sendable, Identifiable {
         let keyNames = Set((primary + foreign).map(\.element.name))
         let changed = columns.filter { !keyNames.contains($0.element.name) && isChanged($0.element) }
         let rest = columns.filter { !keyNames.contains($0.element.name) && !isChanged($0.element) }
-        let ordered = primary.count + foreign.count + changed.count > visibleRows
-            ? primary + changed + foreign + rest
-            : primary + foreign + changed + rest
-        return ordered.map(\.element)
+        return (primary + foreign + changed + rest).map(\.element)
     }
 
     /// `unionTable` with its fields in review reading order.

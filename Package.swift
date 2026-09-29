@@ -39,7 +39,10 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ],
-            path: "Sources/StudioCore"
+            path: "Sources/StudioCore",
+            resources: [
+                .process("Resources/AgentMarks.xcassets"),
+            ]
         ),
         .executableTarget(
             name: "SQLiteGraphStudio",
