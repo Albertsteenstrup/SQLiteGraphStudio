@@ -4,7 +4,7 @@ import Testing
 
 @MainActor
 struct GraphInteractionGeometryTests {
-    @Test func fullModelKeepsTableCardsAtIntermediateZoomWithoutChangingOtherViews() {
+    @Test func schemaReviewsKeepTableCardsAtIntermediateZoom() {
         let cache = GraphInteractionGeometryCache()
         let frames = [
             "users": CGRect(x: 20, y: 20, width: 80, height: 40),
@@ -22,7 +22,7 @@ struct GraphInteractionGeometryTests {
         #expect(ordinary.renderPlan.markerIDs == ["users", "sessions"])
         #expect(ordinary.renderPlan.detailIDs.isEmpty)
 
-        let fullModel = snapshot(detailZoom: GraphExploration.fullModelDetailZoom)
+        let fullModel = snapshot(detailZoom: GraphExploration.reviewDetailZoom)
         #expect(fullModel.renderPlan.detailIDs == ["users", "sessions"])
         #expect(fullModel.renderPlan.markerIDs.isEmpty)
         #expect(fullModel.revision > ordinary.revision)

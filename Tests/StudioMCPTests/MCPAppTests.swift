@@ -66,6 +66,10 @@ final class MCPAppTests: XCTestCase {
         XCTAssertEqual(content["mimeType"] as? String, "text/html;profile=mcp-app")
         XCTAssertEqual(((content["_meta"] as? [String: Any])?["ui"] as? [String: Any])?["prefersBorder"] as? Bool, true)
         let html = try XCTUnwrap(content["text"] as? String)
+        XCTAssertNotEqual(MCPAppResources.reviewURI(for: html), MCPAppResources.reviewURI(for: html + "\n<!-- new viewer -->"),
+                          "A new viewer must have its own host cache entry")
+        XCTAssertNotNil(MCPAppResources.read("ui://sqlite-graph-studio/schema-review.html"),
+                        "Previously saved tool metadata can still load the current viewer")
         for handshake in ["ui/initialize", "ui/notifications/initialized", "ui/notifications/tool-result", "ui/notifications/size-changed"] {
             XCTAssertTrue(html.contains(handshake), handshake)
         }
@@ -319,6 +323,29 @@ final class MCPAppTests: XCTestCase {
         XCTAssertEqual((actionProperties["table"] as? [String: Any])?["type"] as? String, "string")
     }
 
+    func testFullModelNavigationPassesThroughMCPValidation() throws {
+        try write(review(), to: "change.sgreview")
+        let renderer = renderer(executable: try fakeRenderer())
+        defer { renderer.stop() }
+        let server = MCPServer(dispatcher: LocalMCPToolDispatcher(transport: UnusedTransport(), renderer: renderer,
+                                                                  openDocuments: { _ in }),
+                               workingDirectory: directory.path)
+        _ = server.handleMessage(try json(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": [
+            "protocolVersion": "2025-11-25", "clientInfo": ["name": "embedded-view", "version": "1"],
+        ]]))
+        _ = server.handleMessage(try json(["jsonrpc": "2.0", "method": "notifications/initialized"]))
+        let reply = object(server.handleMessage(try json(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": [
+            "name": "studio_review_frame", "arguments": [
+                "path": "change.sgreview", "view_id": "card-zero", "view_set": -1,
+                "actions": [["type": "set", "index": -1]],
+            ],
+        ]])))
+        XCTAssertNil(reply["error"], "View 0 must reach the renderer rather than fail schema validation")
+        let result = try XCTUnwrap(reply["result"] as? [String: Any])
+        XCTAssertEqual(result["isError"] as? Bool, false)
+        XCTAssertEqual((result["content"] as? [[String: Any]])?.first?["data"] as? String, "AAAA")
+    }
+
     func testOpenViewCannotMixAnOlderSummaryWithAReplacedReview() throws {
         let path = "change.sgreview"
         try write(review(), to: path)
@@ -410,6 +437,19 @@ final class MCPAppTests: XCTestCase {
         let rebuilt = try SchemaReviewRenderer.clone(of: source, in: clones)
         XCTAssertNotEqual(rebuilt, clone)
         XCTAssertFalse(FileManager.default.fileExists(atPath: clone.path), "Clones of earlier builds are removed")
+    }
+
+    func testRunningRendererReloadsWhenTheInstalledAppChanges() throws {
+        let executable = try fakeRenderer()
+        let renderer = renderer(executable: executable)
+        defer { renderer.stop() }
+        let request: [String: Any] = ["cmd": "render", "path": "/tmp/review.sgreview"]
+        XCTAssertEqual(try renderer.request(request)["image"] as? String, "AAAA")
+        let updated = try String(contentsOf: executable, encoding: .utf8).replacingOccurrences(of: "AAAA", with: "BBBB")
+        try updated.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        XCTAssertEqual(try renderer.request(request)["image"] as? String, "BBBB",
+                       "The next interaction should use the newly installed renderer")
     }
 
     func testOpensTheReviewInGraphStudioBesideItsOriginalSchema() throws {

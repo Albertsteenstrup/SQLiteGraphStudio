@@ -70,10 +70,14 @@ public enum SchemaReviewRenderSession {
 
 @MainActor
 final class SchemaReviewRenderServer {
+    private struct ReviewKey: Hashable {
+        let path: String
+        let viewID: String
+    }
     /// Reviews kept open at once; the least recently shown one closes first.
     static let maximumOpenReviews = 3
-    private var reviews: [String: RenderedReview] = [:]
-    private var recent: [String] = []
+    private var reviews: [ReviewKey: RenderedReview] = [:]
+    private var recent: [ReviewKey] = []
     private(set) var lastRequest = ContinuousClock.now
 
     func handle(_ line: Data) async -> Data {
@@ -98,10 +102,13 @@ final class SchemaReviewRenderServer {
 
     private func perform(_ request: [String: Any]) async throws -> [String: Any] {
         guard let path = request["path"] as? String, !path.isEmpty else { throw RenderError("A review path is required.") }
+        let key = ReviewKey(path: path, viewID: request["view_id"] as? String ?? "")
+        let actions = request["actions"] as? [[String: Any]]
+            ?? (request["action"] as? [String: Any]).map { [$0] } ?? []
         switch request["cmd"] as? String {
         case "close":
-            reviews.removeValue(forKey: path)?.close()
-            recent.removeAll { $0 == path }
+            reviews.removeValue(forKey: key)?.close()
+            recent.removeAll { $0 == key }
             return [:]
         case "render":
             let version = try ReviewFileVersion(path: path)
@@ -112,27 +119,32 @@ final class SchemaReviewRenderServer {
             let clock = ContinuousClock()
             let started = clock.now
             let review: RenderedReview
-            if let existing = reviews[path], existing.fileVersion == version {
+            if let existing = reviews[key], existing.fileVersion == version {
                 review = existing
                 review.configure(size: size, dark: dark)
             } else {
-                reviews.removeValue(forKey: path)?.close()
+                reviews.removeValue(forKey: key)?.close()
                 review = try await RenderedReview(url: URL(fileURLWithPath: path), size: size, dark: dark,
                                                   fileVersion: version)
                 guard try ReviewFileVersion(path: path) == version else {
                     review.close()
                     throw RenderError("The review changed while it was opening. Retry the frame.")
                 }
-                reviews[path] = review
+                reviews[key] = review
+                // A renderer may restart or evict an idle iframe. Restore that iframe's
+                // view before applying its next gesture, without affecting other cards.
+                if let viewSet = request["view_set"] as? Int, viewSet != 0,
+                   !actions.contains(where: { ["set", "step"].contains($0["type"] as? String ?? "") }) {
+                    review.apply(["type": "set", "index": viewSet])
+                    await review.settle()
+                }
             }
-            recent.removeAll { $0 == path }
-            recent.append(path)
+            recent.removeAll { $0 == key }
+            recent.append(key)
             while recent.count > Self.maximumOpenReviews {
                 reviews.removeValue(forKey: recent.removeFirst())?.close()
             }
             let opened = clock.now
-            let actions = request["actions"] as? [[String: Any]]
-                ?? (request["action"] as? [String: Any]).map { [$0] } ?? []
             for action in actions.prefix(64) {
                 review.apply(action)
                 // Let each step land before the next: a click must hit the view the

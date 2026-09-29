@@ -61,9 +61,9 @@ struct SchemaReviewRendererTests {
                                             idleTimeout: 60)
         defer { renderer.stop() }
 
-        func frame(_ actions: [[String: Any]] = []) throws -> (image: NSBitmapImageRep, state: [String: Any]) {
+        func frame(_ actions: [[String: Any]] = [], viewID: String = "first-card") throws -> (image: NSBitmapImageRep, state: [String: Any]) {
             let result = SchemaReviewAppTools.frame(arguments: ["path": url.path, "width": 480, "height": 320, "scale": 1,
-                                                                "actions": actions],
+                                                                "actions": actions, "view_id": viewID, "view_set": 0],
                                                     workingDirectory: "/", renderer: renderer)
             try #require(result["isError"] as? Bool == false, "\(result["structuredContent"] ?? result)")
             let content = try #require((result["content"] as? [[String: Any]])?.first)
@@ -91,6 +91,12 @@ struct SchemaReviewRendererTests {
 
         let stepped = try frame([["type": "step", "direction": 1]])
         #expect(stepped.state["set"] as? Int == 1)
+
+        let other = try frame(viewID: "second-card")
+        #expect(other.state["set"] as? Int == 0, "Each embedded card opens at View 1")
+        let otherFullModel = try frame([["type": "set", "index": -1]], viewID: "second-card")
+        #expect(otherFullModel.state["set"] as? Int == -1)
+        #expect(try frame().state["set"] as? Int == 1, "Switching another card to View 0 must not move this card")
 
         let linked = try frame([["type": "select", "table": "users"]])
         #expect(linked.state["set"] as? Int == 0)

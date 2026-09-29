@@ -77,7 +77,7 @@ public struct SchemaGraphView: View {
 
     private var isLargeGraph: Bool { renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
     private var effectiveDetailZoom: CGFloat {
-        session.isSchemaReviewFullModelView ? GraphExploration.fullModelDetailZoom : GraphExploration.detailZoom
+        session.schemaReview != nil ? GraphExploration.reviewDetailZoom : GraphExploration.detailZoom
     }
     private var usesOverviewMarks: Bool {
         (isLargeGraph || (!session.isSchemaReviewFullModelView && session.graphNodeSizeMetric != .uniform))
@@ -680,7 +680,7 @@ public struct SchemaGraphView: View {
                 .zIndex(zIndex(for: node.id))
             }
 
-            if let reviewLens, zoom < GraphExploration.detailZoom {
+            if let reviewLens, zoom < effectiveDetailZoom {
                 Canvas { context, _ in
                     drawReviewNameLabels(in: &context, geometry: geometry, lens: reviewLens, viewport: CGRect(origin: .zero, size: size))
                 }
@@ -918,7 +918,7 @@ public struct SchemaGraphView: View {
     /// A click on a drawn table card.
     private func selectCard(_ nodeID: String) {
         if session.schemaReview != nil {
-            chooseReviewTable(nodeID, togglesChosenTable: zoom < GraphExploration.detailZoom)
+            chooseReviewTable(nodeID, togglesChosenTable: zoom < effectiveDetailZoom)
             return
         }
         session.notifyManualGraphInteraction()
@@ -1396,7 +1396,7 @@ public struct SchemaGraphView: View {
                                       onlyHighlighted: true, sampleLimit: nil, inkScale: 1)
         }
         plan.reviewLens = reviewLens
-        plan.hidesUnchangedRelations = reviewLens != nil && zoom < GraphExploration.detailZoom
+        plan.hidesUnchangedRelations = reviewLens != nil && zoom < effectiveDetailZoom
         return plan
     }
 

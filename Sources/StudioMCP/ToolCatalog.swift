@@ -24,6 +24,14 @@ public enum MCPToolCatalog {
         return entries.map { original in
             var entry = original
             let name = entry["name"] as? String ?? ""
+            if name == SchemaReviewInlineView.toolName {
+                var meta = entry["_meta"] as? [String: Any] ?? [:]
+                var ui = meta["ui"] as? [String: Any] ?? [:]
+                ui["resourceUri"] = MCPAppResources.schemaReviewURI
+                meta["ui"] = ui
+                meta["ui/resourceUri"] = MCPAppResources.schemaReviewURI
+                entry["_meta"] = meta
+            }
             // Tools answered by the helper itself need no coding-task context.
             let helperTools = ["studio_status", "studio_launch", "studio_connect_context",
                                SchemaReviewInlineView.toolName, SchemaReviewInlineView.contextToolName]

@@ -30,6 +30,7 @@ public final class SchemaReviewRenderer: @unchecked Sendable {
     private let cloneDirectory: URL
     private let idleTimeout: TimeInterval
     private var running: RunningRenderer?
+    private var runningVersion: ExecutableVersion?
     private var idleTimer: DispatchSourceTimer?
     private var nextRequestID = 1
 
@@ -92,11 +93,13 @@ public final class SchemaReviewRenderer: @unchecked Sendable {
     // MARK: Process lifecycle
 
     private func runningLocked() throws -> RunningRenderer {
-        if let running, running.isAlive { return running }
-        stopLocked()
         guard let executable = executableProvider() else {
             throw RendererError.unavailable("Graph Studio's renderer could not be found next to this helper or in an installed app.")
         }
+        let version = try ExecutableVersion(executable)
+        if let running, running.isAlive, runningVersion == version { return running }
+        // Installing a newer app must also update long-lived embedded viewers.
+        stopLocked()
         guard let slot = RendererSlot.acquire(in: slotDirectory, count: Self.slotCount) else {
             throw RendererError.busy("Graph Studio is already drawing reviews for \(Self.slotCount) other sessions.")
         }
@@ -104,6 +107,7 @@ public final class SchemaReviewRenderer: @unchecked Sendable {
             let clone = try Self.clone(of: executable, in: cloneDirectory)
             let renderer = try RunningRenderer(executable: clone, arguments: [Self.sessionFlag], slot: slot)
             running = renderer
+            runningVersion = version
             return renderer
         } catch {
             slot.release()
@@ -125,6 +129,27 @@ public final class SchemaReviewRenderer: @unchecked Sendable {
         idleTimer = nil
         running?.stop()
         running = nil
+        runningVersion = nil
+    }
+
+    private struct ExecutableVersion: Equatable {
+        let path: String
+        let inode: UInt64
+        let size: UInt64
+        let modified: Date
+
+        init(_ executable: URL) throws {
+            let source = executable.resolvingSymlinksInPath()
+            let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+            path = source.path
+            inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+            size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            modified = attributes[.modificationDate] as? Date ?? .distantPast
+        }
+
+        var cacheKey: String {
+            "\(inode)-\(size)-\(modified.timeIntervalSince1970.bitPattern)"
+        }
     }
 
     /// macOS ties a running process to an app by its executable file: a renderer started from
@@ -134,11 +159,9 @@ public final class SchemaReviewRenderer: @unchecked Sendable {
     /// APFS. It is made once per app build; clones of other builds are removed.
     static func clone(of executable: URL, in directory: URL) throws -> URL {
         let source = executable.resolvingSymlinksInPath()
-        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-        let key = [(attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0, size,
-                   UInt64(max(0, (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0))]
-            .map(String.init).joined(separator: "-")
+        let version = try ExecutableVersion(source)
+        let size = version.size
+        let key = version.cacheKey
         let folder = directory.appendingPathComponent(key, isDirectory: true)
         let destination = folder.appendingPathComponent(rendererName)
         if let existing = try? FileManager.default.attributesOfItem(atPath: destination.path),

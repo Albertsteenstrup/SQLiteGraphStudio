@@ -21,6 +21,8 @@ public enum SchemaReviewAppTools {
                                                             current: SchemaReviewInlineView.fileRevision(at: url))
             }
             var request: [String: Any] = ["cmd": "render", "path": url.path]
+            if let viewID = arguments["view_id"] as? String { request["view_id"] = viewID }
+            if let viewSet = arguments["view_set"] as? NSNumber { request["view_set"] = viewSet }
             // Without an appearance the frame follows the system, as Graph Studio does.
             if let appearance = arguments["appearance"] as? String { request["appearance"] = appearance }
             for key in ["width", "height", "scale"] {

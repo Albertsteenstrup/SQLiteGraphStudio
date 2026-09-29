@@ -2889,6 +2889,16 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "view_id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Unique embedded-view ID; keeps this card's camera and selected view independent from other cards for the same review."
+        },
+        "view_set": {
+          "type": "integer",
+          "minimum": -1,
+          "description": "Current zero-based change set, or -1 for View 0; restores the view if its renderer session was evicted."
+        },
         "path": {
           "type": "string",
           "minLength": 1,
@@ -2983,7 +2993,8 @@
               },
               "index": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": -1,
+                "description": "Zero-based change set, or -1 for View 0 (the full model after changes)."
               }
             },
             "required": [

@@ -55,9 +55,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .dot.removed { border: 2px dashed var(--del); }
 .sets { display: inline-flex; align-items: center; gap: 8px; }
 .position { color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.position[aria-busy="true"]::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 6px; border: 2px solid var(--border); border-top-color: var(--text-2); border-radius: 50%; vertical-align: -1px; animation: spin 0.8s linear infinite; }
 .toast { color: var(--text-2); font-size: 12px; margin: -2px 0 6px; }
 .toast.error { color: var(--del); }
-.canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--bg); overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
+.canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: #f5f7fa; overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
 .canvas.panning { cursor: grabbing; }
 .canvas img.frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
 .canvas svg { display: block; width: 100%; height: 100%; }
@@ -437,13 +438,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   }
   function step(direction) {
     if (!state.mode || state.setCount === 0) return;
-    if (state.mode === exact) { exact.act({ type: "step", direction }); return; }
     const target = state.set === null ? (direction > 0 ? 0 : state.setCount - 1) : state.set + direction;
     if (target >= -1 && target < state.setCount) showSet(target);
   }
   function showSet(index) {
     if (!state.mode) return;
-    if (state.mode === exact) exact.act({ type: "set", index });
+    if (state.mode === exact) exact.navigate(index);
     else simple.showSet(index);
   }
 
@@ -654,8 +654,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 
   // ---- Graph Studio's own graph, drawn by its hidden renderer ----
   const exact = (() => {
+    const viewID = window.crypto?.randomUUID?.() || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let image = null, inFlight = false, again = false, queued = [], local = IDENTITY, sent = IDENTITY;
     let frameSize = null, failures = 0, resizeTimer = 0, generation = 0;
+    let navigation = 0;
+    const viewFrames = new Map();
 
     function reset() {
       generation += 1;
@@ -669,6 +672,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       sent = IDENTITY;
       frameSize = null;
       failures = 0;
+      navigation = 0;
+      viewFrames.clear();
+      $("position").removeAttribute("aria-busy");
     }
 
     function start() {
@@ -685,6 +691,35 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       return { width: Math.round(canvas.clientWidth), height: Math.round(canvas.clientHeight) };
     }
     function act(action) { queued.push(action); flush(); }
+    function frameKey(index, size) { return `${index}:${size.width}x${size.height}`; }
+    function replaceFrame(next, size) {
+      const canvas = $("canvas");
+      if (image !== next) {
+        if (image) canvas.replaceChild(next, image); else canvas.insertBefore(next, canvas.firstChild);
+        image = next;
+      }
+      frameSize = size;
+      $("loading").hidden = true;
+    }
+    function navigate(index) {
+      if (index < -1 || index >= state.setCount) return;
+      navigation += 1;
+      // A new view supersedes earlier navigation and unfinished camera gestures.
+      // Send an absolute destination so rapid clicks cannot replay a long queue of steps.
+      queued = [{ type: "set", index }];
+      local = IDENTITY;
+      state.frameSelection = [];
+      state.showGraphDetail = false;
+      state.focusTable = null;
+      state.focusRelation = null;
+      $("detail").hidden = true;
+      setSets(state.setCount, index);
+      $("position").setAttribute("aria-busy", "true");
+      const size = viewport();
+      const cached = viewFrames.get(frameKey(index, size));
+      if (cached) replaceFrame(cached, size);
+      flush();
+    }
     function gesture(transform) {
       local = compose(transform, local);
       flush();
@@ -708,13 +743,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       sent = local;
       inFlight = true;
       const requestGeneration = generation;
+      const requestNavigation = navigation;
       const size = viewport();
       // The frame keeps Graph Studio's own look, which follows the system appearance.
-      const args = { path: state.model.path, revision: state.model.revision, width: size.width, height: size.height,
+      const args = { path: state.model.path, revision: state.model.revision, view_id: viewID, view_set: state.set,
+                     width: size.width, height: size.height,
                      scale: Math.min(2, Math.max(1, window.devicePixelRatio || 1)) };
       if (actions.length) args.actions = actions;
       callTool("studio_review_frame", args, 40000)
-        .then((result) => show(result, size, actions, requestGeneration))
+        .then((result) => show(result, size, actions, requestGeneration, requestNavigation))
         .then(() => { if (requestGeneration === generation) failures = 0; })
         .catch((error) => {
           if (requestGeneration !== generation) return;
@@ -723,6 +760,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
             showStatus(error.message, true);
             return;
           }
+          if (requestNavigation !== navigation) return;
           // The helper restarts a renderer that stopped; the simplified graph takes over
           // when it cannot draw at all.
           failures += 1;
@@ -736,8 +774,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
           if (state.mode === exact && (again || queued.length || !isIdentity(local))) flush();
         });
     }
-    async function show(result, size, actions, requestGeneration) {
-      if (requestGeneration !== generation) return;
+    async function show(result, size, actions, requestGeneration, requestNavigation) {
+      if (requestGeneration !== generation || requestNavigation !== navigation) return;
       const content = (Array.isArray(result.content) ? result.content : []).find((item) => item && item.type === "image");
       if (!content) throw new Error("The renderer returned no image.");
       const info = result.structuredContent || {};
@@ -746,17 +784,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       next.alt = "";
       next.src = `data:${content.mimeType};base64,${content.data}`;
       await next.decode();
-      if (requestGeneration !== generation || state.mode !== exact) return;
-      frameSize = { width: info.width || size.width, height: info.height || size.height };
+      if (requestGeneration !== generation || requestNavigation !== navigation || state.mode !== exact) return;
+      const renderedSize = { width: info.width || size.width, height: info.height || size.height };
       // The canvas can resize while the renderer is drawing. Keep the last frame
       // covering it until a correctly sized frame replaces it.
       // Gestures made while this frame was drawn go into the next renderer request.
       local = compose(local, inverse(sent));
       sent = IDENTITY;
-      const canvas = $("canvas");
-      if (image) canvas.replaceChild(next, image); else canvas.insertBefore(next, canvas.firstChild);
-      image = next;
-      $("loading").hidden = true;
+      replaceFrame(next, renderedSize);
+      if (actions.every((action) => action.type === "set" || action.type === "fit")) {
+        const key = frameKey(info.set, renderedSize);
+        viewFrames.delete(key);
+        viewFrames.set(key, next);
+        if (viewFrames.size > 8) viewFrames.delete(viewFrames.keys().next().value);
+      }
+      $("position").removeAttribute("aria-busy");
       if (Array.isArray(info.setTables)) {
         const key = info.setTables.map((ids) => ids.join("\u0000")).join("\u0001");
         if (key !== state.visibleSetKey) {
@@ -780,6 +822,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       const model = state.model;
       const requestGeneration = generation;
       state.mode = null;
+      $("position").removeAttribute("aria-busy");
       if (image) { image.remove(); image = null; }
       const reason = error && error.code === "RENDERER_BUSY"
         ? "Graph Studio is drawing reviews for other sessions, so this is a simplified view."
@@ -797,7 +840,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         });
     }
     return {
-      reset, start, act, refresh, resized,
+      reset, start, act, navigate, refresh, resized,
       pan: (dx, dy) => gesture(panBy(dx, dy)),
       zoom: (factor, point) => gesture(zoomAt(factor, point)),
       // The last frame stays still while its camera moves remotely. Map a click on

@@ -80,8 +80,86 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         try await waitUntil("document.getElementById('review').contentDocument.getElementById('detail').textContent.includes('quiet_field')", in: browser)
         _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('next').click(); true")
         try await waitUntil("document.getElementById('review').contentDocument.getElementById('position').textContent.includes('View 1 of 1')", in: browser)
-        let actions = try await browser.evaluateJavaScript("window.frameActions.filter(action => action.type === 'step').map(action => action.direction)") as? [Int]
-        XCTAssertEqual(actions, [-1, 1])
+        let actions = try await browser.evaluateJavaScript("window.frameActions.filter(action => action.type === 'set').map(action => action.index)") as? [Int]
+        XCTAssertEqual(actions, [-1, 0])
+    }
+
+    func testRapidNavigationSkipsStaleFramesAndRestoresVisitedViewsImmediately() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let host = """
+        <!doctype html><html><body>
+        <script>
+        window.currentSet = 0;
+        window.frameRequests = [];
+        window.pendingFrames = [];
+        window.releaseFrame = () => window.pendingFrames.shift()?.();
+        window.addEventListener('message', event => {
+          const message = event.data;
+          if (!message || message.jsonrpc !== '2.0') return;
+          if (message.method === 'ui/initialize') {
+            event.source.postMessage({ jsonrpc:'2.0', id:message.id, result:{ hostContext:{ theme:'light' } } }, '*');
+          } else if (message.method === 'tools/call' && message.params.name === 'studio_review_frame') {
+            const args = message.params.arguments;
+            window.frameRequests.push(args);
+            for (const action of args.actions || []) if (action.type === 'set') window.currentSet = action.index;
+            const renderedSet = window.currentSet;
+            const fill = ['#ddd','#fff','#b8cfff','#cfffba'][renderedSet + 1];
+            const data = btoa(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1' fill='${fill}'/></svg>`);
+            const send = () => event.source.postMessage({ jsonrpc:'2.0', id:message.id, result:{
+              isError:false, content:[{ type:'image', mimeType:'image/svg+xml', data }],
+              structuredContent:{ width:args.width, height:args.height, set:renderedSet,
+                setTables:[['users'],['audits'],['tokens']], selection:[] }
+            } }, '*');
+            if (window.frameRequests.length === 1) send(); else window.pendingFrames.push(send);
+          }
+        });
+        window.addEventListener('load', () => document.getElementById('review').contentWindow.postMessage({
+          jsonrpc:'2.0', method:'ui/notifications/tool-result', params:{ isError:false, content:[],
+            structuredContent:{ format:'sqlite-graph-studio/schema-review-view', path:'/tmp/navigation.sgreview',
+              revision:'test', summary:{ modifiedTables:3 },
+              changeSets:['users','audits','tokens'].map(label => ({ label, tables:1, kind:'modified' })) }
+          }
+        }, '*'), { once:true });
+        </script>
+        <iframe id="review" style="display:block;width:640px;height:600px;border:0" srcdoc="\(escaped)"></iframe>
+        </body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 600))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("!!document.getElementById('review')?.contentDocument?.querySelector('img.frame')", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          window.firstFrame = document.getElementById('review').contentDocument.querySelector('img.frame').src;
+          document.getElementById('review').contentDocument.getElementById('prev').click(); true
+        """)
+        try await waitUntil("window.frameRequests.length === 2", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          document.getElementById('review').contentDocument.getElementById('next').click();
+          document.getElementById('review').contentDocument.getElementById('next').click(); true
+        """)
+        let destination = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('position').textContent") as? String
+        XCTAssertEqual(destination, "View 2 of 3 · Changes", "Navigation responds while the earlier frame is pending")
+        _ = try await browser.evaluateJavaScript("window.releaseFrame(); true")
+        try await waitUntil("window.frameRequests.length === 3", in: browser)
+        let queued = try await browser.evaluateJavaScript("window.frameRequests[2].actions.map(action => action.index)") as? [Int]
+        XCTAssertEqual(queued, [1], "Only the latest destination should be sent")
+        let staleLabel = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('position').textContent") as? String
+        XCTAssertEqual(staleLabel, destination, "An old response must not put the reader back in View 0")
+        _ = try await browser.evaluateJavaScript("window.releaseFrame(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('img.frame').src !== window.firstFrame", in: browser)
+        let restored = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.getElementById('prev').click();
+            return doc.querySelector('img.frame').src === window.firstFrame; })()
+        """) as? Bool
+        XCTAssertEqual(restored, true, "A visited view should appear before the next renderer response")
+        try await waitUntil("window.frameRequests.length === 4", in: browser)
+        let isolated = try await browser.evaluateJavaScript("window.frameRequests.every(request => !!request.view_id && request.view_id === window.frameRequests[0].view_id)") as? Bool
+        XCTAssertEqual(isolated, true)
+        _ = try await browser.evaluateJavaScript("window.releaseFrame(); true")
     }
 
     func testResizingTheGraphNeverExposesTheCanvasBacking() async throws {
@@ -140,9 +218,10 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(try XCTUnwrap(coverage as? NSNumber).doubleValue, -1,
                                     "The last graph frame should cover the canvas until the resized frame arrives")
         let background = try await browser.evaluateJavaScript("""
+          document.getElementById('review').contentDocument.documentElement.style.setProperty('--color-background-primary', '#f6f5f1');
           getComputedStyle(document.getElementById('review').contentDocument.getElementById('canvas')).backgroundColor
         """) as? String
-        XCTAssertEqual(background, "rgb(255, 255, 255)", "The graph should not have a beige backing")
+        XCTAssertEqual(background, "rgb(245, 247, 250)", "The graph should not inherit the host's beige backing")
         try await waitUntil("window.frameRequests.some(request => request.height === \(enlargedHeight))", in: browser)
     }
 

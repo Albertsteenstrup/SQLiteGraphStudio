@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// MCP Apps views served by the helper. A tool names its view with
 /// `_meta.ui.resourceUri`; supporting hosts read the HTML through
@@ -6,7 +7,14 @@ import Foundation
 public enum MCPAppResources {
     public static let extensionIdentifier = "io.modelcontextprotocol/ui"
     public static let mimeType = "text/html;profile=mcp-app"
-    public static let schemaReviewURI = "ui://sqlite-graph-studio/schema-review.html"
+    private static let legacySchemaReviewURI = "ui://sqlite-graph-studio/schema-review.html"
+    /// Hosts cache a view by URI. A new build must not reuse an older viewer's HTML.
+    public static let schemaReviewURI = reviewURI(for: schemaReviewHTML ?? "")
+
+    static func reviewURI(for html: String) -> String {
+        let revision = SHA256.hash(data: Data(html.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+        return "ui://sqlite-graph-studio/schema-review-\(revision).html"
+    }
 
     public static var resources: [[String: Any]] {
         [[
@@ -20,7 +28,8 @@ public enum MCPAppResources {
 
     /// The `resources/read` result for `uri`, or nil when the helper serves no such view.
     public static func read(_ uri: String) -> [String: Any]? {
-        guard uri == schemaReviewURI, let html = schemaReviewHTML else { return nil }
+        guard uri == schemaReviewURI || uri == legacySchemaReviewURI,
+              let html = schemaReviewHTML else { return nil }
         return [
             "contents": [[
                 "uri": uri,
