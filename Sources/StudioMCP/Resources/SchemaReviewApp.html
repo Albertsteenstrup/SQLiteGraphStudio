@@ -57,9 +57,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .position { color: var(--text-2); font-size: 12px; white-space: nowrap; }
 .toast { color: var(--text-2); font-size: 12px; margin: -2px 0 6px; }
 .toast.error { color: var(--del); }
-.canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--bg-2); overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
+.canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--bg); overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
 .canvas.panning { cursor: grabbing; }
-.canvas img.frame { position: absolute; left: 0; top: 0; pointer-events: none; }
+.canvas img.frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
 .canvas svg { display: block; width: 100%; height: 100%; }
 .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 12.5px; }
 .loading::before { content: ""; width: 12px; height: 12px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--text-2); animation: spin 0.8s linear infinite; }
@@ -713,8 +713,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       await next.decode();
       if (requestGeneration !== generation || state.mode !== exact) return;
       frameSize = { width: info.width || size.width, height: info.height || size.height };
-      next.style.width = frameSize.width + "px";
-      next.style.height = frameSize.height + "px";
+      // The canvas can resize while the renderer is drawing. Keep the last frame
+      // covering it until a correctly sized frame replaces it.
       // Gestures made while this frame was drawn go into the next renderer request.
       local = compose(local, inverse(sent));
       sent = IDENTITY;
@@ -1167,11 +1167,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     const width = canvas.clientWidth || 640;
     canvas.style.height = Math.round(Math.min(520, Math.max(340, width * 0.64))) + "px";
   }
-  let lastWidth = 0;
+  let lastWidth = 0, lastHeight = 0;
   new ResizeObserver(() => {
-    if (!state.mode || canvas.clientWidth === lastWidth) return;
-    lastWidth = canvas.clientWidth;
-    sizeCanvas();
+    if (!state.mode) return;
+    const width = canvas.clientWidth;
+    if (width !== lastWidth) sizeCanvas();
+    const height = canvas.clientHeight;
+    if (width === lastWidth && height === lastHeight) return;
+    lastWidth = width;
+    lastHeight = height;
     state.mode.resized();
   }).observe(canvas);
 })();

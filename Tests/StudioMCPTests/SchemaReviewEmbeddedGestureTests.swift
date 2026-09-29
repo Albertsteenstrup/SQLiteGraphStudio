@@ -6,6 +6,68 @@ import XCTest
 /// Exercises the HTML served to MCP App hosts with delayed frame replies.
 @MainActor
 final class SchemaReviewEmbeddedGestureTests: XCTestCase {
+    func testResizingTheGraphNeverExposesTheCanvasBacking() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let frameData = Data("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1' preserveAspectRatio='none'><rect width='1' height='1' fill='#f5f6f7'/></svg>".utf8).base64EncodedString()
+        let host = """
+        <!doctype html><html><body style="margin:0">
+        <script>
+        window.frameRequests = [];
+        window.addEventListener("message", event => {
+          const message = event.data;
+          if (!message || message.jsonrpc !== "2.0") return;
+          if (message.method === "ui/initialize") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: { hostContext: { theme: "light" } } }, "*");
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_frame") {
+            const args = message.params.arguments;
+            window.frameRequests.push(args);
+            if (window.frameRequests.length === 1) event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data: "\(frameData)" }],
+              structuredContent: { width: args.width, height: args.height, sets: 1,
+                setTables: [["users"]], set: 0, selection: [] }
+            } }, "*");
+          }
+        });
+        window.addEventListener("load", () => document.getElementById("review").contentWindow.postMessage({
+          jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { isError: false, content: [],
+            structuredContent: { format: "sqlite-graph-studio/schema-review-view", path: "/tmp/resize.sgreview",
+              revision: "test", summary: { modifiedTables: 1 },
+              changeSets: [{ label: "users", tables: 1, kind: "modified" }] } }
+        }, "*"), { once: true });
+        </script>
+        <iframe id="review" style="display:block;width:640px;height:800px;border:0" srcdoc="\(escaped)"></iframe>
+        </body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 800))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("!!document.getElementById('review')?.contentDocument?.querySelector('img.frame')", in: browser)
+        let size = try await browser.evaluateJavaScript("""
+          (() => { const canvas = document.getElementById('review').contentDocument.getElementById('canvas');
+            const original = canvas.clientHeight;
+            canvas.style.height = (original + 180) + 'px';
+            return canvas.clientHeight; })()
+        """)
+        let enlargedHeight = try XCTUnwrap(size as? NSNumber).intValue
+        let coverage = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            const canvas = doc.getElementById('canvas');
+            const image = canvas.querySelector('img.frame');
+            return image.getBoundingClientRect().bottom - (canvas.getBoundingClientRect().bottom - canvas.clientTop); })()
+        """)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(coverage as? NSNumber).doubleValue, -1,
+                                    "The last graph frame should cover the canvas until the resized frame arrives")
+        let background = try await browser.evaluateJavaScript("""
+          getComputedStyle(document.getElementById('review').contentDocument.getElementById('canvas')).backgroundColor
+        """) as? String
+        XCTAssertEqual(background, "rgb(255, 255, 255)", "The graph should not have a beige backing")
+        try await waitUntil("window.frameRequests.some(request => request.height === \(enlargedHeight))", in: browser)
+    }
+
     func testNarrativeLinksAndCollapsingShrinksTheEmbeddedView() async throws {
         let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
         let escaped = html
