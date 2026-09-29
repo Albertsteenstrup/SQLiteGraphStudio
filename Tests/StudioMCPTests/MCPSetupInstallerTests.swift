@@ -4,6 +4,27 @@ import XCTest
 @testable import StudioMCP
 
 final class MCPSetupInstallerTests: XCTestCase {
+    func testDiagnoserRejectsAnOlderHelperWithoutInlineReview() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("StudioMCP")
+        let replies = [
+            #"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}"#,
+            #"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"studio_status"}]}}"#,
+            #"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Ready"}]}}"#,
+        ]
+        let script = "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "
+            + replies.map { "'\($0)'" }.joined(separator: " ") + "\n"
+        try Data(script.utf8).write(to: helper)
+        XCTAssertEqual(chmod(helper.path, 0o755), 0)
+
+        let result = SystemMCPSetupHelperDiagnoser().diagnose(
+            helperPath: helper.path, workingDirectory: directory
+        )
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.statusSummary.contains("studio_show_review_inline"))
+    }
+
     func testClientCommandsPreserveExecutableArgumentAndSupportProjectScope() {
         let path = "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
         XCTAssertEqual(MCPSetupInstaller.addArguments(for: .codex, executablePath: path), [

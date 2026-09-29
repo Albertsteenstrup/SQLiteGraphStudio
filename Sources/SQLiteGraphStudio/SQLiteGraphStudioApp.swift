@@ -22,6 +22,7 @@ private final class StudioApplicationState {
     var configured = false
     var setupPreviewRequestID = UUID()
     @ObservationIgnored private var documentOpenTask: Task<Void, Never>?
+    @ObservationIgnored private let firstRunSetup = CodingAgentFirstRunSetup()
 
     init() {
         PreferenceDomainMigration.migrateIfNeeded()
@@ -56,6 +57,33 @@ private final class StudioApplicationState {
                 guard self?.setupSheetPresented == true else { return }
                 self?.setupPreviewLoading = false
                 self?.setupPreview = preview
+            }
+        }
+    }
+
+    func offerCodingAgentSetupOnFirstLaunch() {
+        guard firstRunSetup.shouldCheck, !setupSheetPresented else { return }
+        let requestID = setupPreviewRequestID
+        Task.detached { [weak self] in
+            let preview = MCPSetupInstaller.previewFromAppBundle(scope: .user)
+            await MainActor.run {
+                guard let self, !self.setupSheetPresented,
+                      self.setupPreviewRequestID == requestID else { return }
+                switch self.firstRunSetup.decision(for: preview) {
+                case .review:
+                    self.firstRunSetup.markReviewed()
+                    self.setupScope = .user
+                    self.setupProjectDirectory = nil
+                    self.setupPreviewRequestID = UUID()
+                    self.setupPreview = preview
+                    self.setupReport = nil
+                    self.setupPreviewLoading = false
+                    self.setupSheetPresented = true
+                case .complete:
+                    self.firstRunSetup.markReviewed()
+                case .deferUntilClientAvailable:
+                    break
+                }
             }
         }
     }
@@ -302,6 +330,7 @@ struct SQLiteGraphStudioApp: App {
 
         let launchURLs = LaunchRequestResolver.databaseURLs(fromArguments: ProcessInfo.processInfo.arguments)
         state.enqueueOpenDocuments(launchURLs)
+        state.offerCodingAgentSetupOnFirstLaunch()
     }
 }
 

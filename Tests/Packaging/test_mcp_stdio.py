@@ -42,7 +42,21 @@ class MCPInteractiveStdioTests(unittest.TestCase):
             }) + "\n")
             process.stdin.flush()
             discovered = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-            self.assertEqual(len(discovered["result"]["tools"]), 62)
+            tools = {tool["name"]: tool for tool in discovered["result"]["tools"]}
+            self.assertEqual(len(tools), 66)
+            review = tools["studio_show_review_inline"]
+            self.assertEqual(
+                review["_meta"]["ui"]["resourceUri"],
+                "ui://sqlite-graph-studio/schema-review.html",
+            )
+            resource = request({
+                "jsonrpc": "2.0", "id": 3, "method": "resources/read",
+                "params": {"uri": "ui://sqlite-graph-studio/schema-review.html"},
+            })
+            self.assertEqual(
+                resource["result"]["contents"][0]["mimeType"],
+                "text/html;profile=mcp-app",
+            )
         finally:
             process.stdin.close()
             try:

@@ -328,12 +328,13 @@ public struct SystemMCPSetupHelperDiagnoser: MCPSetupHelperDiagnosing {
             guard let listing = responses.first(where: { ($0["id"] as? Int) == 2 })?["result"] as? [String: Any],
                   let tools = listing["tools"] as? [[String: Any]],
                   tools.contains(where: { $0["name"] as? String == "studio_status" }),
+                  tools.contains(where: { $0["name"] as? String == "studio_show_review_inline" }),
                   let statusResponse = responses.first(where: { ($0["id"] as? Int) == 3 })?["result"] as? [String: Any],
                   statusResponse["isError"] as? Bool != true else {
                 return MCPSetupVerification(
                     succeeded: false,
                     discoveredToolCount: 0,
-                    statusSummary: "The helper did not complete MCP tool discovery and the read-only studio_status call."
+                    statusSummary: "The helper did not expose studio_status and studio_show_review_inline or complete the read-only studio_status call."
                 )
             }
             let content = statusResponse["content"] as? [[String: Any]] ?? []
