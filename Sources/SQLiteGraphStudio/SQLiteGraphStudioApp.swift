@@ -71,7 +71,7 @@ private final class StudioApplicationState {
                       self.setupPreviewRequestID == requestID else { return }
                 switch self.firstRunSetup.decision(for: preview) {
                 case .review:
-                    self.firstRunSetup.markReviewed()
+                    self.firstRunSetup.markReviewed(for: preview)
                     self.setupScope = .user
                     self.setupProjectDirectory = nil
                     self.setupPreviewRequestID = UUID()
@@ -80,7 +80,7 @@ private final class StudioApplicationState {
                     self.setupPreviewLoading = false
                     self.setupSheetPresented = true
                 case .complete:
-                    self.firstRunSetup.markReviewed()
+                    self.firstRunSetup.markReviewed(for: preview)
                 case .deferUntilClientAvailable:
                     break
                 }
