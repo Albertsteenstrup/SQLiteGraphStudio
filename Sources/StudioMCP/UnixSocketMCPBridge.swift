@@ -47,11 +47,24 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
                 timeoutMilliseconds: min(max(wait, 1_000), 30_000),
                 foreground: foreground
             )
-        case SchemaReviewInlineView.toolName:
-            // Rendered by the host from the file alone; the app is never contacted.
-            return SchemaReviewInlineView.result(
+        case SchemaReviewInlineView.contextToolName:
+            return SchemaReviewInlineView.explanationContext(
                 path: call.arguments["path"] as? String ?? "",
                 workingDirectory: call.workingDirectory
+            )
+        case SchemaReviewInlineView.toolName:
+            // Rendered by the host from the file alone; the app is never contacted.
+            if call.arguments["explanations"] != nil && !(call.arguments["explanations"] is [[String: Any]]) {
+                let message = "Explanations must be an array of change-set paragraphs."
+                return ["content": [["type": "text", "text": message]],
+                        "structuredContent": ["error": ["code": "INVALID_ARGUMENT", "message": message]],
+                        "isError": true]
+            }
+            return SchemaReviewInlineView.result(
+                path: call.arguments["path"] as? String ?? "",
+                workingDirectory: call.workingDirectory,
+                expectedRevision: call.arguments["revision"] as? String,
+                explanations: call.arguments["explanations"] as? [[String: Any]] ?? []
             )
         case SchemaReviewAppTools.frameToolName:
             // Drawn by a hidden renderer process, never by the reader's running app.

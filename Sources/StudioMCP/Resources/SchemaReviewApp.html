@@ -73,15 +73,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .changes summary::before { content: "›"; color: var(--text-3); font-size: 17px; line-height: 12px; transition: transform 0.15s; }
 .changes[open] summary::before { transform: rotate(90deg); }
 .changes-count { color: var(--text-3); font-size: 11px; font-weight: 400; }
-.changes-body { max-height: 260px; overflow-y: auto; border-top: 1px solid var(--border-2); padding: 4px 10px 8px; font-size: 12px; }
-.changes-body .change-table { padding: 6px 0; border-bottom: 1px solid var(--border-2); }
-.changes-body .change-table:last-child { border-bottom: 0; }
-.changes-body .change-fields, .changes-body .change-relations { display: flex; flex-wrap: wrap; gap: 4px 9px; margin-top: 3px; }
-.changes-body .change-fields > span, .changes-body .change-relations > span { overflow-wrap: anywhere; }
-.changes-body .change-relations { padding: 6px 0 2px; }
+.changes-body { max-height: 260px; overflow-y: auto; border-top: 1px solid var(--border-2); padding: 4px 12px 8px; font-size: 12.5px; }
+.changes-body p { margin: 7px 0; line-height: 1.55; overflow-wrap: anywhere; }
+.changes-body .story-set + .story-set { border-top: 1px solid var(--border-2); margin-top: 9px; padding-top: 5px; }
+.changes-body .story-heading { color: var(--text-3); font-size: 11px; font-weight: 600; }
 .changes-body .muted { color: var(--text-3); }
-.changes-body .jump, .changes-body .more { padding: 0; border: 0; background: none; color: var(--text-2); font: inherit; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 2px; cursor: pointer; }
-.changes-body .jump:hover, .changes-body .more:hover { color: var(--text); background: none; text-decoration-color: currentColor; }
+.changes-body .jump { padding: 0; border: 0; background: none; color: var(--text-2); font: inherit; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 2px; cursor: pointer; }
+.changes-body .jump:hover { color: var(--text); background: none; text-decoration-color: currentColor; }
 .changes-body .jump.k-added { color: var(--add); }
 .changes-body .jump.k-modified { color: var(--mod); }
 .changes-body .jump.k-removed { color: var(--del); }
@@ -131,6 +129,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .fields td.m { width: 18px; font-weight: 600; color: var(--text-3); }
 .fields td.n { width: 34%; }
 .fields tr.focused { background: var(--bg-2); }
+.detail .relation-row.focused { background: var(--bg-2); border-radius: 4px; padding: 2px 4px; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .k-added { color: var(--add) !important; }
 .k-modified { color: var(--mod) !important; }
@@ -257,8 +256,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   // `model` is the small overview; `detail` is fetched when the reader opens the change
   // summary or when the simplified graph needs its tables, fields, and relations.
   const state = { model: null, detail: null, tables: new Map(), labels: [], idSets: [], setCount: 0, set: null, mode: null,
-                  focusTable: null, frameSelection: [], showGraphDetail: false, outlineAll: false, allRelations: false,
-                  expandedFields: new Set(), visibleSetKey: "", detailError: null };
+                  focusTable: null, focusRelation: null, frameSelection: [], showGraphDetail: false,
+                  explanations: new Map(), visibleSetKey: "", detailError: null };
   let detailRequest = null;
 
   function applyHostContext(context) {
@@ -283,7 +282,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   let lastSize = "";
   function reportSize() {
     const width = Math.ceil(document.documentElement.scrollWidth);
-    const height = Math.ceil(document.documentElement.scrollHeight);
+    // The document is at least as tall as the host's last iframe size. Measure the
+    // content instead so closing the explanation can ask the host to shrink it.
+    const height = Math.ceil(document.body.getBoundingClientRect().height);
     const key = width + "x" + height;
     if (key === lastSize) return;
     lastSize = key;
@@ -338,12 +339,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     state.idSets = [];
     state.mode = null;
     state.focusTable = null;
+    state.focusRelation = null;
     state.frameSelection = [];
     state.showGraphDetail = false;
     state.visibleSetKey = "";
-    state.outlineAll = false;
-    state.allRelations = false;
-    state.expandedFields.clear();
+    state.explanations = new Map((Array.isArray(model.explanations) ? model.explanations : [])
+      .filter((item) => item && Number.isInteger(item.set) && Array.isArray(item.paragraphs))
+      .map((item) => [item.set, item.paragraphs]));
     detailRequest = null;
     state.labels = Array.isArray(model.changeSets) ? model.changeSets : [];
     $("status").hidden = true;
@@ -382,12 +384,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     $("next").disabled = state.set !== null && state.set + 1 >= count;
     $("position").textContent = state.set === null ? `${count} sets of changes` : `Changes ${state.set + 1} of ${count}`;
     if (previous !== state.set) {
-      state.outlineAll = false;
-      state.allRelations = false;
-      state.expandedFields.clear();
       const ids = state.set === null ? null : state.idSets[state.set];
       if (state.set === null || !state.focusTable || (ids && !ids.includes(state.focusTable))) {
         state.focusTable = null;
+        state.focusRelation = null;
         $("detail").hidden = true;
       }
       renderChanges();
@@ -478,21 +478,32 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     return state.set === null ? sets.flat() : (sets[state.set] || []);
   }
   function jumpLink(label, kind, tableID, fieldName) {
-    if (!state.tables.has(tableID)) return el("span", { class: "muted" }, label);
+    const table = state.tables.get(tableID);
+    if (!table || (fieldName && !(table.columns || []).some((column) => column.name === fieldName))) {
+      return el("span", { class: "muted" }, label);
+    }
     return el("a", {
       href: "#canvas", class: "jump" + (kind === "unchanged" ? "" : " k-" + kind),
       title: `${LABEL[kind]} ${fieldName ? "field " + fieldName + " in " : "table "}${tableName(tableID)}`,
       onclick: (event) => { event.preventDefault(); focusChange(tableID, fieldName); },
     }, label);
   }
-  function focusChange(tableID, fieldName) {
+  function relationLink(label, relation) {
+    return el("a", { href: "#detail", class: "jump k-" + kindOf(relation.kind),
+      title: `${LABEL[kindOf(relation.kind)]} relation from ${tableName(relation.source)} to ${tableName(relation.target)}`,
+      onclick: (event) => { event.preventDefault(); focusChange(relation.source, (relation.sourceColumns || [])[0], relation.id); },
+    }, label);
+  }
+  function focusChange(tableID, fieldName, relationID = null) {
     const table = state.tables.get(tableID);
     if (!table) return;
     state.focusTable = tableID;
+    state.focusRelation = relationID;
     if (state.mode === exact) { state.showGraphDetail = true; exact.act({ type: "select", table: tableID }); }
-    else if (state.mode === simple) simple.select(tableID, fieldName, false);
-    if (state.mode === exact) simple.renderDetail(table, fieldName);
-    const target = fieldName ? $("detail").querySelector("tr.focused") || $("detail") : $("canvas");
+    else if (state.mode === simple) simple.select(tableID, fieldName, false, relationID);
+    if (state.mode === exact) simple.renderDetail(table, fieldName, relationID);
+    const target = relationID ? $("detail").querySelector(".relation-row.focused") || $("detail")
+      : fieldName ? $("detail").querySelector("tr.focused") || $("detail") : $("canvas");
     requestAnimationFrame(() => target.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   }
   function syncExactDetail() {
@@ -501,8 +512,67 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       ? state.frameSelection[0] : null;
     if (selected !== state.focusTable) {
       state.focusTable = selected;
+      state.focusRelation = null;
       simple.renderDetail(selected ? state.tables.get(selected) : null);
     }
+  }
+  function fallbackParagraphs(index) {
+    const ids = state.idSets[index] || [];
+    const inSet = new Set(ids);
+    const paragraphs = [];
+    for (const table of ids.map((id) => state.tables.get(id)).filter(Boolean).slice(0, 12)) {
+      const kind = kindOf(table.kind);
+      const name = { text: table.name, table: table.id };
+      const fields = (table.columns || []).filter((column) => kindOf(column.kind) !== "unchanged");
+      const parts = kind === "added" ? [{ text: "A new " + (table.objectKind || "table") + " " }, name, { text: " is added" }]
+        : kind === "removed" ? [{ text: "The " + (table.objectKind || "table") + " " }, name, { text: " is removed" }]
+        : [{ text: "The " + (table.objectKind || "table") + " " }, name, { text: " changes" }];
+      if (fields.length) {
+        parts.push({ text: "; " });
+        for (const [fieldIndex, field] of fields.slice(0, 4).entries()) {
+          if (fieldIndex) parts.push({ text: fieldIndex === Math.min(fields.length, 4) - 1 ? " and " : ", " });
+          const fieldKind = kindOf(field.kind);
+          parts.push({ text: fieldKind === "added" ? "adds " : fieldKind === "removed" ? "removes " : "updates " });
+          parts.push({ text: field.name, table: table.id, field: field.name });
+          if (fieldKind === "modified" && field.before && field.description) parts.push({ text: ` from ${field.before} to ${field.description}` });
+        }
+        if (fields.length > 4) parts.push({ text: `, plus ${fields.length - 4} more fields` });
+      }
+      if ((table.definitionChanges || []).length) parts.push({ text: "; its definition also changes" });
+      parts.push({ text: "." });
+      paragraphs.push(parts);
+    }
+    const relations = (state.detail.relations || []).filter((relation) => kindOf(relation.kind) !== "unchanged"
+      && (inSet.has(relation.source) || inSet.has(relation.target)));
+    for (const relation of relations.slice(0, 8)) {
+      const kind = kindOf(relation.kind);
+      const parts = [{ text: "The " }, { text: "relation", relation: relation.id }, { text: " from " },
+        { text: tableName(relation.source), table: relation.source }];
+      const sourceField = (relation.sourceColumns || [])[0];
+      if (sourceField) parts.push({ text: "." }, { text: sourceField, table: relation.source, field: sourceField });
+      parts.push({ text: " to " }, { text: tableName(relation.target), table: relation.target });
+      const targetField = (relation.targetColumns || [])[0];
+      if (targetField) parts.push({ text: "." }, { text: targetField, table: relation.target, field: targetField });
+      parts.push({ text: kind === "added" ? " is added." : kind === "removed" ? " is removed." : " changes." });
+      paragraphs.push(parts);
+    }
+    if (ids.length > 12 || relations.length > 8) paragraphs.push([{ text: "Select a table in the graph to inspect the remaining changes." }]);
+    return paragraphs.length ? paragraphs : [[{ text: "No field or relation changes are shown in this set." }]];
+  }
+  function renderParagraph(parts) {
+    const paragraph = el("p", {});
+    for (const part of parts) {
+      if (!part || typeof part.text !== "string") continue;
+      if (part.relation) {
+        const relation = (state.detail.relations || []).find((entry) => entry.id === part.relation);
+        paragraph.append(relation ? relationLink(part.text, relation) : document.createTextNode(part.text));
+      } else if (part.table) {
+        const table = state.tables.get(part.table);
+        const field = part.field && (table?.columns || []).find((column) => column.name === part.field);
+        paragraph.append(jumpLink(part.text, field ? kindOf(field.kind) : kindOf(table?.kind), part.table, part.field));
+      } else paragraph.append(document.createTextNode(part.text));
+    }
+    return paragraph;
   }
   function renderChanges() {
     const box = $("changes");
@@ -519,54 +589,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       requestAnimationFrame(reportSize);
       return;
     }
-    const tables = ids.map((id) => state.tables.get(id)).filter((table) => table && !table.context);
-    const visibleTables = state.outlineAll ? tables : tables.slice(0, 24);
-    for (const table of visibleTables) {
-      const kind = kindOf(table.kind);
-      const row = el("div", { class: "change-table" },
-        jumpLink(table.name, kind, table.id),
-        el("span", { class: "muted" }, ` · ${LABEL[kind].toLowerCase()} ${table.objectKind || "table"}`));
-      const fields = (Array.isArray(table.columns) ? table.columns : []).filter((column) => kindOf(column.kind) !== "unchanged");
-      if (fields.length) {
-        const expanded = state.expandedFields.has(table.id);
-        const list = el("div", { class: "change-fields" });
-        for (const column of (expanded ? fields : fields.slice(0, 8))) {
-          const fieldKind = kindOf(column.kind);
-          const description = column.before ? `${column.before} → ${column.description || "removed"}` : column.description || "";
-          list.append(el("span", {}, jumpLink(`${MARK[fieldKind]} ${column.name}`, fieldKind, table.id, column.name),
-            description ? el("span", { class: "muted" }, ` · ${clip(description, 80)}`) : null));
-        }
-        if (!expanded && fields.length > 8) list.append(el("button", { type: "button", class: "more",
-          onclick: () => { state.expandedFields.add(table.id); renderChanges(); } }, `+${fields.length - 8} fields`));
-        row.append(list);
-      }
-      const definitions = Array.isArray(table.definitionChanges) ? table.definitionChanges : [];
-      if (definitions.length) row.append(el("div", { class: "muted" }, definitions.map((change) => `${MARK[kindOf(change.kind)]} ${change.label || "Definition"}`).join(" · ")));
-      body.append(row);
+    const indexes = state.set === null ? state.idSets.map((_, index) => index).slice(0, 6) : [state.set];
+    for (const index of indexes) {
+      const section = el("div", { class: "story-set" });
+      if (state.set === null) section.append(el("div", { class: "story-heading" }, state.labels[index]?.label || `Change set ${index + 1}`));
+      const paragraphs = state.explanations.get(index) || fallbackParagraphs(index);
+      for (const parts of paragraphs) if (Array.isArray(parts)) section.append(renderParagraph(parts));
+      body.append(section);
     }
-    if (!state.outlineAll && tables.length > visibleTables.length) body.append(el("button", { type: "button", class: "more",
-      onclick: () => { state.outlineAll = true; renderChanges(); } }, `Show ${tables.length - visibleTables.length} more tables`));
-    const omitted = Math.max(0, total - tables.length);
-    if (omitted) body.append(el("div", { class: "muted" }, `${omitted} more ${omitted === 1 ? "table" : "tables"} in this view; open in Graph Studio to inspect all changes.`));
-
-    const inView = new Set(ids);
-    const relations = (Array.isArray(state.detail.relations) ? state.detail.relations : [])
-      .filter((relation) => kindOf(relation.kind) !== "unchanged" && (inView.has(relation.source) || inView.has(relation.target)));
-    if (relations.length) {
-      const heading = el("div", { class: "muted" }, `${relations.length} ${relations.length === 1 ? "relation" : "relations"}`);
-      const list = el("div", { class: "change-relations" });
-      for (const relation of (state.allRelations ? relations : relations.slice(0, 16))) {
-        const kind = kindOf(relation.kind);
-        list.append(el("span", {}, `${MARK[kind]} `,
-          jumpLink(tableName(relation.source), kind, relation.source),
-          ` (${(relation.sourceColumns || []).join(", ")}) → `,
-          jumpLink(tableName(relation.target), kind, relation.target),
-          ` (${(relation.targetColumns || []).join(", ")})`));
-      }
-      body.append(heading, list);
-      if (!state.allRelations && relations.length > 16) body.append(el("button", { type: "button", class: "more",
-        onclick: () => { state.allRelations = true; renderChanges(); } }, `Show ${relations.length - 16} more relations`));
-    }
+    if (state.set === null && state.idSets.length > indexes.length) body.append(el("p", { class: "muted" },
+      `Choose a change set to read the remaining ${state.idSets.length - indexes.length} explanations.`));
     requestAnimationFrame(reportSize);
   }
   $("changes").addEventListener("toggle", () => {
@@ -928,7 +960,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       g.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(table.id); } });
     }
 
-    function select(id, fieldName, toggle = true) {
+    function select(id, fieldName, toggle = true, relationID = null) {
       selected = id && nodes.has(id) && (!toggle || selected !== id) ? id : null;
       const keep = new Set(selected ? [selected] : []);
       if (selected) {
@@ -945,10 +977,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         const touches = group.dataset.source === selected || group.dataset.target === selected;
         group.classList.toggle("faded", !!selected && !touches);
       }
-      renderDetail(selected ? nodes.get(selected).table : null, fieldName);
+      renderDetail(selected ? nodes.get(selected).table : null, fieldName, relationID);
     }
 
-    function renderDetail(table, fieldName) {
+    function renderDetail(table, fieldName, relationID = null) {
       const detail = $("detail");
       detail.replaceChildren();
       if (!table) { detail.hidden = true; requestAnimationFrame(reportSize); return; }
@@ -997,7 +1029,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         const box = el("div", { class: "defs" }, el("div", {}, "Relations"));
         for (const relation of relations) {
           const relationKind = kindOf(relation.kind);
-          box.append(el("div", { class: relationKind === "unchanged" ? "" : "k-" + relationKind },
+          box.append(el("div", { class: "relation-row" + (relationID === relation.id ? " focused" : "")
+            + (relationKind === "unchanged" ? "" : " k-" + relationKind) },
             `${MARK[relationKind]} ${tableName(relation.source)} (${(relation.sourceColumns || []).join(", ")}) → ${tableName(relation.target)} (${(relation.targetColumns || []).join(", ")})`));
           if (relation.previousDefinition) box.append(el("div", { class: "was" }, "was " + relation.previousDefinition));
         }

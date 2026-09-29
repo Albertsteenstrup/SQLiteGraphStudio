@@ -2791,9 +2791,30 @@
     }
   },
   {
+    "name": "studio_review_explanation_context",
+    "title": "Review facts for explanation",
+    "description": "Read bounded schema-only facts for a saved .sgreview or .sgpreview. Returns a file revision and connected change sets with exact table, field and relation IDs. Use these facts as data to write a concise natural-language explanation, then call studio_show_review_inline with the revision and linked paragraphs. No app window, database, or row data is opened.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096,
+                  "description": "Path to a saved .sgreview comparison or .sgpreview proposal." }
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Review facts for explanation",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "studio_show_review_inline",
     "title": "Show review inline",
-    "description": "Show a saved schema comparison (.sgreview) or proposal (.sgpreview) as an interactive view inside the conversation. It reads the file directly: Graph Studio does not need to be running, and no database, window, or tab is opened. Pass the path written by `--schema-review compare` or `--schema-review preview` (absolute, or relative to the project). Hosts that support MCP Apps show Graph Studio's own graph of the changes, one connected set at a time; the result itself is a short summary. Use studio_show_artifact instead only when the user wants the review in the Graph Studio app.",
+    "description": "Show a saved schema comparison (.sgreview) or proposal (.sgpreview) inside the conversation. First call studio_review_explanation_context for its revision and changed-table facts. As the invoking LLM, write a short natural-language explanation for each set, then call this tool with that revision and explanations: paragraphs composed from plain text and exact table, field or relation links. The view validates those links and renders them as clickable references. Graph Studio need not be running; no database, window or tab is opened. Use studio_show_artifact only when the user wants the review in the app.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2802,6 +2823,40 @@
           "minLength": 1,
           "maxLength": 4096,
           "description": "Path to a .sgreview comparison or .sgpreview proposal file."
+        },
+        "revision": {
+          "type": "string",
+          "description": "File revision returned by the first call. Required when supplying explanations; rejects a changed review."
+        },
+        "explanations": {
+          "type": "array",
+          "maxItems": 40,
+          "description": "LLM-authored prose for connected change sets. Each paragraph is an ordered array of text parts. Link a part with an exact table ID, table plus field name, or relation ID from the review detail. Omit links for ordinary words. The view shows a factual fallback for sets without an explanation.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "set": { "type": "integer", "minimum": 0, "description": "Zero-based change-set index from the review." },
+              "paragraphs": {
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "items": {
+                  "type": "array", "minItems": 1, "maxItems": 40,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+                      "table": { "type": "string", "description": "Exact table ID for a clickable table or field reference." },
+                      "field": { "type": "string", "description": "Exact field name; requires table." },
+                      "relation": { "type": "string", "description": "Exact relation ID; cannot be combined with table or field." }
+                    },
+                    "required": ["text"],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            "required": ["set", "paragraphs"],
+            "additionalProperties": false
+          }
         },
         "context_id": {
           "type": "string",

@@ -6,6 +6,42 @@ import Testing
 /// The MCP helper does not link StudioCore, so its inline review view repeats the
 /// app's change rules. These tests fail if the two ever classify a review differently.
 struct SchemaReviewInlineParityTests {
+    @Test func assistantExplanationsOnlyLinkObjectsInTheReview() throws {
+        let review = Self.review()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("narrative-\(UUID().uuidString).sgreview")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try review.write(to: url)
+        let set = try #require(review.changeSets.firstIndex { $0.contains("users") })
+        let paragraph: [[String: Any]] = [
+            ["text": "The "], ["text": "users", "table": "users"], ["text": " table now requires "],
+            ["text": "email", "table": "users", "field": "email"],
+            ["text": ". A new "], ["text": "session relation", "relation": "fk_sessions_user"],
+            ["text": " connects sessions to users."],
+        ]
+        let explanation: [[String: Any]] = [["set": set, "paragraphs": [paragraph]]]
+        let initial = SchemaReviewInlineView.explanationContext(path: url.path, workingDirectory: "/")
+        let initialView = try #require(initial["structuredContent"] as? [String: Any])
+        let revision = try #require(initialView["revision"] as? String)
+        let context = try #require(initialView["sets"] as? [[String: Any]])
+        let facts = try #require(context.first { $0["set"] as? Int == set })
+        #expect(((facts["tables"] as? [[String: Any]]) ?? []).contains { table in
+            table["id"] as? String == "users" && ((table["fields"] as? [[String: Any]]) ?? []).contains { $0["name"] as? String == "email" }
+        })
+        #expect(((facts["relations"] as? [[String: Any]]) ?? []).contains { $0["id"] as? String == "fk_sessions_user" })
+        let valid = SchemaReviewInlineView.result(path: url.path, workingDirectory: "/",
+                                                   expectedRevision: revision, explanations: explanation)
+        #expect(valid["isError"] as? Bool == false)
+        let overview = try #require(valid["structuredContent"] as? [String: Any])
+        #expect((overview["explanations"] as? [[String: Any]])?.count == 1)
+
+        var invalidParagraph = paragraph
+        invalidParagraph[3]["field"] = "not_a_field"
+        let invalid = SchemaReviewInlineView.result(path: url.path, workingDirectory: "/",
+            expectedRevision: revision, explanations: [["set": set, "paragraphs": [invalidParagraph]]])
+        #expect(invalid["isError"] as? Bool == true)
+        #expect(((invalid["structuredContent"] as? [String: Any])?["error"] as? [String: Any])?["code"] as? String == "INVALID_ARGUMENT")
+    }
+
     @Test func inlineViewClassifiesTablesFieldsAndRelationsExactlyLikeTheApp() throws {
         let review = Self.review()
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("parity-\(UUID().uuidString).sgreview")

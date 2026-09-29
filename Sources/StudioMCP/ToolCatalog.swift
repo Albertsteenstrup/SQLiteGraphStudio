@@ -25,7 +25,8 @@ public enum MCPToolCatalog {
             var entry = original
             let name = entry["name"] as? String ?? ""
             // Tools answered by the helper itself need no coding-task context.
-            let helperTools = ["studio_status", "studio_launch", "studio_connect_context", SchemaReviewInlineView.toolName]
+            let helperTools = ["studio_status", "studio_launch", "studio_connect_context",
+                               SchemaReviewInlineView.toolName, SchemaReviewInlineView.contextToolName]
                 + SchemaReviewAppTools.names
             if !helperTools.contains(name) {
                 var schema = entry["inputSchema"] as? [String: Any] ?? [:]

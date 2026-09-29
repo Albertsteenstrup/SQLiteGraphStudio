@@ -307,6 +307,20 @@ extension StudioSkills {
     the review in the app from that view. Open the app yourself only when the user asks
     for it or the tool is unavailable: `open -a /path/to/SQLiteGraphStudio.app change.sgreview`.
 
+    The calling assistant writes the explanation in the embedded view. First call
+    `studio_review_explanation_context` with the file path to get its `revision` and
+    bounded schema facts. Use those facts to write 1–3 short natural-language
+    paragraphs for each connected change set. Then call `studio_show_review_inline`
+    once with `path`, `revision`, and `explanations`. Each explanation has a zero-based `set` and
+    `paragraphs`, where each paragraph is an ordered array of `{ "text": "..." }`
+    parts. Add `table` to a part to make a table name clickable, `table` plus `field`
+    for a field, or `relation` for a relation. Use exact IDs from the context; the
+    helper rejects links that are absent from the review. Explain behavior and the
+    meaning of changed constraints or relations where the schema supports it; avoid
+    claiming data was migrated or that the change is safe. For very large reviews,
+    inspect the remaining sets selectively and let the view's factual fallback cover
+    any you cannot explain.
+
     Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
     `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
     `--session` takes the human-readable name of the current chat or session. The
@@ -420,6 +434,20 @@ extension StudioSkills {
     `studio_show_review_inline`, passing the `.sgpreview` path; no app window opens.
     Open the app only when the user asks for it or the tool is unavailable:
     `open -a "$bundle" changes.sgpreview`.
+
+    The calling assistant writes the explanation in the embedded view. First call
+    `studio_review_explanation_context` with the file path to get its `revision` and
+    bounded schema facts. Use those facts to write 1–3 short natural-language
+    paragraphs for each connected change set. Then call `studio_show_review_inline`
+    once with `path`, `revision`, and `explanations`. Each explanation has a zero-based `set` and
+    `paragraphs`, where each paragraph is an ordered array of `{ "text": "..." }`
+    parts. Add `table` to a part to make a table name clickable, `table` plus `field`
+    for a field, or `relation` for a relation. Use exact IDs from the context; the
+    helper rejects links that are absent from the review. Explain behavior and the
+    meaning of changed constraints or relations where the schema supports it; avoid
+    claiming data was migrated or that the change is safe. For very large reviews,
+    inspect the remaining sets selectively and let the view's factual fallback cover
+    any you cannot explain.
 
     When your instructions allow you to name yourself, pass `--agent` (`claude`,
     `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the

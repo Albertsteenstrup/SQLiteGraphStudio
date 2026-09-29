@@ -6,6 +6,102 @@ import XCTest
 /// Exercises the HTML served to MCP App hosts with delayed frame replies.
 @MainActor
 final class SchemaReviewEmbeddedGestureTests: XCTestCase {
+    func testNarrativeLinksAndCollapsingShrinksTheEmbeddedView() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let frameData = Data("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1' fill='#f5f6f7'/></svg>".utf8).base64EncodedString()
+        let host = """
+        <!doctype html><html><body style="margin:0">
+        <script>
+        window.heights = [];
+        window.addEventListener("message", event => {
+          const message = event.data;
+          if (!message || message.jsonrpc !== "2.0") return;
+          if (message.method === "ui/initialize") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: { hostContext: { theme: "light" } } }, "*");
+          } else if (message.method === "ui/notifications/size-changed") {
+            const height = message.params.height;
+            window.heights.push(height);
+            document.getElementById("review").style.height = height + "px";
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_frame") {
+            const args = message.params.arguments;
+            const selected = (args.actions || []).find(action => action.type === "select")?.table;
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data: "\(frameData)" }],
+              structuredContent: { width: args.width, height: args.height, sets: 1,
+                setTables: [["users"]], set: 0, selection: selected ? [selected] : [] }
+            } }, "*");
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_detail") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [], structuredContent: {
+                format: "sqlite-graph-studio/schema-review-detail", revision: "test", changeSets: [["users"]],
+                tables: [{ id: "users", name: "users", kind: "modified", objectKind: "table",
+                  columns: [{ name: "email", kind: "modified", before: "TEXT NULL", description: "TEXT NOT NULL" },
+                    { name: "team_id", kind: "unchanged", description: "INTEGER" }] },
+                  { id: "teams", name: "teams", kind: "unchanged", context: true, columns: [{ name: "id", kind: "unchanged", description: "INTEGER" }] }],
+                relations: [{ id: "fk_users_team", kind: "modified", source: "users", target: "teams",
+                  sourceColumns: ["team_id"], targetColumns: ["id"] }] }
+            } }, "*");
+          }
+        });
+        window.addEventListener("load", () => document.getElementById("review").contentWindow.postMessage({
+          jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { isError: false, content: [],
+            structuredContent: { format: "sqlite-graph-studio/schema-review-view", path: "/tmp/resize.sgreview",
+              revision: "test", summary: { modifiedTables: 1 },
+              changeSets: [{ label: "users", tables: 1, kind: "modified" }],
+              explanations: [{ set: 0, paragraphs: [[
+                { text: "The " }, { text: "email", table: "users", field: "email" },
+                { text: " field is now required. The " }, { text: "team relation", relation: "fk_users_team" },
+                { text: " also changes." }
+              ]] }] } }
+        }, "*"), { once: true });
+        </script>
+        <iframe id="review" style="display:block;width:640px;height:520px;border:0" srcdoc="\(escaped)"></iframe>
+        </body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 900))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("!!document.getElementById('review')?.contentDocument?.getElementById('changes') && !document.getElementById('review').contentDocument.getElementById('changes').hidden", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.defaultView.requestAnimationFrame = callback => setTimeout(callback, 0);
+            doc.getElementById('changes').open = true;
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('.changes-body p')?.textContent?.includes('field is now required')", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            [...doc.querySelectorAll('.changes-body a.jump')].find(link => link.textContent === 'email').click();
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#detail tr.focused')?.textContent?.includes('email')", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            [...doc.querySelectorAll('.changes-body a.jump')].find(link => link.textContent === 'team relation').click();
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#detail .relation-row.focused')?.textContent?.includes('users')", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.getElementById('changes-body').appendChild(Object.assign(doc.createElement('div'), { style: 'height:240px' }));
+            return true; })()
+        """)
+        try await Task.sleep(for: .milliseconds(350))
+        try await waitUntil("window.heights.some(height => height > 700)", in: browser)
+        let expandedValue = try await browser.evaluateJavaScript("Number.parseInt(document.getElementById('review').style.height, 10)")
+        let expanded = try XCTUnwrap(expandedValue as? NSNumber).intValue
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('changes').open = false; true")
+        try await waitUntil("window.heights.length > 2", in: browser)
+        try await Task.sleep(for: .milliseconds(200))
+        let collapsedValue = try await browser.evaluateJavaScript("Number.parseInt(document.getElementById('review').style.height, 10)")
+        let collapsed = try XCTUnwrap(collapsedValue as? NSNumber).intValue
+        XCTAssertLessThan(collapsed, expanded - 100, "The host should reclaim the space used by expanded changes")
+    }
+
     func testPanKeepsLastCompleteFrameAndClicksMatchWhatIsStillVisible() async throws {
         let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
         let escaped = html

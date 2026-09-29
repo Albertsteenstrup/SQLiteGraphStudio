@@ -46,7 +46,10 @@ final class MCPAppTests: XCTestCase {
         let schema = tool["inputSchema"] as? [String: Any]
         XCTAssertEqual(schema?["required"] as? [String], ["path"])
         XCTAssertEqual((tool["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool, true)
-        XCTAssertTrue((tool["description"] as? String)?.contains("does not need to be running") == true)
+        XCTAssertNotNil((schema?["properties"] as? [String: Any])?["explanations"])
+        XCTAssertTrue((tool["description"] as? String)?.contains("need not be running") == true)
+        let context = try XCTUnwrap(MCPToolCatalog.tool(named: SchemaReviewInlineView.contextToolName)?.json)
+        XCTAssertEqual(((context["inputSchema"] as? [String: Any])?["required"] as? [String]), ["path"])
     }
 
     func testServesOneSelfContainedViewThatNeverTouchesTheNetwork() throws {
