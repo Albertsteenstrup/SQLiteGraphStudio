@@ -135,6 +135,12 @@ public final class AppSession {
     public private(set) var graphTapRequest: GraphTapRequest?
     /// Changed tables in connected sets, largest first. A review shows one set at a time.
     public private(set) var schemaReviewChangeSets: [[String]] = []
+    /// View 0 is the complete after-schema model; views 1...N are connected change sets.
+    /// This is separate from selection so the first change view can open unselected.
+    public private(set) var schemaReviewViewIndex = 0
+    public var isSchemaReviewFullModelView: Bool { schemaReview != nil && schemaReviewViewIndex == 0 }
+    public private(set) var schemaReviewAfterTableIDs: Set<String> = []
+    public private(set) var schemaReviewAfterEdgeIDs: Set<String> = []
     /// Rows a changed table's card always lists in a review: its keys, then every changed
     /// field. New and removed tables, where every field changed, list their first twelve.
     public private(set) var schemaReviewCardColumns: [String: Set<String>] = [:]
@@ -1320,6 +1326,9 @@ public final class AppSession {
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
         schemaReviewChangeSets = []
+        schemaReviewViewIndex = 0
+        schemaReviewAfterTableIDs = []
+        schemaReviewAfterEdgeIDs = []
         schemaReviewCardColumns = [:]
         pendingReviewChangeSetReveal = nil
         schemaReviewRevision &+= 1
@@ -1635,6 +1644,10 @@ public final class AppSession {
         selectedGraphNodeID = nodeID
         if let nodeID {
             selectedGraphNodeIDs = [nodeID]
+            if schemaReview != nil, schemaReviewViewIndex > 0,
+               let setIndex = schemaReviewChangeSets.firstIndex(where: { $0.contains(nodeID) }) {
+                schemaReviewViewIndex = setIndex + 1
+            }
             StudioLog.ui.debug("Selected graph node: \(nodeID, privacy: .public)")
         } else {
             selectedGraphNodeIDs = []
@@ -1670,6 +1683,7 @@ public final class AppSession {
     /// Shows one connected set of review changes: selects it, which isolates it, and frames it.
     public func revealReviewChangeSet(at index: Int) {
         guard schemaReviewChangeSets.indices.contains(index) else { return }
+        schemaReviewViewIndex = index + 1
         let ids = schemaReviewChangeSets[index]
         setGraphSelection(Set(ids))
         pendingReviewChangeSetReveal = nil
@@ -1679,8 +1693,18 @@ public final class AppSession {
     /// Steps to the previous or next connected set of review changes.
     public func stepReviewChangeSet(by offset: Int) {
         guard !schemaReviewChangeSets.isEmpty else { return }
-        let target = currentReviewChangeSetIndex.map { $0 + offset } ?? (offset >= 0 ? 0 : schemaReviewChangeSets.count - 1)
-        revealReviewChangeSet(at: target)
+        let target = min(max(schemaReviewViewIndex + offset, 0), schemaReviewChangeSets.count)
+        if target == 0 { showSchemaReviewFullModel() }
+        else { revealReviewChangeSet(at: target - 1) }
+    }
+
+    /// Frames only objects that exist after the change, without selecting any table.
+    public func showSchemaReviewFullModel() {
+        guard schemaReview != nil else { return }
+        schemaReviewViewIndex = 0
+        clearGraphSelection()
+        pendingReviewChangeSetReveal = nil
+        graphRevealRequest = GraphRevealRequest(tableIDs: schemaReviewAfterTableIDs.sorted(), fits: true)
     }
 
     /// Hands the graph the set a newly opened review should frame after its first fit.
@@ -2226,6 +2250,9 @@ public final class AppSession {
         schemaReviewChanges = [:]
         schemaReviewEdgeChanges = [:]
         schemaReviewChangeSets = []
+        schemaReviewViewIndex = 0
+        schemaReviewAfterTableIDs = []
+        schemaReviewAfterEdgeIDs = []
         schemaReviewCardColumns = [:]
         pendingReviewChangeSetReveal = nil
         schemaReviewRevision &+= 1
@@ -2405,6 +2432,7 @@ public final class AppSession {
 
     private func applySchemaReview(_ review: SchemaReviewDocument, preservingContext: Bool) {
         let previousLayout = preservingContext ? graphLayout.snapshot(for: graph) : nil
+        let previousViewIndex = preservingContext && schemaReview != nil ? schemaReviewViewIndex : nil
         let changes = review.changes, relations = review.relationChanges
         schemaReview = review
         historicalExplanationArtifact = nil
@@ -2415,6 +2443,12 @@ public final class AppSession {
             change.relation.sourceColumns.indices.map { (change.graphID + ":\($0)", change.kind) }
         })
         schemaReviewChangeSets = review.changeSets
+        schemaReviewViewIndex = schemaReviewChangeSets.isEmpty ? 0
+            : min(previousViewIndex ?? 1, schemaReviewChangeSets.count)
+        schemaReviewAfterTableIDs = Set(review.after.tables.map(\.id))
+        schemaReviewAfterEdgeIDs = Set(relations.filter { $0.kind != .removed }.flatMap { change in
+            change.relation.sourceColumns.indices.map { change.graphID + ":\($0)" }
+        })
         schemaReviewRevision &+= 1
         // Keys first, then changed fields, so a card's first rows show what changed.
         let foreignKeys = review.foreignKeyColumns
@@ -2445,10 +2479,11 @@ public final class AppSession {
         // keeps the reader's explicit choice while that table exists.
         if !preservingContext || (selectedGraphNodeID.map({ !ids.contains($0) }) ?? false) {
             clearGraphSelection()
-            if let first = schemaReviewChangeSets.first {
-                pendingReviewChangeSetReveal = first
+            if schemaReviewViewIndex > 0 {
+                pendingReviewChangeSetReveal = schemaReviewChangeSets[schemaReviewViewIndex - 1]
             }
         }
+        if schemaReviewViewIndex == 0 { showSchemaReviewFullModel() }
         // Row bounds are unavailable; recompute existing field/relation filters.
         if graphTableFilter.isActive { Task { await applyGraphFilter(graphTableFilter) } }
     }

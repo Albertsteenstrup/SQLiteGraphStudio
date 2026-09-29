@@ -88,6 +88,26 @@ struct SchemaReviewInlineParityTests {
         #expect(view["changeSets"] as? [[String]] == review.changeSets)
     }
 
+    @Test func fullModelContainsOnlyTheAfterSchemaWithoutCappingContext() throws {
+        let review = Self.review()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("full-model-\(UUID().uuidString).sgreview")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try review.write(to: url)
+
+        let result = SchemaReviewInlineView.detail(path: url.path, workingDirectory: "/", fullModel: true)
+        #expect(result["isError"] as? Bool == false)
+        let view = try #require(result["structuredContent"] as? [String: Any])
+        #expect(view["format"] as? String == "sqlite-graph-studio/schema-review-full-model")
+        let tables = try #require(view["tables"] as? [[String: Any]])
+        let ids = Set(tables.compactMap { $0["id"] as? String })
+        #expect(ids == Set(review.after.tables.map(\.id)))
+        #expect(!ids.contains("tokens") && ids.contains("sessions"))
+        #expect(tables.allSatisfy { $0["fullModel"] as? Bool == true })
+        let relations = try #require(view["relations"] as? [[String: Any]])
+        #expect(Set(relations.compactMap { $0["id"] as? String }) == Set(review.after.relations.map(\.id)))
+        #expect(!relations.contains { $0["id"] as? String == "fk_left_right" })
+    }
+
     @Test func inlineViewReadsWhatTheSchemaReviewCommandWrites() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("parity-cli-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

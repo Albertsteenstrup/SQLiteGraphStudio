@@ -75,8 +75,14 @@ struct SchemaReviewRendererTests {
         let opened = try frame()
         #expect(opened.image.pixelsWide == 480 && opened.image.pixelsHigh == 320)
         #expect(opened.state["setTables"] as? [[String]] == review.changeSets)
-        #expect(opened.state["set"] is NSNull, "Framing the first set does not select it")
+        #expect(opened.state["set"] as? Int == 0, "View 1 frames the first set without selecting it")
         #expect((opened.state["selection"] as? [String])?.isEmpty == true)
+
+        let fullModel = try frame([["type": "step", "direction": -1]])
+        #expect(fullModel.state["set"] as? Int == -1)
+        #expect((fullModel.state["selection"] as? [String])?.isEmpty == true)
+        let firstSet = try frame([["type": "step", "direction": 1]])
+        #expect(firstSet.state["set"] as? Int == 0)
 
         // Exercise the merged graph gesture path with a real synthetic click on the
         // visible users marker, rather than only selecting a table by ID.
@@ -92,7 +98,7 @@ struct SchemaReviewRendererTests {
 
         // An empty corner is canvas: the app's own tap handling shows every change again.
         let cleared = try frame([["type": "click", "x": 4, "y": 316]])
-        #expect(cleared.state["set"] is NSNull)
+        #expect(cleared.state["set"] as? Int == 0)
         #expect((cleared.state["selection"] as? [String])?.isEmpty == true)
 
         let jumped = try frame([["type": "set", "index": 0], ["type": "transform", "scale": 1.5, "tx": -120, "ty": -80]])

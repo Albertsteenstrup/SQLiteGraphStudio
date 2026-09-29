@@ -3034,6 +3034,10 @@
           "type": "string",
           "description": "File revision from studio_show_review_inline; rejects details after this path is replaced."
         },
+        "full_model": {
+          "type": "boolean",
+          "description": "Return every table and relation in the after-schema for View 0 of the inline review."
+        },
         "context_id": {
           "type": "string",
           "description": "Optional; this tool does not use a coding-task context."

@@ -283,10 +283,13 @@ final class RenderedReview {
             session.stepReviewChangeSet(by: Int(number(action["direction"], default: 1)) >= 0 ? 1 : -1)
         case "set":
             let index = Int(number(action["index"], default: -1))
-            if session.schemaReviewChangeSets.indices.contains(index) { session.revealReviewChangeSet(at: index) }
+            if index == -1 { session.showSchemaReviewFullModel() }
+            else if session.schemaReviewChangeSets.indices.contains(index) { session.revealReviewChangeSet(at: index) }
         case "fit":
-            if let index = session.currentReviewChangeSetIndex {
-                session.revealReviewChangeSet(at: index)
+            if session.isSchemaReviewFullModelView {
+                session.showSchemaReviewFullModel()
+            } else if session.schemaReviewViewIndex > 0 {
+                session.revealReviewChangeSet(at: session.schemaReviewViewIndex - 1)
             } else {
                 session.requestAutomationViewport(fitVisibleTables: true, transitionMilliseconds: 0)
             }
@@ -344,7 +347,7 @@ final class RenderedReview {
             "height": bounds.height,
             "sets": sets.count,
             "setTables": sets,
-            "set": session.currentReviewChangeSetIndex.map { $0 as Any } ?? NSNull(),
+            "set": session.schemaReviewViewIndex - 1,
             "selection": session.selectedGraphNodeIDs.sorted(),
         ]
     }

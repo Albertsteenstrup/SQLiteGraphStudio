@@ -6,6 +6,84 @@ import XCTest
 /// Exercises the HTML served to MCP App hosts with delayed frame replies.
 @MainActor
 final class SchemaReviewEmbeddedGestureTests: XCTestCase {
+    func testViewZeroPrecedesTheDefaultChangeViewEvenWithOneSet() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let frameData = Data("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1' fill='#fff'/></svg>".utf8).base64EncodedString()
+        let host = """
+        <!doctype html><html><body>
+        <script>
+        window.currentSet = 0;
+        window.currentSelection = [];
+        window.frameActions = [];
+        window.addEventListener("message", event => {
+          const message = event.data;
+          if (!message || message.jsonrpc !== "2.0") return;
+          if (message.method === "ui/initialize") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: { hostContext: { theme: "light" } } }, "*");
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_frame") {
+            const args = message.params.arguments;
+            for (const action of args.actions || []) {
+              window.frameActions.push(action);
+              if (action.type === "set") { window.currentSet = action.index; window.currentSelection = []; }
+              if (action.type === "step") { window.currentSet = Math.max(-1, Math.min(0, window.currentSet + action.direction)); window.currentSelection = []; }
+              if (action.type === "click" && window.currentSet === -1) window.currentSelection = ["teams"];
+            }
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data: "\(frameData)" }],
+              structuredContent: { width: args.width, height: args.height, sets: 1,
+                setTables: [["users"]], set: window.currentSet, selection: window.currentSelection }
+            } }, "*");
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_detail") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [], structuredContent: {
+                format: "sqlite-graph-studio/schema-review-full-model", revision: "test",
+                tables: [{ id: "users", name: "users", kind: "modified", fullModel: true, columns: [] },
+                  { id: "teams", name: "teams", kind: "unchanged", fullModel: true,
+                    columns: [{ name: "quiet_field", kind: "unchanged", description: "TEXT · NULL" }] }],
+                relations: [] }
+            } }, "*");
+          }
+        });
+        window.addEventListener("load", () => document.getElementById("review").contentWindow.postMessage({
+          jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { isError: false, content: [],
+            structuredContent: { format: "sqlite-graph-studio/schema-review-view", path: "/tmp/one.sgreview",
+              revision: "test", summary: { modifiedTables: 1 },
+              changeSets: [{ label: "users", tables: 1, kind: "modified" }] } }
+        }, "*"), { once: true });
+        </script>
+        <iframe id="review" style="display:block;width:640px;height:600px;border:0" srcdoc="\(escaped)"></iframe>
+        </body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 600))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("document.getElementById('review')?.contentDocument?.getElementById('position')?.textContent?.includes('View 1 of 1')", in: browser)
+        let initial = try await browser.evaluateJavaScript("(() => { const doc = document.getElementById('review').contentDocument; return !doc.getElementById('prev').disabled && !doc.getElementById('changes').hidden; })()") as? Bool
+        XCTAssertEqual(initial, true)
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('prev').click(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('position').textContent.includes('View 0')", in: browser)
+        let zero = try await browser.evaluateJavaScript("(() => { const doc = document.getElementById('review').contentDocument; return doc.getElementById('prev').disabled && doc.getElementById('changes').hidden && !doc.getElementById('next').disabled; })()") as? Bool
+        XCTAssertEqual(zero, true)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const canvas = document.getElementById('review').contentDocument.getElementById('canvas');
+            canvas.setPointerCapture = () => {};
+            const rect = canvas.getBoundingClientRect();
+            const input = { pointerId: 1, button: 0, clientX: rect.left + 50, clientY: rect.top + 50, bubbles: true };
+            canvas.dispatchEvent(new PointerEvent('pointerdown', input));
+            canvas.dispatchEvent(new PointerEvent('pointerup', input));
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('detail').textContent.includes('quiet_field')", in: browser)
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('next').click(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('position').textContent.includes('View 1 of 1')", in: browser)
+        let actions = try await browser.evaluateJavaScript("window.frameActions.filter(action => action.type === 'step').map(action => action.direction)") as? [Int]
+        XCTAssertEqual(actions, [-1, 1])
+    }
+
     func testResizingTheGraphNeverExposesTheCanvasBacking() async throws {
         let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
         let escaped = html

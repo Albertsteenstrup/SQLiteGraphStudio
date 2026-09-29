@@ -91,35 +91,48 @@ import Testing
         await session.openDocument(url: url)
         #expect(session.presentedError == nil)
         #expect(session.schemaReviewChangeSets == review.changeSets)
+        #expect(session.schemaReviewViewIndex == 1, "A review opens on its first change view")
         #expect(session.currentReviewChangeSetIndex == nil)
         #expect(session.selectedGraphNodeIDs.isEmpty)
+        #expect(session.schemaReviewAfterTableIDs == Set(review.after.tables.map(\.id)))
+        #expect(session.schemaReviewAfterEdgeIDs.contains("fk_logs_audit:0"))
 
         // Cards list their keys and every changed field.
         #expect(session.schemaReviewCardColumns["users"] == ["id", "team_id", "email"])
         #expect(session.schemaReviewCardColumns["logs"]?.isSuperset(of: ["id", "audit_id"]) == true)
 
+        session.stepReviewChangeSet(by: -1)
+        #expect(session.schemaReviewViewIndex == 0)
+        #expect(session.selectedGraphNodeIDs.isEmpty)
+        #expect(Set(session.graphRevealRequest?.tableIDs ?? []) == session.schemaReviewAfterTableIDs)
+
         session.stepReviewChangeSet(by: 1)
+        #expect(session.schemaReviewViewIndex == 1)
         #expect(session.currentReviewChangeSetIndex == 0)
         #expect(session.selectedGraphNodeIDs == ["audits", "logs"])
         session.stepReviewChangeSet(by: 1)
+        #expect(session.schemaReviewViewIndex == 2)
         #expect(session.currentReviewChangeSetIndex == 1)
         #expect(session.selectedGraphNodeIDs == ["teams", "users"])
         let reveal = try #require(session.graphRevealRequest)
         #expect(reveal.fits && reveal.tableIDs == ["teams", "users"])
 
         session.revealReviewChangeSet(at: 3)
+        #expect(session.schemaReviewViewIndex == 4)
         session.stepReviewChangeSet(by: 1)
         #expect(session.currentReviewChangeSetIndex == 3, "Next stops at the last set, as the app's button does")
 
         session.clearGraphSelection()
         #expect(session.currentReviewChangeSetIndex == nil)
         session.stepReviewChangeSet(by: -1)
-        #expect(session.currentReviewChangeSetIndex == 3, "Previous from every change starts at the last set")
+        #expect(session.schemaReviewViewIndex == 3)
+        #expect(session.currentReviewChangeSetIndex == 2)
 
         session.requestGraphTap(at: CGPoint(x: 12, y: 34))
         #expect(session.graphTapRequest?.point == CGPoint(x: 12, y: 34))
         session.closeDatabase()
         #expect(session.schemaReviewChangeSets.isEmpty && session.schemaReviewCardColumns.isEmpty)
+        #expect(session.schemaReviewViewIndex == 0 && session.schemaReviewAfterTableIDs.isEmpty)
         #expect(session.graphTapRequest == nil)
     }
 

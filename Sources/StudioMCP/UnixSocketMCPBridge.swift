@@ -73,7 +73,8 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
         case SchemaReviewAppTools.detailToolName:
             return SchemaReviewInlineView.detail(path: call.arguments["path"] as? String ?? "",
                                                  workingDirectory: call.workingDirectory,
-                                                 revision: call.arguments["revision"] as? String)
+                                                 revision: call.arguments["revision"] as? String,
+                                                 fullModel: call.arguments["full_model"] as? Bool ?? false)
         case SchemaReviewAppTools.openToolName:
             return SchemaReviewAppTools.openInApp(arguments: call.arguments, workingDirectory: call.workingDirectory,
                                                   open: openDocuments)

@@ -92,6 +92,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 /* Simplified graph, drawn when Graph Studio's renderer is unavailable. */
 .node { cursor: pointer; transition: opacity 0.15s; }
 .node .frame { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+.full-model .node.added .frame { stroke: var(--add); }
+.full-model .node.modified .frame { stroke: var(--mod); }
 .node.removed { opacity: 0.74; }
 .node.context .frame { stroke-dasharray: 2 3; }
 .node.selected .frame { stroke: var(--mod); stroke-width: 2; }
@@ -120,6 +122,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .edge.added { stroke: var(--add); stroke-width: 1.8; }
 .edge.modified { stroke: var(--mod); stroke-width: 1.8; }
 .edge.removed { stroke: var(--del); stroke-width: 1.8; stroke-dasharray: 6 4; }
+.full-model .edge { stroke-width: 1; }
 .faded { opacity: 0.12 !important; }
 .detail { margin-top: 10px; border: 1px solid var(--border-2); border-radius: var(--radius); padding: 10px 12px; background: var(--bg); }
 .detail h2 { font-size: 13.5px; margin: 0; font-weight: 600; }
@@ -150,9 +153,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     <span id="legend" class="legend"></span>
     <span class="spacer"></span>
     <span id="sets" class="sets" hidden>
-      <button id="prev" type="button" aria-label="Previous connected changes" title="Previous changes (⌥⌘↑)">‹ Previous</button>
+      <button id="prev" type="button" aria-label="Previous view" title="Previous view (⌥⌘↑)">‹ Previous</button>
       <span id="position" class="position"></span>
-      <button id="next" type="button" aria-label="Next connected changes" title="Next changes (⌥⌘↓)">Next ›</button>
+      <button id="next" type="button" aria-label="Next view" title="Next view (⌥⌘↓)">Next ›</button>
     </span>
   </header>
   <div id="toast" class="toast" hidden></div>
@@ -255,10 +258,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 
   // `model` is the small overview; `detail` is fetched when the reader opens the change
   // summary or when the simplified graph needs its tables, fields, and relations.
-  const state = { model: null, detail: null, tables: new Map(), labels: [], idSets: [], setCount: 0, set: null, mode: null,
+  const state = { model: null, detail: null, fullModel: null, tables: new Map(), labels: [], idSets: [], setCount: 0, set: null, mode: null,
                   focusTable: null, focusRelation: null, frameSelection: [], showGraphDetail: false,
                   explanations: new Map(), visibleSetKey: "", detailError: null };
-  let detailRequest = null;
+  let detailRequest = null, fullModelRequest = null;
 
   function applyHostContext(context) {
     if (!context || typeof context !== "object") return;
@@ -334,6 +337,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     $("canvas").classList.remove("panning");
     state.model = model;
     state.detail = null;
+    state.fullModel = null;
     state.detailError = null;
     state.tables = new Map();
     state.idSets = [];
@@ -347,6 +351,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       .filter((item) => item && Number.isInteger(item.set) && Array.isArray(item.paragraphs))
       .map((item) => [item.set, item.paragraphs]));
     detailRequest = null;
+    fullModelRequest = null;
     state.labels = Array.isArray(model.changeSets) ? model.changeSets : [];
     $("status").hidden = true;
     $("view").hidden = false;
@@ -378,14 +383,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   function setSets(count, current) {
     const previous = state.set;
     state.setCount = count;
-    state.set = Number.isInteger(current) && current >= 0 && current < count ? current : null;
-    $("sets").hidden = count <= 1;
-    $("prev").disabled = state.set === 0;
+    state.set = Number.isInteger(current) && current >= -1 && current < count ? current : null;
+    $("sets").hidden = count === 0;
+    $("prev").disabled = state.set === -1;
     $("next").disabled = state.set !== null && state.set + 1 >= count;
-    $("position").textContent = state.set === null ? `${count} sets of changes` : `Changes ${state.set + 1} of ${count}`;
+    $("position").textContent = state.set === -1 ? "View 0 · Full model"
+      : state.set === null ? `${count} sets of changes` : `View ${state.set + 1} of ${count} · Changes`;
+    $("changes").hidden = !state.model || state.set === -1 || count === 0;
+    if (previous === -1 && state.set !== -1 && state.detail) {
+      state.tables = new Map((state.detail.tables || []).map((table) => [table.id, table]));
+    } else if (state.set === -1 && state.fullModel) {
+      state.tables = new Map((state.fullModel.tables || []).map((table) => [table.id, table]));
+    }
     if (previous !== state.set) {
-      const ids = state.set === null ? null : state.idSets[state.set];
-      if (state.set === null || !state.focusTable || (ids && !ids.includes(state.focusTable))) {
+      const ids = state.set === null || state.set === -1 ? null : state.idSets[state.set];
+      if (state.set === null || state.set === -1 || !state.focusTable || (ids && !ids.includes(state.focusTable))) {
         state.focusTable = null;
         state.focusRelation = null;
         $("detail").hidden = true;
@@ -424,10 +436,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     requestAnimationFrame(reportSize);
   }
   function step(direction) {
-    if (!state.mode || state.setCount <= 1) return;
+    if (!state.mode || state.setCount === 0) return;
     if (state.mode === exact) { exact.act({ type: "step", direction }); return; }
     const target = state.set === null ? (direction > 0 ? 0 : state.setCount - 1) : state.set + direction;
-    if (target >= 0 && target < state.setCount) showSet(target);
+    if (target >= -1 && target < state.setCount) showSet(target);
   }
   function showSet(index) {
     if (!state.mode) return;
@@ -451,7 +463,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         if (state.model === model) {
           state.detail = detail;
           state.detailError = null;
-          state.tables = new Map((Array.isArray(detail.tables) ? detail.tables : []).map((table) => [table.id, table]));
+          if (state.set !== -1) state.tables = new Map((Array.isArray(detail.tables) ? detail.tables : []).map((table) => [table.id, table]));
           if (!state.idSets.length) state.idSets = Array.isArray(detail.changeSets) ? detail.changeSets : [];
           renderChanges();
           if (state.mode === exact) syncExactDetail();
@@ -473,9 +485,32 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     return detailRequest;
   }
 
+  function loadFullModel() {
+    if (state.fullModel) return Promise.resolve(state.fullModel);
+    if (fullModelRequest) return fullModelRequest;
+    const model = state.model;
+    fullModelRequest = callTool("studio_review_detail",
+      { path: model.path, revision: model.revision, full_model: true }, 20000)
+      .then((result) => {
+        const data = result.structuredContent;
+        if (!data || data.format !== "sqlite-graph-studio/schema-review-full-model" ||
+            (model.revision && data.revision !== model.revision)) throw new Error("The full model could not be read from this review.");
+        if (state.model === model) {
+          state.fullModel = data;
+          if (state.set === -1) {
+            state.tables = new Map((Array.isArray(data.tables) ? data.tables : []).map((table) => [table.id, table]));
+            if (state.mode === exact) syncExactDetail();
+          }
+        }
+        return data;
+      })
+      .finally(() => { if (state.model === model) fullModelRequest = null; });
+    return fullModelRequest;
+  }
+
   function changeIDs() {
     const sets = state.idSets.length ? state.idSets : (state.detail && state.detail.changeSets) || [];
-    return state.set === null ? sets.flat() : (sets[state.set] || []);
+    return state.set === -1 ? [] : state.set === null ? sets.flat() : (sets[state.set] || []);
   }
   function jumpLink(label, kind, tableID, fieldName) {
     const table = state.tables.get(tableID);
@@ -507,7 +542,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     requestAnimationFrame(() => target.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   }
   function syncExactDetail() {
-    if (!state.detail || !state.showGraphDetail) return;
+    if (!(state.set === -1 ? state.fullModel : state.detail) || !state.showGraphDetail) return;
     const selected = state.frameSelection.length === 1 && state.tables.has(state.frameSelection[0])
       ? state.frameSelection[0] : null;
     if (selected !== state.focusTable) {
@@ -733,8 +768,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       setSets(Array.isArray(info.setTables) ? info.setTables.length : state.setCount, info.set);
       if (Array.isArray(info.selection)) state.frameSelection = info.selection;
       if (actions.some((action) => action.type === "click" || action.type === "select")) state.showGraphDetail = true;
-      if (state.showGraphDetail && !state.detail && state.frameSelection.length === 1) {
-        loadDetail().catch((error) => toast(error && error.message ? error.message : "Table details are unavailable.", true));
+      if (state.showGraphDetail && state.frameSelection.length === 1 &&
+          !(state.set === -1 ? state.fullModel : state.detail)) {
+        (state.set === -1 ? loadFullModel() : loadDetail())
+          .catch((error) => toast(error && error.message ? error.message : "Table details are unavailable.", true));
       }
       syncExactDetail();
       resized();
@@ -791,6 +828,27 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       renderChanges();
     }
     function showSet(index) {
+      if (index === -1) {
+        setSets(state.idSets.length, -1);
+        selected = null;
+        renderDetail(null);
+        if (state.fullModel) { showFullModel(state.fullModel); return; }
+        $("graph").replaceChildren();
+        $("loading").hidden = false;
+        const model = state.model;
+        loadFullModel().then((data) => {
+          if (state.model === model && state.mode === simple && state.set === -1) showFullModel(data);
+        }).catch((error) => {
+          if (state.model === model && state.mode === simple && state.set === -1) {
+            $("loading").hidden = true;
+            toast(error && error.message ? error.message : "The full model could not be read.", true);
+          }
+        });
+        return;
+      }
+      $("loading").hidden = true;
+      $("note").textContent = "Simplified view";
+      state.tables = new Map((Array.isArray(state.detail.tables) ? state.detail.tables : []).map((table) => [table.id, table]));
       const all = [...state.tables.values()];
       const members = index === null ? all.filter((table) => !table.context).map((table) => table.id) : state.idSets[index] || [];
       const keep = new Set(members);
@@ -807,6 +865,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       setSets(state.idSets.length, index);
       draw(shown, relations.filter((relation) => keep.has(relation.source) && keep.has(relation.target)));
       renderDetail(null);
+      fit();
+    }
+    function showFullModel(data) {
+      const tables = Array.isArray(data.tables) ? data.tables : [];
+      const relations = Array.isArray(data.relations) ? data.relations : [];
+      state.tables = new Map(tables.map((table) => [table.id, table]));
+      shown = tables;
+      $("loading").hidden = true;
+      $("note").textContent = "Simplified view · full model after changes";
+      draw(tables, relations);
       fit();
     }
 
@@ -864,18 +932,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       return links && !links.drawn && links.relations > 0 ? links : null;
     }
     // Fields arrive in review order (keys, then changes); a card shows the first rows.
-    const cardColumns = (table) => (Array.isArray(table.columns) ? table.columns : []).slice(0, GRAPH_ROWS);
+    const cardColumns = (table) => table.fullModel ? [] : (Array.isArray(table.columns) ? table.columns : []).slice(0, GRAPH_ROWS);
     function hiddenCount(table) {
+      if (table.fullModel) return 0;
       const columns = Array.isArray(table.columns) ? table.columns : [];
       return columns.length - cardColumns(table).length + (table.hiddenColumns || 0);
     }
     function nodeHeight(table) {
+      if (table.fullModel) return HEADER + 8;
       return HEADER + cardColumns(table).length * ROW + (hiddenCount(table) > 0 ? ROW : 0) + (summarizedLinks(table) ? ROW : 0) + 8;
     }
 
     function draw(tables, relations) {
       const graph = $("graph");
       graph.replaceChildren();
+      graph.classList.toggle("full-model", state.set === -1);
       const defs = svg("defs", {}, graph);
       for (const kind of ["added", "modified", "removed", "unchanged"]) {
         const marker = svg("marker", { id: "arrow-" + kind, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, defs);
@@ -937,8 +1008,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       svg("rect", { class: "frame", x: node.x, y: node.y, width: node.width, height: node.height, rx: 8 }, g);
       svg("title", {}, g, table.name + (table.badge ? " · " + table.badge : ""));
       svg("text", { class: "title", x: node.x + 12, y: node.y + 21 }, g, clip(table.name, 23));
-      const tag = table.context ? "Related" : (kind === "modified" ? (table.badge || "Changed") : LABEL[kind]);
-      svg("text", { class: "tag " + kind, x: node.x + node.width - 12, y: node.y + 21, "text-anchor": "end" }, g, clip(tag, 12));
+      const tag = table.fullModel ? "" : table.context ? "Related" : (kind === "modified" ? (table.badge || "Changed") : LABEL[kind]);
+      if (tag) svg("text", { class: "tag " + kind, x: node.x + node.width - 12, y: node.y + 21, "text-anchor": "end" }, g, clip(tag, 12));
       const columns = cardColumns(table);
       columns.forEach((column, index) => {
         const y = node.y + HEADER + 12 + index * ROW;
@@ -971,11 +1042,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       }
       for (const node of document.querySelectorAll(".node")) {
         node.classList.toggle("selected", node.dataset.id === selected);
-        node.classList.toggle("faded", !!selected && !keep.has(node.dataset.id));
+        node.classList.toggle("faded", state.set !== -1 && !!selected && !keep.has(node.dataset.id));
       }
       for (const group of document.querySelectorAll(".edge-group")) {
         const touches = group.dataset.source === selected || group.dataset.target === selected;
-        group.classList.toggle("faded", !!selected && !touches);
+        group.classList.toggle("faded", state.set !== -1 && !!selected && !touches);
       }
       renderDetail(selected ? nodes.get(selected).table : null, fieldName, relationID);
     }
@@ -1024,7 +1095,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         if (links.more) box.append(el("div", { class: "was" }, `+${links.more} more`));
         detail.append(box);
       }
-      const relations = (state.detail && Array.isArray(state.detail.relations) ? state.detail.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
+      const graphDetail = state.set === -1 ? state.fullModel : state.detail;
+      const relations = (graphDetail && Array.isArray(graphDetail.relations) ? graphDetail.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
       if (relations.length) {
         const box = el("div", { class: "defs" }, el("div", {}, "Relations"));
         for (const relation of relations) {

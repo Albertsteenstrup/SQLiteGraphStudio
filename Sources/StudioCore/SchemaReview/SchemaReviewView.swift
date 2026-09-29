@@ -136,7 +136,9 @@ struct SchemaReviewWorkspaceView: View {
                     HStack {
                         Text(isHistoricalExplanation ? "Captured tables" : "Tables").font(.headline)
                         Spacer()
-                        if !isHistoricalExplanation { Toggle("Changes only", isOn: $onlyChanges).toggleStyle(.checkbox) }
+                        if !isHistoricalExplanation && !session.isSchemaReviewFullModelView {
+                            Toggle("Changes only", isOn: $onlyChanges).toggleStyle(.checkbox)
+                        }
                     }
                     TextField("Find a table", text: $search).textFieldStyle(.roundedBorder)
                     tableList(order).frame(minHeight: 100, idealHeight: 170, maxHeight: 220)
@@ -146,10 +148,12 @@ struct SchemaReviewWorkspaceView: View {
                                                         replayView: session.historicalReplayView,
                                                         currentLeftPane: session.leftPane.kind,
                                                         currentRightPane: session.rightPane.kind)
-                    } else if selected != nil {
+                    } else {
                         changeSetBar()
                     }
-                    if historicalArtifact == nil, let selected {
+                    if historicalArtifact == nil, session.isSchemaReviewFullModelView, let table = selected?.after {
+                        SchemaReviewAfterTableDetail(table: table, relations: review.after.relations)
+                    } else if historicalArtifact == nil, let selected, !session.isSchemaReviewFullModelView {
                         SchemaReviewTableDetail(change: selected, relations: review.relationChanges, isPreview: review.proposal != nil)
                     } else if historicalArtifact == nil { allChangesSummary(order.changed) }
                 }
@@ -203,7 +207,10 @@ struct SchemaReviewWorkspaceView: View {
     }
 
     private func tableList(_ order: TableOrder) -> some View {
-        let visible = (onlyChanges ? order.changed : order.all).filter { search.isEmpty || $0.id.localizedCaseInsensitiveContains(search) }
+        let candidates = session.isSchemaReviewFullModelView
+            ? order.all.filter { session.schemaReviewAfterTableIDs.contains($0.id) }
+            : (onlyChanges ? order.changed : order.all)
+        let visible = candidates.filter { search.isEmpty || $0.id.localizedCaseInsensitiveContains(search) }
         let sections = Dictionary(grouping: visible, by: order.kind)
         let kinds = Self.kindOrder.filter { sections[$0] != nil }
         return ScrollViewReader { proxy in
@@ -256,29 +263,37 @@ struct SchemaReviewWorkspaceView: View {
     /// is read hunk by hunk. A review whose changes are all connected has one set.
     private func changeSetBar() -> some View {
         let sets = session.schemaReviewChangeSets
-        let index = session.currentReviewChangeSetIndex
+        let view = session.schemaReviewViewIndex
         return HStack(spacing: 6) {
-            if sets.count > 1 {
+            if !sets.isEmpty {
                 Button { session.stepReviewChangeSet(by: -1) } label: { Image(systemName: "chevron.up") }
-                    .disabled(index == 0)
+                    .disabled(view == 0)
                     .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                    .help("Previous connected changes (⌥⌘↑)")
+                    .help("Previous view (⌥⌘↑)")
                 Button { session.stepReviewChangeSet(by: 1) } label: { Image(systemName: "chevron.down") }
-                    .disabled(index.map { $0 + 1 >= sets.count } ?? false)
+                    .disabled(view >= sets.count)
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                    .help("Next connected changes (⌥⌘↓)")
-                Text(index.map { "Changes \($0 + 1) of \(sets.count)" } ?? "\(sets.count) sets of changes")
+                    .help("Next view (⌥⌘↓)")
+                Text(view == 0 ? "View 0 · Full model" : "View \(view) of \(sets.count) · Changes")
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
             Spacer()
-            Button("Show All Changes") { session.clearGraphSelection() }
-                .controlSize(.small)
+            if view == 0 {
+                Button("View 1: Changes") { session.revealReviewChangeSet(at: 0) }
+                    .controlSize(.small)
+            } else {
+                Button("Show All Changes") { session.clearGraphSelection() }
+                    .controlSize(.small)
+            }
         }
     }
 
     @ViewBuilder
     private func allChangesSummary(_ changed: [SchemaTableChange]) -> some View {
-        if let first = changed.first {
+        if session.isSchemaReviewFullModelView {
+            Text("Full data model after these changes. Added and changed tables and relations are marked by colour.")
+                .foregroundStyle(.secondary)
+        } else if let first = changed.first {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Showing all \(changed.count) changed \(changed.count == 1 ? "table" : "tables")").font(.headline)
                 Text("Choose a table to see only its changes in the graph and compare its fields here.")
@@ -290,6 +305,42 @@ struct SchemaReviewWorkspaceView: View {
         } else {
             Text("No schema changes. Select a table to see its fields.").foregroundStyle(.secondary)
         }
+    }
+}
+
+private struct SchemaReviewAfterTableDetail: View {
+    let table: SchemaReviewSnapshot.Table
+    let relations: [SchemaReviewSnapshot.Relation]
+
+    private var tableRelations: [SchemaReviewSnapshot.Relation] {
+        relations.filter { $0.source == table.id || $0.target == table.id }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(table.displayName).font(.headline).textSelection(.enabled)
+                Text("\(table.columns.count) fields · after changes")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(table.columns) { column in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(column.name).font(.caption.monospaced().weight(.semibold))
+                        Text(column.description).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                    .textSelection(.enabled)
+                    Divider()
+                }
+                if !tableRelations.isEmpty {
+                    Text("Relations").font(.headline)
+                    ForEach(tableRelations) { relation in
+                        Text("\(relation.source) (\(relation.sourceColumns.joined(separator: ", "))) → \(relation.target) (\(relation.targetColumns.joined(separator: ", ")))")
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .id(table.id)
     }
 }
 
