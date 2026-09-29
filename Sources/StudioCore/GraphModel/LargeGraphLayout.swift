@@ -338,7 +338,10 @@ enum LargeGraphLayout {
         var positions: [String: CGPoint] = [:]
         var occupied: [CGRect] = []
         for (index, item) in items.enumerated() {
-            let neighbors = links[item.id, default: [:]].compactMap { id, count -> (CGPoint, CGFloat)? in
+            // Sum in a fixed order. A dictionary's order differs between instances, and
+            // mirror-image candidates score almost the same, so rounding differences
+            // would otherwise decide the side a domain lands on (and the whole layout).
+            let neighbors = links[item.id, default: [:]].sorted { $0.key < $1.key }.compactMap { id, count -> (CGPoint, CGFloat)? in
                 guard let position = positions[id], count > 0 else { return nil }
                 return (position, CGFloat(log1p(Double(count))))
             }

@@ -111,6 +111,58 @@ struct LargeGraphLayoutTests {
         #expect(first.allPositions(for: fixture.graph) == second.allPositions(for: fixture.graph))
     }
 
+    /// Swift seeds each dictionary's order from its storage, so the same input iterates
+    /// differently in different layout instances. Domains linked to several placed domains
+    /// must still land in the same place; the renderer lays out every inline review card
+    /// afresh, and a mirrored graph in one card reads as a different schema.
+    @Test
+    func largeLayoutIsIdenticalAcrossInstancesWhenDomainsShareManyLinks() {
+        var nodes: [GraphNode] = []
+        var edges: [GraphEdge] = []
+        var hints: [String: String] = [:]
+        let groups = 24
+        for group in 0..<groups {
+            for table in 0..<7 {
+                let id = String(format: "g%02d_t%d", group, table)
+                nodes.append(GraphNode(id: id, title: id, isEditable: false))
+                hints[id] = String(format: "Domain %02d", group)
+                if table > 0 {
+                    edges.append(GraphEdge(id: "\(id)_hub", sourceID: id, targetID: String(format: "g%02d_t0", group),
+                                           sourceColumn: "hub_id", targetColumn: "id"))
+                }
+            }
+            // Each domain references four others, with different link counts.
+            for offset in 1...4 {
+                let target = (group + offset * 5) % groups
+                for link in 0..<(1 + (group + offset) % 3) {
+                    edges.append(GraphEdge(id: "g\(group)_to_g\(target)_\(link)",
+                                           sourceID: String(format: "g%02d_t%d", group, 1 + link),
+                                           targetID: String(format: "g%02d_t0", target),
+                                           sourceColumn: "ref_\(offset)_\(link)", targetColumn: "id"))
+                }
+            }
+        }
+        let graph = SchemaGraph(nodes: nodes, edges: edges)
+        #expect(graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold)
+
+        var layouts: [[String: CGPoint]] = []
+        var ballast: [[String: Int]] = []
+        for run in 0..<8 {
+            // Vary what is allocated before each layout, so its dictionaries get new storage.
+            ballast.append(Dictionary(uniqueKeysWithValues: (0..<(run * 37 + 11)).map { ("k\($0)", $0) }))
+            let layout = GraphLayoutModel()
+            layout.setClusterHints(hints)
+            layout.reset(for: graph)
+            layout.stabilize(graph: graph, presentation: .compact,
+                             descriptorLookup: nil, nodeSizeLookup: { _ in CGSize(width: 220, height: 46) })
+            layouts.append(layout.allPositions(for: graph))
+        }
+        #expect(!ballast.isEmpty)
+        for (run, positions) in layouts.enumerated().dropFirst() {
+            #expect(positions == layouts[0], "Layout \(run) differs from the first")
+        }
+    }
+
     @Test
     func largeStabilizationRespectsPinnedCardsAndMovesTheirOverlappingNeighbors() {
         let fixture = makeLargeLayoutFixture(nodeCount: 195, groupSize: 39)
