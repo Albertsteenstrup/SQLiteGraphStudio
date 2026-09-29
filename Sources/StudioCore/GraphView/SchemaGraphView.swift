@@ -590,6 +590,7 @@ public struct SchemaGraphView: View {
                 let displayStyle = nodeDisplayStyle(for: node.id, previewColumns: previewColumns)
                 let cardSize = nodeSize(for: node.id)
                 let scrollOffset = cardScrollOffsets[node.id] ?? 0
+                let showsCardShadow = shows(.cardShadows) && session.schemaReview == nil
 
                 let isMultiSelected = session.selectedGraphNodeIDs.count > 1 && session.selectedGraphNodeIDs.contains(node.id)
 
@@ -656,10 +657,10 @@ public struct SchemaGraphView: View {
                 .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
                 .opacity(reviewCardOpacity(for: node.id, lens: reviewLens))
                 .shadow(
-                    color: shows(.cardShadows)
+                    color: showsCardShadow
                         ? StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8)
                         : .clear,
-                    radius: shows(.cardShadows) ? shadowRadius(for: node.id) : 0,
+                    radius: showsCardShadow ? shadowRadius(for: node.id) : 0,
                     y: session.showAllGraphTableCards ? 5 : (draggedNodeID == node.id ? 16 : 10)
                 )
                 .zIndex(zIndex(for: node.id))

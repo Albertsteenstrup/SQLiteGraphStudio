@@ -7,6 +7,46 @@ import Testing
 /// Drives Graph Studio's real renderer process the way the inline review view does: the
 /// helper starts it from a clone of the app executable and sends the reader's input.
 struct SchemaReviewRendererTests {
+    @Test func selectedReviewCardHasNoOuterHalo() throws {
+        let executable = try #require(Self.appExecutable(), "The SQLiteGraphStudio product is built for this test target")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("review-border-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var review = Self.review()
+        review.before.tables.removeAll { $0.id != "users" }
+        review.after.tables.removeAll { $0.id != "users" }
+        review.before.relations = []
+        review.after.relations = []
+        let url = folder.appendingPathComponent("change.sgreview")
+        try review.write(to: url)
+        let renderer = SchemaReviewRenderer(executableProvider: { executable },
+                                            slotDirectory: folder.appendingPathComponent("slots", isDirectory: true),
+                                            cloneDirectory: folder.appendingPathComponent("clones", isDirectory: true),
+                                            idleTimeout: 60)
+        defer { renderer.stop() }
+
+        let request: [String: Any] = ["cmd": "render", "path": url.path, "width": 800, "height": 500,
+                                      "scale": 1, "appearance": "light", "format": "png"]
+        _ = try renderer.request(request)
+        var selectedRequest = request
+        selectedRequest["actions"] = [["type": "select", "table": "users"]]
+        let selected = try renderer.request(selectedRequest)
+        #expect(selected["selection"] as? [String] == ["users"])
+        let imageData = try #require(Data(base64Encoded: selected["image"] as? String ?? ""))
+        let image = try #require(NSBitmapImageRep(data: imageData))
+        let midY = image.pixelsHigh / 2
+        func rgb(at x: Int) -> NSColor? { image.colorAt(x: x, y: midY)?.usingColorSpace(.deviceRGB) }
+        let borderX = try #require((50..<(image.pixelsWide / 2)).first { x in
+            guard let color = rgb(at: x) else { return false }
+            return color.blueComponent - color.redComponent > 0.08
+                && color.blueComponent - color.greenComponent > 0.04
+        }, "The selected review card should have a blue border")
+        let outside = try #require(rgb(at: borderX - 3))
+        let background = try #require(rgb(at: borderX - 40))
+        #expect(abs(outside.redComponent - background.redComponent) * 255 <= 3,
+                "The review card should not darken the canvas outside its blue border")
+    }
+
     @Test func drawsTheAppsGraphAndAnswersReaderInput() throws {
         let executable = try #require(Self.appExecutable(), "The SQLiteGraphStudio product is built for this test target")
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("renderer-\(UUID().uuidString)", isDirectory: true)
