@@ -45,17 +45,50 @@ public struct MCPSetupOutcome: Equatable, Sendable {
     public let state: State
     public let message: String
     public let verification: MCPSetupVerification?
+    /// For Codex at user scope: whether setup turned on the MCP Apps feature.
+    public let codexApps: MCPSetupCodexApps?
 
     public init(
         client: MCPSetupClient,
         state: State,
         message: String,
-        verification: MCPSetupVerification? = nil
+        verification: MCPSetupVerification? = nil,
+        codexApps: MCPSetupCodexApps? = nil
     ) {
         self.client = client
         self.state = state
         self.message = message
         self.verification = verification
+        self.codexApps = codexApps
+    }
+}
+
+/// Codex shows MCP App views, such as the inline schema review, only while its
+/// `enable_mcp_apps` feature is on. The feature is still under development, so
+/// user-scope setup offers to turn it on and the reader accepts it with the rest.
+public struct MCPSetupCodexApps: Equatable, Sendable {
+    public enum State: String, Equatable, Sendable {
+        /// Preview: accepting setup turns the feature on.
+        case willEnable
+        /// Outcome: setup turned the feature on.
+        case enabled
+        case alreadyEnabled
+        /// The reader's Codex config turns the feature off; setup keeps that choice.
+        case turnedOff
+        /// No Codex CLI here offers the feature.
+        case unsupported
+        case failed
+    }
+
+    public let state: State
+    /// The Codex CLI that reports and changes the feature.
+    public let cliPath: String?
+    public let message: String
+
+    public init(state: State, cliPath: String?, message: String) {
+        self.state = state
+        self.cliPath = cliPath
+        self.message = message
     }
 }
 
@@ -137,6 +170,9 @@ public struct MCPSetupReport: Equatable, Sendable {
             if let verification = outcome.verification {
                 lines.append("\(outcome.client.rawValue) MCP diagnostic: \(verification.statusSummary)")
             }
+            if let codexApps = outcome.codexApps {
+                lines.append("\(outcome.client.rawValue) MCP Apps: \(codexApps.message)")
+            }
             return lines
         } + ["skills: \(skills.summary)"]
     }
@@ -170,19 +206,23 @@ public struct MCPSetupClientPlan: Equatable, Sendable {
     public let cliPath: String?
     public let cliVersion: String?
     public let message: String
+    /// For Codex at user scope: what setup will do about the MCP Apps feature.
+    public let codexApps: MCPSetupCodexApps?
 
     public init(
         client: MCPSetupClient,
         state: State,
         cliPath: String?,
         cliVersion: String? = nil,
-        message: String
+        message: String,
+        codexApps: MCPSetupCodexApps? = nil
     ) {
         self.client = client
         self.state = state
         self.cliPath = cliPath
         self.cliVersion = cliVersion
         self.message = message
+        self.codexApps = codexApps
     }
 }
 
@@ -240,7 +280,8 @@ public struct MCPSetupPreview: Equatable, Sendable {
     }
 
     public var canInstall: Bool {
-        clients.contains { $0.state == .willRegister } || skills.contains(where: \.hasChanges)
+        clients.contains { $0.state == .willRegister || $0.codexApps?.state == .willEnable }
+            || skills.contains(where: \.hasChanges)
     }
 
     public var hasBlockers: Bool {
@@ -576,7 +617,19 @@ public enum MCPSetupInstaller {
                 homeDirectory: homeDirectory,
                 runner: runner,
                 helperDiagnoser: helperDiagnoser
-            )
+            ).map { outcome in
+                // The feature is a global Codex setting, so only user-scope setup changes it,
+                // and only once this helper is the one Codex runs.
+                guard outcome.client == .codex, scope == .user,
+                      [.installed, .alreadyInstalled].contains(outcome.state),
+                      let cliPath = findExecutable(named: outcome.client.rawValue, searchPath: searchPath,
+                                                   homeDirectory: homeDirectory) else { return outcome }
+                return MCPSetupOutcome(
+                    client: outcome.client, state: outcome.state, message: outcome.message,
+                    verification: outcome.verification,
+                    codexApps: enableCodexApps(cliPath: cliPath, homeDirectory: homeDirectory, runner: runner)
+                )
+            }
         } else {
             clientOutcomes = clients.map {
                 MCPSetupOutcome(
@@ -800,7 +853,9 @@ public enum MCPSetupInstaller {
                 return MCPSetupClientPlan(
                     client: client, state: .willRegister, cliPath: cliPath,
                     cliVersion: cliVersion,
-                    message: "\(client.displayName) did not confirm an existing \(serverName) entry (CLI status \(current.status)). The installer will attempt registration after you approve."
+                    message: "\(client.displayName) did not confirm an existing \(serverName) entry (CLI status \(current.status)). The installer will attempt registration after you approve.",
+                    codexApps: client == .codex
+                        ? codexAppsPlan(cliPath: cliPath, homeDirectory: homeDirectory, runner: runner) : nil
                 )
             }
 
@@ -819,7 +874,9 @@ public enum MCPSetupInstaller {
                 cliVersion: cliVersion,
                 message: matches
                     ? "\(client.displayName) already has the bundled helper registered."
-                    : "\(client.displayName) already has an entry named \(serverName); it will be left unchanged."
+                    : "\(client.displayName) already has an entry named \(serverName); it will be left unchanged.",
+                codexApps: client == .codex && matches
+                    ? codexAppsPlan(cliPath: cliPath, homeDirectory: homeDirectory, runner: runner) : nil
             )
         }
 
@@ -1886,9 +1943,11 @@ public enum MCPSetupInstaller {
             homeDirectory.appendingPathComponent(".asdf/shims", isDirectory: true).path,
         ])
         directories.append(contentsOf: hostOverride ?? (
-            ["/opt/homebrew/bin", "/usr/local/bin"] + (isCodex ? ["/Applications/ChatGPT.app/Contents/Resources"] : [])
+            ["/opt/homebrew/bin", "/usr/local/bin"]
+                + (isCodex ? ["/Applications/" + codexAppCLIDirectory, "/Applications/ChatGPT.app/Contents/Resources"] : [])
         ))
         if isCodex {
+            directories.append(homeDirectory.appendingPathComponent("Applications/" + codexAppCLIDirectory).path)
             directories.append(homeDirectory.appendingPathComponent("Applications/ChatGPT.app/Contents/Resources").path)
         }
 
@@ -1900,6 +1959,103 @@ public enum MCPSetupInstaller {
             }
         }
         return nil
+    }
+
+    static let codexAppsFeatureName = "enable_mcp_apps"
+    private static let codexAppCLIDirectory = "Codex.app/Contents/Resources/codex-cli/bin"
+
+    /// What accepting setup will do about Codex's MCP Apps feature.
+    private static func codexAppsPlan(
+        cliPath: String, homeDirectory: URL, runner: MCPSetupCommandRunning
+    ) -> MCPSetupCodexApps {
+        let feature = codexAppsFeatureName
+        guard let found = probeCodexApps(primary: cliPath, homeDirectory: homeDirectory, runner: runner) else {
+            return MCPSetupCodexApps(state: .unsupported, cliPath: nil,
+                message: "This Codex doesn't offer MCP App views (\(feature)), so schema reviews show as text in Codex.")
+        }
+        if found.enabled {
+            return MCPSetupCodexApps(state: .alreadyEnabled, cliPath: found.cliPath,
+                message: "Codex already shows MCP App views, such as inline schema reviews.")
+        }
+        if codexConfigTurnsAppsOff(homeDirectory: homeDirectory) {
+            return MCPSetupCodexApps(state: .turnedOff, cliPath: found.cliPath,
+                message: "Your Codex config turns \(feature) off, so setup leaves it off and schema reviews show as text in Codex.")
+        }
+        return MCPSetupCodexApps(state: .willEnable, cliPath: found.cliPath,
+            message: "Will turn on Codex's \(feature) feature (\(found.stage)) in your Codex config, so schema reviews show inside Codex chats. It applies to all Codex sessions once Codex restarts.")
+    }
+
+    private static func enableCodexApps(
+        cliPath: String, homeDirectory: URL, runner: MCPSetupCommandRunning
+    ) -> MCPSetupCodexApps {
+        let plan = codexAppsPlan(cliPath: cliPath, homeDirectory: homeDirectory, runner: runner)
+        guard plan.state == .willEnable, let featureCLI = plan.cliPath else { return plan }
+        let feature = codexAppsFeatureName
+        let enabled = runner.run(executable: featureCLI, arguments: ["features", "enable", feature])
+        guard enabled.status == 0 else {
+            return MCPSetupCodexApps(state: .failed, cliPath: featureCLI,
+                message: "Codex could not turn on \(feature): \(brief(enabled.stderr.isEmpty ? enabled.stdout : enabled.stderr)). Schema reviews show as text in Codex.")
+        }
+        let readBack = runner.run(executable: featureCLI, arguments: ["features", "list"])
+        guard readBack.status == 0, codexAppsFeature(in: readBack.stdout)?.enabled == true else {
+            return MCPSetupCodexApps(state: .failed, cliPath: featureCLI,
+                message: "Codex accepted turning on \(feature), but its feature list did not confirm it.")
+        }
+        return MCPSetupCodexApps(state: .enabled, cliPath: featureCLI,
+            message: "Turned on Codex's \(feature) feature, so schema reviews show inside Codex chats. Restart Codex to apply it.")
+    }
+
+    /// The first Codex CLI that reports the feature. The Codex app's own CLI comes first:
+    /// it knows the features that app offers, while a CLI on PATH may be older. All of
+    /// them read and write the same Codex config.
+    private static func probeCodexApps(
+        primary: String, homeDirectory: URL, runner: MCPSetupCommandRunning
+    ) -> (cliPath: String, stage: String, enabled: Bool)? {
+        var directories = [homeDirectory.appendingPathComponent("Applications/" + codexAppCLIDirectory, isDirectory: true).path]
+        if hostSearchDirectoriesOverride == nil { directories.insert("/Applications/" + codexAppCLIDirectory, at: 0) }
+        var seen = Set<String>()
+        let candidates = (directories.map { $0 + "/codex" } + [primary]).filter {
+            seen.insert($0).inserted && FileManager.default.isExecutableFile(atPath: $0)
+        }
+        for cli in candidates {
+            let listed = runner.run(executable: cli, arguments: ["features", "list"])
+            guard listed.status == 0, let feature = codexAppsFeature(in: listed.stdout) else { continue }
+            return (cli, feature.stage, feature.enabled)
+        }
+        return nil
+    }
+
+    /// Reads the feature's row from `codex features list`: name, stage, effective state.
+    private static func codexAppsFeature(in output: String) -> (stage: String, enabled: Bool)? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            let words = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard words.count >= 3, words[0] == codexAppsFeatureName,
+                  let state = words.last, state == "true" || state == "false" else { continue }
+            let stage = words.dropFirst().dropLast().joined(separator: " ")
+            return stage == "removed" ? nil : (stage, state == "true")
+        }
+        return nil
+    }
+
+    /// A reader who turned the feature off in Codex's config keeps that choice.
+    private static func codexConfigTurnsAppsOff(homeDirectory: URL) -> Bool {
+        let config = homeDirectory.appendingPathComponent(".codex/config.toml", isDirectory: false)
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: config.path))?[.size] as? NSNumber,
+              size.uint64Value <= maximumProjectConfigBytes,
+              let text = try? String(contentsOf: config, encoding: .utf8) else { return false }
+        var section: [String] = []
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = stripTOMLComment(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("[") {
+                section = parseTOMLTableHeader(line) ?? []
+                continue
+            }
+            if section == ["features"], let (key, value) = parseTOMLAssignment(line), key == codexAppsFeatureName {
+                return value == "false"
+            }
+        }
+        return false
     }
 
     private static func brief(_ value: String) -> String {

@@ -200,6 +200,11 @@ struct CodingAgentSetupSheet: View {
                             Text(plan.message)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
+                            if let codexApps = plan.codexApps {
+                                Text(codexApps.message)
+                                    .font(.callout)
+                                    .foregroundStyle(codexApps.state == .willEnable ? Color.primary : Color.secondary)
+                            }
                             if let cliPath = plan.cliPath {
                                 if let cliVersion = plan.cliVersion {
                                     Text("Version: \(cliVersion)")
@@ -281,6 +286,11 @@ struct CodingAgentSetupSheet: View {
                                     )
                             }
                             Text(outcome.message).font(.callout).foregroundStyle(.secondary)
+                            if let codexApps = outcome.codexApps {
+                                Text(codexApps.message)
+                                    .font(.callout)
+                                    .foregroundStyle(codexApps.state == .failed ? Color.orange : Color.secondary)
+                            }
                         }
                     }
                 }

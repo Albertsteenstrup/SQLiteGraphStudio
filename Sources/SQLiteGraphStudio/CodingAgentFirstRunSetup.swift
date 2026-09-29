@@ -32,7 +32,7 @@ struct CodingAgentFirstRunSetup {
         }
         guard !availableClients.isEmpty else { return .deferUntilClientAvailable }
         let actionableClient = availableClients.contains {
-            $0.state == .willRegister || $0.state == .nameConflict
+            $0.state == .willRegister || $0.state == .nameConflict || $0.codexApps?.state == .willEnable
         }
         let actionableSkills = preview.skills.contains { skill in
             (skill.hasChanges || skill.state == .blocked || !skill.blockers.isEmpty)

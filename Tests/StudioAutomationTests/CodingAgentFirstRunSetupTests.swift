@@ -88,6 +88,11 @@ struct CodingAgentFirstRunSetupTests {
         let onboarding = CodingAgentFirstRunSetup(defaults: defaults)
         #expect(onboarding.decision(for: previewWithCodex(.alreadyRegistered)) == .complete)
         #expect(onboarding.decision(for: previewWithCodex(.nameConflict)) == .review)
+        let appsOff = MCPSetupPreview(helperPath: helperPath, clients: [MCPSetupClientPlan(
+            client: .codex, state: .alreadyRegistered, cliPath: "/usr/local/bin/codex", message: "test",
+            codexApps: MCPSetupCodexApps(state: .willEnable, cliPath: "/usr/local/bin/codex", message: "test")
+        )], skills: [])
+        #expect(onboarding.decision(for: appsOff) == .review, "Turning on Codex's MCP Apps is a change to review")
     }
 
     private var helperPath: String {

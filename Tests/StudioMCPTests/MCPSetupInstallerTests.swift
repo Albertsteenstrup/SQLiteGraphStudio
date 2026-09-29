@@ -300,20 +300,23 @@ final class MCPSetupInstallerTests: XCTestCase {
             MCPSetupCommandResult(status: 0, stdout: "added"),
             MCPSetupCommandResult(status: 0, stdout: "{\"command\":\"/path/StudioMCP\",\"args\":[]}"),
         ])
-        let report = MCPSetupInstaller.setup(
-            clients: [.codex],
-            executablePath: "/path/StudioMCP",
-            homeDirectory: home,
-            searchPath: bin.path,
-            runner: runner,
-            helperDiagnoser: FakeHelperDiagnoser(result: MCPSetupVerification(
-                succeeded: true,
-                discoveredToolCount: 62,
-                statusSummary: "MCP handshake, 62-tool discovery, and studio_status succeeded. Graph Studio is closed."
-            ))
-        )
+        let report = MCPSetupInstaller.$hostSearchDirectoriesOverride.withValue([]) {
+            MCPSetupInstaller.setup(
+                clients: [.codex],
+                executablePath: "/path/StudioMCP",
+                homeDirectory: home,
+                searchPath: bin.path,
+                runner: runner,
+                helperDiagnoser: FakeHelperDiagnoser(result: MCPSetupVerification(
+                    succeeded: true,
+                    discoveredToolCount: 62,
+                    statusSummary: "MCP handshake, 62-tool discovery, and studio_status succeeded. Graph Studio is closed."
+                ))
+            )
+        }
 
         XCTAssertEqual(report.clients.map(\.state), [.installed])
+        XCTAssertEqual(report.clients[0].codexApps?.state, .unsupported, "This fake Codex lists no features")
         XCTAssertEqual(report.skills.installed.count, 5)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/skills").path))
         XCTAssertFalse(report.hasFailures)
@@ -392,18 +395,23 @@ final class MCPSetupInstallerTests: XCTestCase {
         let runner = FakeCommandRunner(responses: [
             MCPSetupCommandResult(status: 0, stdout: "codex 0.1"),
             MCPSetupCommandResult(status: 0, stdout: "{\"command\":\"\(helper.path)\",\"args\":[]}"),
+            MCPSetupCommandResult(status: 0, stdout: "enable_mcp_apps   under development   false\n"),
             MCPSetupCommandResult(status: 0, stdout: "claude 1.2"),
             MCPSetupCommandResult(status: 1, stderr: "not configured"),
         ])
-        let preview = MCPSetupInstaller.previewFromAppBundle(
-            appBundle: appBundle,
-            homeDirectory: home,
-            searchPath: bin.path,
-            runner: runner
-        )
+        let preview = MCPSetupInstaller.$hostSearchDirectoriesOverride.withValue([]) {
+            MCPSetupInstaller.previewFromAppBundle(
+                appBundle: appBundle,
+                homeDirectory: home,
+                searchPath: bin.path,
+                runner: runner
+            )
+        }
 
         XCTAssertEqual(preview.helperPath, helper.path)
         XCTAssertEqual(preview.clients.map(\.state), [.alreadyRegistered, .willRegister])
+        XCTAssertEqual(preview.clients[0].codexApps?.state, .willEnable)
+        XCTAssertNil(preview.clients[1].codexApps)
         XCTAssertEqual(preview.clients[0].cliVersion, "codex 0.1")
         XCTAssertEqual(preview.clients[1].cliVersion, "claude 1.2")
         XCTAssertTrue(preview.canInstall)
@@ -416,6 +424,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         XCTAssertEqual(runner.invocations.map(\.arguments), [
             ["--version"],
             ["mcp", "get", MCPSetupInstaller.serverName, "--json"],
+            ["features", "list"],
             ["--version"],
             ["mcp", "get", MCPSetupInstaller.serverName],
         ])
@@ -634,6 +643,81 @@ final class MCPSetupInstallerTests: XCTestCase {
         XCTAssertEqual(servers[MCPSetupInstaller.serverName]?["command"] as? String, helperPath)
         XCTAssertEqual(report.skills.installed.count, 5)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/skills/database-explore/SKILL.md").path))
+    }
+
+    /// Codex shows inline reviews only while its MCP Apps feature is on. Accepting user-wide
+    /// setup turns it on through the Codex app's own CLI, which knows the feature even when an
+    /// older CLI comes first on PATH. A reader's explicit "off" and an older Codex are left alone.
+    func testUserSetupTurnsOnCodexAppsThroughTheCodexAppCLI() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let bin = home.appendingPathComponent("bin", isDirectory: true)
+        let appBin = home.appendingPathComponent("Applications/Codex.app/Contents/Resources/codex-cli/bin", isDirectory: true)
+        for directory in [bin, appBin] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let cli = directory.appendingPathComponent("codex")
+            XCTAssertTrue(FileManager.default.createFile(atPath: cli.path, contents: Data()))
+            XCTAssertEqual(chmod(cli.path, 0o755), 0)
+        }
+        let pathCLI = bin.appendingPathComponent("codex").path
+        let appCLI = appBin.appendingPathComponent("codex").path
+        let registered = MCPSetupCommandResult(status: 0, stdout: "{\"command\":\"/path/StudioMCP\",\"args\":[]}")
+        let off = MCPSetupCommandResult(status: 0, stdout: "apps   stable   true\nenable_mcp_apps   under development   false\n")
+        let on = MCPSetupCommandResult(status: 0, stdout: "enable_mcp_apps   under development   true\n")
+        let diagnoser = FakeHelperDiagnoser(result: MCPSetupVerification(
+            succeeded: true, discoveredToolCount: 67, statusSummary: "MCP handshake succeeded."
+        ))
+        func setup(_ runner: FakeCommandRunner) -> MCPSetupReport {
+            MCPSetupInstaller.$hostSearchDirectoriesOverride.withValue([]) {
+                MCPSetupInstaller.setup(clients: [.codex], executablePath: "/path/StudioMCP", homeDirectory: home,
+                                        searchPath: bin.path, runner: runner, helperDiagnoser: diagnoser)
+            }
+        }
+
+        // The review only reads, and names the change the reader accepts.
+        let previewRunner = FakeCommandRunner(responses: [MCPSetupCommandResult(status: 0, stdout: "codex-cli 0.42.0"), registered, off])
+        let preview = MCPSetupInstaller.$hostSearchDirectoriesOverride.withValue([]) {
+            MCPSetupInstaller.preview(clients: [.codex], executablePath: "/path/StudioMCP", homeDirectory: home,
+                                      searchPath: bin.path, runner: previewRunner)
+        }
+        let plan = try XCTUnwrap(preview.clients.first)
+        XCTAssertEqual(plan.state, .alreadyRegistered)
+        XCTAssertEqual(plan.codexApps?.state, .willEnable)
+        XCTAssertEqual(plan.codexApps?.cliPath, appCLI)
+        XCTAssertTrue(MCPSetupPreview(helperPath: "/path/StudioMCP", clients: [plan], skills: []).canInstall,
+                      "Turning the feature on is a change to install, even with everything else current")
+        XCTAssertFalse(previewRunner.invocations.contains { $0.arguments.contains("enable") })
+
+        let runner = FakeCommandRunner(responses: [registered, off, MCPSetupCommandResult(status: 0, stdout: "Enabled feature"), on])
+        let report = setup(runner)
+        XCTAssertEqual(report.clients.first?.state, .alreadyInstalled)
+        XCTAssertEqual(report.clients.first?.codexApps?.state, .enabled)
+        XCTAssertFalse(report.hasFailures)
+        XCTAssertTrue(report.outputLines.contains { $0.hasPrefix("codex MCP Apps: Turned on") })
+        XCTAssertEqual(runner.invocations.map { [$0.executable] + $0.arguments }, [
+            [pathCLI, "mcp", "get", MCPSetupInstaller.serverName, "--json"],
+            [appCLI, "features", "list"],
+            [appCLI, "features", "enable", "enable_mcp_apps"],
+            [appCLI, "features", "list"],
+        ])
+
+        // A reader who turned it off keeps that choice.
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+        try Data("[features]\n# my choice\nenable_mcp_apps = false\n".utf8).write(to: home.appendingPathComponent(".codex/config.toml"))
+        let keptRunner = FakeCommandRunner(responses: [registered, off])
+        XCTAssertEqual(setup(keptRunner).clients.first?.codexApps?.state, .turnedOff)
+        XCTAssertFalse(keptRunner.invocations.contains { $0.arguments.contains("enable") })
+
+        // A Codex that doesn't offer the feature is left alone, without failing setup.
+        let olderRunner = FakeCommandRunner(responses: [
+            registered,
+            MCPSetupCommandResult(status: 2, stderr: "error: unexpected argument 'list' found"),
+            MCPSetupCommandResult(status: 0, stdout: "apps   stable   true\n"),
+        ])
+        let older = setup(olderRunner)
+        XCTAssertEqual(older.clients.first?.codexApps?.state, .unsupported)
+        XCTAssertFalse(older.hasFailures)
+        XCTAssertFalse(olderRunner.invocations.contains { $0.arguments.contains("enable") })
     }
 
     private func temporaryDirectory() throws -> URL {
