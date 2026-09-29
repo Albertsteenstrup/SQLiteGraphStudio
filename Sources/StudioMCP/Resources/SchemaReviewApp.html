@@ -59,7 +59,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .toast.error { color: var(--del); }
 .canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: var(--bg-2); overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
 .canvas.panning { cursor: grabbing; }
-.canvas img.frame { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.canvas img.frame { position: absolute; left: 0; top: 0; pointer-events: none; }
 .canvas svg { display: block; width: 100%; height: 100%; }
 .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 12.5px; }
 .loading::before { content: ""; width: 12px; height: 12px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--text-2); animation: spin 0.8s linear infinite; }
@@ -577,7 +577,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     requestAnimationFrame(reportSize);
   });
 
-  // ---- Screen transforms: x ↦ s·x + t, used to preview gestures on the last frame ----
+  // ---- Screen transforms: x ↦ s·x + t, batched for the renderer ----
   const IDENTITY = { s: 1, tx: 0, ty: 0 };
   const compose = (a, b) => ({ s: a.s * b.s, tx: a.s * b.tx + a.tx, ty: a.s * b.ty + a.ty });
   const inverse = (a) => ({ s: 1 / a.s, tx: -a.tx / a.s, ty: -a.ty / a.s });
@@ -620,7 +620,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     function act(action) { queued.push(action); flush(); }
     function gesture(transform) {
       local = compose(transform, local);
-      applyPreview();
       flush();
     }
     function refresh() { again = true; flush(); }
@@ -630,9 +629,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         const size = viewport();
         if (frameSize && (size.width !== frameSize.width || size.height !== frameSize.height)) refresh();
       }, 180);
-    }
-    function applyPreview() {
-      if (image) image.style.transform = `translate(${local.tx}px, ${local.ty}px) scale(${local.s})`;
     }
     function flush() {
       if (state.mode !== exact) return;
@@ -687,13 +683,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       frameSize = { width: info.width || size.width, height: info.height || size.height };
       next.style.width = frameSize.width + "px";
       next.style.height = frameSize.height + "px";
-      // Gestures made while this frame was drawn stay previewed on top of it.
+      // Gestures made while this frame was drawn go into the next renderer request.
       local = compose(local, inverse(sent));
       sent = IDENTITY;
       const canvas = $("canvas");
       if (image) canvas.replaceChild(next, image); else canvas.insertBefore(next, canvas.firstChild);
       image = next;
-      applyPreview();
       $("loading").hidden = true;
       if (Array.isArray(info.setTables)) {
         const key = info.setTables.map((ids) => ids.join("\u0000")).join("\u0001");
@@ -736,7 +731,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       reset, start, act, refresh, resized,
       pan: (dx, dy) => gesture(panBy(dx, dy)),
       zoom: (factor, point) => gesture(zoomAt(factor, point)),
-      click: (point) => act({ type: "click", x: point.x, y: point.y }),
+      // The last frame stays still while its camera moves remotely. Map a click on
+      // that visible frame to where the same point will be after pending gestures.
+      click: (point) => act({ type: "click", x: local.s * point.x + local.tx, y: local.s * point.y + local.ty }),
       fit: () => act({ type: "fit" }),
     };
   })();
