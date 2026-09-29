@@ -63,10 +63,14 @@ public struct GraphTapRequest: Identifiable, Sendable, Equatable {
     public let id: UUID
     /// In the graph view's coordinates, from its top-left corner.
     public let point: CGPoint
+    /// Clicking a review's chosen table normally returns to every change. A reader who
+    /// closed that table's details clicks it to see them again, so it stays chosen.
+    public let keepsChosenTable: Bool
 
-    public init(id: UUID = UUID(), point: CGPoint) {
+    public init(id: UUID = UUID(), point: CGPoint, keepsChosenTable: Bool = false) {
         self.id = id
         self.point = point
+        self.keepsChosenTable = keepsChosenTable
     }
 }
 
@@ -1716,8 +1720,8 @@ public final class AppSession {
     }
 
     /// Clicks the graph at `point` as a reader at the window would.
-    public func requestGraphTap(at point: CGPoint) {
-        graphTapRequest = GraphTapRequest(point: point)
+    public func requestGraphTap(at point: CGPoint, keepsChosenTable: Bool = false) {
+        graphTapRequest = GraphTapRequest(point: point, keepsChosenTable: keepsChosenTable)
     }
 
     /// Selects a table and asks the graph to bring it into view — for choices made

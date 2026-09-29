@@ -484,10 +484,16 @@ public struct SchemaGraphView: View {
                 .gesture(backgroundPanGesture(in: size, geometry: geometry, edgeLookup: edgeLookup))
                 .onTapGesture(perform: tapCanvas)
                 .onChange(of: session.graphTapRequest?.id) { _, _ in
-                    guard let point = session.graphTapRequest?.point else { return }
+                    guard let request = session.graphTapRequest else { return }
+                    let point = request.point
+                    let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup)
+                    if request.keepsChosenTable, let card, session.schemaReview != nil,
+                       session.selectedGraphNodeIDs == [card.tableID],
+                       renderPlan.detailIDs.contains(card.tableID) || renderPlan.markerIDs.contains(card.tableID) {
+                        return
+                    }
                     // A drawn card takes its own clicks; marks and empty canvas are the canvas's.
-                    if let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup),
-                       renderPlan.detailIDs.contains(card.tableID), !renderPlan.markerIDs.contains(card.tableID) {
+                    if let card, renderPlan.detailIDs.contains(card.tableID), !renderPlan.markerIDs.contains(card.tableID) {
                         selectCard(card.tableID)
                     } else {
                         tapCanvas(point)

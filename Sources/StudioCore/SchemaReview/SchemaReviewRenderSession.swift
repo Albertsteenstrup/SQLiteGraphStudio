@@ -264,7 +264,7 @@ final class RenderedReview {
         let point = CGPoint(x: number(action["x"]), y: number(action["y"]))
         switch action["type"] as? String {
         case "click":
-            session.requestGraphTap(at: point)
+            session.requestGraphTap(at: point, keepsChosenTable: action["keepChosen"] as? Bool ?? false)
         case "select":
             if let table = action["table"] as? String { session.revealGraphNode(table) }
         case "pan":

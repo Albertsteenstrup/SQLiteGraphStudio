@@ -2995,6 +2995,10 @@
                 "type": "integer",
                 "minimum": -1,
                 "description": "Zero-based change set, or -1 for View 0 (the full model after changes)."
+              },
+              "keepChosen": {
+                "type": "boolean",
+                "description": "For click: keep the chosen table chosen when the click lands on it, rather than returning to every change. Sent while the view's table details are closed."
               }
             },
             "required": [

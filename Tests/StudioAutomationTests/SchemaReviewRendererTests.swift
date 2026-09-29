@@ -88,6 +88,14 @@ struct SchemaReviewRendererTests {
         // visible users marker, rather than only selecting a table by ID.
         let clicked = try frame([["type": "click", "x": 240, "y": 227]])
         #expect(clicked.state["selection"] as? [String] == ["users"])
+        // Clicking the chosen table again returns to every change, as in the app, unless
+        // the embedded view closed its details and the reader clicks to see them again.
+        let kept = try frame([["type": "click", "x": 240, "y": 227, "keepChosen": true]])
+        #expect(kept.state["selection"] as? [String] == ["users"])
+        let unchosen = try frame([["type": "click", "x": 240, "y": 227]])
+        #expect((unchosen.state["selection"] as? [String])?.isEmpty == true)
+        let chosenAgain = try frame([["type": "click", "x": 240, "y": 227, "keepChosen": true]])
+        #expect(chosenAgain.state["selection"] as? [String] == ["users"], "Keeping only applies to a chosen table")
 
         let stepped = try frame([["type": "step", "direction": 1]])
         #expect(stepped.state["set"] as? Int == 1)

@@ -662,6 +662,123 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         try await waitUntil("document.getElementById('review').contentDocument.getElementById('position').textContent.includes('View 42') && document.getElementById('review').contentDocument.getElementById('changes-body').textContent.includes('outside the embedded detail limit')", in: browser)
     }
 
+    /// The view sits in a scrolling conversation: scrolling that arrives because the
+    /// conversation moved the graph under a still pointer must keep scrolling it. And a
+    /// reader who closed a table's details clicks that table to see them again.
+    func testScrollingPassesThroughUntilTheGraphIsUsedAndClosedDetailsReopen() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let frameData = Data("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1' fill='#f5f6f7'/></svg>".utf8).base64EncodedString()
+        let host = """
+        <!doctype html><html><body style="margin:0">
+        <script>
+        window.actions = [];
+        window.selection = [];
+        window.addEventListener("message", event => {
+          const message = event.data;
+          if (!message || message.jsonrpc !== "2.0") return;
+          if (message.method === "ui/initialize") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: { hostContext: { theme: "light" } } }, "*");
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_frame") {
+            const args = message.params.arguments;
+            for (const action of args.actions || []) {
+              window.actions.push(action);
+              // Stands in for the renderer: every click here lands on the users table,
+              // which the app un-chooses when it is already chosen.
+              if (action.type === "click") {
+                const chosen = window.selection.length === 1;
+                window.selection = chosen && !action.keepChosen ? [] : ["users"];
+              }
+            }
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data: "\(frameData)" }],
+              structuredContent: { width: args.width, height: args.height, sets: 1,
+                setTables: [["users"]], set: 0, selection: window.selection } } }, "*");
+          } else if (message.method === "tools/call" && message.params.name === "studio_review_detail") {
+            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
+              isError: false, content: [], structuredContent: {
+                format: "sqlite-graph-studio/schema-review-detail", revision: "test", changeSets: [["users"]],
+                tables: [{ id: "users", name: "users", kind: "modified", objectKind: "table",
+                  columns: [{ name: "email", kind: "modified", before: "TEXT NULL", description: "TEXT NOT NULL" }] }],
+                relations: [] } } }, "*");
+          }
+        });
+        window.addEventListener("load", () => document.getElementById("review").contentWindow.postMessage({
+          jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { isError: false, content: [],
+            structuredContent: { format: "sqlite-graph-studio/schema-review-view", path: "/tmp/wheel.sgreview",
+              revision: "test", summary: { modifiedTables: 1 },
+              changeSets: [{ label: "users", tables: 1, kind: "modified" }] } }
+        }, "*"), { once: true });
+        </script>
+        <iframe id="review" style="display:block;width:640px;height:700px;border:0" srcdoc="\(escaped)"></iframe>
+        </body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 700))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("!!document.getElementById('review')?.contentDocument?.querySelector('img.frame')", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            const view = doc.defaultView, canvas = doc.getElementById('canvas');
+            canvas.setPointerCapture = () => {};
+            const bounds = canvas.getBoundingClientRect();
+            const at = { clientX: bounds.left + 200, clientY: bounds.top + 150, bubbles: true, cancelable: true };
+            window.wheel = (extra = {}) => {
+              const event = new view.WheelEvent('wheel', { ...at, deltaX: 0, deltaY: 24.5, deltaMode: 0, ...extra });
+              canvas.dispatchEvent(event);
+              return event.defaultPrevented;
+            };
+            window.move = (screenX, screenY) => canvas.dispatchEvent(new view.PointerEvent('pointermove',
+              { ...at, pointerId: 1, screenX, screenY }));
+            window.leave = () => canvas.dispatchEvent(new view.PointerEvent('pointerleave', { pointerId: 1 }));
+            window.click = () => {
+              canvas.dispatchEvent(new view.PointerEvent('pointerdown', { ...at, pointerId: 1, button: 0 }));
+              canvas.dispatchEvent(new view.PointerEvent('pointerup', { ...at, pointerId: 1, button: 0 }));
+            };
+            window.detailShown = () => !doc.getElementById('detail').hidden;
+            return true; })()
+        """)
+
+        func prevented(_ script: String) async throws -> Bool {
+            let value = try await browser.evaluateJavaScript(script)
+            return try XCTUnwrap(value as? NSNumber).boolValue
+        }
+        let untouched = try await prevented("window.wheel()")
+        XCTAssertFalse(untouched, "Scrolling onto a graph the reader hasn't used scrolls the conversation")
+        let stillPointer = try await prevented("window.move(300, 400); window.move(300, 400); window.wheel()")
+        XCTAssertFalse(stillPointer, "Moves at the same screen point come from content scrolling under the pointer")
+        let pinch = try await prevented("window.wheel({ ctrlKey: true, deltaY: -8 })")
+        XCTAssertTrue(pinch, "A pinch always zooms the graph")
+        let moved = try await prevented("window.move(312, 404); window.wheel()")
+        XCTAssertTrue(moved, "Once the reader moves onto the graph, scrolling moves the graph")
+        try await waitUntil("window.actions.some(action => action.type === 'transform' && action.ty < 0)", in: browser)
+        let left = try await prevented("window.leave(); window.wheel()")
+        XCTAssertFalse(left, "Leaving the graph gives scrolling back to the conversation")
+
+        // Choose users: its details open. A click with them open un-chooses it, as in the app.
+        _ = try await browser.evaluateJavaScript("window.click(); true")
+        try await waitUntil("window.detailShown() && window.selection.length === 1", in: browser)
+        _ = try await browser.evaluateJavaScript("window.click(); true")
+        try await waitUntil("!window.detailShown() && window.selection.length === 0", in: browser)
+        let clicks = try await browser.evaluateJavaScript("JSON.stringify(window.actions.filter(action => action.type === 'click').map(action => !!action.keepChosen))") as? String
+        XCTAssertEqual(clicks, "[true,false]", "Only a click made while details are closed keeps the chosen table")
+
+        // Close the details with the table still chosen; the next click brings them back.
+        _ = try await browser.evaluateJavaScript("window.click(); true")
+        try await waitUntil("window.detailShown() && window.selection.length === 1", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+            return true; })()
+        """)
+        try await waitUntil("!window.detailShown() && window.selection.length === 1", in: browser)
+        _ = try await browser.evaluateJavaScript("window.click(); true")
+        try await waitUntil("window.detailShown() && window.selection.length === 1", in: browser)
+    }
+
     private func waitUntil(_ expression: String, in browser: WKWebView) async throws {
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline {

@@ -865,7 +865,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       zoom: (factor, point) => gesture(zoomAt(factor, point)),
       // The last frame stays still while its camera moves remotely. Map a click on
       // that visible frame to where the same point will be after pending gestures.
-      click: (point) => act({ type: "click", x: local.s * point.x + local.tx, y: local.s * point.y + local.ty }),
+      // As in the simplified graph, clicking the chosen table while its details are
+      // closed shows them again instead of returning to every change.
+      click: (point) => act({ type: "click", x: local.s * point.x + local.tx, y: local.s * point.y + local.ty,
+                              ...($("detail").hidden ? { keepChosen: true } : {}) }),
       fit: () => act({ type: "fit" }),
     };
   })();
@@ -1225,8 +1228,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     return { x: event.clientX - rect.left - canvas.clientLeft, y: event.clientY - rect.top - canvas.clientTop };
   }
   function centerPoint() { return { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 }; }
+  // The view sits in a scrolling conversation. Scrolling that reaches the graph because
+  // the conversation moved it under a still pointer keeps scrolling the conversation;
+  // the graph takes scrolling once the reader moves the pointer onto it or presses in
+  // it, until the pointer leaves. A pinch always zooms the graph.
+  let scrollsGraph = false;
+  let lastPointer = null;
+  canvas.addEventListener("pointermove", (event) => {
+    // Content scrolling under a still pointer can send moves at the same screen point.
+    const moved = !!lastPointer && (event.screenX !== lastPointer.x || event.screenY !== lastPointer.y);
+    lastPointer = { x: event.screenX, y: event.screenY };
+    if (moved) scrollsGraph = true;
+  }, { passive: true });
+  canvas.addEventListener("pointerleave", () => { scrollsGraph = false; lastPointer = null; });
   canvas.addEventListener("wheel", (event) => {
-    if (!state.mode) return;
+    if (!state.mode || (!event.ctrlKey && !scrollsGraph)) return;
     event.preventDefault();
     const point = pointOf(event);
     const lineScale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
@@ -1258,6 +1274,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   });
   let drag = null;
   canvas.addEventListener("pointerdown", (event) => {
+    scrollsGraph = true;
     if (event.button !== 0 || !state.mode || event.target.closest(".zoom")) return;
     drag = { x: event.clientX, y: event.clientY, moved: false, target: event.target, point: pointOf(event) };
     canvas.setPointerCapture(event.pointerId);
