@@ -6,6 +6,106 @@ import XCTest
 /// Exercises the HTML served to MCP App hosts with delayed frame replies.
 @MainActor
 final class SchemaReviewEmbeddedGestureTests: XCTestCase {
+    func testExplanationDisclosureIsSharedAcrossViewsAndReviewRefreshes() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let frameData = Data("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1' fill='#fff'/></svg>".utf8).base64EncodedString()
+        let host = """
+        <!doctype html><html><body>
+        <script>
+        const ids = ['users', 'audits'];
+        window.currentSet = 0;
+        window.detailRequests = 0;
+        window.frameRevisions = [];
+        window.review = {
+          format:'sqlite-graph-studio/schema-review-view', path:'/tmp/disclosure.sgreview',
+          revision:'test', summary:{ modifiedTables:2 },
+          changeSets:ids.map(label => ({ label, tables:1, kind:'modified' }))
+        };
+        window.resendReview = () => document.getElementById('review').contentWindow.postMessage({
+          jsonrpc:'2.0', method:'ui/notifications/tool-result',
+          params:{ isError:false, content:[], structuredContent:window.review }
+        }, '*');
+        window.addEventListener('message', event => {
+          const message = event.data;
+          if (!message || message.jsonrpc !== '2.0') return;
+          const reply = result => event.source.postMessage({ jsonrpc:'2.0', id:message.id, result }, '*');
+          if (message.method === 'ui/initialize') {
+            reply({ hostContext:{ theme:'light' } });
+          } else if (message.method === 'tools/call' && message.params.name === 'studio_review_frame') {
+            const args = message.params.arguments;
+            window.frameRevisions.push(args.revision);
+            window.currentSet = args.view_set;
+            for (const action of args.actions || []) if (action.type === 'set') window.currentSet = action.index;
+            reply({ isError:false, content:[{ type:'image', mimeType:'image/svg+xml', data:'\(frameData)' }],
+              structuredContent:{ width:args.width, height:args.height, set:window.currentSet,
+                setTables:ids.map(id => [id]), selection:[] } });
+          } else if (message.method === 'tools/call' && message.params.name === 'studio_review_detail') {
+            window.detailRequests += 1;
+            reply({ isError:false, content:[], structuredContent:{
+              format:'sqlite-graph-studio/schema-review-detail', revision:message.params.arguments.revision,
+              changeSets:ids.map(id => [id]), relations:[],
+              tables:ids.map(id => ({ id, name:id, kind:'modified', columns:[
+                { name:'note', kind:'added', description:'TEXT NULL' }
+              ] }))
+            } });
+          }
+        });
+        window.addEventListener('load', window.resendReview, { once:true });
+        </script>
+        <iframe id="review" style="display:block;width:640px;height:600px;border:0" srcdoc="\(escaped)"></iframe>
+        </body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 600))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("!!document.getElementById('review')?.contentDocument?.querySelector('img.frame')", in: browser)
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.querySelector('#changes summary').click(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#changes[open] #changes-body')?.textContent.includes('users')", in: browser)
+
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('next').click(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#changes[open] #changes-body')?.textContent.includes('audits')", in: browser)
+        let staysCollapsed = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.querySelector('#changes summary').click();
+            doc.getElementById('prev').click();
+            return !doc.getElementById('changes').open && doc.getElementById('position').textContent.includes('View 1'); })()
+        """) as? Bool
+        XCTAssertEqual(staysCollapsed, true, "Collapsing in View 2 must also collapse the panel in View 1")
+
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.getElementById('next').click();
+            doc.querySelector('#changes summary').click();
+            doc.getElementById('prev').click();
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#changes[open] #changes-body')?.textContent.includes('users')", in: browser)
+        let throughFullModel = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            doc.getElementById('prev').click();
+            const hiddenInZero = doc.getElementById('changes').hidden;
+            doc.getElementById('next').click();
+            return hiddenInZero && !doc.getElementById('changes').hidden && doc.getElementById('changes').open; })()
+        """) as? Bool
+        XCTAssertEqual(throughFullModel, true, "View 0 should temporarily hide explanations without discarding the open state")
+
+        // Hosts may resend the review result while updating an existing iframe.
+        // Keep the reader's choice and reload the newly supplied schema facts.
+        _ = try await browser.evaluateJavaScript("window.review.revision = 'updated'; window.resendReview(); true")
+        try await waitUntil("window.detailRequests === 2 && document.getElementById('review').contentDocument.querySelector('#changes[open] #changes-body')?.textContent.includes('users')", in: browser)
+        _ = try await browser.evaluateJavaScript("""
+          document.getElementById('review').contentDocument.querySelector('#changes summary').click();
+          window.review.revision = 'collapsed';
+          window.resendReview(); true
+        """)
+        try await waitUntil("window.frameRevisions.includes('collapsed') && !!document.getElementById('review').contentDocument.querySelector('img.frame')", in: browser)
+        let remainsCollapsedAfterRefresh = try await browser.evaluateJavaScript("!document.getElementById('review').contentDocument.getElementById('changes').open") as? Bool
+        XCTAssertEqual(remainsCollapsedAfterRefresh, true)
+    }
+
     func testViewZeroPrecedesTheDefaultChangeViewEvenWithOneSet() async throws {
         let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
         let escaped = html

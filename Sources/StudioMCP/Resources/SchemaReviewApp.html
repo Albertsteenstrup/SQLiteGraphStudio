@@ -359,7 +359,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     state.labels = Array.isArray(model.changeSets) ? model.changeSets : [];
     $("status").hidden = true;
     $("view").hidden = false;
-    $("changes").open = false;
+    // The explanation has one open/closed choice for this embedded review. Keep
+    // that choice across views and when the host sends an updated review result.
 
     const summary = model.summary || {};
     const legend = $("legend");
@@ -377,7 +378,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     setSets(state.labels.length + (model.moreChangeSets || 0), hasChanges ? 0 : null);
     renderChanges();
     sizeCanvas();
-    if (hasChanges) exact.start();
+    if (hasChanges) {
+      exact.start();
+      // An already-open disclosure does not emit another toggle on a refresh.
+      if ($("changes").open) loadDetail().catch(() => {});
+    }
     requestAnimationFrame(reportSize);
   }
 
