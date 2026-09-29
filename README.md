@@ -81,7 +81,15 @@ tables are named at a readable size, and relations that did not change stay
 hidden until you zoom in. Choose a table in the list or the graph to see only its
 changes — the relations it gained or lost and the tables they reach — while the
 rest fade; choose it again, or click empty canvas, to return. ⌥⌘↓ and ⌥⌘↑ step
-through changes and bring each one into view.
+through changes and bring each one into view. View 1 is the default; Previous
+from there opens **View 0**, the complete model after the changes. View 0 omits
+removed objects, keeps tables at uniform size and opacity, and uses colour alone
+to mark additions and edits. Table cards appear at a lower zoom in all review views.
+
+In the embedded viewer, **Changes in this view** can contain assistant-written
+explanations with clickable table, field, and relation names. Its expanded or
+collapsed state carries between views. Table details have a **Close ×** button
+and support **Escape**; closing either panel releases its space in the embed.
 
 The [database-diff skill](Skills/database-diff/SKILL.md) documents command-line
 snapshot and comparison creation for hooks. Bind generated reviews to immutable

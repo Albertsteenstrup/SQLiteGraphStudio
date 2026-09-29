@@ -138,7 +138,9 @@ public final class AppSession {
     /// View 0 is the complete after-schema model; views 1...N are connected change sets.
     /// This is separate from selection so the first change view can open unselected.
     public private(set) var schemaReviewViewIndex = 0
-    public var isSchemaReviewFullModelView: Bool { schemaReview != nil && schemaReviewViewIndex == 0 }
+    public var isSchemaReviewFullModelView: Bool {
+        schemaReview != nil && historicalExplanationArtifact == nil && schemaReviewViewIndex == 0
+    }
     public private(set) var schemaReviewAfterTableIDs: Set<String> = []
     public private(set) var schemaReviewAfterEdgeIDs: Set<String> = []
     /// Rows a changed table's card always lists in a review: its keys, then every changed

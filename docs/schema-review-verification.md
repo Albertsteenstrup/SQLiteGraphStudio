@@ -136,3 +136,65 @@ Command Line Tools' Testing framework; the four XCTest files could not be compil
 there and were excluded. The CLI
 flags were exercised against the built binary on a synthetic 195-table comparison.
 The native review window was not inspected visually in this pass.
+
+
+## Embedded review and setup follow-up — 2026-09-29
+
+This follow-up supersedes the earlier descriptions of multiple card borders and
+opening every change at once. Reviews frame View 1 without selecting a table.
+Selected change cards have a single change-coloured border, with no outer halo.
+View 0 shows only the after-schema model with uniform node sizing and opacity;
+View 1 and later retain the focused change presentation. Cards appear at a lower
+zoom in every review view.
+
+Embedded viewers keep the last complete frame during movement and resizing,
+use absolute view navigation to reject stale replies, and isolate state by iframe.
+Linked assistant explanations are tied to the exact review revision and validated
+against its table, field and relation IDs. The explanation disclosure preference
+survives view switches and refreshed tool results. Details close with **Close ×**
+or **Escape**, including while a frame is pending; panel collapse requests a
+smaller host height. Versioned and historical viewer resource names remain readable
+after helper upgrades. Already-running helpers still require a host restart.
+
+The setup installer accepts Codex's current nested stdio transport format and
+preserves already-correct registrations. User-wide skill-root links can resolve
+to an existing, user-owned directory inside the home folder, with other-user
+writes prohibited. Project destinations and nested skill links retain their
+restrictions; customized skills are preserved.
+
+Fresh focused pre-push verification against `origin/main` at `499ffdf`:
+
+- 47 XCTest checks passed: 21 MCP App/resource checks, 19 installer checks and
+  seven WKWebView embedded interaction checks.
+- 69 Swift Testing checks passed in nine suites, including real renderer
+  processes, graph geometry/lens behavior, schema comparison, View 0, inline/native
+  parity, historical explanations and skill installation.
+- Canonical, generated and MCP skill contents match
+  (`python3 Tools/generate_embedded_skills.py --check`).
+- The packaged app built successfully. Its installed helper completed setup for
+  both clients, including MCP handshake, 67-tool discovery and `studio_status`;
+  repeated setup reported all 10 skill copies current. Existing Codex settings,
+  the Claude skills link and previously existing shared skill files were unchanged.
+
+This is focused regression evidence, not a full test-suite or live PostgreSQL
+migration-validation claim. WKWebView tests exercise the actual viewer HTML with
+controlled host replies; they do not prove every host application's iframe layout.
+
+The independent pre-push review found two regressions, both reproduced before
+repair: dropping entirely omitted sets renumbered large-review explanations, and
+historical explanation captures accidentally inherited View 0 rendering rules.
+Detail sets now retain their original indices, omitted counts remain accurate,
+and fallback navigation keeps bounded overview labels. A WKWebView regression
+checks the correct explanation after an omitted set and bounds the navigation
+chips with 500 further omitted sets. Historical captures are explicitly excluded
+from View 0 so their saved visibility, expansion and focus behavior remains active.
+
+The reviewer rechecked the repairs and reported no remaining findings. All 116
+focused tests passed; after the final omitted-set message adjustment, all 28
+MCP App and embedded-view checks passed again, including navigation beyond the
+40-label overview limit.
+
+Wiki impact: no update needed — this repository has no Wiki source or publishing
+machinery; README and canonical documentation cover the changed workflows.
+
+Gate: PASS

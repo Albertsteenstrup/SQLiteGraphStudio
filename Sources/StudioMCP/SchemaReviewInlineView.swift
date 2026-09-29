@@ -568,7 +568,9 @@ public enum SchemaReviewInlineView {
             return model
         }
         let allSets = changeSets(changes, relations: relations)
-        let sets = allSets.map { $0.filter(shownChangedIDs.contains) }.filter { !$0.isEmpty }
+        // Keep empty slots: the native renderer, overview and assistant explanations
+        // use the original set index even when this drawing omits all its tables.
+        let sets = allSets.map { $0.filter(shownChangedIDs.contains) }
 
         let groups = changeGroups(changed, relations: relations)
         let addedCount = changed.filter { $0.kind == .added }.count
@@ -650,7 +652,7 @@ public enum SchemaReviewInlineView {
                         },
                     ]
                 },
-                "moreTables": max(0, ids.count - maximumExplanationTables),
+                "moreTables": ids.count - ids.prefix(maximumExplanationTables).filter { tableModels[$0] != nil }.count,
                 "relations": linkedRelations.prefix(maximumExplanationRelations).map { relation in
                     ["id": relation["id"] ?? "", "kind": relation["kind"] ?? "modified",
                      "source": relation["source"] ?? "", "target": relation["target"] ?? "",

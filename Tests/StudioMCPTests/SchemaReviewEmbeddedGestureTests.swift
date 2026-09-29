@@ -610,6 +610,58 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         _ = try await browser.evaluateJavaScript("window.releaseFrames(); true")
     }
 
+    func testSimplifiedViewKeepsOmittedSetNumberingAndExplanation() async throws {
+        let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
+        let escaped = html.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let host = """
+        <html><body><script>
+        window.addEventListener('message', event => {
+          const message = event.data;
+          const reply = result => event.source.postMessage({jsonrpc:'2.0', id:message.id, result}, '*');
+          if (message.method === 'ui/initialize') reply({hostContext:{theme:'light'}});
+          if (message.method === 'tools/call') {
+            if (message.params.name === 'studio_review_frame') reply({isError:true,
+              content:[{type:'text', text:'Renderer unavailable'}]});
+            if (message.params.name === 'studio_review_detail') reply({isError:false, structuredContent:{
+              format:'sqlite-graph-studio/schema-review-detail', revision:'test',
+              changeSets:[[], ['users'], ...Array.from({length:500}, () => [])], omitted:{changedTables:301}, relations:[],
+              tables:[{id:'users', name:'users', kind:'added', columns:[]}]}});
+          }
+        });
+        window.addEventListener('load', () => document.getElementById('review').contentWindow.postMessage({
+          jsonrpc:'2.0', method:'ui/notifications/tool-result', params:{isError:false, structuredContent:{
+            format:'sqlite-graph-studio/schema-review-view', path:'/tmp/large.sgreview', revision:'test',
+            summary:{addedTables:302}, changeSets:[
+              {label:'omitted group', tables:301, kind:'added'}, {label:'users', tables:1, kind:'added'}],
+            explanations:[{set:1, paragraphs:[[{text:'Users belong to the second change set.'}]]}]
+          }}}, '*'), {once:true});
+        </script><iframe id="review" style="width:640px;height:600px" srcdoc="\(escaped)"></iframe></body></html>
+        """
+        let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 600))
+        browser.loadHTMLString(host, baseURL: nil)
+        try await waitUntil("document.getElementById('review')?.contentDocument?.getElementById('note')?.textContent.includes('301 changed tables not drawn')", in: browser)
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.querySelector('#changes summary').click(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('changes-body').textContent.includes('outside the embedded detail limit')", in: browser)
+        _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('next').click(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('changes-body').textContent.includes('Users belong to the second')", in: browser)
+        let correctView = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            return doc.getElementById('position').textContent.includes('View 2')
+              && doc.getElementById('others').textContent.includes('omitted group')
+              && doc.querySelectorAll('#others button').length === 1; })()
+        """) as? Bool
+        XCTAssertEqual(correctView, true)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            for (let i = 0; i < 40; i++) doc.getElementById('next').click();
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('position').textContent.includes('View 42') && document.getElementById('review').contentDocument.getElementById('changes-body').textContent.includes('outside the embedded detail limit')", in: browser)
+    }
+
     private func waitUntil(_ expression: String, in browser: WKWebView) async throws {
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline {

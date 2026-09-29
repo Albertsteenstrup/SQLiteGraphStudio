@@ -522,6 +522,43 @@ final class MCPAppTests: XCTestCase {
         XCTAssertEqual(SchemaReviewInlineView.definitionLabel("option:fillfactor"), "Option fillfactor")
     }
 
+    func testExplanationContextAndLinksSurviveTheDrawingTableLimit() throws {
+        // Largest set sorts first but falls beyond the alphabetic drawing cap.
+        // The remaining set must keep index 1 in the context, detail and viewer.
+        let first = (0..<300).map { String(format: "a_%03d", $0) }
+        let omitted = (0..<301).map { String(format: "z_%03d", $0) }
+        let tables = (first + omitted).map { table($0, columns: [column("id", pk: 1), column("parent_id")]) }
+        let links = (1..<300).map { relation("fk_a_\($0)", first[$0], "parent_id", first[$0 - 1]) }
+            + (1..<301).map { relation("fk_z_\($0)", omitted[$0], "parent_id", omitted[$0 - 1]) }
+        try write([
+            "version": 1, "title": "Large review", "baseRef": "a", "headRef": "b", "notes": [],
+            "before": ["version": 1, "engine": "sqlite", "tables": [], "relations": []],
+            "after": ["version": 1, "engine": "sqlite", "tables": tables, "relations": links],
+        ], to: "large.sgreview")
+        let context = try XCTUnwrap(SchemaReviewInlineView.explanationContext(
+            path: "large.sgreview", workingDirectory: directory.path
+        )["structuredContent"] as? [String: Any])
+        let sets = try XCTUnwrap(context["sets"] as? [[String: Any]])
+        let second = try XCTUnwrap(sets.first { $0["set"] as? Int == 1 })
+        XCTAssertEqual((second["tables"] as? [[String: Any]])?.first?["id"] as? String, "a_000")
+        let omittedSet = try XCTUnwrap(sets.first { $0["set"] as? Int == 0 })
+        XCTAssertEqual(omittedSet["moreTables"] as? Int, 301)
+        let detail = try XCTUnwrap(SchemaReviewInlineView.detail(
+            path: "large.sgreview", workingDirectory: directory.path
+        )["structuredContent"] as? [String: Any])
+        XCTAssertEqual(detail["changeSets"] as? [[String]], [[], first])
+        XCTAssertEqual((detail["tables"] as? [Any])?.count, 300)
+        let result = SchemaReviewInlineView.result(
+            path: "large.sgreview", workingDirectory: directory.path,
+            expectedRevision: try XCTUnwrap(context["revision"] as? String),
+            explanations: [["set": 1, "paragraphs": [[
+                ["text": "a_001.parent_id", "table": "a_001", "field": "parent_id"],
+                ["text": " references a_000.", "relation": "fk_a_1"]
+            ]]]]
+        )
+        XCTAssertEqual(result["isError"] as? Bool, false, "\(result)")
+    }
+
     // MARK: Fixtures
 
     private func column(_ name: String, type: String = "TEXT", notNull: Bool = false, defaultSQL: String? = nil, pk: Int = 0) -> [String: Any] {

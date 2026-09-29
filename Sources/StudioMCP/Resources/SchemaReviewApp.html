@@ -419,13 +419,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     const table = state.tables.get(id);
     return table ? table.name : String(id).replace(/^public\./, "");
   }
-  /// A set as the chips name it: its first table, its size, and one kind for all of it.
-  function labelFor(ids) {
-    const tables = ids.map((id) => state.tables.get(id)).filter(Boolean);
-    const kinds = new Set(tables.map((table) => kindOf(table.kind)));
-    return { label: tables.length ? tables[0].name : String(ids[0] || ""), tables: ids.length,
-             kind: kinds.size === 1 ? [...kinds][0] : "modified", badge: tables.length === 1 ? tables[0].badge : undefined };
-  }
   function renderOthers() {
     const box = $("others");
     box.replaceChildren();
@@ -610,7 +603,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       paragraphs.push(parts);
     }
     if (ids.length > 12 || relations.length > 8) paragraphs.push([{ text: "Select a table in the graph to inspect the remaining changes." }]);
-    return paragraphs.length ? paragraphs : [[{ text: "No field or relation changes are shown in this set." }]];
+    const omittedSet = state.labels[index]?.tables ||
+      (Array.isArray(state.idSets[index]) && state.detail.omitted?.changedTables > 0);
+    return paragraphs.length ? paragraphs : [[{ text: omittedSet
+      ? "This set is outside the embedded detail limit. Open the review in Graph Studio to inspect it."
+      : "No field or relation changes are shown in this set." }]];
   }
   function renderParagraph(parts) {
     const paragraph = el("p", {});
@@ -883,7 +880,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       state.detail = detail;
       state.tables = new Map((Array.isArray(detail.tables) ? detail.tables : []).map((table) => [table.id, table]));
       state.idSets = Array.isArray(detail.changeSets) ? detail.changeSets : [];
-      state.labels = state.idSets.map(labelFor);
+      // Keep the overview's bounded labels and original indices, including sets
+      // whose tables were omitted from this simplified drawing.
       $("graph").toggleAttribute("hidden", false);
       $("loading").hidden = true;
       const notDrawn = (detail.omitted || {}).changedTables || 0;
@@ -913,7 +911,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         return;
       }
       $("loading").hidden = true;
-      $("note").textContent = "Simplified view";
+      const notDrawn = (state.detail.omitted || {}).changedTables || 0;
+      $("note").textContent = notDrawn ? `Simplified view · ${notDrawn} changed tables not drawn` : "Simplified view";
       state.tables = new Map((Array.isArray(state.detail.tables) ? state.detail.tables : []).map((table) => [table.id, table]));
       const all = [...state.tables.values()];
       const members = index === null ? all.filter((table) => !table.context).map((table) => table.id) : state.idSets[index] || [];
