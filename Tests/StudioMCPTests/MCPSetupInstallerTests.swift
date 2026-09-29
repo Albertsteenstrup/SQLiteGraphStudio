@@ -68,6 +68,120 @@ final class MCPSetupInstallerTests: XCTestCase {
         ])
     }
 
+    func testRecognizesCurrentCodexTransportWithoutRewritingConfiguration() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cli = home.appendingPathComponent("codex")
+        try Data().write(to: cli)
+        XCTAssertEqual(chmod(cli.path, 0o755), 0)
+        let entries = [
+            #"{"enabled":true,"transport":{"type":"stdio","command":"/path/StudioMCP","args":[],"env":null,"cwd":null}}"#,
+            #"{"transport":{"type":"stdio","command":"/other/helper","args":[]}}"#,
+            #"{"transport":{"type":"stdio","command":"/path/StudioMCP","args":["--other"]}}"#,
+            #"{"transport":{"type":"streamable_http","url":"http://localhost"},"command":"/path/StudioMCP"}"#,
+        ]
+        let runner = FakeCommandRunner(responses: entries.map { MCPSetupCommandResult(status: 0, stdout: $0) })
+        let outcomes = MCPSetupInstaller.install(
+            clients: Array(repeating: .codex, count: entries.count),
+            executablePath: "/path/StudioMCP", searchPath: home.path, runner: runner
+        )
+        XCTAssertEqual(outcomes.map(\.state), [.alreadyInstalled, .conflict, .conflict, .conflict])
+        XCTAssertTrue(runner.invocations.allSatisfy { $0.arguments == ["mcp", "get", "sqlite-graph-studio", "--json"] })
+    }
+
+    func testUserSkillRootLinkInsideHomeIsPreviewedAndInstalledWithoutReplacingLink() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let shared = home.appendingPathComponent("Developer/project/.agents/skills")
+        let claude = home.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let link = claude.appendingPathComponent("skills")
+        let target = "../Developer/project/.agents/skills"
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
+        let custom = shared.appendingPathComponent("database-explore")
+        try FileManager.default.createDirectory(at: custom, withIntermediateDirectories: true)
+        let customFile = custom.appendingPathComponent("SKILL.md")
+        try Data("My customized skill".utf8).write(to: customFile)
+        let preview = MCPSetupInstaller.preview(
+            clients: [.claude], executablePath: nil, homeDirectory: home
+        )
+        let plan = try XCTUnwrap(preview.skills.first)
+        XCTAssertEqual(plan.state, .ready)
+        XCTAssertEqual(plan.install.count, 4)
+        XCTAssertEqual(plan.customizedPreserved.count, 1)
+        XCTAssertTrue(plan.rootPath.contains("Developer/project/.agents/skills"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shared.appendingPathComponent("database-diff").path))
+
+        let result = MCPSetupInstaller.installUserSkills(in: home)
+        XCTAssertTrue(result.succeeded, result.summary)
+        XCTAssertEqual(result.installed.count, 9)
+        XCTAssertEqual(result.customizedPreserved.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shared.appendingPathComponent("database-diff/SKILL.md").path))
+        XCTAssertEqual(try String(contentsOf: customFile, encoding: .utf8), "My customized skill")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), target)
+        let repeated = MCPSetupInstaller.installUserSkills(in: home)
+        XCTAssertTrue(repeated.succeeded, repeated.summary)
+        XCTAssertEqual(repeated.alreadyCurrent.count, 9)
+    }
+
+    func testSharedSkillRootStillRejectsUnsafeTargetsAndNestedLinks() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let shared = home.appendingPathComponent("shared")
+        let claude = home.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let link = claude.appendingPathComponent("skills")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: shared)
+        XCTAssertEqual(chmod(shared.path, 0o777), 0)
+        let unsafe = MCPSetupInstaller.installUserSkills(in: home)
+        XCTAssertFalse(unsafe.succeeded)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: shared.path), [])
+        XCTAssertEqual(chmod(shared.path, 0o755), 0)
+
+        // Nested links must remain untouched, including retired managed files.
+        let protected = home.appendingPathComponent("protected")
+        try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
+        let protectedFile = protected.appendingPathComponent("SKILL.md")
+        let released = Data("known retired version".utf8)
+        try released.write(to: protectedFile)
+        for id in ["database-explore", "story-flows"] {
+            try FileManager.default.createSymbolicLink(at: shared.appendingPathComponent(id), withDestinationURL: protected)
+        }
+        let catalog = MCPManagedSkillCatalog(
+            version: 1,
+            skills: [.init(id: "database-explore", content: "new", managedSHA256: [])],
+            retiredSkills: [.init(id: "story-flows", managedSHA256: [digest(released)])]
+        )
+        let nested = MCPSetupInstaller.installUserSkills(catalog: catalog, homeDirectory: home, fileManager: .default)
+        XCTAssertFalse(nested.succeeded)
+        XCTAssertEqual(nested.retiredCustomizedPreserved.count, 1)
+        XCTAssertEqual(try Data(contentsOf: protectedFile), released)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), shared.path)
+    }
+
+    func testProjectSkillRootLinkRemainsBlockedEvenInsideProject() throws {
+        let project = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let shared = project.appendingPathComponent("shared")
+        let claude = project.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: claude.appendingPathComponent("skills"), withDestinationURL: shared)
+        let preview = MCPSetupInstaller.preview(
+            clients: [.claude], executablePath: nil, scope: .project,
+            projectDirectory: project, homeDirectory: project
+        )
+        XCTAssertEqual(preview.skills.first?.state, .blocked)
+        let report = MCPSetupInstaller.setup(
+            clients: [.claude], executablePath: nil, scope: .project,
+            projectDirectory: project, homeDirectory: project
+        )
+        XCTAssertFalse(report.skills.succeeded)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: shared.path), [])
+    }
+
     func testReportsMissingClientWithoutAttemptingConfiguration() throws {
         let home = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: home) }

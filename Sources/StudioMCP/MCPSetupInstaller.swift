@@ -626,7 +626,8 @@ public enum MCPSetupInstaller {
 
     /// Read-only setup review for the app's bundled helper. This only locates
     /// client executables, asks each available CLI for its existing entry, and
-    /// inspects skill paths without creating directories or following symlinks.
+    /// inspects skill paths without creating directories. User-wide root links are
+    /// resolved only to an existing, user-owned directory inside the home folder.
     public static func previewFromAppBundle(
         clients: [MCPSetupClient] = MCPSetupClient.allCases,
         scope: MCPSetupScope = .user,
@@ -946,9 +947,10 @@ public enum MCPSetupInstaller {
         }
         for target in targets {
             let anchor = target.anchor
-            let root = target.root
+            let root: URL
             let labelRoot = target.labelRoot
             do {
+                root = try skillRoot(target.root, under: anchor, scope: scope, fileManager: fileManager)
                 try ensureDirectory(root, under: anchor, fileManager: fileManager)
             } catch {
                 errors.append("\(labelRoot): \(error.localizedDescription)")
@@ -993,6 +995,14 @@ public enum MCPSetupInstaller {
                 let skillDirectory = root.appendingPathComponent(retired.id, isDirectory: true)
                 let destination = skillDirectory.appendingPathComponent("SKILL.md", isDirectory: false)
                 let label = "\(labelRoot)/\(retired.id)/SKILL.md"
+                // Never read or remove retired files through a nested directory link.
+                switch inspectDirectory(skillDirectory, under: anchor, fileManager: fileManager) {
+                case .missing: continue
+                case .blocked:
+                    retiredCustomizedPreserved.append(label)
+                    continue
+                case .exists: break
+                }
                 if isSymbolicLink(destination, fileManager: fileManager) {
                     retiredCustomizedPreserved.append(label)
                     continue
@@ -1573,6 +1583,33 @@ public enum MCPSetupInstaller {
         return String(escaped)
     }
 
+    /// Support a user-managed shared skills folder without relaxing the rules
+    /// for project paths or links inside individual skills. Only the final root
+    /// component may be a link; its existing target must be inside this home,
+    /// owned by the same user, and not writable by other users.
+    private static func skillRoot(
+        _ root: URL, under home: URL, scope: MCPSetupScope, fileManager: FileManager
+    ) throws -> URL {
+        guard scope == .user, isSymbolicLink(root, fileManager: fileManager) else { return root }
+        guard case .exists = inspectDirectory(root.deletingLastPathComponent(), under: home, fileManager: fileManager),
+              let link = try? fileManager.destinationOfSymbolicLink(atPath: root.path) else {
+            throw MCPSetupError.unsafePath(root.path)
+        }
+        let target = (link.hasPrefix("/")
+            ? URL(fileURLWithPath: link, isDirectory: true)
+            : root.deletingLastPathComponent().appendingPathComponent(link, isDirectory: true)).standardizedFileURL
+        guard case .exists = inspectDirectory(target, under: home, fileManager: fileManager),
+              let attributes = try? fileManager.attributesOfItem(atPath: target.path),
+              let homeAttributes = try? fileManager.attributesOfItem(atPath: home.path),
+              let owner = attributes[.ownerAccountID] as? NSNumber,
+              owner == homeAttributes[.ownerAccountID] as? NSNumber,
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              permissions.intValue & 0o022 == 0 else {
+            throw MCPSetupError.unsafePath(root.path)
+        }
+        return target
+    }
+
     private static func ensureDirectory(_ directory: URL, under home: URL, fileManager: FileManager) throws {
         let homePath = home.standardizedFileURL.path
         let targetPath = directory.standardizedFileURL.path
@@ -1608,7 +1645,7 @@ public enum MCPSetupInstaller {
     ) -> MCPSetupSkillsPlan {
         let relativeRoot = client.skillRoot
         let anchor: URL
-        let root: URL
+        let requestedRoot: URL
         let labelRoot: String
         if scope == .project {
             guard let projectDirectory,
@@ -1625,14 +1662,26 @@ public enum MCPSetupInstaller {
                 )
             }
             anchor = projectDirectory.standardizedFileURL
-            root = anchor.appendingPathComponent(relativeRoot, isDirectory: true)
+            requestedRoot = anchor.appendingPathComponent(relativeRoot, isDirectory: true)
             labelRoot = relativeRoot
         } else {
             anchor = homeDirectory
-            root = homeDirectory.appendingPathComponent(relativeRoot, isDirectory: true)
+            requestedRoot = homeDirectory.appendingPathComponent(relativeRoot, isDirectory: true)
             labelRoot = "~/\(relativeRoot)"
         }
-        let rootPath = scope == .project ? relativeRoot : "~/\(relativeRoot)"
+        var rootPath = scope == .project ? relativeRoot : "~/\(relativeRoot)"
+        let resolvedRoot: URL
+        do {
+            resolvedRoot = try skillRoot(requestedRoot, under: anchor, scope: scope, fileManager: fileManager)
+        } catch {
+            return MCPSetupSkillsPlan(
+                client: client, rootPath: rootPath, state: .blocked,
+                install: [], update: [], alreadyCurrent: [], customizedPreserved: [],
+                retiredManaged: [], retiredCustomizedPreserved: [], blockers: [error.localizedDescription]
+            )
+        }
+        if resolvedRoot != requestedRoot { rootPath += " → \(resolvedRoot.path)" }
+        let root = resolvedRoot
         let rootState = inspectDirectory(root, under: anchor, fileManager: fileManager)
         if case .blocked(let path) = rootState {
             return MCPSetupSkillsPlan(
@@ -1774,10 +1823,17 @@ public enum MCPSetupInstaller {
 
     private static func codexEntry(_ text: String, matches executablePath: String) -> Bool {
         guard let data = text.data(using: .utf8),
-              let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              commandEntry(entry, matches: executablePath)
+              let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return false }
-        return true
+        // Current Codex CLI puts stdio configuration under transport. Older
+        // versions return the command at the top level. Do not fall back when
+        // a transport exists but is invalid or uses HTTP.
+        if let transport = entry["transport"] {
+            guard let transport = transport as? [String: Any],
+                  transport["type"] as? String == "stdio" else { return false }
+            return commandEntry(transport, matches: executablePath)
+        }
+        return commandEntry(entry, matches: executablePath)
     }
 
     private static func claudeUserEntry(homeDirectory: URL) -> [String: Any]? {
