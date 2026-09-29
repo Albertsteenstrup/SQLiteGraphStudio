@@ -148,6 +148,7 @@ final class GraphInteractionGeometryCache {
         let frames: [String: CGRect]
         let viewport: CGRect
         let zoom: CGFloat
+        let detailZoom: CGFloat
         let isLarge: Bool
         let emphasized: Set<String>
         let primary: Set<String>
@@ -171,6 +172,7 @@ final class GraphInteractionGeometryCache {
         frames: [String: CGRect],
         viewport: CGRect,
         zoom: CGFloat,
+        detailZoom: CGFloat = GraphExploration.detailZoom,
         isLarge: Bool,
         emphasized: Set<String>,
         primary: Set<String> = [],
@@ -186,7 +188,7 @@ final class GraphInteractionGeometryCache {
         displayedColumnsForNode: (String) -> [String]? = { _ in nil }
     ) -> GraphInteractionGeometry {
         let newKey = Key(
-            frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
+            frames: frames, viewport: viewport, zoom: zoom, detailZoom: detailZoom, isLarge: isLarge,
             emphasized: emphasized, primary: primary, retained: retained, contentRevision: contentRevision,
             hoveredID: hoveredID, connectedIDs: connectedIDs, nodeSizing: nodeSizing,
             overviewAnchors: overviewAnchors, focusRootID: focusRootID
@@ -195,7 +197,7 @@ final class GraphInteractionGeometryCache {
 
         let overviewAnchorIDs = Set(overviewAnchors.map(\.id))
         let renderPlan = GraphExploration.renderPlan(
-            frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
+            frames: frames, viewport: viewport, zoom: zoom, detailZoom: detailZoom, isLarge: isLarge,
             emphasized: emphasized, primary: primary, retained: retained,
             overviewAnchorIDs: overviewAnchorIDs
         )

@@ -4,6 +4,32 @@ import Testing
 
 @MainActor
 struct GraphInteractionGeometryTests {
+    @Test func fullModelKeepsTableCardsAtIntermediateZoomWithoutChangingOtherViews() {
+        let cache = GraphInteractionGeometryCache()
+        let frames = [
+            "users": CGRect(x: 20, y: 20, width: 80, height: 40),
+            "sessions": CGRect(x: 140, y: 20, width: 80, height: 40),
+        ]
+        func snapshot(detailZoom: CGFloat = GraphExploration.detailZoom) -> GraphInteractionGeometry {
+            cache.snapshot(
+                frames: frames, viewport: viewport, zoom: 0.25, detailZoom: detailZoom,
+                isLarge: true, emphasized: [], contentRevision: 0,
+                roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil }
+            )
+        }
+
+        let ordinary = snapshot()
+        #expect(ordinary.renderPlan.markerIDs == ["users", "sessions"])
+        #expect(ordinary.renderPlan.detailIDs.isEmpty)
+
+        let fullModel = snapshot(detailZoom: GraphExploration.fullModelDetailZoom)
+        #expect(fullModel.renderPlan.detailIDs == ["users", "sessions"])
+        #expect(fullModel.renderPlan.markerIDs.isEmpty)
+        #expect(fullModel.revision > ordinary.revision)
+
+        #expect(snapshot().renderPlan.markerIDs == ["users", "sessions"])
+    }
+
     @Test func detailHitWinsOverCanvasMarkerRegardlessOfMarkerOrdinal() {
         let snapshot = GraphInteractionGeometryCache().snapshot(
             frames: ["detail": CGRect(x: 20, y: 20, width: 60, height: 60),

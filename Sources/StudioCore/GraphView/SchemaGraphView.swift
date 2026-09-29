@@ -76,9 +76,12 @@ public struct SchemaGraphView: View {
     }
 
     private var isLargeGraph: Bool { renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
+    private var effectiveDetailZoom: CGFloat {
+        session.isSchemaReviewFullModelView ? GraphExploration.fullModelDetailZoom : GraphExploration.detailZoom
+    }
     private var usesOverviewMarks: Bool {
         (isLargeGraph || (!session.isSchemaReviewFullModelView && session.graphNodeSizeMetric != .uniform))
-            && zoom < GraphExploration.detailZoom
+            && zoom < effectiveDetailZoom
     }
 
     private var overviewAnchors: [GraphOverviewAnchors.Anchor] {
@@ -2433,7 +2436,8 @@ public struct SchemaGraphView: View {
         let primary = fullModel ? retained : session.expandedGraphNodeIDs.union(retained)
             .union(usesOverviewMarks ? [] : [hoveredNodeID].compactMap { $0 })
         return interactionGeometryCache.snapshot(
-            frames: frames, viewport: CGRect(origin: .zero, size: size), zoom: zoom, isLarge: isLargeGraph || usesOverviewMarks,
+            frames: frames, viewport: CGRect(origin: .zero, size: size), zoom: zoom,
+            detailZoom: effectiveDetailZoom, isLarge: isLargeGraph || usesOverviewMarks,
             emphasized: fullModel ? [] : session.selectedGraphNodeIDs.union(focusPlan?.visibleTableIDs() ?? []),
             primary: primary, retained: retained, contentRevision: scenePreparation.contentRevision,
             hoveredID: fullModel || draggedNodeID != nil ? nil : hoveredNodeID,

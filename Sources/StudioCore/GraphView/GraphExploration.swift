@@ -16,6 +16,7 @@ enum GraphExploration {
     static let pageSize = 48
     static let maximumDetailedCards = 160
     static let detailZoom: CGFloat = 0.42
+    static let fullModelDetailZoom: CGFloat = 0.22
 
     struct Page: Equatable {
         let ids: [String]
@@ -68,6 +69,7 @@ enum GraphExploration {
 
     static func renderPlan(
         frames: [String: CGRect], viewport: CGRect, zoom: CGFloat,
+        detailZoom: CGFloat = GraphExploration.detailZoom,
         isLarge: Bool, emphasized: Set<String>, primary: Set<String> = [], retained: Set<String> = [],
         overviewAnchorIDs: Set<String> = []
     ) -> RenderPlan {
