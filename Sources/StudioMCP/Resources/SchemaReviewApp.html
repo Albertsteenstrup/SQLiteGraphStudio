@@ -40,7 +40,7 @@ html, body { margin: 0; padding: 0; background: transparent; color: var(--text);
 body { padding: 10px 12px 12px; }
 button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 3px 10px; cursor: pointer; }
 button:hover { background: var(--bg-2); }
-button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visible, .node:focus-visible { outline: 2px solid var(--mod); outline-offset: 2px; }
+button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visible, .node:focus-visible, .detail-body:focus-visible { outline: 2px solid var(--mod); outline-offset: 2px; }
 .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .spacer { flex: 1; }
 .brand { display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent; padding: 2px 6px 2px 2px; font-size: 14px; font-weight: 600; }
@@ -126,9 +126,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .full-model .edge { stroke-width: 1; }
 .faded { opacity: 0.12 !important; }
 .detail { margin-top: 10px; border: 1px solid var(--border-2); border-radius: var(--radius); padding: 10px 12px; background: var(--bg); }
-.detail h2 { font-size: 13.5px; margin: 0; font-weight: 600; }
-.detail .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.fields { width: 100%; border-collapse: collapse; margin-top: 8px; table-layout: fixed; }
+.detail h2 { font-size: 13.5px; margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.detail .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.detail-close { flex: none; white-space: nowrap; }
+.detail-body { margin-top: 8px; max-height: 360px; overflow: auto; overscroll-behavior: contain; }
+.fields { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .fields td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid var(--border-2); overflow-wrap: anywhere; }
 .fields td.m { width: 18px; font-weight: 600; color: var(--text-3); }
 .fields td.n { width: 34%; }
@@ -175,7 +178,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     <summary>Changes in this view <span id="changes-count" class="changes-count"></span></summary>
     <div id="changes-body" class="changes-body"></div>
   </details>
-  <section id="detail" class="detail" hidden></section>
+  <section id="detail" class="detail" aria-labelledby="detail-title" hidden></section>
   <section id="others" class="others" hidden></section>
 </main>
 <script>
@@ -534,12 +537,22 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     if (!table) return;
     state.focusTable = tableID;
     state.focusRelation = relationID;
-    if (state.mode === exact) { state.showGraphDetail = true; exact.act({ type: "select", table: tableID }); }
+    if (state.mode === exact) exact.act({ type: "select", table: tableID });
     else if (state.mode === simple) simple.select(tableID, fieldName, false, relationID);
     if (state.mode === exact) simple.renderDetail(table, fieldName, relationID);
     const target = relationID ? $("detail").querySelector(".relation-row.focused") || $("detail")
       : fieldName ? $("detail").querySelector("tr.focused") || $("detail") : $("canvas");
-    requestAnimationFrame(() => target.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+    requestAnimationFrame(() => {
+      if (!$("detail").hidden && state.focusTable === tableID) target.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+  function dismissDetail() {
+    state.showGraphDetail = false;
+    state.focusTable = null;
+    state.focusRelation = null;
+    simple.renderDetail(null);
+    $("canvas").focus({ preventScroll: true });
+    reportSize();
   }
   function syncExactDetail() {
     if (!(state.set === -1 ? state.fullModel : state.detail) || !state.showGraphDetail) return;
@@ -690,7 +703,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       const canvas = $("canvas");
       return { width: Math.round(canvas.clientWidth), height: Math.round(canvas.clientHeight) };
     }
-    function act(action) { queued.push(action); flush(); }
+    function act(action) {
+      // Opening details is a reader action, not a side effect of a frame arriving.
+      // A late click/select response must not reopen a panel they just dismissed.
+      if (action.type === "click" || action.type === "select") state.showGraphDetail = true;
+      queued.push(action);
+      flush();
+    }
     function frameKey(index, size) { return `${index}:${size.width}x${size.height}`; }
     function replaceFrame(next, size) {
       const canvas = $("canvas");
@@ -809,7 +828,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       }
       setSets(Array.isArray(info.setTables) ? info.setTables.length : state.setCount, info.set);
       if (Array.isArray(info.selection)) state.frameSelection = info.selection;
-      if (actions.some((action) => action.type === "click" || action.type === "select")) state.showGraphDetail = true;
       if (state.showGraphDetail && state.frameSelection.length === 1 &&
           !(state.set === -1 ? state.fullModel : state.detail)) {
         (state.set === -1 ? loadFullModel() : loadDetail())
@@ -1075,7 +1093,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     }
 
     function select(id, fieldName, toggle = true, relationID = null) {
-      selected = id && nodes.has(id) && (!toggle || selected !== id) ? id : null;
+      selected = id && nodes.has(id) && (!toggle || selected !== id || $("detail").hidden) ? id : null;
       const keep = new Set(selected ? [selected] : []);
       if (selected) {
         for (const group of document.querySelectorAll(".edge-group")) {
@@ -1100,11 +1118,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       if (!table) { detail.hidden = true; requestAnimationFrame(reportSize); return; }
       detail.hidden = false;
       const kind = kindOf(table.kind);
-      detail.append(el("div", { class: "row" },
-        el("h2", {}, table.name),
-        el("span", { class: "badge" }, table.context ? "Related, unchanged" : LABEL[kind]),
-        kind === "modified" && table.badge ? el("span", { class: "badge" }, table.badge) : null,
-        table.objectKind && table.objectKind !== "table" ? el("span", { class: "badge" }, table.objectKind) : null));
+      detail.append(el("header", { class: "detail-header" },
+        el("div", { class: "row" },
+          el("h2", { id: "detail-title" }, table.name),
+          el("span", { class: "badge" }, table.context ? "Related, unchanged" : LABEL[kind]),
+          kind === "modified" && table.badge ? el("span", { class: "badge" }, table.badge) : null,
+          table.objectKind && table.objectKind !== "table" ? el("span", { class: "badge" }, table.objectKind) : null),
+        el("button", { type: "button", class: "detail-close", "aria-label": "Close table details",
+          title: "Close table details (Esc)", onclick: dismissDetail }, "Close ", el("span", { "aria-hidden": "true" }, "×"))));
+      const body = el("div", { class: "detail-body", tabindex: 0, role: "region", "aria-label": "Fields and relations" });
+      detail.append(body);
       const rows = (Array.isArray(table.columns) ? table.columns : []).map((column) => {
         const columnKind = kindOf(column.kind);
         const keys = [column.primaryKey ? "PK" : null, column.foreignKey ? "FK" : null].filter(Boolean).join(" ");
@@ -1113,8 +1136,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
           el("td", { class: "n" + (columnKind === "unchanged" ? "" : " k-" + columnKind) }, column.name, keys ? el("span", { class: "was" }, " " + keys) : null),
           el("td", { class: "mono" }, column.description || "", column.before ? el("div", { class: "was" }, "was " + column.before) : null));
       });
-      if (rows.length) detail.append(el("table", { class: "fields" }, el("tbody", {}, rows)));
-      if (table.hiddenColumns) detail.append(el("p", { class: "was" }, `${table.hiddenColumns} unchanged fields are not listed.`));
+      if (rows.length) body.append(el("table", { class: "fields" }, el("tbody", {}, rows)));
+      if (table.hiddenColumns) body.append(el("p", { class: "was" }, `${table.hiddenColumns} unchanged fields are not listed.`));
       const definitions = Array.isArray(table.definitionChanges) ? table.definitionChanges : [];
       if (definitions.length) {
         const box = el("div", { class: "defs" }, el("div", {}, "Definition changes"));
@@ -1124,7 +1147,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
           if (change.before) box.append(el("pre", { class: change.after ? "" : "k-removed" }, (change.after ? "was: " : "") + change.before));
           if (change.after) box.append(el("pre", {}, change.after));
         }
-        detail.append(box);
+        body.append(box);
       }
       const links = summarizedLinks(table);
       if (links) {
@@ -1136,7 +1159,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
             : `→ ${table.name} references ${item.name} (${columns})`));
         }
         if (links.more) box.append(el("div", { class: "was" }, `+${links.more} more`));
-        detail.append(box);
+        body.append(box);
       }
       const graphDetail = state.set === -1 ? state.fullModel : state.detail;
       const relations = (graphDetail && Array.isArray(graphDetail.relations) ? graphDetail.relations : []).filter((relation) => relation.source === table.id || relation.target === table.id);
@@ -1149,7 +1172,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
             `${MARK[relationKind]} ${tableName(relation.source)} (${(relation.sourceColumns || []).join(", ")}) → ${tableName(relation.target)} (${(relation.targetColumns || []).join(", ")})`));
           if (relation.previousDefinition) box.append(el("div", { class: "was" }, "was " + relation.previousDefinition));
         }
-        detail.append(box);
+        body.append(box);
       }
       requestAnimationFrame(reportSize);
     }
@@ -1256,7 +1279,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
   document.addEventListener("keydown", (event) => {
-    if (!state.mode || event.target instanceof HTMLButtonElement) return;
+    if (event.key === "Escape" && (state.showGraphDetail || !$("detail").hidden)) {
+      event.preventDefault();
+      dismissDetail();
+      return;
+    }
+    if (!state.mode || event.target instanceof HTMLButtonElement || event.target.closest?.("#detail")) return;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); step(1); }
     else if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
     else if (event.key === "+" || event.key === "=") state.mode.zoom(1.25, centerPoint());

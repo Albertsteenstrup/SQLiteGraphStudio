@@ -237,6 +237,11 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         <!doctype html><html><body style="margin:0">
         <script>
         window.heights = [];
+        window.holdFrames = false;
+        window.pendingFrames = [];
+        window.frameRequests = 0;
+        window.selection = [];
+        window.releaseFrames = () => { window.holdFrames = false; window.pendingFrames.splice(0).forEach(send => send()); };
         window.addEventListener("message", event => {
           const message = event.data;
           if (!message || message.jsonrpc !== "2.0") return;
@@ -249,18 +254,23 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
           } else if (message.method === "tools/call" && message.params.name === "studio_review_frame") {
             const args = message.params.arguments;
             const selected = (args.actions || []).find(action => action.type === "select")?.table;
-            event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
-              isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data: "\(frameData)" }],
+            if (selected) window.selection = [selected];
+            const data = btoa(atob("\(frameData)").replace('</svg>', `<!-- frame ${++window.frameRequests} --></svg>`));
+            const result = {
+              isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data }],
               structuredContent: { width: args.width, height: args.height, sets: 1,
-                setTables: [["users"]], set: 0, selection: selected ? [selected] : [] }
-            } }, "*");
+                setTables: [["users"]], set: 0, selection: window.selection }
+            };
+            const send = () => event.source.postMessage({ jsonrpc: "2.0", id: message.id, result }, "*");
+            if (window.holdFrames) window.pendingFrames.push(send); else send();
           } else if (message.method === "tools/call" && message.params.name === "studio_review_detail") {
             event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
               isError: false, content: [], structuredContent: {
                 format: "sqlite-graph-studio/schema-review-detail", revision: "test", changeSets: [["users"]],
                 tables: [{ id: "users", name: "users", kind: "modified", objectKind: "table",
                   columns: [{ name: "email", kind: "modified", before: "TEXT NULL", description: "TEXT NOT NULL" },
-                    { name: "team_id", kind: "unchanged", description: "INTEGER" }] },
+                    { name: "team_id", kind: "unchanged", description: "INTEGER" }].concat(
+                      Array.from({ length: 30 }, (_, index) => ({ name: `field_${index}`, kind: "unchanged", description: "TEXT NULL" }))) },
                   { id: "teams", name: "teams", kind: "unchanged", context: true, columns: [{ name: "id", kind: "unchanged", description: "INTEGER" }] }],
                 relations: [{ id: "fk_users_team", kind: "modified", source: "users", target: "teams",
                   sourceColumns: ["team_id"], targetColumns: ["id"] }] }
@@ -298,12 +308,75 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
             return true; })()
         """)
         try await waitUntil("document.getElementById('review').contentDocument.querySelector('#detail tr.focused')?.textContent?.includes('email')", in: browser)
+        let scrollsInsidePanel = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            const body = doc.querySelector('.detail-body');
+            const close = doc.querySelector('button[aria-label="Close table details"]');
+            if (!body || !close) return false;
+            body.focus();
+            const before = doc.getElementById('position').textContent;
+            const key = new doc.defaultView.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+            body.dispatchEvent(key);
+            body.scrollTop = body.scrollHeight;
+            return body.clientHeight <= 360 && body.scrollHeight > body.clientHeight
+              && close.getBoundingClientRect().bottom <= body.getBoundingClientRect().top
+              && doc.getElementById('position').textContent === before && !key.defaultPrevented; })()
+        """) as? Bool
+        XCTAssertEqual(scrollsInsidePanel, true, "Long field lists should scroll with Close still visible, without arrow keys changing views")
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            window.holdFrames = true;
+            [...doc.querySelectorAll('.changes-body a.jump')].find(link => link.textContent === 'team relation').click();
+            return true; })()
+        """)
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#detail .relation-row.focused')?.textContent?.includes('users')", in: browser)
+        try await waitUntil("window.pendingFrames.length > 0", in: browser)
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('button[aria-label=\"Close table details\"]') !== null", in: browser)
+
+        // Dismiss locally while the graph is still rendering the linked selection.
+        // Closing must shrink the host immediately and must survive that late reply.
+        try await waitUntil("Number.parseInt(document.getElementById('review').style.height, 10) > 600", in: browser)
+        let dismissedImmediately = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            window.expandedDetailHeight = Number.parseInt(document.getElementById('review').style.height, 10);
+            window.frameBeforeClose = doc.querySelector('img.frame').src;
+            window.requestsBeforeClose = window.frameRequests;
+            const close = doc.querySelector('button[aria-label="Close table details"]');
+            close.focus(); close.click();
+            return doc.getElementById('detail').hidden && doc.activeElement.id === 'canvas'; })()
+        """) as? Bool
+        XCTAssertEqual(dismissedImmediately, true)
+        try await waitUntil("Number.parseInt(document.getElementById('review').style.height, 10) < window.expandedDetailHeight - 60", in: browser)
+        _ = try await browser.evaluateJavaScript("window.releaseFrames(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.querySelector('img.frame').src !== window.frameBeforeClose", in: browser)
+        let remainedClosed = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            return doc.getElementById('detail').hidden && window.frameRequests === window.requestsBeforeClose
+              && doc.getElementById('position').textContent.includes('View 1 of 1'); })()
+        """) as? Bool
+        XCTAssertEqual(remainedClosed, true, "Dismissing details must not send a camera action or be undone by a late frame")
+
+        // The same link reopens details. Escape works even with focus on a button.
         _ = try await browser.evaluateJavaScript("""
           (() => { const doc = document.getElementById('review').contentDocument;
             [...doc.querySelectorAll('.changes-body a.jump')].find(link => link.textContent === 'team relation').click();
             return true; })()
         """)
-        try await waitUntil("document.getElementById('review').contentDocument.querySelector('#detail .relation-row.focused')?.textContent?.includes('users')", in: browser)
+        try await waitUntil("!document.getElementById('review').contentDocument.getElementById('detail').hidden", in: browser)
+        let escapedDetail = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            const close = doc.querySelector('button[aria-label="Close table details"]');
+            close.focus();
+            close.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+            return doc.getElementById('detail').hidden && doc.activeElement.id === 'canvas'; })()
+        """) as? Bool
+        XCTAssertEqual(escapedDetail, true)
+        _ = try await browser.evaluateJavaScript("""
+          (() => { const doc = document.getElementById('review').contentDocument;
+            [...doc.querySelectorAll('.changes-body a.jump')].find(link => link.textContent === 'email').click();
+            return true; })()
+        """)
+        try await waitUntil("!document.getElementById('review').contentDocument.getElementById('detail').hidden && document.getElementById('review').contentDocument.querySelector('#detail tr.focused')?.textContent?.includes('email')", in: browser)
         _ = try await browser.evaluateJavaScript("""
           (() => { const doc = document.getElementById('review').contentDocument;
             doc.getElementById('changes-body').appendChild(Object.assign(doc.createElement('div'), { style: 'height:240px' }));
