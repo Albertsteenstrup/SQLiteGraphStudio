@@ -15,7 +15,7 @@ public struct QueryWorkspaceView: View {
 
             if let activeQuery = session.queryWorkspace.activeQuery {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .top, spacing: 12) {
+                    HStack(alignment: .center, spacing: 6) {
                         VStack(alignment: .leading, spacing: 6) {
                             TextField(
                                 "Query Title",
@@ -31,8 +31,14 @@ public struct QueryWorkspaceView: View {
 
                         Spacer()
 
+                        if activeQuery.isRunning {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(StudioPalette.accent)
+                        }
+
                         if !session.queryWorkspace.history.isEmpty {
-                            Menu {
+                            StudioMenu(.quiet, iconOnly: true) {
                                 ForEach(session.queryWorkspace.history) { entry in
                                     Menu(entry.title) {
                                         Button("Open") {
@@ -56,9 +62,6 @@ public struct QueryWorkspaceView: View {
                             } label: {
                                 Label("History", systemImage: "clock.arrow.circlepath")
                             }
-                            .buttonStyle(.bordered)
-                            .buttonBorderShape(.capsule)
-                            .tint(StudioPalette.accent)
                             .help("Query history")
                         }
 
@@ -70,56 +73,10 @@ public struct QueryWorkspaceView: View {
                                 systemImage: activeQuery.isSaved ? "bookmark.fill" : "bookmark"
                             )
                         }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .tint(StudioPalette.accent)
+                        .buttonStyle(.studioIcon)
                         .help(activeQuery.isSaved ? "Unsave query" : "Save query")
 
-                        Button {
-                            session.queryWorkspace.explain()
-                        } label: {
-                            Label("Explain", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                        }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .tint(StudioPalette.accent)
-                        .help("Explain query plan")
-
-                        Button {
-                            session.queryWorkspace.run()
-                        } label: {
-                            Label("Run Query", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .buttonBorderShape(.capsule)
-                        .tint(StudioPalette.accent)
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .help("Run Query (Command-Enter)")
-
-                        Menu {
-                            Picker("Query timeout", selection: $session.queryWorkspace.timeoutSeconds) {
-                                ForEach([5.0, 15.0, 30.0, 60.0, 120.0], id: \.self) { seconds in
-                                    Text("\(Int(seconds)) seconds").tag(seconds)
-                                }
-                            }
-                        } label: {
-                            Label("\(Int(session.queryWorkspace.timeoutSeconds))s", systemImage: "timer")
-                        }
-                        .help("Maximum query execution time")
-
-                        if activeQuery.isRunning {
-                            Button("Stop", systemImage: "stop.fill") {
-                                session.queryWorkspace.stop()
-                            }
-                            .buttonStyle(.bordered)
-                            .keyboardShortcut(".", modifiers: .command)
-                            .help("Stop query (Command-Period)")
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(StudioPalette.accent)
-                        }
-
-                        Menu {
+                        StudioMenu(.quiet, iconOnly: true) {
                             Text(session.queryExportScopeLabel)
                             Button("Export CSV") {
                                 session.exportActiveQueryResult(format: .csv)
@@ -130,11 +87,45 @@ public struct QueryWorkspaceView: View {
                         } label: {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .tint(StudioPalette.accent)
                         .help("Export query results")
                         .disabled(session.exportProgress?.isRunning == true)
+
+                        StudioMenu(.quiet) {
+                            Picker("Query timeout", selection: $session.queryWorkspace.timeoutSeconds) {
+                                ForEach([5.0, 15.0, 30.0, 60.0, 120.0], id: \.self) { seconds in
+                                    Text("\(Int(seconds)) seconds").tag(seconds)
+                                }
+                            }
+                        } label: {
+                            Label("\(Int(session.queryWorkspace.timeoutSeconds))s", systemImage: "timer")
+                        }
+                        .help("Maximum query execution time")
+
+                        Button {
+                            session.queryWorkspace.explain()
+                        } label: {
+                            Label("Explain", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        }
+                        .buttonStyle(.studio)
+                        .help("Explain query plan")
+
+                        if activeQuery.isRunning {
+                            Button("Stop", systemImage: "stop.fill") {
+                                session.queryWorkspace.stop()
+                            }
+                            .buttonStyle(.studio)
+                            .keyboardShortcut(".", modifiers: .command)
+                            .help("Stop query (Command-Period)")
+                        }
+
+                        Button {
+                            session.queryWorkspace.run()
+                        } label: {
+                            Label("Run Query", systemImage: "play.fill")
+                        }
+                        .buttonStyle(.studioPrimary)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Run Query (Command-Enter)")
                     }
 
                     TextEditor(
@@ -164,18 +155,14 @@ public struct QueryWorkspaceView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker(
-                            "Output",
+                        StudioSegmentedPicker(
+                            [("Results", QueryOutputKind.results), ("Plan", QueryOutputKind.plan)],
                             selection: Binding(
                                 get: { session.queryWorkspace.activeQuery?.selectedOutput ?? .results },
                                 set: { session.queryWorkspace.selectActiveOutput($0) }
                             )
-                        ) {
-                            Text("Results").tag(QueryOutputKind.results)
-                            Text("Plan").tag(QueryOutputKind.plan)
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 180)
+                        )
+                        .accessibilityLabel("Output")
 
                         switch activeQuery.selectedOutput {
                         case .results:
@@ -203,19 +190,18 @@ public struct QueryWorkspaceView: View {
                     } label: {
                         Label("New Query", systemImage: "plus")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studioPrimary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(20)
+        .studioSurface(.light)
     }
 
     private var queryTabStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 ForEach(session.queryWorkspace.queries) { query in
                     QueryTabView(
                         query: query,
@@ -230,19 +216,10 @@ public struct QueryWorkspaceView: View {
                     session.queryWorkspace.createQuery()
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(StudioPalette.primaryText)
-                        .frame(width: 32, height: 32)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(StudioPalette.headerSurface.opacity(0.84))
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(StudioPalette.borderSoft)
-                        }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.studioIcon)
+                .help("New query")
+                .accessibilityLabel("New query")
             }
             .padding(.bottom, 4)
         }
@@ -261,17 +238,17 @@ private struct QueryTabView: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             if query.isSaved {
                 Image(systemName: "bookmark.fill")
-                    .font(.caption2.weight(.bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(StudioPalette.secondaryText)
+                    .padding(.trailing, 2)
             }
 
             if isEditing {
                 TextField("", text: $editingTitle)
                     .textFieldStyle(.plain)
-                    .font(.subheadline)
                     .foregroundStyle(StudioPalette.primaryText)
                     .focused($fieldFocused)
                     .frame(minWidth: 60)
@@ -280,28 +257,11 @@ private struct QueryTabView: View {
             } else {
                 Text(query.title)
                     .lineLimit(1)
-                    .foregroundStyle(StudioPalette.primaryText)
             }
 
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2.bold())
-                    .foregroundStyle(StudioPalette.secondaryText)
-            }
-            .buttonStyle(.plain)
+            StudioTabCloseButton(title: "Close \(query.title)", action: onClose)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isActive ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isActive ? StudioPalette.border : StudioPalette.borderSoft)
-        }
+        .studioTabChrome(isActive: isActive)
         .onTapGesture { onSelect() }
         .onTapGesture(count: 2) { startEditing() }
     }

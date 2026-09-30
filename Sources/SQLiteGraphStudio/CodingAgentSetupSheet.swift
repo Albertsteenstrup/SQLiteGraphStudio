@@ -1,4 +1,5 @@
 import AppKit
+import StudioCore
 import StudioMCP
 import SwiftUI
 
@@ -80,16 +81,19 @@ struct CodingAgentSetupSheet: View {
             HStack {
                 if report == nil && !isChecking && !isInstalling {
                     Button("Cancel", action: onDone)
+                        .buttonStyle(.studio)
                         .keyboardShortcut(.cancelAction)
                     Spacer()
                     Button("Install reviewed changes") {
                         onInstall(selectedScope, selectedScope == .project ? selectedProjectDirectory : nil)
                     }
+                        .buttonStyle(.studioPrimary)
                         .keyboardShortcut(.defaultAction)
                         .disabled(!previewMatchesSelection || preview?.canInstall != true)
                 } else if report != nil {
                     Spacer()
                     Button("Done", action: onDone)
+                        .buttonStyle(.studioPrimary)
                         .keyboardShortcut(.defaultAction)
                 }
             }
@@ -101,12 +105,11 @@ struct CodingAgentSetupSheet: View {
 
     private var scopePicker: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Setup scope", selection: $selectedScope) {
-                ForEach(MCPSetupScope.allCases, id: \.self) { choice in
-                    Text(choice.displayName).tag(choice)
-                }
-            }
-            .pickerStyle(.segmented)
+            StudioSegmentedPicker(
+                MCPSetupScope.allCases.map { ($0.displayName, $0) },
+                selection: $selectedScope
+            )
+            .accessibilityLabel("Setup scope")
             .disabled(isChecking || isInstalling || report != nil)
             .onChange(of: selectedScope) { _, value in
                 if value == .user {
@@ -131,6 +134,8 @@ struct CodingAgentSetupSheet: View {
                     }
                     Spacer(minLength: 8)
                     Button(selectedProjectDirectory == nil ? "Choose Folder…" : "Change…", action: chooseProjectDirectory)
+                        .buttonStyle(.studio)
+                        .controlSize(.small)
                         .disabled(isChecking || isInstalling || report != nil)
                 }
             }
@@ -144,6 +149,7 @@ struct CodingAgentSetupSheet: View {
             Text("The preview is read-only. Select the folder where this project's MCP connection and agent skills should live.")
         } actions: {
             Button("Choose Project Folder…", action: chooseProjectDirectory)
+                .buttonStyle(.studioPrimary)
                 .disabled(isChecking || isInstalling)
         }
         .frame(maxWidth: .infinity, minHeight: 160)

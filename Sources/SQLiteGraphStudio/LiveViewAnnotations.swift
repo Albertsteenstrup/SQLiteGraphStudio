@@ -171,10 +171,11 @@ struct LiveViewAnnotationOverlay: View {
             isExpanded = true
         } label: {
             Label("\(title) · \(count)", systemImage: "text.bubble")
-                .font(.callout)
         }
-        .buttonStyle(.bordered)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .buttonStyle(.studioQuiet)
+        .background(.regularMaterial, in: Capsule())
+        .overlay { Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1) }
+        .shadow(color: Color.black.opacity(0.08), radius: 8, y: 3)
         .accessibilityLabel("Show explanation notes")
         .accessibilityValue("\(count) notes")
         .accessibilityIdentifier("liveViewAnnotationToggle")
@@ -184,21 +185,23 @@ struct LiveViewAnnotationOverlay: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Explanation notes")
-                    .font(.callout.weight(.semibold))
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button {
                     isExpanded = false
                 } label: {
                     Image(systemName: "chevron.up")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.studioIcon)
+                .controlSize(.small)
                 .help("Collapse explanation notes")
                 .accessibilityLabel("Hide explanation notes")
                 .accessibilityIdentifier("liveViewAnnotationToggle")
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
+            .padding(.leading, 14)
+            .padding(.trailing, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
 
             Divider()
 
@@ -222,8 +225,12 @@ struct LiveViewAnnotationOverlay: View {
         }
         .frame(width: 340)
         .frame(maxHeight: 260)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .shadow(radius: 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.1), radius: 16, y: 6)
     }
 
     private func savedAnnotations() -> [LiveViewAnnotation] {
@@ -268,9 +275,11 @@ struct LiveViewAnnotationOverlay: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
                         ForEach(annotation.anchors, id: \.label) { anchor in
-                            Button(anchor.label) { focus(anchor) }
-                                .buttonStyle(.borderless)
-                                .font(.caption.monospaced())
+                            Button { focus(anchor) } label: {
+                                Text(anchor.label).font(.system(size: 11, design: .monospaced))
+                            }
+                            .buttonStyle(.studio)
+                            .controlSize(.mini)
                         }
                     }
                 }

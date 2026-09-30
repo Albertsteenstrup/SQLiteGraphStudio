@@ -23,9 +23,14 @@ struct GraphFilterEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Filter tables").font(.headline)
-            Text("Leave a bound empty for no limit.").font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Filter tables")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Leave a bound empty for no limit.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
             range("Fields", minimum: $minimumFields, maximum: $maximumFields)
             range("Rows", minimum: $minimumRows, maximum: $maximumRows)
                 .disabled(session.schemaReview != nil)
@@ -36,13 +41,15 @@ struct GraphFilterEditor: View {
                 ProgressView("Counting rows… \(progress) tables checked")
             }
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
-            HStack {
+            HStack(spacing: 6) {
                 Button("Reset") {
                     session.clearGraphFilter()
                     dismiss()
                 }
+                .buttonStyle(.studioQuiet)
                 Spacer()
                 Button("Cancel") { session.cancelGraphFilter(); dismiss() }
+                    .buttonStyle(.studio)
                 Button("Apply") {
                     do {
                         let filter = GraphTableFilter(
@@ -55,19 +62,26 @@ struct GraphFilterEditor: View {
                         Task { if await session.applyGraphFilter(filter) { dismiss() } }
                     } catch { self.error = "Enter whole numbers greater than or equal to zero." }
                 }
+                .buttonStyle(.studioPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(session.graphFilterProgress != nil)
             }
+            .padding(.top, 2)
         }
-        .padding(18)
+        .padding(16)
+        // A popover follows the system appearance even when it opens from the canvas.
+        .studioSurface(.adaptive)
         .frame(width: 370)
     }
 
     private func range(_ title: String, minimum: Binding<String>, maximum: Binding<String>) -> some View {
         HStack {
-            Text(title).frame(width: 64, alignment: .leading)
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
             TextField("Minimum", text: minimum).accessibilityLabel("Minimum \(title.lowercased())")
-            Text("to").foregroundStyle(.secondary)
+            Text("to").font(.system(size: 12)).foregroundStyle(.tertiary)
             TextField("Maximum", text: maximum).accessibilityLabel("Maximum \(title.lowercased())")
         }.textFieldStyle(.roundedBorder)
     }
