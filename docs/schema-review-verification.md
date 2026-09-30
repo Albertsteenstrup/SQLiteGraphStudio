@@ -198,3 +198,167 @@ Wiki impact: no update needed — this repository has no Wiki source or publishi
 machinery; README and canonical documentation cover the changed workflows.
 
 Gate: PASS
+
+## Embedded gesture responsiveness — 2026-09-30
+
+Dragging and zooming now transform the last rendered image immediately in the
+browser. An 80 ms pause in input triggers a native frame, with only one request
+outstanding, keeping snapshotting and image decoding out of continuous gestures.
+Incoming frames retain gestures
+made after their request, and queued clicks follow subsequent camera movements
+so they still hit the table the reader chose. Navigation resets the preview
+transform before restoring a cached view. Newly exposed areas show the canvas
+background until the next native frame arrives; zoomed images can be temporarily
+soft while waiting for that frame.
+
+The existing delayed-frame WKWebView regression was extended to check immediate
+dragging, zooming in and back out at the pointer, batching twenty pointer moves,
+click coordinates during further movement, and reconciliation of an older frame
+without replaying its pan. It failed on the original HTML and passed after the
+fix. All 72 XCTest checks in `StudioMCPTests` passed, including all eight embedded
+browser checks. Verification compiled the repository's actual MCP source, resource
+bundle and test target in a disposable SwiftPM package, without unrelated native
+app dependencies.
+
+These checks use controlled host replies; they do not measure live host frame
+latency or establish a display frame rate. The initial iteration left the native
+renderer and installed app unchanged. A rebuilt helper and refreshed MCP
+connection are needed to load the updated viewer.
+
+For the subsequent inline trial, the installed helper's viewer HTML was updated
+to match this checkout; app binaries and settings were left in place. Its prior
+HTML is backed up at
+`/private/tmp/sql-gui-embedded-performance-check/installed-viewer-before.html`.
+The synthetic `drag-and-zoom-trial.sgreview` was shown through the real inline
+tool. Resource discovery confirmed that the existing connection still serves
+the old HTML revision (`d5c7ddd3a585ca52270905db`), while the installed update is
+`1fc1cb4ac2acd6fd1277f7f8`. The MCP connection must be refreshed before the trial
+can demonstrate the new gesture behavior.
+
+### Native camera latency and earlier table details
+
+Resource discovery during the follow-up confirmed that the connection had loaded
+the first gesture fix (`1fc1cb4ac2acd6fd1277f7f8`), so the remaining lag was not
+just an old viewer. Camera-only rendering now waits for SwiftUI to consume its
+viewport command instead of waiting for three additional stable ticks. Initial
+fit, selection, and set navigation retain the full settling path. The viewer
+waits for an 80 ms input pause before requesting a refined frame, previews input
+immediately, and uses the renderer's camera limits to prevent zoom overshoot.
+Cached navigation frames retain their camera metadata.
+
+Review detail cards start at 10% zoom, previously 22%. Their names and field text
+no longer fade as the camera zooms out. Repeated table clicks keep the same
+choose/unchoose behavior when cards become visible sooner. A native render of
+the synthetic trial at the user's approximate zoom confirmed that fields are
+drawn at full opacity instead of behind the large overview labels.
+
+Two local hidden-renderer runs used the same seven-table review, an 800 by 520
+viewport at scale 1, and six consecutive 10-pixel pans after opening. Median
+request time was 214.61 ms before the changes and 26.515 ms after. The updated
+run ranged from 24.58 to 341.33 ms, including one slow outlier. This excludes MCP
+transport and host display time and is not a live iframe frame-rate claim.
+Timing records are in
+`/private/tmp/sql-gui-embedded-performance-check/renderer-baseline.json` and
+`/private/tmp/sql-gui-embedded-performance-check/renderer-updated.json`.
+
+All 128 focused checks passed: 72 MCP XCTest checks (including eight WKWebView
+checks), 54 graph geometry/exploration checks, and two real renderer process
+checks. Native pixel checks verify that returned pan and zoom frames already
+contain the moved and resized card. Embedded checks verify immediate transforms,
+late-frame reconciliation, click alignment, and both zoom limits. The packaged
+viewer matches the source resource; its current revision is
+`9348240fbd0ad6afa81afdf6`.
+
+The tested app is built at `dist/SQLiteGraphStudio.app`. After user approval, it
+was installed at `/Applications/SQLiteGraphStudio.app` and reopened with the
+synthetic Drag and zoom trial. The previous bundle is preserved at
+`/private/tmp/sql-gui-embedded-performance-check/installed-app-before-native-update.app`.
+The update preserved existing MCP helper processes. Installed app and helper
+binaries and the viewer HTML match the tested package; the installed bundle
+passes deep, strict ad-hoc signature verification. `studio_status` reports the
+new app instance accepting requests, and native accessibility inspection confirms
+that the trial and its table fields are visible. After the user restarted the MCP
+connection, resource discovery confirmed viewer revision
+`9348240fbd0ad6afa81afdf6`, and the synthetic trial was shown again through
+`studio_show_review_inline` on the refreshed connection. User-perceived embedded
+gesture latency remains a live trial, rather than a claim established by tests.
+
+The Added / Changed / Removed legend was subsequently removed from the native
+review header at the user's request. The app built successfully, was installed
+and reopened, and accessibility inspection confirmed the original trial's header
+no longer includes those labels. The previous app is preserved at
+`/private/tmp/sql-gui-embedded-performance-check/installed-app-before-legend-removal.app`.
+
+The graph and table/details panel now use a native `HSplitView` instead of fixed
+56% / 44% widths. Both panes remain clipped and have minimum widths so the graph
+and table controls stay usable. The app built, was installed and reopened, and
+native accessibility resizing moved the divider from 639.5 to 800 and back to
+716 points. Before/after renders confirmed the graph grows and the table panel
+shrinks with the divider. Mouse-drag automation returned `noWindowsAvailable`
+while the app remained running; the native splitter itself was verified through
+its accessibility value. The previous app is preserved at
+`/private/tmp/sql-gui-embedded-performance-check/installed-app-before-review-split.app`.
+
+
+### Session title as the author heading (2026-09-30)
+
+The current Codex task was matched by exact thread ID
+`01a0f137-4f4a-7181-9e56-04fa3d755153` using the Codex app thread list. Its actual
+title is `Improve embedded view performance`; this title now lives in the trial
+review's `author.session`. Native headers lead with that session name, keeping
+the agent mark and complete tool/session provenance in the tooltip and accessible
+label. Reviews without a session keep their normalized tool name.
+
+Inline overviews retain the existing `author` provenance string and add an
+optional `authorLabel`. The production HTML displays this label using
+`textContent`, falls back to legacy provenance strings, and hides the row for
+unauthored reviews. Canonical diff/preview capture instructions require the actual
+current title whenever the host provides it; generated resources, project copies,
+and the four verified managed user-wide Codex/Claude copies were updated. Custom
+copies are preserved, with prior managed hashes retained for future updates.
+
+Verification: the existing MCP integration test failed on the pre-fix transport
+because `authorLabel` was absent. All 72 MCP checks then passed, including eight
+production-HTML WebKit tests; the header test exercises the real title, provenance,
+legacy fallback, and absent-author refresh. Eight native review tests and eleven
+skill tests passed. After final skill regeneration, all twenty MCP setup tests
+passed, and the generator check and `git diff --check` passed.
+
+The built app was ad-hoc signed, verified deeply and strictly, installed with a
+recoverable backup at
+`/private/tmp/sql-gui-embedded-performance-check/installed-app-before-session-title.app`,
+and reopened. Its native window visibly showed the actual session title beside
+the Codex mark. Existing MCP helper processes were preserved; the current Codex
+connection still serves its earlier cached viewer and must reconnect before the
+embedded header update appears there.
+
+
+### Main integration before push (2026-09-30)
+
+Fetched `origin/main` at `e3f151ce8f030c1b044282c70e141125b4280e2a`
+(`Restore workspace controls and start with an empty workspace`). An independent
+pre-sync review inspected the actual patch, camera and hit-testing call paths,
+and the incoming graph input monitor; it found no actionable issues and passed
+all eight production-HTML WebKit checks. The local review changes were then
+committed and rebased onto that main commit without conflicts. A second fetch
+confirmed the same upstream base during verification.
+
+Fresh combined verification passed:
+
+- Full MCP XCTest suite: 72 tests, including eight WebKit gesture/viewer tests.
+- Native graph, workspace, review and skill checks: 89 tests across eleven
+  suites. The incoming workspace/input tests exercised real AppKit panel,
+  minimap, button and trackpad exclusion behavior.
+- Actual renderer-process and native/inline review parity checks: seven tests
+  across two suites, including two renderer pixel/input tests.
+- Generated skill contents and whitespace checks passed. README and CHANGES
+  describe the revised card threshold, pane sizing, immediate embedded gesture
+  previews, and producing-session label.
+
+This is focused integrated validation; the complete Swift suite, PostgreSQL
+fixtures, packaged distribution checks and live embedded frame rate were not
+rerun for this change. The native splitter mouse-drag automation limitation and
+current MCP connection's cached viewer limitation above remain unchanged.
+
+Wiki impact: no update needed — this repository has no Wiki source or publishing
+validator; README and canonical documentation cover these user-visible changes.

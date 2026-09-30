@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Which agent and session produced a review: `[mark] Claude · Table diff visualization clarity`.
+/// The producing chat's name beside the agent's mark, with full provenance in the tooltip.
 ///
 /// A reader with several reviews open — or one handed over from another tool — can tell at
 /// a glance where each came from. It records provenance, not approval.
@@ -10,7 +10,7 @@ struct SchemaReviewAuthorLabel: View {
     var body: some View {
         HStack(spacing: 7) {
             SchemaReviewAgentMark(agent: author.agent)
-            Text(author.summary)
+            Text(author.displayName)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }

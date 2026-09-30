@@ -149,9 +149,9 @@ final class SchemaReviewRenderServer {
                 review.apply(action)
                 // Let each step land before the next: a click must hit the view the
                 // preceding camera move produced.
-                if actions.count > 1 { await review.settle() }
+                if actions.count > 1 { await review.settle(cameraOnly: Self.isCameraAction(action)) }
             }
-            await review.settle()
+            await review.settle(cameraOnly: actions.last.map(Self.isCameraAction) ?? false)
             let settled = clock.now
             var frame = try review.frame(scale: scale, png: request["format"] as? String == "png")
             frame["timing"] = ["openMs": Self.milliseconds(started.duration(to: opened)),
@@ -165,6 +165,10 @@ final class SchemaReviewRenderServer {
 
     private static func milliseconds(_ duration: Duration) -> Int {
         Int(duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    private static func isCameraAction(_ action: [String: Any]) -> Bool {
+        ["pan", "zoom", "transform"].contains(action["type"] as? String ?? "")
     }
 
     private static func dimension(_ value: Any?, default fallback: CGFloat) -> CGFloat {
@@ -315,14 +319,19 @@ final class RenderedReview {
     }
 
     /// Waits until the camera, selection and layout have stopped changing.
-    func settle() async {
+    func settle(cameraOnly: Bool = false) async {
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
         var last: (CGFloat, CGSize, Set<String>)?
         var stableTicks = 0
         while ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(20))
+            try? await Task.sleep(for: .milliseconds(cameraOnly && !needsInitialFit ? 2 : 20))
             hosting.layoutSubtreeIfNeeded()
             let fitted = !needsInitialFit || session.initializedGraphViewportDocument != nil
+            // Offscreen camera commands have no transition. Once the graph consumed
+            // the command, its view state is ready for cacheDisplay; there is no
+            // layout or selection animation to wait another three ticks for.
+            if cameraOnly, !needsInitialFit, session.graphLayout.hasSettledLayout,
+               session.automationViewportCommand == nil { return }
             let current = (session.graphZoom, session.graphPan, session.selectedGraphNodeIDs)
             if fitted, session.graphLayout.hasSettledLayout, let last,
                last.0 == current.0, last.1 == current.1, last.2 == current.2 {
@@ -361,6 +370,7 @@ final class RenderedReview {
             "setTables": sets,
             "set": session.schemaReviewViewIndex - 1,
             "selection": session.selectedGraphNodeIDs.sorted(),
+            "camera": ["zoom": session.graphZoom, "minZoom": minimumZoom, "maxZoom": 2.4],
         ]
     }
 

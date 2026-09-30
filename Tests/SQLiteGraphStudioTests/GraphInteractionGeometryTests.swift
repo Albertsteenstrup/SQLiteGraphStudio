@@ -12,7 +12,7 @@ struct GraphInteractionGeometryTests {
         ]
         func snapshot(detailZoom: CGFloat = GraphExploration.detailZoom) -> GraphInteractionGeometry {
             cache.snapshot(
-                frames: frames, viewport: viewport, zoom: 0.25, detailZoom: detailZoom,
+                frames: frames, viewport: viewport, zoom: 0.12, detailZoom: detailZoom,
                 isLarge: true, emphasized: [], contentRevision: 0,
                 roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil }
             )

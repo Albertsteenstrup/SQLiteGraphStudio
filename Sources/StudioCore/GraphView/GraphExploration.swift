@@ -16,7 +16,7 @@ enum GraphExploration {
     static let pageSize = 48
     static let maximumDetailedCards = 160
     static let detailZoom: CGFloat = 0.42
-    static let reviewDetailZoom: CGFloat = 0.22
+    static let reviewDetailZoom: CGFloat = 0.10
 
     struct Page: Equatable {
         let ids: [String]

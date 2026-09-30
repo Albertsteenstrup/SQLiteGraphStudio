@@ -135,6 +135,8 @@ final class MCPAppTests: XCTestCase {
         let overview = try XCTUnwrap(result["structuredContent"] as? [String: Any])
         XCTAssertEqual(overview["format"] as? String, "sqlite-graph-studio/schema-review-view")
         XCTAssertEqual(overview["artifact"] as? String, "comparison")
+        XCTAssertEqual(overview["authorLabel"] as? String, "Review session")
+        XCTAssertEqual(overview["author"] as? String, "Claude · Review session")
         XCTAssertEqual(overview["overview"] as? String, text, "Claude Code shows the model structuredContent, so it carries the summary too")
         let sets = try XCTUnwrap(overview["changeSets"] as? [[String: Any]])
         XCTAssertEqual(sets.count, 1)
@@ -433,6 +435,10 @@ final class MCPAppTests: XCTestCase {
         let state = try XCTUnwrap(result["structuredContent"] as? [String: Any])
         XCTAssertEqual(state["sets"] as? Int, 2)
         XCTAssertEqual(state["setTables"] as? [[String]], [["users"], ["teams"]])
+        let camera = try XCTUnwrap(state["camera"] as? [String: Any])
+        XCTAssertEqual((camera["zoom"] as? NSNumber)?.doubleValue, 0.5)
+        XCTAssertEqual((camera["minZoom"] as? NSNumber)?.doubleValue, 0.12)
+        XCTAssertEqual((camera["maxZoom"] as? NSNumber)?.doubleValue, 2.4)
         XCTAssertTrue(renderer.isRunning)
         let spare = RendererSlot.acquire(in: slots, count: SchemaReviewRenderer.slotCount)
         XCTAssertNotNil(spare, "One renderer holds one slot")
@@ -628,7 +634,7 @@ final class MCPAppTests: XCTestCase {
         #!/bin/sh
         while IFS= read -r line; do
           id=$(printf '%s' "$line" | sed -E 's/.*"id":([0-9]+).*/\\1/')
-          printf '{"id":%s,"ok":true,"image":"AAAA","mimeType":"image/jpeg","width":640,"height":400,"sets":2,"setTables":[["users"],["teams"]],"set":1,"selection":["teams"]}\\n' "$id"
+          printf '{"id":%s,"ok":true,"image":"AAAA","mimeType":"image/jpeg","width":640,"height":400,"sets":2,"setTables":[["users"],["teams"]],"set":1,"selection":["teams"],"camera":{"zoom":0.5,"minZoom":0.12,"maxZoom":2.4}}\\n' "$id"
         done
 
         """.write(to: url, atomically: true, encoding: .utf8)

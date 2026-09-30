@@ -42,6 +42,7 @@ button { font: inherit; color: var(--text); background: var(--bg); border: 1px s
 button:hover { background: var(--bg-2); }
 button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visible, .node:focus-visible, .detail-body:focus-visible { outline: 2px solid var(--mod); outline-offset: 2px; }
 .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.author { font-size: 16px; font-weight: 650; overflow-wrap: anywhere; margin-bottom: 8px; }
 .spacer { flex: 1; }
 .brand { display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent; padding: 2px 6px 2px 2px; font-size: 14px; font-weight: 600; }
 .brand img { width: 22px; height: 22px; display: block; }
@@ -60,7 +61,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 .toast.error { color: var(--del); }
 .canvas { position: relative; height: 460px; border: 1px solid var(--border-2); border-radius: var(--radius); background: #f5f7fa; overflow: hidden; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; }
 .canvas.panning { cursor: grabbing; }
-.canvas img.frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+.canvas img.frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; transform-origin: 0 0; will-change: transform; }
 .canvas svg { display: block; width: 100%; height: 100%; }
 .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 12.5px; }
 .loading::before { content: ""; width: 12px; height: 12px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--text-2); animation: spin 0.8s linear infinite; }
@@ -150,6 +151,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
 <body>
 <div id="status" class="status">Waiting for the review…</div>
 <main id="view" hidden>
+  <div id="author" class="author" hidden></div>
   <header class="bar">
     <button id="open-app" class="brand" type="button" title="Open in Graph Studio, with the schema before these changes in a second tab">
       <img alt="" src="data:image/png;base64,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">GraphStudio
@@ -359,6 +361,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     state.labels = Array.isArray(model.changeSets) ? model.changeSets : [];
     $("status").hidden = true;
     $("view").hidden = false;
+    const author = $("author");
+    author.textContent = typeof model.authorLabel === "string" ? model.authorLabel
+      : typeof model.author === "string" ? model.author : "";
+    author.hidden = !author.textContent;
+    author.title = typeof model.author === "string" ? "Produced by " + model.author : "";
     // The explanation has one open/closed choice for this embedded review. Keep
     // that choice across views and when the host sends an updated review result.
 
@@ -671,13 +678,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
   const exact = (() => {
     const viewID = window.crypto?.randomUUID?.() || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let image = null, inFlight = false, again = false, queued = [], local = IDENTITY, sent = IDENTITY;
-    let frameSize = null, failures = 0, resizeTimer = 0, generation = 0;
+    let frameSize = null, failures = 0, resizeTimer = 0, gestureTimer = 0, generation = 0;
     let navigation = 0;
+    let camera = null;
     const viewFrames = new Map();
 
     function reset() {
       generation += 1;
       clearTimeout(resizeTimer);
+      clearTimeout(gestureTimer);
+      gestureTimer = 0;
       if (image) image.remove();
       image = null;
       inFlight = false;
@@ -688,6 +698,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       frameSize = null;
       failures = 0;
       navigation = 0;
+      camera = null;
       viewFrames.clear();
       $("position").removeAttribute("aria-busy");
     }
@@ -713,8 +724,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       flush();
     }
     function frameKey(index, size) { return `${index}:${size.width}x${size.height}`; }
+    function preview(next = image) {
+      if (next) next.style.transform = isIdentity(local) ? "none"
+        : `matrix(${local.s}, 0, 0, ${local.s}, ${local.tx}, ${local.ty})`;
+    }
     function replaceFrame(next, size) {
       const canvas = $("canvas");
+      // Apply only gestures newer than this frame before attaching it, so an old
+      // renderer reply cannot briefly snap the graph back under the pointer.
+      preview(next);
       if (image !== next) {
         if (image) canvas.replaceChild(next, image); else canvas.insertBefore(next, canvas.firstChild);
         image = next;
@@ -729,6 +747,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       // Send an absolute destination so rapid clicks cannot replay a long queue of steps.
       queued = [{ type: "set", index }];
       local = IDENTITY;
+      preview();
       state.frameSelection = [];
       state.showGraphDetail = false;
       state.focusTable = null;
@@ -738,12 +757,32 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       $("position").setAttribute("aria-busy", "true");
       const size = viewport();
       const cached = viewFrames.get(frameKey(index, size));
-      if (cached) replaceFrame(cached, size);
+      camera = cached?.camera || null;
+      if (cached) replaceFrame(cached.image, size);
       flush();
     }
     function gesture(transform) {
+      if (transform.s === 1 && transform.tx === 0 && transform.ty === 0) return;
       local = compose(transform, local);
-      flush();
+      // Camera transforms are sent before clicks. Carry an unsent click with its
+      // table if another gesture happens before the renderer can receive it.
+      for (const action of queued) if (action.type === "click") {
+        action.x = transform.s * action.x + transform.tx;
+        action.y = transform.s * action.y + transform.ty;
+      }
+      preview();
+      // Keep native snapshots and image decoding out of a continuous gesture.
+      // The image moves locally until input pauses, then one request refines it.
+      clearTimeout(gestureTimer);
+      gestureTimer = setTimeout(() => { gestureTimer = 0; flush(); }, 80);
+    }
+    function zoom(factor, point) {
+      if (!(factor > 0)) return;
+      if (camera) {
+        const current = camera.zoom * local.s;
+        factor = Math.max(camera.minZoom, Math.min(camera.maxZoom, current * factor)) / current;
+      }
+      if (Number.isFinite(factor)) gesture(zoomAt(factor, point));
     }
     function refresh() { again = true; flush(); }
     function resized() {
@@ -755,6 +794,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     }
     function flush() {
       if (state.mode !== exact) return;
+      clearTimeout(gestureTimer);
+      gestureTimer = 0;
       if (inFlight) { again = true; return; }
       const actions = [];
       if (!isIdentity(local)) actions.push({ type: "transform", scale: local.s, tx: local.tx, ty: local.ty });
@@ -792,7 +833,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
         .finally(() => {
           if (requestGeneration !== generation) return;
           inFlight = false;
-          if (state.mode === exact && (again || queued.length || !isIdentity(local))) flush();
+          if (state.mode === exact && !gestureTimer && (again || queued.length || !isIdentity(local))) flush();
         });
     }
     async function show(result, size, actions, requestGeneration, requestNavigation) {
@@ -812,11 +853,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
       // Gestures made while this frame was drawn go into the next renderer request.
       local = compose(local, inverse(sent));
       sent = IDENTITY;
+      if (info.camera && Number.isFinite(info.camera.zoom) && info.camera.zoom > 0 &&
+          Number.isFinite(info.camera.minZoom) && info.camera.minZoom > 0 &&
+          Number.isFinite(info.camera.maxZoom) && info.camera.maxZoom >= info.camera.minZoom) camera = info.camera;
+      else camera = null;
       replaceFrame(next, renderedSize);
       if (actions.every((action) => action.type === "set" || action.type === "fit")) {
         const key = frameKey(info.set, renderedSize);
         viewFrames.delete(key);
-        viewFrames.set(key, next);
+        viewFrames.set(key, { image: next, camera });
         if (viewFrames.size > 8) viewFrames.delete(viewFrames.keys().next().value);
       }
       $("position").removeAttribute("aria-busy");
@@ -862,12 +907,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .canvas:focus-visi
     return {
       reset, start, act, navigate, refresh, resized,
       pan: (dx, dy) => gesture(panBy(dx, dy)),
-      zoom: (factor, point) => gesture(zoomAt(factor, point)),
-      // The last frame stays still while its camera moves remotely. Map a click on
-      // that visible frame to where the same point will be after pending gestures.
+      zoom,
+      // The image already previews pending gestures in canvas coordinates, which
+      // are the coordinates the renderer uses after applying those same gestures.
       // As in the simplified graph, clicking the chosen table while its details are
       // closed shows them again instead of returning to every change.
-      click: (point) => act({ type: "click", x: local.s * point.x + local.tx, y: local.s * point.y + local.ty,
+      click: (point) => act({ type: "click", x: point.x, y: point.y,
                               ...($("detail").hidden ? { keepChosen: true } : {}) }),
       fit: () => act({ type: "fit" }),
     };

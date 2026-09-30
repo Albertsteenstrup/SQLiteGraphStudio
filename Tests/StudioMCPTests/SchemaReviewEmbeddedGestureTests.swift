@@ -23,6 +23,7 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         window.review = {
           format:'sqlite-graph-studio/schema-review-view', path:'/tmp/disclosure.sgreview',
           revision:'test', summary:{ modifiedTables:2 },
+          author:'Codex · Improve embedded view performance', authorLabel:'Improve embedded view performance',
           changeSets:ids.map(label => ({ label, tables:1, kind:'modified' }))
         };
         window.resendReview = () => document.getElementById('review').contentWindow.postMessage({
@@ -62,6 +63,10 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         let browser = WKWebView(frame: .init(x: 0, y: 0, width: 640, height: 600))
         browser.loadHTMLString(host, baseURL: nil)
         try await waitUntil("!!document.getElementById('review')?.contentDocument?.querySelector('img.frame')", in: browser)
+        let author = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('author').textContent") as? String
+        XCTAssertEqual(author, "Improve embedded view performance")
+        let provenance = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.getElementById('author').title") as? String
+        XCTAssertEqual(provenance, "Produced by Codex · Improve embedded view performance")
         _ = try await browser.evaluateJavaScript("document.getElementById('review').contentDocument.querySelector('#changes summary').click(); true")
         try await waitUntil("document.getElementById('review').contentDocument.querySelector('#changes[open] #changes-body')?.textContent.includes('users')", in: browser)
 
@@ -104,6 +109,11 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         try await waitUntil("window.frameRevisions.includes('collapsed') && !!document.getElementById('review').contentDocument.querySelector('img.frame')", in: browser)
         let remainsCollapsedAfterRefresh = try await browser.evaluateJavaScript("!document.getElementById('review').contentDocument.getElementById('changes').open") as? Bool
         XCTAssertEqual(remainsCollapsedAfterRefresh, true)
+        // Older hosts can supply just the provenance string. An absent author hides the row.
+        _ = try await browser.evaluateJavaScript("delete window.review.authorLabel; window.review.author = 'Codex'; window.resendReview(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('author').textContent === 'Codex'", in: browser)
+        _ = try await browser.evaluateJavaScript("delete window.review.author; window.resendReview(); true")
+        try await waitUntil("document.getElementById('review').contentDocument.getElementById('author').hidden", in: browser)
     }
 
     func testViewZeroPrecedesTheDefaultChangeViewEvenWithOneSet() async throws {
@@ -494,7 +504,7 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
         XCTAssertLessThan(collapsed, expanded - 100, "The host should reclaim the space used by expanded changes")
     }
 
-    func testPanKeepsLastCompleteFrameAndClicksMatchWhatIsStillVisible() async throws {
+    func testGesturesMoveImmediatelyAndPendingFramesPreserveNewerInput() async throws {
         let html = try XCTUnwrap(MCPAppResources.schemaReviewHTML)
         let escaped = html
             .replacingOccurrences(of: "&", with: "&amp;")
@@ -533,7 +543,8 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
               event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {
                 isError: false, content: [{ type: "image", mimeType: "image/svg+xml", data: frameData[Math.min(index - 1, 1)] }],
                 structuredContent: { width: args.width, height: args.height, sets: 1,
-                  setTables: [["users"]], set: null, selection: [] }
+                  setTables: [["users"]], set: null, selection: [],
+                  camera: { zoom: [0.5, 0.5, 0.625, 0.12][index - 1], minZoom: 0.12, maxZoom: 2.4 } }
               } }, "*");
             };
             if (index === 1) send(); else window.pendingFrames.push(send);
@@ -561,27 +572,63 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
             canvas.setPointerCapture = () => {};
             const start = { pointerId: 1, button: 0, clientX: bounds.left + 120,
               clientY: bounds.top + 120, bubbles: true };
-            const end = { ...start, clientX: start.clientX + 180.5, clientY: start.clientY - 0.5 };
             canvas.dispatchEvent(new PointerEvent('pointerdown', start));
-            canvas.dispatchEvent(new PointerEvent('pointermove', end));
+            for (let i = 1; i <= 20; i++) canvas.dispatchEvent(new PointerEvent('pointermove',
+              { ...start, clientX: start.clientX + 180.5 * i / 20, clientY: start.clientY - 0.5 * i / 20 }));
+            const end = { ...start, clientX: start.clientX + 180.5, clientY: start.clientY - 0.5 };
             canvas.dispatchEvent(new PointerEvent('pointerup', end));
             return true; })()
         """)
-        let offset = try await browser.evaluateJavaScript("""
-          (() => { const doc = document.getElementById('review').contentDocument;
-            return doc.querySelector('img.frame').getBoundingClientRect().left
-              - doc.getElementById('canvas').getBoundingClientRect().left; })()
-        """)
-        XCTAssertLessThan(abs(try XCTUnwrap(offset as? NSNumber).doubleValue), 3,
-                          "Panning must not expose the canvas background beside a shifted frame")
+        func preview() async throws -> [String: Double] {
+            let result = try await browser.evaluateJavaScript("""
+              (() => { const doc = document.getElementById('review').contentDocument;
+                const canvas = doc.getElementById('canvas'), bounds = canvas.getBoundingClientRect();
+                const image = doc.querySelector('img.frame').getBoundingClientRect();
+                return { x: image.left - bounds.left - canvas.clientLeft,
+                  y: image.top - bounds.top - canvas.clientTop, scale: image.width / canvas.clientWidth }; })()
+            """)
+            return try XCTUnwrap(result as? [String: Double])
+        }
+        let panned = try await preview()
+        XCTAssertEqual(try XCTUnwrap(panned["x"]), 180.5, accuracy: 0.01,
+                       "Dragging must move the visible graph before a renderer reply")
+        XCTAssertEqual(try XCTUnwrap(panned["y"]), -0.5, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(panned["scale"]), 1, accuracy: 0.001)
 
         try await waitUntil("window.frameRequests.length >= 2", in: browser)
         let transform = try await browser.evaluateJavaScript("window.frameRequests[1][0]") as? [String: Any]
         XCTAssertEqual(transform?["type"] as? String, "transform")
         XCTAssertEqual((transform?["tx"] as? NSNumber)?.doubleValue ?? 0, 180.5, accuracy: 0.01)
+        let requestCount = try await browser.evaluateJavaScript("window.frameRequests.length") as? Int
+        XCTAssertEqual(requestCount, 2,
+                       "A burst of pointer moves should be coalesced into one camera request")
 
-        // A quick click before the new frame arrives is on the stationary image. The
-        // renderer receives it after the pan, so its hit point must move with that pan.
+        func pinch(_ factor: Double) async throws {
+            _ = try await browser.evaluateJavaScript("""
+              (() => { const doc = document.getElementById('review').contentDocument;
+                const canvas = doc.getElementById('canvas'), bounds = canvas.getBoundingClientRect();
+                canvas.dispatchEvent(new doc.defaultView.WheelEvent('wheel', { ctrlKey: true,
+                  clientX: bounds.left + canvas.clientLeft + 50, clientY: bounds.top + canvas.clientTop + 50,
+                  deltaY: -Math.log(\(factor)) / 0.01, bubbles: true, cancelable: true }));
+                return true; })()
+            """)
+        }
+        try await pinch(1.25)
+        let zoomed = try await preview()
+        XCTAssertEqual(try XCTUnwrap(zoomed["scale"]), 1.25, accuracy: 0.001,
+                       "Pinching must scale the visible graph while the pan reply is outstanding")
+        XCTAssertEqual(try XCTUnwrap(zoomed["x"]), 213.125, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(zoomed["y"]), -13.125, accuracy: 0.01)
+        try await pinch(0.8)
+        let zoomedOut = try await preview()
+        XCTAssertEqual(try XCTUnwrap(zoomedOut["scale"]), 1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(zoomedOut["x"]), 180.5, accuracy: 0.01,
+                       "Zooming back out at the same pointer must preserve the original pan")
+        XCTAssertEqual(try XCTUnwrap(zoomedOut["y"]), -0.5, accuracy: 0.01)
+        try await pinch(1.25)
+
+        // Hit-test the graph where the reader sees it. More movement before this click
+        // is sent must carry its hit point along with the same table.
         _ = try await browser.evaluateJavaScript("""
           (() => { const doc = document.getElementById('review').contentDocument;
             const canvas = doc.getElementById('canvas');
@@ -591,23 +638,56 @@ final class SchemaReviewEmbeddedGestureTests: XCTestCase {
               clientY: bounds.top + canvas.clientTop + 50, bubbles: true };
             canvas.dispatchEvent(new PointerEvent('pointerdown', input));
             canvas.dispatchEvent(new PointerEvent('pointerup', input));
+            const start = { ...input, clientX: input.clientX + 100, clientY: input.clientY + 100 };
+            const end = { ...start, clientX: start.clientX + 30, clientY: start.clientY + 15 };
+            canvas.dispatchEvent(new PointerEvent('pointerdown', start));
+            canvas.dispatchEvent(new PointerEvent('pointermove', end));
+            canvas.dispatchEvent(new PointerEvent('pointerup', end));
             return true; })()
         """)
         _ = try await browser.evaluateJavaScript("window.releaseFrames(); true")
         try await waitUntil("window.frameRequests.length >= 3", in: browser)
-        let click = try await browser.evaluateJavaScript("window.frameRequests[2][0]") as? [String: Any]
+        let nextTransform = try await browser.evaluateJavaScript("window.frameRequests[2][0]") as? [String: Any]
+        XCTAssertEqual(nextTransform?["type"] as? String, "transform")
+        XCTAssertEqual((nextTransform?["scale"] as? NSNumber)?.doubleValue ?? 0, 1.25, accuracy: 0.001)
+        XCTAssertEqual((nextTransform?["tx"] as? NSNumber)?.doubleValue ?? 0, 17.5, accuracy: 0.01)
+        XCTAssertEqual((nextTransform?["ty"] as? NSNumber)?.doubleValue ?? 0, 2.5, accuracy: 0.01)
+        let click = try await browser.evaluateJavaScript("window.frameRequests[2][1]") as? [String: Any]
         XCTAssertEqual(click?["type"] as? String, "click")
-        XCTAssertEqual((click?["x"] as? NSNumber)?.doubleValue ?? 0, 230.5, accuracy: 0.01)
-        XCTAssertEqual((click?["y"] as? NSNumber)?.doubleValue ?? 0, 49.5, accuracy: 0.01)
+        XCTAssertEqual((click?["x"] as? NSNumber)?.doubleValue ?? 0, 80, accuracy: 0.01)
+        XCTAssertEqual((click?["y"] as? NSNumber)?.doubleValue ?? 0, 65, accuracy: 0.01)
 
         try await waitUntil("window.frameReplies >= 2 && document.getElementById('review').contentDocument.querySelector('img.frame')?.src !== window.initialFrameSrc", in: browser)
-        let settledOffset = try await browser.evaluateJavaScript("""
-          (() => { const doc = document.getElementById('review').contentDocument;
-            return doc.querySelector('img.frame').getBoundingClientRect().left
-              - doc.getElementById('canvas').getBoundingClientRect().left; })()
-        """)
-        XCTAssertLessThan(abs(try XCTUnwrap(settledOffset as? NSNumber).doubleValue), 3)
+        let rebased = try await preview()
+        XCTAssertEqual(try XCTUnwrap(rebased["scale"]), 1.25, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(rebased["x"]), 17.5, accuracy: 0.01,
+                       "A late pan frame must preserve the newer zoom and drag without applying the old pan twice")
+        XCTAssertEqual(try XCTUnwrap(rebased["y"]), 2.5, accuracy: 0.01)
         _ = try await browser.evaluateJavaScript("window.releaseFrames(); true")
+        try await waitUntil("window.frameReplies === 3 && getComputedStyle(document.getElementById('review').contentDocument.querySelector('img.frame')).transform === 'none'", in: browser)
+        let settled = try await preview()
+        XCTAssertEqual(try XCTUnwrap(settled["x"]), 0, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(settled["y"]), 0, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(settled["scale"]), 1, accuracy: 0.001)
+
+        // Respect the renderer's limits before a frame comes back, so zooming at
+        // either bound cannot overshoot locally and snap back on the next image.
+        try await pinch(100)
+        let maximum = try await preview()
+        XCTAssertEqual(try XCTUnwrap(maximum["scale"]), 3.84, accuracy: 0.001)
+        try await pinch(2)
+        let stillMaximum = try await preview()
+        XCTAssertEqual(try XCTUnwrap(stillMaximum["scale"]), 3.84, accuracy: 0.001)
+        try await pinch(0.000001)
+        let minimum = try await preview()
+        XCTAssertEqual(try XCTUnwrap(minimum["scale"]), 0.192, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(minimum["x"]), 40.4, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(minimum["y"]), 40.4, accuracy: 0.01)
+        try await waitUntil("window.frameRequests.length === 4", in: browser)
+        let bounded = try await browser.evaluateJavaScript("window.frameRequests[3][0]") as? [String: Any]
+        XCTAssertEqual((bounded?["scale"] as? NSNumber)?.doubleValue ?? 0, 0.192, accuracy: 0.001)
+        _ = try await browser.evaluateJavaScript("window.releaseFrames(); true")
+        try await waitUntil("window.frameReplies === 4 && getComputedStyle(document.getElementById('review').contentDocument.querySelector('img.frame')).transform === 'none'", in: browser)
     }
 
     func testSimplifiedViewKeepsOmittedSetNumberingAndExplanation() async throws {

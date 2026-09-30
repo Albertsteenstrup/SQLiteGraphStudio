@@ -45,6 +45,36 @@ struct SchemaReviewRendererTests {
         let background = try #require(rgb(at: borderX - 40))
         #expect(abs(outside.redComponent - background.redComponent) * 255 <= 3,
                 "The review card should not darken the canvas outside its blue border")
+
+        // Camera-only frames must already show the applied pan when they return.
+        // This catches a fast settle that snapshots SwiftUI before it consumes the command.
+        var movedRequest = request
+        movedRequest["actions"] = [["type": "transform", "scale": 1, "tx": 60, "ty": 0]]
+        let moved = try renderer.request(movedRequest)
+        let movedImage = try #require(NSBitmapImageRep(data: Data(base64Encoded: moved["image"] as? String ?? "") ?? Data()))
+        let movedBorder = try #require(movedImage.colorAt(x: borderX + 60, y: midY)?.usingColorSpace(.deviceRGB))
+        #expect(movedBorder.blueComponent - movedBorder.redComponent > 0.08)
+        #expect(movedBorder.blueComponent - movedBorder.greenComponent > 0.04)
+        let vacated = try #require(movedImage.colorAt(x: borderX, y: midY)?.usingColorSpace(.deviceRGB))
+        #expect(abs(vacated.redComponent - background.redComponent) * 255 <= 3)
+        let camera = try #require(moved["camera"] as? [String: Any])
+        #expect((camera["zoom"] as? NSNumber)?.doubleValue ?? 0 > 0)
+        #expect((camera["minZoom"] as? NSNumber)?.doubleValue == 0.12)
+        #expect((camera["maxZoom"] as? NSNumber)?.doubleValue == 2.4)
+
+        var zoomedRequest = request
+        zoomedRequest["actions"] = [["type": "transform", "scale": 1.25, "tx": -100, "ty": -62.5]]
+        let zoomed = try renderer.request(zoomedRequest)
+        let zoomedImage = try #require(NSBitmapImageRep(data: Data(base64Encoded: zoomed["image"] as? String ?? "") ?? Data()))
+        let expectedBorderX = Int((CGFloat(borderX + 60) * 1.25 - 100).rounded())
+        #expect((expectedBorderX - 2...expectedBorderX + 2).contains { x in
+            guard let color = zoomedImage.colorAt(x: x, y: midY)?.usingColorSpace(.deviceRGB) else { return false }
+            return color.blueComponent - color.redComponent > 0.08
+                && color.blueComponent - color.greenComponent > 0.04
+        }, "Camera-only zoom frames should show the resized card immediately")
+        let zoomedCamera = try #require(zoomed["camera"] as? [String: Any])
+        let previousZoom = try #require((camera["zoom"] as? NSNumber)?.doubleValue)
+        #expect(abs(((zoomedCamera["zoom"] as? NSNumber)?.doubleValue ?? 0) - previousZoom * 1.25) < 0.0001)
     }
 
     @Test func drawsTheAppsGraphAndAnswersReaderInput() throws {

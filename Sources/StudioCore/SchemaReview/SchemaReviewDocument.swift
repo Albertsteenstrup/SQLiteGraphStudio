@@ -205,6 +205,8 @@ public struct SchemaReviewDocument: Codable, Sendable {
 
         public var agent: SchemaReviewAgent? { SchemaReviewAgent(identifier: tool) }
         public var toolName: String { agent?.displayName ?? tool }
+        /// Lead with the producing chat's name when the host supplies it.
+        public var displayName: String { session ?? toolName }
         /// `Claude · Table diff visualization clarity`
         public var summary: String { ([toolName] + [session].compactMap { $0 }).joined(separator: " · ") }
 

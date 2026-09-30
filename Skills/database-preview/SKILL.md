@@ -65,11 +65,20 @@ inspect the remaining sets selectively and let the view's factual fallback cover
 any you cannot explain.
 
 When your instructions allow you to name yourself, pass `--agent` (`claude`,
-`codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
-current chat or session's human-readable name) so the preview header shows where
-it came from. Never invent either, and leave the session out when its name should
-not travel with the file. They sit outside the plan, so they never change its
-fingerprint.
+`codex`, `opencode`, `copilot`, or another tool's own name). Always include
+`--session` with the actual human-readable title of the current chat when the
+host makes it available. Retrieve it from the host's session context or tools;
+in Codex, use the Codex app's thread listing or reader and match the current
+thread's exact ID. Never choose the first or most recent thread just because it
+appears in the list, and never substitute an opaque ID for a title. If the host
+cannot supply the title, omit `--session`; never invent either name.
+
+The header leads with the session title beside the agent's mark; full tool and
+session provenance remains in the tooltip. The session name travels with the
+file, so omit it when it contains anything that should not be shared. This
+records where the review came from, not an approval.
+
+These author labels sit outside the plan and never change its fingerprint.
 
 `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
 to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than

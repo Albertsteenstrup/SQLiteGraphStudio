@@ -86,18 +86,24 @@ rest fade; choose it again, or click empty canvas, to return. ⌥⌘↓ and ⌥�
 through changes and bring each one into view. View 1 is the default; Previous
 from there opens **View 0**, the complete model after the changes. View 0 omits
 removed objects, keeps tables at uniform size and opacity, and uses colour alone
-to mark additions and edits. Table cards appear at a lower zoom in all review views.
+to mark additions and edits. Table cards show their full contents from 10% zoom
+in all review views. Drag the divider between the graph and table list to resize
+the panes in the app.
 
 In the embedded viewer, **Changes in this view** can contain assistant-written
 explanations with clickable table, field, and relation names. Its expanded or
 collapsed state carries between views. Table details have a **Close ×** button
 and support **Escape**; closing either panel releases its space in the embed.
+Dragging and zooming move the current frame immediately; after a short pause,
+the viewer requests a fresh native frame to sharpen the graph.
 
 The [database-diff skill](Skills/database-diff/SKILL.md) documents command-line
 snapshot and comparison creation for hooks. Bind generated reviews to immutable
 base/head revisions and run them after the existing code-review rounds. An agent
-may add `--agent` and `--session` so the review header names the tool and session
-that produced it, such as **Claude · Table diff visualization clarity**. Git does
+passes `--agent` and includes the actual current chat title with `--session`
+whenever its host provides it. That title leads the review header beside the
+tool's mark, with full provenance in the tooltip. If the host cannot supply the
+title, the header falls back to the tool name. Git does
 not run pre-merge-commit on fast-forward merges, so that workflow needs an explicit
 final schema-review step as well.
 

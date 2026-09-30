@@ -117,21 +117,17 @@ struct SchemaReviewWorkspaceView: View {
                     Label("Offline snapshot", systemImage: "clock.arrow.circlepath").foregroundStyle(.secondary)
                 } else {
                     changeSummary(order).font(.callout)
-                    Label("Added", systemImage: "plus.square").foregroundStyle(SchemaChangeKind.added.tint)
-                    Label("Changed", systemImage: "square.and.pencil").foregroundStyle(SchemaChangeKind.modified.tint)
-                    Label("Removed", systemImage: "minus.square").foregroundStyle(SchemaChangeKind.removed.tint)
                 }
             }
             .padding(.horizontal, 16)
             GeometryReader { geometry in
-              HStack(spacing: 0) {
+              HSplitView {
                 // Cards and labels are positioned freely inside the graph; without a clip
                 // they would paint over, and take clicks meant for, the panel beside it.
                 SchemaGraphView(session: session)
-                    .frame(width: geometry.size.width * 0.56)
+                    .frame(minWidth: 280, idealWidth: geometry.size.width * 0.56, maxWidth: .infinity)
                     .clipped()
                     .contentShape(Rectangle())
-                Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Text(isHistoricalExplanation ? "Captured tables" : "Tables").font(.headline)
@@ -158,9 +154,10 @@ struct SchemaReviewWorkspaceView: View {
                     } else if historicalArtifact == nil { allChangesSummary(order.changed) }
                 }
                 .padding(16)
-                .frame(width: geometry.size.width * 0.44 - 1)
+                .frame(minWidth: 320, idealWidth: geometry.size.width * 0.44, maxWidth: .infinity)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .background(Color(nsColor: .windowBackgroundColor))
+                .clipped()
               }
             }
             if isHistoricalExplanation || review.proposal != nil {

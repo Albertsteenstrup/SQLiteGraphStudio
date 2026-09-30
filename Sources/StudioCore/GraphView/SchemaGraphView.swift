@@ -633,7 +633,7 @@ public struct SchemaGraphView: View {
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
                     highlightState: relationHighlight.highlightState(for: node.id),
-                    keepsTextReadableWhenZoomed: isOverviewAnchor || focusPlan != nil || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
+                    keepsTextReadableWhenZoomed: session.schemaReview != nil || isOverviewAnchor || focusPlan != nil || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
                     schemaChange: session.isSchemaReviewFullModelView ? nil : session.schemaReviewChanges[node.id],
                     colorOnlyChange: session.isSchemaReviewFullModelView ? session.schemaReviewChanges[node.id]?.kind : nil,
                     selectNode: { selectCard(node.id) },
@@ -924,7 +924,7 @@ public struct SchemaGraphView: View {
     /// A click on a drawn table card.
     private func selectCard(_ nodeID: String) {
         if session.schemaReview != nil {
-            chooseReviewTable(nodeID, togglesChosenTable: zoom < effectiveDetailZoom)
+            chooseReviewTable(nodeID)
             return
         }
         session.notifyManualGraphInteraction()

@@ -321,16 +321,23 @@ extension StudioSkills {
     inspect the remaining sets selectively and let the view's factual fallback cover
     any you cannot explain.
 
-    Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
-    `opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
-    `--session` takes the human-readable name of the current chat or session. The
-    review header then leads with the tool's mark, for example `Claude · Table diff
-    visualization clarity`. In the app, Graph Studio replaces the tab of an earlier review
-    from the same tool and session, so an updated diff does not open another tab; reviews from
-    other sessions open in their own tabs. Omit `--session` when you don't know the session's name,
-    and omit both when you may not disclose them; never invent either. The session
-    name travels with the review file, so leave it out when it holds anything that
-    should not be shared. This records where the review came from, not an approval.
+    When your instructions allow you to name yourself, pass `--agent` (`claude`,
+    `codex`, `opencode`, `copilot`, or another tool's own name). Always include
+    `--session` with the actual human-readable title of the current chat when the
+    host makes it available. Retrieve it from the host's session context or tools;
+    in Codex, use the Codex app's thread listing or reader and match the current
+    thread's exact ID. Never choose the first or most recent thread just because it
+    appears in the list, and never substitute an opaque ID for a title. If the host
+    cannot supply the title, omit `--session`; never invent either name.
+
+    The header leads with the session title beside the agent's mark; full tool and
+    session provenance remains in the tooltip. The session name travels with the
+    file, so omit it when it contains anything that should not be shared. This
+    records where the review came from, not an approval.
+
+    In the app, Graph Studio replaces an earlier review tab from the same tool
+    and session, so updated diffs stay in their tab and other sessions have their
+    own tabs.
 
     Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
     custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection
@@ -450,11 +457,20 @@ extension StudioSkills {
     any you cannot explain.
 
     When your instructions allow you to name yourself, pass `--agent` (`claude`,
-    `codex`, `opencode`, `copilot`, or another tool's own name) and `--session` (the
-    current chat or session's human-readable name) so the preview header shows where
-    it came from. Never invent either, and leave the session out when its name should
-    not travel with the file. They sit outside the plan, so they never change its
-    fingerprint.
+    `codex`, `opencode`, `copilot`, or another tool's own name). Always include
+    `--session` with the actual human-readable title of the current chat when the
+    host makes it available. Retrieve it from the host's session context or tools;
+    in Codex, use the Codex app's thread listing or reader and match the current
+    thread's exact ID. Never choose the first or most recent thread just because it
+    appears in the list, and never substitute an opaque ID for a title. If the host
+    cannot supply the title, omit `--session`; never invent either name.
+
+    The header leads with the session title beside the agent's mark; full tool and
+    session provenance remains in the tooltip. The session name travels with the
+    file, so omit it when it contains anything that should not be shared. This
+    records where the review came from, not an approval.
+
+    These author labels sit outside the plan and never change its fingerprint.
 
     `inspect` returns `baseFingerprint`; copy it into the plan. The index is bounded
     to 100 tables (`--limit 1..500`, `--find TEXT`). Repeat `--table ID` for more than
@@ -541,9 +557,9 @@ extension StudioSkills {
     """#
 
     static let knownManagedHashes: [String: Set<String>] = [
-        "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877", "92a1bc97cc3b7e6561a663cc9aa615b1901ceadb88da47c92f38ba9b811b9419", "9076bbe8af3324dafc63ef8456d8d77cc9e3f54b06d3ae5ee1d7549b6096065f"],
+        "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877", "92a1bc97cc3b7e6561a663cc9aa615b1901ceadb88da47c92f38ba9b811b9419", "9076bbe8af3324dafc63ef8456d8d77cc9e3f54b06d3ae5ee1d7549b6096065f", "7a300c6964cdba3336dfb3c59ed59b54c94ee71ec96606aa7f1cb8250149840b"],
         "database-explore": ["b9d635243780070b8083dd1d0b1305a3f474f67e70f537de649f5dd52191935d", "2d3fd74135fd38d8c9442220f0e9afc1061c5f542b41d762be059cc4ab669fb6", "580f50bbb7157869e4f973c2efba2149978e67d43c1b4a3416ac41444a2d845a", "f3d00e24454a36b4c77d19918ebe0dd8cfd6cfdbea7b6fb8aa263a9639b0c89f", "421cbceee6bc59db488d17a3973b7c98baf4701d264e4dbd8d639219b7f35bc6", "35cbf93c3fbd0ae880d95ee3e75b841cddaceb0f18609d32a0cb74a8e9609954", "ba6441b6732a7531e37ad37fcb98991ae2e38a5f3e78994587777e1148ee9a17"],
-        "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388", "885b33b70f2f31322a8723ab822e1cb92fc58b8546d05acf8cfb5308ff823063", "a0c5fde5d6016aaa9744f525d39dbd6f35e6ad881a8e855f39f917105021a73b"],
+        "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388", "885b33b70f2f31322a8723ab822e1cb92fc58b8546d05acf8cfb5308ff823063", "a0c5fde5d6016aaa9744f525d39dbd6f35e6ad881a8e855f39f917105021a73b", "2d7482c3795f21a57939d15fb5eb79dffce438ab47752f8c55f85444a2922753"],
         "graph-clusters": ["0a7091b32ae03d1b229e4581ae174404493eaaeaea100ab9fea5513672d0a68c", "ee97e6f72efb08efc52b15dcab494524559b9ed92c9ee6eacca42303fc6db8b1", "a5955fb18a7f27d77b2a926a22a101ee24769ebf8ca20fe2a3b12f50459d5f26", "217cda60b500d45d9430947345f92a9fa7189beb9050e51791cc519f0b95c5c0", "5cac1ae166a7ac30a5b925da54c58ae4b7906648ab4ec0d3e35925a4d3d93f49"],
         "schema-descriptions": ["1b0514eecb66d32e85f34e3c5f7bde441a39971dd2e1499031cd1ec7482c430b", "5597c5dc512b3d28027c15c40ed1aefb5ee6c71175ac4a6531bdca5842594cee"],
         "story-flows": ["2dec3cc7b479343a6f2b40547bcddc5390f6435762046cf8ccfd08bf4075abe1", "4771c1c0fc2389911a97ed8e99dfd3858b055b8bd2b0d43bed4be2d84f6132db", "98af44e239d2326b74a1b2c94fdfb3912be6b21be6aba413709534f6910b5957"],

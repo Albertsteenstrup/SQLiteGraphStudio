@@ -210,17 +210,18 @@ public enum SchemaReviewInlineView {
             var tool: String
             var session: String?
 
-            var summary: String {
+            var toolName: String {
                 let key = tool.lowercased().filter(\.isLetter)
-                let name: String = switch key {
+                return switch key {
                 case "claude", "claudecode", "anthropicclaude": "Claude"
                 case "codex", "openaicodex", "codexcli": "Codex"
                 case "opencode": "OpenCode"
                 case "copilot", "githubcopilot", "vscodecopilot", "vscode", "copilotchat": "Copilot"
                 default: tool
                 }
-                return ([name] + [session].compactMap { $0 }).joined(separator: " · ")
             }
+            var displayName: String { session ?? toolName }
+            var summary: String { ([toolName] + [session].compactMap { $0 }).joined(separator: " · ") }
         }
 
         func validate() throws {
@@ -595,6 +596,7 @@ public enum SchemaReviewInlineView {
             "headRef": document.headRef,
             "engine": document.after.engine,
             "author": document.author.map { $0.summary as Any } ?? NSNull(),
+            "authorLabel": document.author.map { $0.displayName as Any } ?? NSNull(),
             "path": path,
             "overview": summary,
             "summary": [

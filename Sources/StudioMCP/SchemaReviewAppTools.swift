@@ -38,7 +38,7 @@ public enum SchemaReviewAppTools {
                 throw SchemaReviewRenderer.RendererError.failed("The renderer returned no image.")
             }
             var state: [String: Any] = [:]
-            for key in ["width", "height", "sets", "setTables", "set", "selection"] {
+            for key in ["width", "height", "sets", "setTables", "set", "selection", "camera"] {
                 state[key] = response[key] ?? NSNull()
             }
             return [

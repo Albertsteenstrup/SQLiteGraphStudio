@@ -69,16 +69,23 @@ claiming data was migrated or that the change is safe. For very large reviews,
 inspect the remaining sets selectively and let the view's factual fallback cover
 any you cannot explain.
 
-Name yourself when your instructions allow it. `--agent` takes `claude`, `codex`,
-`opencode` or `copilot` (GitHub Copilot in VS Code), or another tool's own name;
-`--session` takes the human-readable name of the current chat or session. The
-review header then leads with the tool's mark, for example `Claude · Table diff
-visualization clarity`. In the app, Graph Studio replaces the tab of an earlier review
-from the same tool and session, so an updated diff does not open another tab; reviews from
-other sessions open in their own tabs. Omit `--session` when you don't know the session's name,
-and omit both when you may not disclose them; never invent either. The session
-name travels with the review file, so leave it out when it holds anything that
-should not be shared. This records where the review came from, not an approval.
+When your instructions allow you to name yourself, pass `--agent` (`claude`,
+`codex`, `opencode`, `copilot`, or another tool's own name). Always include
+`--session` with the actual human-readable title of the current chat when the
+host makes it available. Retrieve it from the host's session context or tools;
+in Codex, use the Codex app's thread listing or reader and match the current
+thread's exact ID. Never choose the first or most recent thread just because it
+appears in the list, and never substitute an opaque ID for a title. If the host
+cannot supply the title, omit `--session`; never invent either name.
+
+The header leads with the session title beside the agent's mark; full tool and
+session provenance remains in the tooltip. The session name travels with the
+file, so omit it when it contains anything that should not be shared. This
+records where the review came from, not an approval.
+
+In the app, Graph Studio replaces an earlier review tab from the same tool
+and session, so updated diffs stay in their tab and other sessions have their
+own tabs.
 
 Before/after must use the same engine. Snapshot accepts SQLite files, PostgreSQL
 custom-format `.dump`/`.backup` archives, and `.postgres`/`.pgstudio` connection

@@ -61,11 +61,13 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - **Marks**: unchanged tables recede; a review never draws the dashed "size unknown" outline, because it has no row data and dashes mean "removed" there
 - **Panel**: the list is grouped Removed / New / Changed; choosing a row reveals the table (pans at the current zoom, zooms out only to fit its changed relations, never in); ⌥⌘↓/⌥⌘↑ step through changes. The graph is clipped to its pane so cards cannot paint over the panel
 - **Clicking an overview node in a review selects it** instead of pulling its neighbours into a focus ring, which would rearrange the layout being compared
+- **Review panes**: the native graph and table list use a draggable split divider. Full table cards appear from 10% zoom and keep field text opaque. The redundant Added/Changed/Removed header legend is removed; counts, badges, and graph marks still explain changes.
+- **Embedded gestures**: pan and zoom immediately transform the current native frame locally. After input pauses for 80 ms, one renderer request refines it; newer input remains visible when an older frame arrives. Camera-only snapshots wait for the graph to consume the command without waiting for selection/layout settling.
 - **Status**: ✅ ACTIVE
 
 ### Review Author
 - **Files**: `Sources/StudioCore/SchemaReview/SchemaReviewDocument.swift`, `Sources/StudioCore/SchemaReview/SchemaReviewAuthorLabel.swift`, `Sources/StudioCore/SchemaReview/SchemaReviewCapture.swift`, `Skills/database-diff`, `Skills/database-preview`
-- **Change**: `compare` and `preview` accept `--agent TOOL --session NAME`, stored as an optional `author` on the document. The header then leads with the tool's mark and `Claude · Session name`. Known tools (`claude`, `codex`, `opencode`, `copilot`) are normalised from common spellings; any other tool keeps its own name
+- **Change**: `compare` and `preview` accept `--agent TOOL --session NAME`, stored as an optional `author` on the document. Capture skills require the actual current chat title whenever the host provides it. Native and embedded headers lead with that session title; the native header keeps the tool's mark, and tool/session provenance remains in the tooltip. Unnamed reviews fall back to the tool name. Known tools (`claude`, `codex`, `opencode`, `copilot`) are normalised from common spellings; any other tool keeps its own name
 - **Marks**: drawn in code — Claude's spark, and plain monogram tiles for the others rather than imitations of their logos. No third-party artwork is bundled
 - **Compatibility**: documents without `author` load unchanged. It is provenance only, never approval, and sits outside a preview's plan so it never changes the plan fingerprint
 - **Status**: ✅ ACTIVE
