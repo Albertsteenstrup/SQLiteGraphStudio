@@ -39,7 +39,7 @@ Tabs may contain different SQLite files, PostgreSQL sources, previews, compariso
 
 A coding task gets a reusable explanation workspace. Existing manual work stays available in its own tab. New comparison work can use additional tabs. Background agent activity can prepare or update its own tab but must not activate it or speak over another explanation. One narrator is active across the application. An explicit new user request can switch to another task's explanation; an unsolicited background update cannot.
 
-Restore tabs, view state, and query drafts across launches. Restored result displays identify their age. Do not automatically replay speech, re-run expensive queries, reconnect to a substituted source, or resume an obsolete presentation.
+Normal launch starts with an empty workspace; opening a source requires an explicit file/folder choice, Open Recent, Finder, or launch argument. Snapshot restoration remains a controller capability, but the application does not invoke it or automatic workspace persistence on normal launch. Restored result displays identify their age. Do not automatically replay speech, re-run expensive queries, reconnect to a substituted source, or resume an obsolete presentation.
 
 ### A point in an explanation
 

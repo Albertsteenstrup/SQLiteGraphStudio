@@ -3910,7 +3910,7 @@ private struct GraphTrackpadInputSurface: NSViewRepresentable {
 }
 
 @MainActor
-private final class GraphTrackpadInputView: NSView {
+final class GraphTrackpadInputView: NSView {
     var onPan: ((CGSize) -> Void)?
     var onMagnify: ((CGFloat, CGPoint) -> Void)?
     var onPointerMove: ((CGPoint?) -> Void)?
@@ -3932,6 +3932,10 @@ private final class GraphTrackpadInputView: NSView {
     override var isFlipped: Bool {
         true
     }
+
+    // This view observes window events; it never owns clicks. SwiftUI's
+    // allowsHitTesting(false) does not make the embedded AppKit view transparent.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -4016,57 +4020,63 @@ private final class GraphTrackpadInputView: NSView {
     private func installMonitorIfNeeded() {
         guard eventMonitor == nil else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .mouseMoved]) { [weak self] event in
-            guard let self, let window = self.window,
-                  event.window === window, !self.isHiddenOrHasHiddenAncestor
-            else { return event }
-            let point = self.convert(event.locationInWindow, from: nil)
-            let isInside = self.bounds.contains(point)
+            guard let self else { return event }
+            return self.handleEvent(event)
+        }
+    }
 
-            switch event.type {
-            case .scrollWheel:
-                guard isInside, !self.ignoresInput else {
-                    self.publishInteractionEndIfNeeded(for: event)
-                    return event
-                }
-                // A wheel event can arrive before the coalesced mouse-move sample.
-                // Route it using the card actually under this event's pointer.
-                self.publishPointerMove(point, immediately: true)
-                self.hasAcceptedGesture = true
-                if event.hasPreciseScrollingDeltas {
-                    self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
-                } else {
-                    // Mouse wheel: vertical scroll zooms toward the cursor; horizontal scroll pans.
-                    let lineScale: CGFloat = 14
-                    let deltaX = event.scrollingDeltaX * lineScale
-                    let deltaY = event.scrollingDeltaY * lineScale
-                    if abs(deltaY) >= abs(deltaX), deltaY != 0 {
-                        self.onMagnify?(-deltaY * 0.09, point)
-                    } else if deltaX != 0 {
-                        self.onPan?(CGSize(width: deltaX, height: 0))
-                    }
-                }
+    func handleEvent(_ event: NSEvent) -> NSEvent? {
+        guard let window = self.window,
+              event.window === window, !self.isHiddenOrHasHiddenAncestor
+        else { return event }
+        let point = self.convert(event.locationInWindow, from: nil)
+        let isInside = self.bounds.contains(point)
+            && !GraphInputExclusionRegion.contains(event.locationInWindow, in: window)
+
+        switch event.type {
+        case .scrollWheel:
+            guard isInside, !self.ignoresInput else {
                 self.publishInteractionEndIfNeeded(for: event)
-                return nil
-            case .magnify:
-                guard isInside, !self.ignoresInput else {
-                    self.publishInteractionEndIfNeeded(for: event)
-                    return event
-                }
-                self.publishPointerMove(point, immediately: true)
-                self.hasAcceptedGesture = true
-                self.onMagnify?(event.magnification, point)
-                self.publishInteractionEndIfNeeded(for: event)
-                return nil
-            case .mouseMoved:
-                guard !self.ignoresInput else {
-                    self.publishPointerMove(nil)
-                    return event
-                }
-                self.publishPointerMove(isInside ? point : nil)
-                return event
-            default:
                 return event
             }
+            // A wheel event can arrive before the coalesced mouse-move sample.
+            // Route it using the card actually under this event's pointer.
+            self.publishPointerMove(point, immediately: true)
+            self.hasAcceptedGesture = true
+            if event.hasPreciseScrollingDeltas {
+                self.onPan?(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
+            } else {
+                // Mouse wheel: vertical scroll zooms toward the cursor; horizontal scroll pans.
+                let lineScale: CGFloat = 14
+                let deltaX = event.scrollingDeltaX * lineScale
+                let deltaY = event.scrollingDeltaY * lineScale
+                if abs(deltaY) >= abs(deltaX), deltaY != 0 {
+                    self.onMagnify?(-deltaY * 0.09, point)
+                } else if deltaX != 0 {
+                    self.onPan?(CGSize(width: deltaX, height: 0))
+                }
+            }
+            self.publishInteractionEndIfNeeded(for: event)
+            return nil
+        case .magnify:
+            guard isInside, !self.ignoresInput else {
+                self.publishInteractionEndIfNeeded(for: event)
+                return event
+            }
+            self.publishPointerMove(point, immediately: true)
+            self.hasAcceptedGesture = true
+            self.onMagnify?(event.magnification, point)
+            self.publishInteractionEndIfNeeded(for: event)
+            return nil
+        case .mouseMoved:
+            guard !self.ignoresInput else {
+                self.publishPointerMove(nil)
+                return event
+            }
+            self.publishPointerMove(isInside ? point : nil)
+            return event
+        default:
+            return event
         }
     }
 
@@ -4092,12 +4102,16 @@ private final class GraphTrackpadInputView: NSView {
             return
         }
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        publishPointerMove(bounds.contains(point) ? point : nil)
+        publishPointerMove(bounds.contains(point)
+                           && !GraphInputExclusionRegion.contains(window.mouseLocationOutsideOfEventStream, in: window)
+                           ? point : nil)
     }
 
     private func pointInBounds(for event: NSEvent) -> CGPoint? {
         let point = convert(event.locationInWindow, from: nil)
-        return bounds.contains(point) ? point : nil
+        return bounds.contains(point)
+            && event.window.map { !GraphInputExclusionRegion.contains(event.locationInWindow, in: $0) } == true
+            ? point : nil
     }
 
     private func publishPointerMove(_ point: CGPoint?, immediately: Bool = false) {

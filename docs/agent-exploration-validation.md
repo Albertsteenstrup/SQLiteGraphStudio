@@ -20,7 +20,7 @@ Exit evidence: protocol traces without row/credential leakage, native view/readi
 
 Refactor app/window/source/tab ownership. Introduce the primary workspace tab bar with graph/data split by default and pane maximization. Migrate current state into a first workspace. Support different live databases, restored sources, and artifacts in separate tabs; isolate camera, field selection, filters, query drafts, results, and navigation.
 
-Keep source resources shared where appropriate. Reference-count PostgreSQL restored runtimes and database sessions so closing one tab cannot break another. Define tab ownership and one global narrator. Persist restorable workspaces without automatically executing queries or replaying speech.
+Keep source resources shared where appropriate. Reference-count PostgreSQL restored runtimes and database sessions so closing one tab cannot break another. Define tab ownership and one global narrator. Exercise explicit snapshot restoration without automatically executing queries or replaying speech. Normal application launch must stay empty until a source is explicitly opened; it does not automatically persist or restore workspace snapshots.
 
 Exit evidence: native multi-tab tests with two SQLite databases, PostgreSQL, a preview and a comparison; independent state; restore/relaunch; resource cleanup; existing manual editing still functional.
 

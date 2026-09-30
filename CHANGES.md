@@ -2,12 +2,19 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## Workspace Input and Startup
+
+- Normal launch starts with an empty workspace. Sources open through an explicit file/folder choice, Open Recent, Finder, or launch arguments; the app no longer automatically restores datasets from the prior session.
+- Supported file formats are available through the welcome screen's **Supported formats** information button.
+- Metadata issues can be dismissed without discarding their diagnostics. Their panel owns its scrolling, wheel and pinch gestures, and returns when the source or diagnostics change.
+- The graph's native event observer passes clicks through to underlying controls. The informational minimap also passes clicks through, keeping table, search, filter, split and view controls reachable.
+
 ## One Graph Studio Window for Coding Agents
 
 - The app uses one main window with workspace tabs. A user-wide process lock prevents separate worktree builds from opening extra app copies; a new build also defers to a running older copy. Launch scripts and bundled skills reuse the running app instead of requesting a new copy.
 - `studio_launch` reuses a paired running app. Reopening the same source in one coding task returns its bound workspace; `studio_refresh_source` reloads it when needed.
 - The development launcher never terminates Graph Studio processes by name and refuses to replace a bundle while its app or MCP helper is running. Swift build parallelism defaults to four jobs so simultaneous worktrees create less memory pressure.
-- At most four documents are loaded across the app, including in-progress opens from separate coding tasks. Saved background tabs restore their source when selected instead of reopening every database at startup. MCP-created workspaces remain bounded to 12 owned tabs and 32 total tabs. At a limit, the tool returns a recoverable error instead of continuing to allocate database sessions and graph canvases.
+- At most four documents are loaded across the app, including in-progress opens from separate coding tasks. Normal startup opens no source; unloaded tabs in an explicitly restored workspace load their source when selected. MCP-created workspaces remain bounded to 12 owned tabs and 32 total tabs. At a limit, the tool returns a recoverable error instead of continuing to allocate database sessions and graph canvases.
 
 ## PostgreSQL Read-Only Connections
 
@@ -95,8 +102,8 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 ### Minimap
 - **File**: `Sources/StudioCore/GraphView/SchemaGraphView.swift`
 - **Component**: `GraphMinimapView`
-- **Location**: Bottom-right corner
-- **Features**: Bird's-eye view, viewport indicator, click-to-navigate
+- **Location**: Bottom-left corner
+- **Features**: Informational bird's-eye view and viewport indicator; mouse input passes through to workspace controls
 - **Status**: ✅ ACTIVE
 
 ### Back to Content Button

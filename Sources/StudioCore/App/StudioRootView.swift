@@ -123,11 +123,11 @@ private struct WorkspaceTabBar: View {
 private struct WorkspaceSessionRootView: View {
     @Bindable private var session: AppSession
     private let chooseSource: () -> Void
-    @State private var isMinimapHovered = false
     @State private var skillsToastVisible = false
     @State private var skillsRepeatTask: Task<Void, Never>? = nil
     @State private var skillsToastDismissedForURL: URL? = nil
     @State private var refreshToastTask: Task<Void, Never>? = nil
+    @State private var metadataIssuesDismissed = false
 
     init(session: AppSession, chooseSource: @escaping () -> Void) {
         self.session = session
@@ -179,9 +179,10 @@ private struct WorkspaceSessionRootView: View {
                     .frame(width: 180, height: 120)
                     .padding(18)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .onHover { isHovered in isMinimapHovered = isHovered }
-                    .zIndex(isMinimapHovered ? 1000 : 1)
                 }
+                // The overview is informational; its full-window container must
+                // let the workspace's buttons, divider, and dock receive clicks.
+                .allowsHitTesting(false)
             }
         }
         .disabled(session.isRefreshing)
@@ -223,18 +224,34 @@ private struct WorkspaceSessionRootView: View {
                     .frame(maxWidth: 620)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
-                if !session.metadataDiagnostics.isEmpty {
-                    DisclosureGroup("Metadata: \(session.metadataDiagnostics.count) issue(s)") {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 4) {
-                                ForEach(session.metadataDiagnostics, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
+                if !session.metadataDiagnostics.isEmpty, !metadataIssuesDismissed {
+                    HStack(alignment: .top, spacing: 8) {
+                        DisclosureGroup("Metadata: \(session.metadataDiagnostics.count) issue(s)") {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ForEach(session.metadataDiagnostics, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
+                                }
                             }
-                        }.frame(maxHeight: 140)
-                        Button("Reload Metadata") { session.reloadSchemaSidecarFromDisk() }
+                            .frame(maxHeight: 140)
+                            Button("Reload Metadata") { session.reloadSchemaSidecarFromDisk() }
+                        }
+                        Button {
+                            metadataIssuesDismissed = true
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(StudioPalette.secondaryText)
+                                .frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss metadata issues")
+                        .accessibilityLabel("Dismiss metadata issues")
                     }
                     .padding(12)
                     .frame(maxWidth: 620)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .background(GraphInputExclusionRegion())
                 }
                 if let refreshToast = session.refreshToast {
                     RefreshToastView(message: refreshToast.message)
@@ -270,6 +287,9 @@ private struct WorkspaceSessionRootView: View {
         }
         .animation(.snappy(duration: 0.3), value: skillsToastVisible)
         .animation(.snappy(duration: 0.3), value: session.refreshToast?.id)
+        .onChange(of: session.metadataDiagnostics) { _, _ in
+            metadataIssuesDismissed = false
+        }
         .onChange(of: session.refreshToast?.id) { _, newID in
             refreshToastTask?.cancel()
             guard newID != nil else { return }
@@ -300,6 +320,7 @@ private struct WorkspaceSessionRootView: View {
             }
         }
         .onChange(of: session.databaseURL) { _, _ in
+            metadataIssuesDismissed = false
             skillsRepeatTask?.cancel()
             skillsRepeatTask = nil
             refreshToastTask?.cancel()
@@ -1081,6 +1102,7 @@ private struct OpenTablePickerView: View {
 private struct EmptyDatabaseView: View {
     @Bindable var session: AppSession
     let chooseSource: () -> Void
+    @State private var showsSupportedFormats = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -1107,13 +1129,32 @@ private struct EmptyDatabaseView: View {
                     .tint(StudioPalette.accent)
                     .controlSize(.large)
 
-                    Text(DatabaseDocument.supportedFormatsDescription
-                         + "\nMigrations: a folder of versioned .sql files")
-                        .font(.caption)
-                        .foregroundStyle(StudioPalette.secondaryText)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 520)
+                    Button {
+                        showsSupportedFormats.toggle()
+                    } label: {
+                        Label("Supported formats", systemImage: "info.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(StudioPalette.secondaryText)
+                    .padding(.vertical, 4)
+                    .help("Show supported file formats and migration folders")
+                    .accessibilityHint("Opens a list of supported file formats and migration folders")
+                    .popover(isPresented: $showsSupportedFormats) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Supported formats")
+                                .font(.headline)
+                                .foregroundStyle(StudioPalette.primaryText)
+                            Text(DatabaseDocument.supportedFormatsDescription
+                                 + "\nMigrations: a folder of versioned .sql files")
+                                .font(.caption)
+                                .foregroundStyle(StudioPalette.secondaryText)
+                                .lineSpacing(5)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(width: 340, alignment: .leading)
+                        .padding(18)
+                    }
                 }
             }
             .frame(maxWidth: .infinity)

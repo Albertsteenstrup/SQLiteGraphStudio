@@ -141,8 +141,8 @@ private final class StudioApplicationState {
         setupPreviewRequestID = UUID()
     }
 
-    /// File-open callbacks can arrive while saved tabs are being restored. Keep
-    /// them in arrival order so one document never races another tab activation.
+    /// Keep explicit file-open requests in arrival order so one document never
+    /// races another tab activation.
     func enqueueOpenDocuments(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         let prior = documentOpenTask
@@ -300,11 +300,8 @@ struct SQLiteGraphStudioApp: App {
         guard !state.configured else { return }
         state.configured = true
         let state = state
-        let restorationStore = WorkspaceRestorationStore.defaultStore
-        if let snapshot = restorationStore.load() {
-            await state.tabs.restoreWorkspace(from: snapshot)
-        }
-        state.tabs.enableAutomaticRestoration(using: restorationStore)
+        // Keep the initial empty workspace on a normal launch. Only explicit
+        // Finder, command-line, or in-app requests should open a source.
 
         do {
             try state.server.start()
@@ -312,12 +309,6 @@ struct SQLiteGraphStudioApp: App {
             state.serverError = error.localizedDescription
         }
         appDelegate.onTerminate = {
-            do {
-                try state.tabs.saveRestorationState()
-            } catch {
-                NSLog("SQLite Graph Studio could not save its workspaces: %@", error.localizedDescription)
-            }
-            state.tabs.stopAutomaticRestoration()
             state.server.stop()
             await state.automation.close()
             await state.tabs.closeAllAndWait()

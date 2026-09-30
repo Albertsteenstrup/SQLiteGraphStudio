@@ -27,7 +27,7 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
 - Local MCP bridge — Codex and Claude Code can inspect the active task's source context and request supported schema views through Graph Studio. The bridge reports status without opening the app; launching is an explicit tool action.
-- Workspace tabs — each tab keeps its own graph/data split, camera, filters and query drafts; restorable browsing state returns after relaunch without running saved drafts or restarting speech.
+- Workspace tabs — each tab keeps its own graph/data split, camera, filters and query drafts. A normal launch starts at the welcome screen; choose a file or use Open Recent to reopen a source.
 - Guided explanations — an agent can show a small set of tables, inspect rows or a read-only result, and add short captioned points with local streamed macOS narration and immediate playback controls.
 
 ## AI Skills
@@ -155,7 +155,7 @@ A migration set is replayed, not executed, so what a parser cannot interpret is 
 
 ## PostgreSQL connections
 
-Choose **Choose file/folder…** from the File menu (⌘O), or **Choose file/folder** on the welcome screen. Select one or more supported files to open them in new workspaces, or select one project folder by itself to search for databases and migration sources. The picker does not display a file-extension list; supported extensions appear below the welcome-screen button. These files also work through Finder, launch arguments and Open Recent.
+Choose **Choose file/folder…** from the File menu (⌘O), or **Choose file/folder** on the welcome screen. Select one or more supported files to open them in new workspaces, or select one project folder by itself to search for databases and migration sources. The picker does not display a file-extension list; click **Supported formats** below the welcome-screen button to see supported extensions. These files also work through Finder, launch arguments and Open Recent.
 
 A backup opens without connection details or a login. Graph Studio copies it into a private temporary workspace, restores it using local PostgreSQL, and opens the schema, rows, record explorer and SQL editor in read-only mode. Progress and Cancel are shown during preparation. The source backup is never modified. Closing the workspace or quitting stops its server and removes the temporary copy; reopening restores a fresh copy. A private Unix socket is used, with no TCP listener. Restore tools and the server run under a filesystem/network sandbox. Restoration is the only write phase and only affects the private copy; browsing uses a separate reader with existing read-only query restrictions.
 
@@ -208,6 +208,8 @@ At full-model zoom, authored group titles and a few optional `overviewTables` ca
 - **Graph options (…) → Expand all tables** uses the same size-aware layout and refits large views. Return to all groups to recover the overview; ordinary panning and hovering do not rerun layout.
 
 Canvas interaction reuses relationship indexes, group connections and table sizes while the camera moves. Only visible detailed cards prepare column rows; overview marks use a spatial hit index. Camera updates keep the minimap moving during continuous gestures, and the active drag stays mounted at the viewport edge. The minimap batches its table and relationship drawing. These limits apply equally to PostgreSQL and SQLite.
+
+The minimap is an informational overview and passes clicks through to workspace controls. Metadata issues appear in a collapsible panel; use its **×** button to dismiss it. Scrolling over the panel scrolls its issues without moving or zooming the graph. The panel returns when the source or its diagnostics change.
 
 See [dump and native UI verification](docs/dump-ui-verification.md) for archive, crash, scrolling and filter checks. See [verification evidence](docs/postgres-parity-scale-verification.md) for measured layout and canvas preparation work, test coverage and the limits of the native interaction checks.
 
