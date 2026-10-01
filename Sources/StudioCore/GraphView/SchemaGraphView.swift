@@ -1713,17 +1713,11 @@ public struct SchemaGraphView: View {
                     session.notifyManualGraphInteraction()
                     fitGraph(in: size)
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 8, weight: .semibold))
-                        Text("Back to Content")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    Label("Back to Content", systemImage: "arrow.uturn.backward")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.studio)
+                // Floats over the canvas, so the shared capsule needs an opaque backing.
+                .studioSurface(.light)
                 .background(Capsule().fill(StudioPalette.chromeFill))
                 .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
                 .shadow(color: StudioPalette.shadow.opacity(0.75), radius: 18, y: 12)
@@ -1733,42 +1727,34 @@ public struct SchemaGraphView: View {
         }
     }
 
-    /// The same toggles the menu bar offers, so the canvas menu and View ▸ Graph Visuals
-    /// can never drift apart.
-    @ViewBuilder
-    private var graphVisualToggles: some View {
-        GraphVisualToggles(session: session)
-    }
-
     private func graphOptionsMenu(in size: CGSize) -> some View {
         StudioMenu(.quiet, iconOnly: session.graphNodeSizeMetric == .uniform || size.width < 760) {
-            Text(session.graphTableFilter.isActive
-                 ? "\(session.graphVisibleTableIDs.count) of \(session.tables.count) tables"
-                 : "\(session.graph.nodes.count) tables · \(session.graphGrouping.groupCount) groups")
+            StudioMenuHeader(session.graphTableFilter.isActive
+                             ? "\(session.graphVisibleTableIDs.count) of \(session.tables.count) tables"
+                             : "\(session.graph.nodes.count) tables · \(session.graphGrouping.groupCount) groups")
             if session.graphTableFilter.isActive {
-                Button("Clear filter") { session.clearGraphFilter() }
+                StudioMenuItem("Clear filter") { session.clearGraphFilter() }
             }
-            Divider()
-            Menu("Node size") {
-                Picker("Node size", selection: Binding(
-                    get: { session.graphNodeSizeMetric },
-                    set: { session.setGraphNodeSizeMetric($0, persist: true); session.notifyManualGraphInteraction() }
-                )) {
-                    ForEach(GraphNodeSizeMetric.allCases) { metric in
-                        Text(metric.title).tag(metric)
-                    }
-                }
-                .pickerStyle(.inline)
+            StudioMenuDivider()
+            StudioSubmenu("Node size") {
+                StudioMenuPicker(
+                    GraphNodeSizeMetric.allCases.map { (title: $0.title, value: $0) },
+                    selection: Binding(
+                        get: { session.graphNodeSizeMetric },
+                        set: { session.setGraphNodeSizeMetric($0, persist: true); session.notifyManualGraphInteraction() }
+                    )
+                )
             }
-            Toggle("Expand all tables", isOn: Binding(
+            StudioMenuToggle("Expand all tables", isOn: Binding(
                 get: { session.showAllGraphTableCards },
                 set: { session.setShowAllGraphTableCards($0) }
             ))
-            Menu("Graph visuals") {
-                graphVisualToggles
+            // The same switches the menu bar offers under View ▸ Graph Visuals.
+            StudioSubmenu("Graph visuals") {
+                GraphVisualToggles(session: session)
             }
-            Divider()
-            Button("Relayout") {
+            StudioMenuDivider()
+            StudioMenuItem("Relayout") {
                 session.reloadSchemaSidecarFromDisk()
                 session.clearPersistedGraphLayout()
                 invalidateClusterTitleCache()

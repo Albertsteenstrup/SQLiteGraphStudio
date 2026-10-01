@@ -40,8 +40,8 @@ public struct QueryWorkspaceView: View {
                         if !session.queryWorkspace.history.isEmpty {
                             StudioMenu(.quiet, iconOnly: true) {
                                 ForEach(session.queryWorkspace.history) { entry in
-                                    Menu(entry.title) {
-                                        Button("Open") {
+                                    StudioSubmenu(entry.title) {
+                                        StudioMenuItem("Open") {
                                             session.queryWorkspace.createQuery(
                                                 title: entry.title,
                                                 sqlText: entry.sqlText,
@@ -50,13 +50,13 @@ public struct QueryWorkspaceView: View {
                                                 isSaved: false
                                             )
                                         }
-                                        Button("Remove", role: .destructive) {
+                                        StudioMenuItem("Remove", role: .destructive) {
                                             session.queryWorkspace.removeHistoryEntry(id: entry.id)
                                         }
                                     }
                                 }
-                                Divider()
-                                Button("Clear History", role: .destructive) {
+                                StudioMenuDivider()
+                                StudioMenuItem("Clear History", role: .destructive) {
                                     session.queryWorkspace.clearHistory()
                                 }
                             } label: {
@@ -77,11 +77,11 @@ public struct QueryWorkspaceView: View {
                         .help(activeQuery.isSaved ? "Unsave query" : "Save query")
 
                         StudioMenu(.quiet, iconOnly: true) {
-                            Text(session.queryExportScopeLabel)
-                            Button("Export CSV") {
+                            StudioMenuHeader(session.queryExportScopeLabel)
+                            StudioMenuItem("Export CSV") {
                                 session.exportActiveQueryResult(format: .csv)
                             }
-                            Button("Export JSON") {
+                            StudioMenuItem("Export JSON") {
                                 session.exportActiveQueryResult(format: .json)
                             }
                         } label: {
@@ -91,11 +91,11 @@ public struct QueryWorkspaceView: View {
                         .disabled(session.exportProgress?.isRunning == true)
 
                         StudioMenu(.quiet) {
-                            Picker("Query timeout", selection: $session.queryWorkspace.timeoutSeconds) {
-                                ForEach([5.0, 15.0, 30.0, 60.0, 120.0], id: \.self) { seconds in
-                                    Text("\(Int(seconds)) seconds").tag(seconds)
-                                }
-                            }
+                            StudioMenuHeader("Query timeout")
+                            StudioMenuPicker(
+                                [5.0, 15.0, 30.0, 60.0, 120.0].map { (title: "\(Int($0)) seconds", value: $0) },
+                                selection: $session.queryWorkspace.timeoutSeconds
+                            )
                         } label: {
                             Label("\(Int(session.queryWorkspace.timeoutSeconds))s", systemImage: "timer")
                         }

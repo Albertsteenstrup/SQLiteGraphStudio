@@ -34,49 +34,27 @@ private struct WorkspaceTabBar: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(controller.tabs) { tab in
-                        HStack(spacing: 0) {
+                        HStack(spacing: 4) {
                             Button {
                                 controller.activate(tab.id)
                             } label: {
                                 HStack(spacing: 7) {
                                     Image(systemName: tab.kind.systemImage)
-                                        .font(.caption.weight(.semibold))
+                                        .font(.system(size: 11, weight: .semibold))
                                     Text(tab.title)
-                                        .font(.caption.weight(.semibold))
                                         .lineLimit(1)
                                         .frame(maxWidth: 190)
                                 }
-                                .foregroundStyle(controller.activeTabID == tab.id ? StudioPalette.primaryText : StudioPalette.secondaryText)
-                                .padding(.leading, 12)
-                                .padding(.vertical, 8)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Show \(tab.title) workspace")
 
-                            Button {
+                            StudioTabCloseButton(title: "Close \(tab.title) workspace") {
                                 Task { await controller.closeAndWait(tab.id) }
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(StudioPalette.tertiaryText)
-                                    .frame(width: 28, height: 30)
-                                    .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .help("Close \(tab.title) workspace")
-                            .accessibilityLabel("Close \(tab.title) workspace")
                         }
-                        .background(
-                            Capsule().fill(controller.activeTabID == tab.id
-                                           ? StudioPalette.chromeFillStrong
-                                           : StudioPalette.headerSurface.opacity(0.72))
-                        )
-                        .overlay {
-                            Capsule().stroke(controller.activeTabID == tab.id
-                                             ? StudioPalette.border
-                                             : StudioPalette.borderSoft, lineWidth: 1)
-                        }
+                        .studioTabChrome(isActive: controller.activeTabID == tab.id)
                     }
                 }
                 .padding(.vertical, 7)
@@ -89,12 +67,8 @@ private struct WorkspaceTabBar: View {
                 }
             } label: {
                 Image(systemName: "plus")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .frame(width: 32, height: 32)
-                    .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.studioIconTinted)
             .disabled(controller.tabs.count >= WorkspaceTabController.maximumTabs)
             .help("New workspace tab")
             .accessibilityLabel("New workspace tab")
@@ -103,12 +77,8 @@ private struct WorkspaceTabBar: View {
                 controller.presentOpenPanel()
             } label: {
                 Image(systemName: "folder")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .frame(width: 32, height: 32)
-                    .background(StudioPalette.headerSurface.opacity(0.82), in: Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.studioIconTinted)
             .help("Open files in new tabs or search a project folder")
             .accessibilityLabel("Choose files or search a project folder")
         }
@@ -117,6 +87,8 @@ private struct WorkspaceTabBar: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(StudioPalette.borderSoft).frame(height: 1)
         }
+        // The strip is drawn on the fixed light palette, whatever the system appearance.
+        .studioSurface(.light)
     }
 }
 
@@ -242,12 +214,9 @@ private struct WorkspaceSessionRootView: View {
                             metadataIssuesDismissed = true
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(StudioPalette.secondaryText)
-                                .frame(width: 24, height: 24)
-                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.studioIcon)
+                        .controlSize(.small)
                         .help("Dismiss metadata issues")
                         .accessibilityLabel("Dismiss metadata issues")
                     }
@@ -634,22 +603,7 @@ private struct PaneShell: View {
             }
             Spacer()
             if isMaximized {
-                Button {
-                    session.exitMaximizedMode()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.right.and.arrow.up.left")
-                            .font(.caption.weight(.semibold))
-                        Text("Exit Full Screen")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .foregroundStyle(StudioPalette.primaryText)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Capsule().fill(StudioPalette.chromeFillStrong))
-                    .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
-                }
-                .buttonStyle(.plain)
+                ExitFullScreenButton { session.exitMaximizedMode() }
             } else if !isCompact {
                 PaneHeaderIconButton(systemImage: "arrow.up.left.and.arrow.down.right", title: "Maximize pane") {
                     session.toggleMaximizePane(side)
@@ -812,15 +766,26 @@ private struct PaneHeaderIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(StudioPalette.secondaryText)
-                .frame(width: 30, height: 30)
-                .background(StudioPalette.headerSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.studioIcon)
         .help(title)
         .accessibilityLabel(title)
+        // Pane headers are drawn on the fixed light palette.
+        .studioSurface(.light)
+    }
+}
+
+/// Leaves a maximized pane. Both maximized headers share it.
+private struct ExitFullScreenButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Exit Full Screen", systemImage: "arrow.down.right.and.arrow.up.left")
+        }
+        .buttonStyle(.studio)
+        .controlSize(.small)
+        .studioSurface(.light)
     }
 }
 
@@ -1298,28 +1263,7 @@ private struct MaximizedPaneView: View {
 
             Spacer()
 
-            Button {
-                session.exitMaximizedMode()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .font(.caption.weight(.semibold))
-                    Text("Exit Full Screen")
-                        .font(.caption.weight(.semibold))
-                }
-                .foregroundStyle(StudioPalette.primaryText)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(StudioPalette.chromeFillStrong)
-                )
-                .overlay {
-                    Capsule()
-                        .stroke(StudioPalette.border, lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
+            ExitFullScreenButton { session.exitMaximizedMode() }
 
             Text(session.databaseDisplayName)
                 .font(.caption.weight(.medium))
@@ -1472,11 +1416,12 @@ private struct AlterTableSheetView: View {
                 Divider()
 
                 HStack(spacing: 8) {
-                    Picker("Column", selection: $selectedColumn) {
-                        ForEach(descriptor.columns) { column in
-                            Text(column.name).tag(column.name)
-                        }
-                    }
+                    StudioSelect(
+                        "Column",
+                        options: descriptor.columns.map { (title: $0.name, value: $0.name) },
+                        selection: $selectedColumn,
+                        placeholder: "Choose a column"
+                    )
                     .frame(width: 180)
                     TextField("New name", text: $renamedColumn)
                         .textFieldStyle(.roundedBorder)
@@ -1647,7 +1592,7 @@ private struct SkillsPickerView: View {
                 .buttonStyle(.studio)
                 StudioMenu(.secondary) {
                     ForEach(missingTargetDirectories) { targetDirectory in
-                        Button(targetDirectory.label) {
+                        StudioMenuItem(targetDirectory.label) {
                             session.installSkills(to: targetDirectory)
                             installRevision &+= 1
                             scheduleAutoClose()

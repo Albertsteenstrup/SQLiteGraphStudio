@@ -380,28 +380,28 @@ public struct TableWorkspaceView: View {
 
                 StudioMenu(.quiet, iconOnly: true) {
                     if session.databaseCapabilities.canAlterSchema {
-                        Button { session.showAlterTable() } label: {
-                            Label("Alter Table", systemImage: "slider.horizontal.3")
+                        StudioMenuItem("Alter Table", systemImage: "slider.horizontal.3") {
+                            session.showAlterTable()
                         }
                     }
                     if session.databaseCapabilities.canImportRows && activeTab.isEditable {
-                        Button { session.importRowsIntoActiveTable(format: .csv) } label: {
-                            Label("Import CSV", systemImage: "square.and.arrow.down")
+                        StudioMenuItem("Import CSV", systemImage: "square.and.arrow.down") {
+                            session.importRowsIntoActiveTable(format: .csv)
                         }
-                        Button { session.importRowsIntoActiveTable(format: .json) } label: {
-                            Label("Import JSON", systemImage: "square.and.arrow.down")
+                        StudioMenuItem("Import JSON", systemImage: "square.and.arrow.down") {
+                            session.importRowsIntoActiveTable(format: .json)
                         }
-                        Divider()
+                        StudioMenuDivider()
                     }
 
-                    Menu("Export loaded rows (\(activeTab.chunk.rows.count))") {
-                        Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .loadedRows) }
-                        Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .loadedRows) }
+                    StudioSubmenu("Export loaded rows (\(activeTab.chunk.rows.count))", systemImage: "square.and.arrow.up") {
+                        StudioMenuItem("CSV…") { session.exportActiveTableRows(format: .csv, scope: .loadedRows) }
+                        StudioMenuItem("JSON…") { session.exportActiveTableRows(format: .json, scope: .loadedRows) }
                     }
                     .disabled(session.exportProgress?.isRunning == true)
-                    Menu("Export all matching rows") {
-                        Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .allMatchingRows) }
-                        Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .allMatchingRows) }
+                    StudioSubmenu("Export all matching rows", systemImage: "square.and.arrow.up") {
+                        StudioMenuItem("CSV…") { session.exportActiveTableRows(format: .csv, scope: .allMatchingRows) }
+                        StudioMenuItem("JSON…") { session.exportActiveTableRows(format: .json, scope: .allMatchingRows) }
                     }
                     .disabled(session.exportProgress?.isRunning == true)
                 } label: {

@@ -109,9 +109,9 @@ struct LivePresentationOverlay: View {
 
                     StudioMenu(.quiet, iconOnly: true) {
                         if !presentation.status.isFailed {
-                            Button("Repeat this point") { coordinator.userControlPresentation("repeat") }
+                            StudioMenuItem("Repeat this point") { coordinator.userControlPresentation("repeat") }
                         }
-                        Button("Return to previous view") { coordinator.userControlPresentation("return") }
+                        StudioMenuItem("Return to previous view") { coordinator.userControlPresentation("return") }
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
