@@ -48,16 +48,74 @@ struct WorkspaceSplitViewTests {
         }
     }
 
-    private func hostedWorkspace() -> (AppSession, NSWindow) {
+    /// The divider moves with the split it is dragging. Measured in the divider's own coordinate
+    /// space, a drag loses whatever distance the divider has already covered once a frame commits
+    /// between two pointer events: it trails the pointer at about half speed and, when the pointer
+    /// stops, swings back and forth around it.
+    @Test
+    func draggingTheDividerKeepsPaceWithThePointerAndSettlesWhenItStops() async throws {
+        // SwiftUI feeds drag gestures only while the app is active. As an accessory app, a
+        // non-activating panel becomes key without taking focus from whatever is in front.
+        let application = NSApplication.shared
+        let originalPolicy = application.activationPolicy()
+        application.setActivationPolicy(.accessory)
+        defer { application.setActivationPolicy(originalPolicy) }
+
+        let (_, window) = hostedWorkspace(receivesMouse: true)
+        defer { window.close() }
+        let initial = try #require(await waitForPaneWidths(in: window))
+        let grabX = try #require(dividerCenterX(in: window))
+        guard window.isKeyWindow else {
+            try Test.cancel("Drag gestures reach SwiftUI only in an unlocked, active GUI session")
+        }
+
+        try sendMouse(.leftMouseDown, x: grabX, in: window)
+        var travel: CGFloat = 0
+        var trace: [String] = []
+        var worstLag: CGFloat = 0
+        for _ in 0..<10 {
+            travel += 10
+            try sendMouse(.leftMouseDragged, x: grabX + travel, in: window)
+            let moved = try #require(paneWidths(in: window)).left - initial.left
+            trace.append("\(Int(moved.rounded()))/\(Int(travel))")
+            worstLag = max(worstLag, abs(moved - travel))
+        }
+        // A hand that has stopped still moves a point or so; the divider must not amplify it.
+        var worstSwing: CGFloat = 0
+        for step in 0..<10 {
+            try sendMouse(.leftMouseDragged, x: grabX + travel + CGFloat(step % 2), in: window)
+            let moved = try #require(paneWidths(in: window)).left - initial.left
+            trace.append("\(Int(moved.rounded()))/\(Int(travel))")
+            worstSwing = max(worstSwing, abs(moved - travel))
+        }
+        try sendMouse(.leftMouseUp, x: grabX + travel, in: window)
+        #expect(worstLag < 3, "The divider should stay under the pointer; moved/pointer per event: \(trace)")
+        #expect(worstSwing < 3, "A still pointer should leave the divider still; moved/pointer per event: \(trace)")
+
+        // A second drag starts from where the first one left the divider.
+        let settled = try #require(paneWidths(in: window))
+        let secondGrab = try #require(dividerCenterX(in: window))
+        try sendMouse(.leftMouseDown, x: secondGrab, in: window)
+        for step in 1...5 {
+            try sendMouse(.leftMouseDragged, x: secondGrab - CGFloat(step) * 10, in: window)
+        }
+        try sendMouse(.leftMouseUp, x: secondGrab - 50, in: window)
+        let back = try #require(paneWidths(in: window))
+        #expect(abs((settled.left - back.left) - 50) < 3,
+                "The second drag should move the divider 50 pt left, not \(settled.left - back.left)")
+    }
+
+    private func hostedWorkspace(receivesMouse: Bool = false) -> (AppSession, NSWindow) {
         let session = AppSession(databaseService: DatabaseService())
         session.apply(
             snapshot: CatalogSnapshot(descriptors: [], graph: .empty),
             target: .sqlite(URL(fileURLWithPath: "/tmp/workspace-split-layout.sqlite"))
         )
-        let window = NSWindow(
-            contentRect: NSRect(x: -2000, y: -2000, width: 1200, height: 800),
-            styleMask: [.titled, .resizable], backing: .buffered, defer: false
-        )
+        let frame = NSRect(x: -2000, y: -2000, width: 1200, height: 800)
+        let window: NSWindow = receivesMouse
+            ? NSPanel(contentRect: frame, styleMask: [.titled, .resizable, .nonactivatingPanel],
+                      backing: .buffered, defer: false)
+            : NSWindow(contentRect: frame, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(
             rootView: StudioRootView(session: session)
@@ -87,6 +145,24 @@ struct WorkspaceSplitViewTests {
         let frames = renderedPaneFrames(in: window)
         guard frames.count == 2 else { return nil }
         return (frames[0].width, frames[1].width)
+    }
+
+    private func dividerCenterX(in window: NSWindow) -> CGFloat? {
+        let frames = renderedPaneFrames(in: window)
+        guard frames.count == 2 else { return nil }
+        return (frames[0].maxX + frames[1].minX) / 2
+    }
+
+    /// Delivers one pointer event, then lets a frame commit, as it does between real events.
+    private func sendMouse(_ type: NSEvent.EventType, x: CGFloat, in window: NSWindow) throws {
+        let point = NSPoint(x: x, y: (window.contentView?.bounds.height ?? 0) / 2)
+        let event = try #require(NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        window.sendEvent(event)
+        for _ in 0..<3 { RunLoop.current.run(mode: .default, before: Date()) }
+        window.contentView?.layoutSubtreeIfNeeded()
     }
 
     private func renderedPaneFrames(in window: NSWindow) -> [NSRect] {

@@ -451,6 +451,12 @@ private struct WorkspaceLayoutView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dividerDragStartWidth: CGFloat?
 
+    /// The divider moves with the split it drags. Measured in its own space, a drag loses
+    /// whatever distance the divider has already covered once a frame commits between two
+    /// pointer events: it trails the pointer at about half speed and swings back and forth
+    /// when the pointer stops. The pane row has a fixed frame, so its space stays put.
+    private static let splitSpace: NamedCoordinateSpace = .named("workspace-split")
+
     private var fullscreenSide: WorkspacePaneSide? {
         if let side = session.maximizedPaneSide {
             return side
@@ -506,6 +512,7 @@ private struct WorkspaceLayoutView: View {
                               showsDatabaseName: (fullscreenSide ?? databaseNameSide) == .right)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+                .coordinateSpace(Self.splitSpace)
 
                 if fullscreenSide == nil || isCompactSinglePane {
                     WorkspaceDockView(session: session, visibleKinds: visiblePaneKinds)
@@ -548,7 +555,7 @@ private struct WorkspaceLayoutView: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 1, coordinateSpace: Self.splitSpace)
                     .onChanged { value in
                         let startWidth = dividerDragStartWidth ?? widths.leftWidth
                         if dividerDragStartWidth == nil { dividerDragStartWidth = startWidth }
