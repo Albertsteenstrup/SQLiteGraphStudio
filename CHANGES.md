@@ -17,6 +17,8 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - Supported file formats are available through the welcome screen's **Supported formats** information button.
 - Metadata issues can be dismissed without discarding their diagnostics. Their panel owns its scrolling, wheel and pinch gestures, and returns when the source or diagnostics change.
 - The graph's native event observer passes clicks through to underlying controls. The informational minimap also passes clicks through, keeping table, search, filter, split and view controls reachable.
+- The workspace divider's drag is measured in the coordinate space of the fixed-size pane row, not the divider's own. The divider moves with the split, so its own space makes it trail the pointer at about half speed and swing back and forth when the pointer stops. `WorkspaceSplitViewTests` drags the real divider with synthetic mouse events to guard this (it skips when the session cannot deliver gestures, such as a locked screen).
+- A window resize or divider step builds the graph scene once. The graph keeps its last pane size in a reference-typed box instead of `@State`, and `AppSession.updateWorkspaceWidth` stores the compact layout only when it changes, so resizing does not re-run the whole root view.
 
 ## One Graph Studio Window for Coding Agents
 
