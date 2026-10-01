@@ -30,6 +30,7 @@ public struct TableWorkspaceView: View {
             }
         }
         .padding(18)
+        .studioSurface(.light)
         .defaultFocus($isSearchFocused, false)
         .onChange(of: session.activeTabID) { _, _ in isSearchFocused = false }
     }
@@ -44,16 +45,15 @@ public struct TableWorkspaceView: View {
                 .foregroundStyle(StudioPalette.secondaryText)
 
             if session.hasOpenDatabase {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Button("Open Table") {
                         session.showTablePicker()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studioPrimary)
 
                     if session.databaseCapabilities.canCreateTable {
                         Button("Create Table") { session.showCreateTable() }
-                            .buttonStyle(.bordered).tint(StudioPalette.accent)
+                            .buttonStyle(.studio)
                     }
                 }
             }
@@ -62,58 +62,44 @@ public struct TableWorkspaceView: View {
 
     private var tabStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 ForEach(session.openTabs) { tab in
                     Button {
                         session.selectTab(id: tab.id)
                     } label: {
                         let tableDescription = session.tableDescription(for: tab.descriptor.name)
-                        HStack(spacing: 8) {
+                        HStack(spacing: 4) {
                             if let tableDescription {
                                 DescribedTableNameText(
                                     title: tab.title,
                                     description: tableDescription,
-                                    font: .body
+                                    font: .system(size: 12.5, weight: session.activeTabID == tab.id ? .medium : .regular)
                                 )
                             } else {
                                 Text(tab.title)
                                     .lineLimit(1)
-                                    .foregroundStyle(StudioPalette.primaryText)
                             }
 
-                            Button {
+                            StudioTabCloseButton(title: "Close \(tab.title)") {
                                 session.closeTab(id: tab.id)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(StudioPalette.secondaryText)
                             }
-                            .buttonStyle(.plain)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(session.activeTabID == tab.id ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(session.activeTabID == tab.id ? StudioPalette.border : StudioPalette.borderSoft)
-                        }
+                        .studioTabChrome(isActive: session.activeTabID == tab.id)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
     }
 
     @ViewBuilder
     private func tableContent(for activeTab: TableTabModel) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             header(for: activeTab)
             if session.databaseCapabilities.canBrowseRows {
-                pagingControls(for: activeTab)
+                rowControls(for: activeTab)
             } else {
                 // A model replayed from migration files has structure but no data.
                 Label(
@@ -220,36 +206,130 @@ public struct TableWorkspaceView: View {
         )
     }
 
-    @ViewBuilder
-    private func pagingControls(for activeTab: TableTabModel) -> some View {
-        ViewThatFits(in: .horizontal) {
-          HStack {
-            Button("Previous Page") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
-            Button("Next Page") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
-            Text(activeTab.chunk.rows.isEmpty ? "No loaded rows" : "Loaded rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
-            Spacer()
-            Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
-            Button("Filters…") { showsFilters = true }
-                .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
-          }.fixedSize(horizontal: true, vertical: false)
-          VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Button("Previous") { activeTab.previousPage() }.disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
-                Button("Next") { activeTab.nextPage() }.disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
-                Text(activeTab.chunk.rows.isEmpty ? "No rows" : "Rows \(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)").font(.caption)
+    /// Search and filter on the left, paging on the right: one quiet row instead
+    /// of a row of bezeled push buttons.
+    private func rowControls(for activeTab: TableTabModel) -> some View {
+        HStack(spacing: 8) {
+            searchField(for: activeTab)
+                .frame(minWidth: 120, maxWidth: 340)
+
+            Button { showsFilters = true } label: {
+                let filterCount = activeTab.queryState.sanitizedFilters.count
+                Label(
+                    filterCount == 0 ? "Filter" : "Filter · \(filterCount)",
+                    systemImage: "line.3.horizontal.decrease"
+                )
             }
-            HStack {
-                Button("Count Exactly") { activeTab.countExactly() }.disabled(activeTab.isLoading)
-                Button("Filters…") { showsFilters = true }
-                    .popover(isPresented: $showsFilters) { TableFilterEditor(tab: activeTab).id(activeTab.id) }
+            .buttonStyle(StudioButtonStyle(activeTab.hasColumnFilters ? .secondary : .quiet))
+            .fixedSize()
+            .help(activeTab.hasColumnFilters ? "Edit column filters" : "Filter rows by column")
+            .popover(isPresented: $showsFilters, arrowEdge: .bottom) {
+                TableFilterEditor(tab: activeTab).id(activeTab.id)
             }
-          }
+
+            Spacer(minLength: 8)
+
+            if activeTab.isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(StudioPalette.accent)
+            }
+
+            pager(for: activeTab)
         }
     }
 
+    private func searchField(for activeTab: TableTabModel) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                activeTab.updateSearch(activeTab.queryState.searchText)
+                isSearchFocused = false
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(StudioPalette.secondaryText)
+            }
+            .buttonStyle(.plain)
+            .help("Search rows")
+            .accessibilityLabel("Search rows")
+
+            TextField(
+                "Search rows",
+                text: Binding(
+                    get: { activeTab.queryState.searchText },
+                    set: { activeTab.queryState.searchText = $0 }
+                )
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 12.5))
+            .focused($isSearchFocused)
+            .background(SearchFieldFocusDismissal(isFocused: isSearchFocused) { isSearchFocused = false })
+            .onExitCommand { isSearchFocused = false }
+            .onSubmit {
+                activeTab.updateSearch(activeTab.queryState.searchText)
+                isSearchFocused = false
+            }
+
+            if !activeTab.queryState.searchText.isEmpty {
+                Button {
+                    activeTab.updateSearch("")
+                    isSearchFocused = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioPalette.tertiaryText)
+                }
+                .buttonStyle(.plain)
+                .help("Clear row search")
+                .accessibilityLabel("Clear row search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(Capsule().fill(Color.black.opacity(isSearchFocused ? 0.03 : 0.045)))
+        .overlay {
+            Capsule().stroke(Color.black.opacity(isSearchFocused ? 0.16 : 0), lineWidth: 1)
+        }
+        // The borderless field sits on the always-light pane, so its text and
+        // placeholder must stay dark in Dark Mode too.
+        .environment(\.colorScheme, .light)
+        .animation(.easeOut(duration: 0.12), value: isSearchFocused)
+    }
+
+    private func pager(for activeTab: TableTabModel) -> some View {
+        HStack(spacing: 0) {
+            Button { activeTab.previousPage() } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(activeTab.chunk.offset == 0 || activeTab.isLoading)
+            .help("Previous page")
+            .accessibilityLabel("Previous page")
+
+            Text(activeTab.chunk.rows.isEmpty
+                 ? "No rows"
+                 : "\(activeTab.chunk.offset + 1)–\(activeTab.chunk.rowRange.upperBound)")
+                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(StudioPalette.secondaryText)
+                .padding(.horizontal, 6)
+                .help("Loaded rows")
+
+            Button { activeTab.nextPage() } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(!activeTab.chunk.hasMore || activeTab.isLoading)
+            .help("Next page")
+            .accessibilityLabel("Next page")
+        }
+        .buttonStyle(.studioIcon)
+        .controlSize(.small)
+        .padding(2)
+        .background(Capsule().fill(Color.black.opacity(0.045)))
+        .fixedSize()
+    }
+
     private func header(for activeTab: TableTabModel) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
                 let tableDescription = session.tableDescription(for: activeTab.descriptor.name)
                 if let tableDescription {
                     DescribedTableNameText(
@@ -265,12 +345,19 @@ public struct TableWorkspaceView: View {
                         .truncationMode(.middle)
                         .help(activeTab.descriptor.name)
                 }
-                HStack(spacing: 8) {
-                    Text(activeTab.descriptor.isEditable ? "Editable table" : "Read-only table")
+                HStack(spacing: 6) {
+                    Text(activeTab.descriptor.isEditable ? "Editable" : "Read-only")
+                    Text("·").foregroundStyle(StudioPalette.tertiaryText)
                     // A schema-only model has no row count to report, and zero
                     // would read as a claim that the table is empty.
                     if session.databaseCapabilities.canBrowseRows {
                         Text(activeTab.rowCountLabel)
+                            .monospacedDigit()
+                        Button("Count exactly") { activeTab.countExactly() }
+                            .buttonStyle(.studioQuiet)
+                            .controlSize(.mini)
+                            .disabled(activeTab.isLoading)
+                            .help("Count every matching row")
                     } else {
                         Text("schema only")
                     }
@@ -279,132 +366,98 @@ public struct TableWorkspaceView: View {
                 .foregroundStyle(StudioPalette.secondaryText)
             }
 
+            Spacer(minLength: 12)
+
             if session.databaseCapabilities.canBrowseRows {
-                HStack(spacing: 8) {
-                    TextField(
-                        "Search rows",
-                        text: Binding(
-                            get: { activeTab.queryState.searchText },
-                            set: { activeTab.queryState.searchText = $0 }
-                        )
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .focused($isSearchFocused)
-                    .background(SearchFieldFocusDismissal(isFocused: isSearchFocused) { isSearchFocused = false })
-                    .onExitCommand { isSearchFocused = false }
-                    .onSubmit {
-                        activeTab.updateSearch(activeTab.queryState.searchText)
-                        isSearchFocused = false
-                    }
-
-                    if !activeTab.queryState.searchText.isEmpty {
-                        Button {
-                            activeTab.updateSearch("")
-                            isSearchFocused = false
-                        } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                        .help("Clear row search")
-                        .accessibilityLabel("Clear row search")
-                    }
-
-                    if activeTab.isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(StudioPalette.accent)
-                    }
-
-                    Button {
-                        activeTab.updateSearch(activeTab.queryState.searchText)
-                        isSearchFocused = false
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .tint(StudioPalette.accent)
-                    .help("Search rows")
-
-                    Button {
-                        activeTab.refresh()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .tint(StudioPalette.accent)
-                    .help("Refresh table")
-
-                    Menu {
-                        if session.databaseCapabilities.canAlterSchema {
-                            Button { session.showAlterTable() } label: {
-                                Label("Alter Table", systemImage: "slider.horizontal.3")
-                            }
-                        }
-                        if session.databaseCapabilities.canImportRows && activeTab.isEditable {
-                            Button { session.importRowsIntoActiveTable(format: .csv) } label: {
-                                Label("Import CSV", systemImage: "square.and.arrow.down")
-                            }
-                            Button { session.importRowsIntoActiveTable(format: .json) } label: {
-                                Label("Import JSON", systemImage: "square.and.arrow.down")
-                            }
-                            Divider()
-                        }
-
-                        Menu("Export loaded rows (\(activeTab.chunk.rows.count))") {
-                            Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .loadedRows) }
-                            Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .loadedRows) }
-                        }
-                        .disabled(session.exportProgress?.isRunning == true)
-                        Menu("Export all matching rows") {
-                            Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .allMatchingRows) }
-                            Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .allMatchingRows) }
-                        }
-                        .disabled(session.exportProgress?.isRunning == true)
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .tint(StudioPalette.accent)
-                    .help("More actions")
+                Button {
+                    activeTab.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.studioIcon)
+                .help("Refresh table")
+                .accessibilityLabel("Refresh table")
+
+                StudioMenu(.quiet, iconOnly: true) {
+                    if session.databaseCapabilities.canAlterSchema {
+                        Button { session.showAlterTable() } label: {
+                            Label("Alter Table", systemImage: "slider.horizontal.3")
+                        }
+                    }
+                    if session.databaseCapabilities.canImportRows && activeTab.isEditable {
+                        Button { session.importRowsIntoActiveTable(format: .csv) } label: {
+                            Label("Import CSV", systemImage: "square.and.arrow.down")
+                        }
+                        Button { session.importRowsIntoActiveTable(format: .json) } label: {
+                            Label("Import JSON", systemImage: "square.and.arrow.down")
+                        }
+                        Divider()
+                    }
+
+                    Menu("Export loaded rows (\(activeTab.chunk.rows.count))") {
+                        Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .loadedRows) }
+                        Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .loadedRows) }
+                    }
+                    .disabled(session.exportProgress?.isRunning == true)
+                    Menu("Export all matching rows") {
+                        Button("CSV…") { session.exportActiveTableRows(format: .csv, scope: .allMatchingRows) }
+                        Button("JSON…") { session.exportActiveTableRows(format: .json, scope: .allMatchingRows) }
+                    }
+                    .disabled(session.exportProgress?.isRunning == true)
+                } label: {
+                    Label("More actions", systemImage: "ellipsis")
+                }
+                .help("More actions")
             }
         }
     }
 
     private func schemaMetadataStrip(for descriptor: EditableTableDescriptor) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                metadataMenu(
-                    "\(descriptor.indexes.count) indexes",
-                    systemImage: "list.bullet.rectangle",
-                    items: descriptor.indexes.map { "\($0.name): \($0.columns.joined(separator: ", "))" }
+            HStack(spacing: 2) {
+                SchemaMetadataChip(
+                    title: "Indexes", singular: "index", plural: "indexes", systemImage: "list.bullet.rectangle",
+                    items: descriptor.indexes.map { index in
+                        StudioListItem(
+                            id: index.id,
+                            title: index.name,
+                            detail: index.columns.joined(separator: ", "),
+                            tag: index.isUnique ? "unique" : index.isPartial ? "partial" : nil
+                        )
+                    }
                 )
-                metadataMenu(
-                    "\(descriptor.triggers.count) triggers",
-                    systemImage: "bolt",
-                    items: descriptor.triggers.map(\.name)
+                SchemaMetadataChip(
+                    title: "Triggers", singular: "trigger", plural: "triggers", systemImage: "bolt",
+                    items: descriptor.triggers.map { StudioListItem(id: $0.id, title: $0.name) }
                 )
-                metadataMenu(
-                    "\(descriptor.constraints.count) constraints",
-                    systemImage: "checkmark.seal",
-                    items: descriptor.constraints.map(\.detail)
+                SchemaMetadataChip(
+                    title: "Constraints", singular: "constraint", plural: "constraints", systemImage: "checkmark.seal",
+                    items: descriptor.constraints.map { constraint in
+                        StudioListItem(
+                            id: constraint.id,
+                            title: constraint.columns.isEmpty
+                                ? constraint.name ?? constraint.kind.title
+                                : constraint.columns.joined(separator: ", "),
+                            detail: constraint.kind.detailAddsInformation ? constraint.detail : nil,
+                            tag: constraint.kind.title.lowercased()
+                        )
+                    }
                 )
-                metadataMenu(
-                    "\(descriptor.generatedColumns.count) generated",
-                    systemImage: "function",
-                    items: descriptor.generatedColumns.map { "\($0.name): \($0.storedKind)" }
+                SchemaMetadataChip(
+                    title: "Generated columns", singular: "generated", plural: "generated", systemImage: "function",
+                    items: descriptor.generatedColumns.map { StudioListItem(id: $0.id, title: $0.name, detail: $0.storedKind) }
                 )
-                metadataMenu(
-                    "\(descriptor.identityColumns.count) identity",
-                    systemImage: "person.badge.key",
+                SchemaMetadataChip(
+                    title: "Identity columns", singular: "identity", plural: "identity", systemImage: "person.badge.key",
                     items: descriptor.identityColumns.compactMap { column in
-                        column.identityLabel.map { "\(column.name): \($0)" }
+                        column.identityLabel.map { StudioListItem(id: column.id, title: column.name, detail: $0) }
                     }
                 )
             }
+            .controlSize(.small)
             .padding(.bottom, 2)
         }
+        .padding(.leading, -8)
     }
 
     private func schemaOnlyColumnList(for descriptor: EditableTableDescriptor) -> some View {
@@ -462,25 +515,55 @@ public struct TableWorkspaceView: View {
         }
     }
 
-    private func metadataMenu(_ title: String, systemImage: String, items: [String]) -> some View {
-        Menu {
-            if items.isEmpty {
-                Text("None")
-            } else {
-                ForEach(items, id: \.self) { item in
-                    Text(item)
-                }
+}
+
+/// A count of one kind of schema object. Clicking it lists them; an empty kind
+/// stays readable but inert.
+private struct SchemaMetadataChip: View {
+    let title: String
+    let singular: String
+    let plural: String
+    let systemImage: String
+    let items: [StudioListItem]
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+                Text("\(items.count)").fontWeight(.semibold).monospacedDigit()
+                    + Text(" \(items.count == 1 ? singular : plural)")
             }
-        } label: {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(StudioPalette.secondaryText)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(StudioPalette.headerSurface.opacity(0.72), in: Capsule())
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.studioQuiet)
+        .disabled(items.isEmpty)
         .fixedSize()
+        .help(items.isEmpty ? "No \(plural)" : "Show \(plural)")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            StudioPopoverList(title: title, items: items)
+        }
+    }
+}
+
+private extension SchemaConstraintKind {
+    var title: String {
+        switch self {
+        case .primaryKey: "Primary key"
+        case .foreignKey: "Foreign key"
+        case .unique: "Unique"
+        case .notNull: "Not null"
+        case .defaultValue: "Default"
+        case .check: "Check"
+        }
+    }
+
+    /// Whether the SQL says more than the columns and kind already do.
+    var detailAddsInformation: Bool {
+        switch self {
+        case .foreignKey, .defaultValue, .check: true
+        case .primaryKey, .unique, .notNull: false
+        }
     }
 }
 

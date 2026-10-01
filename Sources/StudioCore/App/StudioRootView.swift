@@ -194,9 +194,10 @@ private struct WorkspaceSessionRootView: View {
                     ProgressView()
                     Text(progress)
                     Button("Cancel") { session.cancelDocumentOpen() }
+                        .buttonStyle(.studio)
                 }
                 .padding(28)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             }
         }
         .overlay(alignment: .bottom) {
@@ -219,10 +220,12 @@ private struct WorkspaceSessionRootView: View {
                                 Button("Dismiss") { session.dismissExportProgress() }
                             }
                         }
+                        .buttonStyle(.studio)
+                        .controlSize(.small)
                     }
-                    .padding(12)
+                    .padding(14)
                     .frame(maxWidth: 620)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 if !session.metadataDiagnostics.isEmpty, !metadataIssuesDismissed {
                     HStack(alignment: .top, spacing: 8) {
@@ -964,16 +967,18 @@ private struct OpenTablePickerView: View {
             }
             .frame(minWidth: 460, minHeight: 340, maxHeight: 480)
 
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel") {
                     session.dismissTablePicker()
                     dismiss()
                 }
+                .buttonStyle(.studio)
                 Button("Open") {
                     if let selection { session.openTable(named: selection) }
                     dismiss()
                 }
+                .buttonStyle(.studioPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(selection == nil)
             }
@@ -1132,8 +1137,7 @@ private struct EmptyDatabaseView: View {
                     } label: {
                         Label("Choose file/folder", systemImage: "folder")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studioPrimary)
                     .controlSize(.large)
 
                     Button {
@@ -1141,10 +1145,8 @@ private struct EmptyDatabaseView: View {
                     } label: {
                         Label("Supported formats", systemImage: "info.circle")
                     }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .padding(.vertical, 4)
+                    .buttonStyle(.studioQuiet)
+                    .controlSize(.small)
                     .help("Show supported file formats and migration folders")
                     .accessibilityHint("Opens a list of supported file formats and migration folders")
                     .popover(isPresented: $showsSupportedFormats) {
@@ -1190,6 +1192,8 @@ private struct EmptyDatabaseView: View {
         .padding(.horizontal, 36)
         .padding(.vertical, 42)
         .studioGlassCard(cornerRadius: 30, tint: Color.white, strokeOpacity: 0.14)
+        // Drawn over the fixed light backdrop with StudioPalette text.
+        .studioSurface(.light)
     }
 }
 
@@ -1363,8 +1367,8 @@ private struct CreateTableSheetView: View {
                     } label: {
                         Label("Add Column", systemImage: "plus")
                     }
-                    .buttonStyle(.bordered)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studio)
+                    .controlSize(.small)
                 }
 
                 // Columns are unbounded, so they scroll rather than pushing the
@@ -1399,18 +1403,18 @@ private struct CreateTableSheetView: View {
                 .background(StudioPalette.editorSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel") {
                     session.dismissCreateTable()
                     dismiss()
                 }
+                .buttonStyle(.studio)
                 Button("Create") {
                     session.createTable(draft)
                     dismiss()
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(StudioPalette.accent)
+                .buttonStyle(.studioPrimary)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -1444,8 +1448,7 @@ private struct AlterTableSheetView: View {
                         session.renameActiveTable(to: tableName)
                         dismiss()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studio)
                 }
                 Text("ALTER TABLE \(quoteIdentifier(descriptor.name)) RENAME TO \(quoteIdentifier(tableName.isEmpty ? descriptor.name : tableName))")
                     .font(.caption.monospaced())
@@ -1467,8 +1470,7 @@ private struct AlterTableSheetView: View {
                         session.addColumnToActiveTable(newColumn)
                         dismiss()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studio)
                 }
                 Text("ALTER TABLE \(quoteIdentifier(descriptor.name)) ADD COLUMN \(quoteIdentifier(newColumn.name.isEmpty ? "column_name" : newColumn.name)) \(newColumn.type)")
                     .font(.caption.monospaced())
@@ -1489,14 +1491,14 @@ private struct AlterTableSheetView: View {
                         session.renameColumnInActiveTable(from: selectedColumn, to: renamedColumn)
                         dismiss()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studio)
                     .disabled(selectedColumn.isEmpty || renamedColumn.isEmpty)
 
                     Button("Drop Column", role: .destructive) {
                         session.dropColumnFromActiveTable(selectedColumn)
                         dismiss()
                     }
+                    .buttonStyle(.studio)
                     .disabled(selectedColumn.isEmpty)
                 }
                 Text("ALTER TABLE \(quoteIdentifier(descriptor.name)) RENAME COLUMN \(quoteIdentifier(selectedColumn.isEmpty ? "column" : selectedColumn)) TO \(quoteIdentifier(renamedColumn.isEmpty ? "new_column" : renamedColumn))")
@@ -1510,6 +1512,7 @@ private struct AlterTableSheetView: View {
                     session.dismissAlterTable()
                     dismiss()
                 }
+                .buttonStyle(.studioPrimary)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -1571,25 +1574,24 @@ private struct SkillsToastView: View {
             Button("Get Skills") {
                 onOpen()
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .tint(StudioPalette.accent)
+            .buttonStyle(.studioPrimary)
             .controlSize(.small)
 
             Button {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(StudioPalette.secondaryText)
-                    .frame(width: 20, height: 20)
-                    .background(StudioPalette.chromeFillStrong, in: Circle())
+                    .font(.system(size: 9, weight: .bold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.studioIcon)
+            .controlSize(.small)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .studioGlassCard(cornerRadius: 24, tint: Color.white, strokeOpacity: 0.12)
+        .studioSurface(.light)
     }
 }
 
@@ -1649,13 +1651,20 @@ private struct SkillsPickerView: View {
                     session.dismissSkills()
                     dismiss()
                 }
-                Menu("Add Target") {
+                .buttonStyle(.studio)
+                StudioMenu(.secondary) {
                     ForEach(missingTargetDirectories) { targetDirectory in
                         Button(targetDirectory.label) {
                             session.installSkills(to: targetDirectory)
                             installRevision &+= 1
                             scheduleAutoClose()
                         }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text("Add Target")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .bold))
                     }
                 }
                 .disabled(missingTargetDirectories.isEmpty)
@@ -1664,8 +1673,7 @@ private struct SkillsPickerView: View {
                     installRevision &+= 1
                     scheduleAutoClose()
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(StudioPalette.accent)
+                .buttonStyle(.studioPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(missingInstallCount == 0)
             }
@@ -1742,7 +1750,7 @@ private struct SkillsPickerView: View {
                             session.installSkill(skill)
                             installRevision &+= 1
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.studio)
                         .controlSize(.small)
                         .help("Replace installed copies of this skill with the app's current version")
                     } else {
@@ -1750,8 +1758,7 @@ private struct SkillsPickerView: View {
                             session.installSkill(skill)
                             installRevision &+= 1
                         }
-                        .buttonStyle(.bordered)
-                        .tint(StudioPalette.accent)
+                        .buttonStyle(.studio)
                         .controlSize(.small)
                         .disabled(installStatus.availableCount == 0 || installStatus.missingCount == 0)
                     }

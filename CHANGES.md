@@ -2,6 +2,15 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## Studio Controls
+
+- Files: Sources/StudioCore/Support/StudioControls.swift and the views that use it
+- Change: In-app buttons, menus, tabs and pickers use shared minimal styles instead of the system's bezeled push buttons and pop-up menus: `.studioPrimary` (one solid ink capsule per surface), `.studio`, `.studioQuiet`, round `.studioIcon` buttons, `.studioRow` list rows, `StudioMenu`, `StudioSegmentedPicker` and `studioTabChrome`. Read-only lists (table indexes, triggers, constraints, generated and identity columns, review notes) open in a `StudioPopoverList` popover rather than a menu of dimmed items.
+- Table pane: search, filter and a `‹ 1–10 ›` pager share one row; **Count exactly** sits beside the row count; the metadata counts are chips.
+- Live explanation player: icon transport controls (previous, play/pause, next), a text toggle, a **More** menu and an end button, with the same accessibility labels as before.
+- Appearance: panes, the graph canvas and their chrome use the fixed light `StudioPalette`, so views there declare `.studioSurface(.light)`. Popovers, sheets and material overlays follow the system appearance, and the controls on them switch to light ink in Dark Mode.
+- Status: ACTIVE
+
 ## Workspace Input and Startup
 
 - Normal launch starts with an empty workspace. Sources open through an explicit file/folder choice, Open Recent, Finder, or launch arguments; the app no longer automatically restores datasets from the prior session.

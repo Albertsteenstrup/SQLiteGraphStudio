@@ -221,14 +221,18 @@ public struct SchemaGraphView: View {
                         && session.graphVisibleTableIDs.isEmpty {
                         VStack(spacing: 12) {
                             Text("No tables are visible in this graph scope")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
                             if session.automationVisibleTableIDs != nil {
                                 Button("Return to all") { returnToAllTables(in: geometry.size) }
+                                    .buttonStyle(.studio)
                             } else {
                                 Button("Clear filters") { session.clearGraphFilter() }
+                                    .buttonStyle(.studio)
                             }
                         }
                         .padding(20)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
                     if !session.rendersOffscreen {
                         graphOverlayControls(size: geometry.size)
@@ -757,11 +761,9 @@ public struct SchemaGraphView: View {
             .accessibilityLabel("Return to overview")
 
             if let target = graphFocusTableRelation {
-                Text("\(visibleRelatedNodeIDs(for: target).count) related tables")
-                    .font(.caption).monospacedDigit()
+                graphToolbarText("\(visibleRelatedNodeIDs(for: target).count) related tables")
             } else if let nodeID = tableFocusNodeID {
-                Text("\(tableConnectionIDs(nodeID).count) related tables")
-                    .font(.caption).monospacedDigit()
+                graphToolbarText("\(tableConnectionIDs(nodeID).count) related tables")
             }
         } else if let group = session.graphGrouping.group(id: focusedGroupID ?? "") {
             Button { showGraphOverview(in: size) } label: {
@@ -783,14 +785,20 @@ public struct SchemaGraphView: View {
 
     private func graphPageControls(page: GraphExploration.Page, noun: String,
                                    previous: @escaping () -> Void, next: @escaping () -> Void) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             Button(action: previous) { Image(systemName: "chevron.left") }
                 .disabled(page.index == 0).help("Previous tables")
-            Text("\(page.start)–\(page.end) of \(page.total) \(noun)")
-                .font(.caption).monospacedDigit()
+            graphToolbarText("\(page.start)–\(page.end) of \(page.total) \(noun)")
             Button(action: next) { Image(systemName: "chevron.right") }
                 .disabled(page.index + 1 == page.count).help("Next tables")
         }
+    }
+
+    private func graphToolbarText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+            .foregroundStyle(StudioPalette.secondaryText)
+            .padding(.horizontal, 6)
     }
 
     private func returnToAllTables(in size: CGSize) {
@@ -1684,25 +1692,25 @@ public struct SchemaGraphView: View {
                 }
 
                 Button { isGraphFilterPresented = true } label: {
-                    Label("Filter", systemImage: session.graphTableFilter.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                    Label("Filter", systemImage: "line.3.horizontal.decrease")
                 }
-                .tint(session.graphTableFilter.isActive ? StudioPalette.accent : nil)
+                .buttonStyle(StudioButtonStyle(session.graphTableFilter.isActive ? .secondary : .quiet))
                 .help(session.graphTableFilter.isActive ? "Edit active filters" : "Filter by fields, rows, and relations")
                 .popover(isPresented: $isGraphFilterPresented) { GraphFilterEditor(session: session) }
 
                 graphOptionsMenu(in: size)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.studioIcon)
+            .studioSurface(.light)
             .fixedSize()
-            .padding(8)
+            .padding(4)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                 graphControlsHeight = height
                 if graphFocusPlan != nil { fitGraphFocusViewport(in: size) }
             }
-            .background(StudioPalette.chromeFill, in: RoundedRectangle(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).stroke(StudioPalette.border, lineWidth: 1) }
-            .shadow(color: StudioPalette.shadow.opacity(0.45), radius: 10, y: 5)
+            .background(StudioPalette.chromeFillStrong, in: Capsule())
+            .overlay { Capsule().stroke(Color.black.opacity(0.06), lineWidth: 1) }
+            .shadow(color: StudioPalette.shadow.opacity(0.35), radius: 12, y: 4)
             .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
 
@@ -1740,7 +1748,7 @@ public struct SchemaGraphView: View {
     }
 
     private func graphOptionsMenu(in size: CGSize) -> some View {
-        Menu {
+        StudioMenu(.quiet, iconOnly: session.graphNodeSizeMetric == .uniform || size.width < 760) {
             Text(session.graphTableFilter.isActive
                  ? "\(session.graphVisibleTableIDs.count) of \(session.tables.count) tables"
                  : "\(session.graph.nodes.count) tables · \(session.graphGrouping.groupCount) groups")
@@ -1774,13 +1782,8 @@ public struct SchemaGraphView: View {
                 rebuildLayout(in: size, refit: true, clearPinnedState: true, persistLayout: true)
             }
         } label: {
-            if session.graphNodeSizeMetric == .uniform || size.width < 760 {
-                Image(systemName: "ellipsis")
-            } else {
-                Label("Size: \(session.graphNodeSizeMetric.title)", systemImage: "ellipsis")
-            }
+            Label("Size: \(session.graphNodeSizeMetric.title)", systemImage: "ellipsis")
         }
-        .menuIndicator(.hidden)
         .help("Graph options. \(session.graphNodeSizeMetric.explanation)")
         .accessibilityLabel("Graph options. Node size: \(session.graphNodeSizeMetric.title)")
         .fixedSize()

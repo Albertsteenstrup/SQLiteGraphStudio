@@ -43,6 +43,8 @@ struct SchemaReviewWorkspaceView: View {
     let review: SchemaReviewDocument
     @State private var onlyChanges = true
     @State private var search = ""
+    @State private var showsHeaderNotes = false
+    @State private var showsFooterNotes = false
 
     /// Whole-table removals and additions lead, because they carry the most consequence
     /// for the code that reads them; edits follow, then everything unchanged.
@@ -97,13 +99,12 @@ struct SchemaReviewWorkspaceView: View {
                                 .background(Color.blue.opacity(0.1), in: Capsule())
                         }
                         if !isHistoricalExplanation && review.proposal == nil && !review.notes.isEmpty {
-                            Menu {
-                                ForEach(Array(review.notes.enumerated()), id: \.offset) { _, note in Text(note) }
-                            } label: {
+                            Button { showsHeaderNotes.toggle() } label: {
                                 Image(systemName: "note.text")
                             }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
+                            .buttonStyle(.studioIcon)
+                            .controlSize(.small)
+                            .popover(isPresented: $showsHeaderNotes, arrowEdge: .bottom) { notesList(review.notes) }
                             .help("Review notes")
                             .accessibilityLabel("Review notes")
                         }
@@ -172,7 +173,12 @@ struct SchemaReviewWorkspaceView: View {
                     }
                     Spacer()
                     if !review.notes.isEmpty {
-                        Menu("Review notes") { ForEach(Array(review.notes.enumerated()), id: \.offset) { _, note in Text(note) } }
+                        Button { showsFooterNotes.toggle() } label: {
+                            Label("Review notes", systemImage: "note.text")
+                        }
+                        .buttonStyle(.studioQuiet)
+                        .controlSize(.small)
+                        .popover(isPresented: $showsFooterNotes, arrowEdge: .top) { notesList(review.notes) }
                     }
                 }.padding(.horizontal, 16)
             }
@@ -186,6 +192,14 @@ struct SchemaReviewWorkspaceView: View {
                 session.refreshSchemaPreviewIfChanged()
             }
         }
+    }
+
+    private func notesList(_ notes: [String]) -> some View {
+        StudioPopoverList(
+            title: "Review notes",
+            items: notes.enumerated().map { StudioListItem(id: "\($0.offset)", title: $0.element) },
+            wrapsTitles: true
+        )
     }
 
     @ViewBuilder
@@ -264,22 +278,30 @@ struct SchemaReviewWorkspaceView: View {
         return HStack(spacing: 6) {
             if !sets.isEmpty {
                 Button { session.stepReviewChangeSet(by: -1) } label: { Image(systemName: "chevron.up") }
+                    .buttonStyle(.studioIconTinted)
+                    .controlSize(.small)
                     .disabled(view == 0)
                     .keyboardShortcut(.upArrow, modifiers: [.command, .option])
                     .help("Previous view (⌥⌘↑)")
+                    .accessibilityLabel("Previous view")
                 Button { session.stepReviewChangeSet(by: 1) } label: { Image(systemName: "chevron.down") }
+                    .buttonStyle(.studioIconTinted)
+                    .controlSize(.small)
                     .disabled(view >= sets.count)
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                     .help("Next view (⌥⌘↓)")
+                    .accessibilityLabel("Next view")
                 Text(view == 0 ? "View 0 · Full model" : "View \(view) of \(sets.count) · Changes")
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
             Spacer()
             if view == 0 {
                 Button("View 1: Changes") { session.revealReviewChangeSet(at: 0) }
+                    .buttonStyle(.studio)
                     .controlSize(.small)
             } else {
                 Button("Show All Changes") { session.clearGraphSelection() }
+                    .buttonStyle(.studio)
                     .controlSize(.small)
             }
         }
@@ -296,6 +318,7 @@ struct SchemaReviewWorkspaceView: View {
                 Text("Choose a table to see only its changes in the graph and compare its fields here.")
                     .foregroundStyle(.secondary)
                 Button("Review Changes") { session.revealReviewChangeSet(at: 0) }
+                    .buttonStyle(.studioPrimary)
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                     .help("Start with the changes connected to \(first.table.displayName) (⌥⌘↓)")
             }

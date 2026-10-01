@@ -15,34 +15,31 @@ struct LivePresentationOverlay: View {
             let spokenPoint = point.narration?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             let presentationID = coordinator.activePresentationID
             let showsTranscript = !spokenPoint || (presentationID != nil && expandedTranscriptForID == presentationID)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    Text(coordinator.activePresentationTitle ?? "Live explanation")
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer(minLength: 12)
+            let isPaused = presentation.status.isPaused
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
                     if spokenPoint {
                         Image(systemName: "waveform")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .symbolEffect(.variableColor.iterative, isActive: presentation.status.isSpeaking)
                             .accessibilityLabel("Audio narration")
                     }
-                    Text(statusText(presentation.status))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(coordinator.activePresentationTitle ?? "Live explanation")
+                        .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                    if spokenPoint && presentation.hasVisibleCurrentPoint && !presentation.status.isFailed {
-                        Button(showsTranscript ? "Hide text" : "Show text") {
-                            expandedTranscriptForID = showsTranscript ? nil : presentationID
-                        }
-                        .font(.caption)
-                        .buttonStyle(.borderless)
-                    }
+                    Spacer(minLength: 12)
+                    Text(statusText(presentation.status))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
                 if presentation.needsViewReplay {
                     explanationText("View changed. Continue to replay this point.")
                 } else if let failure = failureMessage(presentation.status) {
                     explanationText(failure)
                 } else if !presentation.hasVisibleCurrentPoint {
-                    explanationText("Updating the view…")
+                    explanationText("Updating the view…", secondary: true)
                 } else if showsTranscript {
                     explanationText(point.caption)
                 }
@@ -52,42 +49,92 @@ struct LivePresentationOverlay: View {
                             LazyVStack(alignment: .leading, spacing: 8) {
                                 ForEach(presentation.displayedHistory) { earlier in
                                     Text(earlier.caption)
-                                        .font(.caption)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
+                            .padding(.top, 6)
                         }
                         .frame(maxHeight: 160)
                     }
-                    .font(.caption)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 8) {
-                    Button("Back") { coordinator.userControlPresentation("back") }
-                        .disabled(!presentation.canGoBack)
-                    Button(presentation.status.isPaused ? "Continue" : "Pause") {
-                        coordinator.userControlPresentation(presentation.status.isPaused ? "continue" : "pause")
+                HStack(spacing: 4) {
+                    Button { coordinator.userControlPresentation("back") } label: {
+                        Image(systemName: "backward.end.fill")
                     }
+                    .disabled(!presentation.canGoBack)
+                    .help("Previous point")
+                    .accessibilityLabel("Back")
+
+                    Button {
+                        coordinator.userControlPresentation(isPaused ? "continue" : "pause")
+                    } label: {
+                        Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(.studioIconPrimary)
+                    .controlSize(.large)
                     .disabled(presentation.status.isCompleted)
-                    Button("Next") { coordinator.userControlPresentation("next") }
-                        .disabled(!presentation.canGoForward)
+                    .help(isPaused ? "Continue" : "Pause")
+                    .accessibilityLabel(isPaused ? "Continue" : "Pause")
+
+                    Button { coordinator.userControlPresentation("next") } label: {
+                        Image(systemName: "forward.end.fill")
+                    }
+                    .disabled(!presentation.canGoForward)
+                    .help("Next point")
+                    .accessibilityLabel("Next")
+
                     if presentation.status.isFailed {
                         Button("Retry") { coordinator.userControlPresentation("repeat") }
+                            .buttonStyle(.studio)
+                            .controlSize(.small)
+                            .padding(.leading, 6)
                     }
+
                     Spacer()
-                    Menu("More") {
+
+                    if spokenPoint && presentation.hasVisibleCurrentPoint && !presentation.status.isFailed {
+                        Button {
+                            expandedTranscriptForID = showsTranscript ? nil : presentationID
+                        } label: {
+                            Image(systemName: showsTranscript ? "captions.bubble.fill" : "captions.bubble")
+                        }
+                        .help(showsTranscript ? "Hide text" : "Show text")
+                        .accessibilityLabel(showsTranscript ? "Hide text" : "Show text")
+                    }
+
+                    StudioMenu(.quiet, iconOnly: true) {
                         if !presentation.status.isFailed {
                             Button("Repeat this point") { coordinator.userControlPresentation("repeat") }
                         }
                         Button("Return to previous view") { coordinator.userControlPresentation("return") }
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
                     }
-                    Button("End") { coordinator.userControlPresentation("end") }
+                    .help("More")
+
+                    Button { coordinator.userControlPresentation("end") } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .help("End explanation")
+                    .accessibilityLabel("End")
                 }
-                .controlSize(.small)
+                .buttonStyle(.studioIcon)
             }
-            .padding(16)
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
             .frame(maxWidth: 560)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-            .shadow(radius: 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            }
+            .shadow(color: Color.black.opacity(0.12), radius: 24, y: 10)
             .task(id: point.id) {
                 // Yield once so SwiftUI can install the controls before the
                 // graph's render acknowledgement permits this point to speak.
@@ -97,9 +144,11 @@ struct LivePresentationOverlay: View {
         }
     }
 
-    private func explanationText(_ value: String) -> some View {
+    private func explanationText(_ value: String, secondary: Bool = false) -> some View {
         Text(value)
-            .font(.body)
+            .font(.system(size: 13.5))
+            .foregroundStyle(secondary ? .secondary : .primary)
+            .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -137,6 +186,11 @@ private extension LivePresentationController.Status {
 
     var isCompleted: Bool {
         if case .completed = self { return true }
+        return false
+    }
+
+    var isSpeaking: Bool {
+        if case .speaking = self { return true }
         return false
     }
 }
