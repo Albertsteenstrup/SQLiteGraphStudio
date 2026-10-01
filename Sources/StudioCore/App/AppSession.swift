@@ -2199,7 +2199,11 @@ public final class AppSession {
     /// View, or moved between Stage Manager slots. When the layout first runs
     /// out of room for two panes, the graph is the one that stays.
     public func updateWorkspaceWidth(_ width: CGFloat) {
-        guard workspaceCompactLayout.update(width: width) else { return }
+        // Update a copy and store it only on a change: calling the mutating method
+        // in place would notify every observer of the layout on each resize tick.
+        var next = workspaceCompactLayout
+        guard next.update(width: width) else { return }
+        workspaceCompactLayout = next
         preferSchemaPaneWhenCompact()
     }
 

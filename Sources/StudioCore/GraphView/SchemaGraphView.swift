@@ -11,7 +11,14 @@ public struct SchemaGraphView: View {
     @State private var baseZoom: CGFloat = 1.0
     @State private var pan: CGSize = .zero
     @State private var panStart: CGSize = .zero
-    @State private var viewportSize: CGSize = .zero
+    /// The pane size as of the last layout, for event handlers and deferred work.
+    /// Held in a box so recording it does not re-run the whole scene; drawing takes
+    /// its size from the GeometryReader.
+    @State private var viewportBox = GraphViewportSizeBox()
+    private var viewportSize: CGSize {
+        get { viewportBox.size }
+        nonmutating set { viewportBox.size = newValue }
+    }
     @State private var initialViewport = GraphInitialViewport()
     @State private var initialViewportTask: Task<Void, Never>?
     @State private var nodeDragOrigin: CGPoint?
@@ -537,7 +544,7 @@ public struct SchemaGraphView: View {
                     drawGroupConnections(in: &context, size: size)
                 }
                 if let edgePlan {
-                    drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan)
+                    drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan, viewportSize: size)
                 }
                 drawOverviewMarks(in: &context, frames: geometry.markerFrames,
                                   connectedIDs: hoverNeighbors, reviewLens: reviewLens)
@@ -581,7 +588,7 @@ public struct SchemaGraphView: View {
             // Signals follow exactly the relations the layer above painted, so the
             // pulse layer stays idle — and unbuilt — whenever no line is drawn.
             let pulseTracks = animatesRelationPulses ? (edgePlan.map {
-                cachedEdgePulseTracks(anchorMap: anchorMap, plan: $0, geometryRevision: geometry.revision)
+                cachedEdgePulseTracks(anchorMap: anchorMap, plan: $0, geometryRevision: geometry.revision, viewportSize: size)
             } ?? []) : []
 
             if !pulseTracks.isEmpty {
@@ -1408,7 +1415,7 @@ public struct SchemaGraphView: View {
 
     /// Resolves the relations a plan paints: graph order, screen anchors, the curve the
     /// static layer strokes, and whether the reader is focused on each one.
-    private func visibleEdgeRenders(anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) -> [GraphEdgeRender] {
+    private func visibleEdgeRenders(anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan, viewportSize: CGSize) -> [GraphEdgeRender] {
         let highlighted = plan.highlight.highlightedEdgeIDs
         // Sampling the filtered edge list before resolving anchors bounds the work and
         // prevents filtered tables from resurfacing in the overview.
@@ -1460,13 +1467,13 @@ public struct SchemaGraphView: View {
         render.isHighlighted ? .subject : lens.emphasis(for: render.edge)
     }
 
-    private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) {
+    private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan, viewportSize: CGSize) {
         let focusedTable = plan.focusPlan?.isActive == true
         let focusedHubID = graphFocusTableRelation?.tableID ?? tableFocusNodeID
         let baseOpacity = (focusedTable ? 0.95 : (session.showAllGraphTableCards ? 0.48 : 0.34)) * plan.inkScale * (plan.reviewLens == nil ? 1 : 0.7)
         let baseWidth = (focusedTable ? 1.5 : (session.showAllGraphTableCards ? 1.25 : 1.05)) * plan.inkScale
 
-        var renders = visibleEdgeRenders(anchorMap: anchorMap, plan: plan)
+        var renders = visibleEdgeRenders(anchorMap: anchorMap, plan: plan, viewportSize: viewportSize)
         if let lens = plan.reviewLens {
             // Changes paint over context, and the changes being read paint over the rest.
             let ranked = renders.map { (render: $0, emphasis: reviewEmphasis(of: $0, lens: lens)) }
@@ -2464,7 +2471,8 @@ public struct SchemaGraphView: View {
     private func cachedEdgePulseTracks(
         anchorMap: GraphAnchorMap,
         plan: GraphEdgeLayerPlan,
-        geometryRevision: Int
+        geometryRevision: Int,
+        viewportSize: CGSize
     ) -> [GraphEdgePulseTrack] {
         let key = GraphEdgePulseKey(
             geometryRevision: geometryRevision,
@@ -2478,7 +2486,7 @@ public struct SchemaGraphView: View {
         )
         if scenePreparation.pulseKey == key { return scenePreparation.pulseTracks }
 
-        let candidates = visibleEdgeRenders(anchorMap: anchorMap, plan: plan).map { render in
+        let candidates = visibleEdgeRenders(anchorMap: anchorMap, plan: plan, viewportSize: viewportSize).map { render in
             GraphEdgePulseTrack(
                 edgeID: render.edge.id,
                 start: render.anchors.source,
@@ -4331,4 +4339,9 @@ enum GraphVisibleGroupMembers {
     static func intersection(_ groupNodeIDs: [String], renderedGraph: SchemaGraph) -> [String] {
         intersection(groupNodeIDs, renderedNodeIDs: Set(renderedGraph.nodes.map(\.id)))
     }
+}
+
+/// Reference-typed so writing the size never invalidates the view that owns it.
+final class GraphViewportSizeBox {
+    var size: CGSize = .zero
 }
