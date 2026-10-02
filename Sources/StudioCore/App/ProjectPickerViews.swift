@@ -183,9 +183,12 @@ private struct ProjectCandidateRow: View {
 }
 
 /// The list of versions, newest first. Long histories are grouped so a menu
-/// over hundreds of migrations stays navigable.
+/// over hundreds of migrations stays navigable. The studio rows draw as a
+/// dropdown in the app and as ordinary items in the menu bar, and mark the
+/// applied version.
 struct MigrationVersionMenuContent: View {
     let set: MigrationSet
+    var selectedVersion: String?
     let select: (String) -> Void
 
     private static let groupSize = 40
@@ -197,7 +200,7 @@ struct MigrationVersionMenuContent: View {
         } else {
             ForEach(Array(stride(from: 0, to: files.count, by: Self.groupSize)), id: \.self) { start in
                 let group = Array(files[start..<min(start + Self.groupSize, files.count)])
-                Menu(groupTitle(group)) {
+                StudioSubmenu(groupTitle(group)) {
                     ForEach(group) { file in button(for: file) }
                 }
             }
@@ -210,7 +213,10 @@ struct MigrationVersionMenuContent: View {
     }
 
     private func button(for file: MigrationFile) -> some View {
-        Button(file.version == set.latest?.version ? "\(file.displayLabel)  (latest)" : file.displayLabel) {
+        StudioMenuChoice(
+            file.version == set.latest?.version ? "\(file.displayLabel)  (latest)" : file.displayLabel,
+            isSelected: file.version == selectedVersion
+        ) {
             select(file.version)
         }
     }
@@ -232,8 +238,8 @@ struct MigrationVersionPicker: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(StudioPalette.secondaryText)
-            StudioMenu(.secondary) {
-                MigrationVersionMenuContent(set: set) { selection = $0 }
+            StudioMenu(.secondary, width: 320) {
+                MigrationVersionMenuContent(set: set, selectedVersion: resolved?.version) { selection = $0 }
             } label: {
                 HStack(spacing: 6) {
                     Text(resolved.map { $0.version == set.latest?.version ? "\($0.displayLabel)  (latest)" : $0.displayLabel } ?? "—")
@@ -274,8 +280,10 @@ struct MigrationVersionControl: View {
                 .help("Step back one migration")
                 .accessibilityLabel("Previous migration")
 
-                StudioMenu(.quiet) {
-                    MigrationVersionMenuContent(set: set) { session.selectMigrationVersion($0) }
+                StudioMenu(.quiet, width: 320) {
+                    MigrationVersionMenuContent(set: set, selectedVersion: set.files[appliedIndex].version) {
+                        session.selectMigrationVersion($0)
+                    }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "square.stack.3d.up")

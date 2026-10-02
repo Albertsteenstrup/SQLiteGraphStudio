@@ -3,7 +3,8 @@ import SwiftUI
 /// The graph decoration switches, as menu content.
 ///
 /// One definition serves both View ▸ Graph Visuals in the menu bar and the graph's own
-/// options menu, so the two can never drift apart.
+/// options menu, so the two can never drift apart. The rows are studio menu rows, which
+/// draw as switches in the graph's dropdown and as ordinary items in the menu bar.
 public struct GraphVisualToggles: View {
     @Bindable private var session: AppSession
 
@@ -14,22 +15,21 @@ public struct GraphVisualToggles: View {
     public var body: some View {
         ForEach(Array(GraphVisual.Section.allCases.enumerated()), id: \.element) { index, section in
             if index > 0 {
-                Divider()
+                StudioMenuDivider()
             }
             ForEach(section.visuals) { visual in
-                Toggle(visual.title, isOn: binding(for: visual))
-                    .help(visual.help)
+                StudioMenuToggle(visual.title, isOn: binding(for: visual), help: visual.help)
             }
         }
 
-        Divider()
+        StudioMenuDivider()
 
-        Button("Turn All Off") {
+        StudioMenuItem("Turn All Off") {
             session.graphVisuals.disableAll()
         }
         .disabled(session.graphVisuals.disabledVisuals.count == GraphVisual.allCases.count)
 
-        Button("Restore Defaults") {
+        StudioMenuItem("Restore Defaults") {
             session.graphVisuals.reset()
         }
         .disabled(session.graphVisuals.isDefault)

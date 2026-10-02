@@ -15,17 +15,20 @@ struct TableFilterEditor: View {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
                 GridRow {
                     fieldLabel("Column")
-                    Picker("Column", selection: $columnName) {
-                        ForEach(tab.descriptor.columns) { column in Text("\(column.name) · \(column.typeLabel)").tag(column.name) }
-                    }
-                    .labelsHidden()
+                    StudioSelect(
+                        "Column",
+                        options: tab.descriptor.columns.map { (title: "\($0.name) · \($0.typeLabel)", value: $0.name) },
+                        selection: $columnName,
+                        placeholder: "Choose a column"
+                    )
                 }
                 GridRow {
                     fieldLabel("Match")
-                    Picker("Match", selection: $comparison) {
-                        ForEach(ColumnFilterComparison.allCases) { Text($0.label).tag($0) }
-                    }
-                    .labelsHidden()
+                    StudioSelect(
+                        "Match",
+                        options: ColumnFilterComparison.allCases.map { (title: $0.label, value: $0) },
+                        selection: $comparison
+                    )
                 }
                 if comparison.requiresValue {
                     GridRow {

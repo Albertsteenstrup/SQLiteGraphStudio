@@ -22,6 +22,8 @@ public enum StudioSurface: Sendable {
 
 extension EnvironmentValues {
     @Entry var studioSurface: StudioSurface = .adaptive
+    /// True while the control's own dropdown or popover is open, so it stays lit.
+    @Entry var studioControlActive: Bool = false
 }
 
 public extension View {
@@ -29,6 +31,14 @@ public extension View {
     /// it, so a popover opened from a pane declares `.adaptive` again.
     func studioSurface(_ surface: StudioSurface) -> some View {
         environment(\.studioSurface, surface)
+    }
+}
+
+extension View {
+    /// Keeps the studio button this wraps drawn as pressed while `isActive`, for a
+    /// trigger whose dropdown is open.
+    func studioControlActive(_ isActive: Bool) -> some View {
+        environment(\.studioControlActive, isActive)
     }
 }
 
@@ -125,6 +135,7 @@ private struct StudioButtonBody: View {
     @Environment(\.controlSize) private var controlSize
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.studioSurface) private var surface
+    @Environment(\.studioControlActive) private var isActive
     @State private var isHovered = false
 
     var body: some View {
@@ -134,7 +145,7 @@ private struct StudioButtonBody: View {
             ink: StudioInk(surface: surface, colorScheme: colorScheme),
             isDestructive: configuration.role == .destructive,
             isHovered: isHovered,
-            isPressed: configuration.isPressed,
+            isPressed: configuration.isPressed || isActive,
             isEnabled: isEnabled
         )
         configuration.label
@@ -172,6 +183,7 @@ private struct StudioIconButtonBody: View {
     @Environment(\.controlSize) private var controlSize
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.studioSurface) private var surface
+    @Environment(\.studioControlActive) private var isActive
     @State private var isHovered = false
 
     var body: some View {
@@ -181,7 +193,7 @@ private struct StudioIconButtonBody: View {
             ink: StudioInk(surface: surface, colorScheme: colorScheme),
             isDestructive: configuration.role == .destructive,
             isHovered: isHovered,
-            isPressed: configuration.isPressed,
+            isPressed: configuration.isPressed || isActive,
             isEnabled: isEnabled
         )
         configuration.label
@@ -245,76 +257,6 @@ public extension ButtonStyle where Self == StudioIconButtonStyle {
     static var studioIcon: StudioIconButtonStyle { StudioIconButtonStyle(.quiet) }
     static var studioIconTinted: StudioIconButtonStyle { StudioIconButtonStyle(.secondary) }
     static var studioIconPrimary: StudioIconButtonStyle { StudioIconButtonStyle(.primary) }
-}
-
-// MARK: - Menus
-
-/// A pull-down menu drawn as a studio control. AppKit menu styles flatten a
-/// custom label into a bezeled pop-up button, so the label is drawn here and the
-/// system only supplies the menu itself.
-public struct StudioMenu<Content: View, Label: View>: View {
-    private let prominence: StudioControlProminence
-    private let isIconOnly: Bool
-    private let content: Content
-    private let label: Label
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.controlSize) private var controlSize
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.studioSurface) private var surface
-    @State private var isHovered = false
-
-    public init(
-        _ prominence: StudioControlProminence = .secondary,
-        iconOnly: Bool = false,
-        @ViewBuilder content: () -> Content,
-        @ViewBuilder label: () -> Label
-    ) {
-        self.prominence = prominence
-        self.isIconOnly = iconOnly
-        self.content = content()
-        self.label = label()
-    }
-
-    public var body: some View {
-        let metrics = StudioControlMetrics(controlSize)
-        let chrome = StudioControlChrome(
-            prominence: prominence,
-            ink: StudioInk(surface: surface, colorScheme: colorScheme),
-            isDestructive: false,
-            isHovered: isHovered,
-            isPressed: false,
-            isEnabled: isEnabled
-        )
-        Menu {
-            content
-        } label: {
-            Group {
-                if isIconOnly {
-                    label
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: metrics.fontSize, weight: .semibold))
-                        .frame(width: metrics.height, height: metrics.height)
-                        .background(Circle().fill(chrome.fill))
-                        .contentShape(Circle())
-                } else {
-                    label
-                        .font(.system(size: metrics.fontSize, weight: .medium))
-                        .lineLimit(1)
-                        .padding(.horizontal, metrics.horizontalPadding)
-                        .frame(minHeight: metrics.height)
-                        .background(Capsule().fill(chrome.fill))
-                        .contentShape(Capsule())
-                }
-            }
-            .foregroundStyle(chrome.foreground)
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.12), value: isHovered)
-    }
 }
 
 // MARK: - Segmented picker
