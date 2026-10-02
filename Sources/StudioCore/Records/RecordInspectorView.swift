@@ -6,10 +6,15 @@ public struct RecordExplorationView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Button { session.records.back() } label: { Image(systemName: "chevron.left") }
-                    .disabled(!session.records.canGoBack).help("Back to the previous record or originating view")
-                Button { session.records.forward() } label: { Image(systemName: "chevron.right") }
-                    .disabled(!session.records.canGoForward).help("Forward")
+                HStack(spacing: 2) {
+                    Button { session.records.back() } label: { Image(systemName: "chevron.left") }
+                        .disabled(!session.records.canGoBack).help("Back to the previous record or originating view")
+                        .accessibilityLabel("Back")
+                    Button { session.records.forward() } label: { Image(systemName: "chevron.right") }
+                        .disabled(!session.records.canGoForward).help("Forward")
+                        .accessibilityLabel("Forward")
+                }
+                .buttonStyle(.studioIcon)
                 VStack(alignment: .leading) {
                     Text(session.records.showsGraph ? "Record graph" : "Record inspector").font(.headline)
                     Text("From \(session.records.originLabel)").font(.caption).foregroundStyle(.secondary)
@@ -24,18 +29,25 @@ public struct RecordExplorationView: View {
                 }
                 Button("Return to origin") { session.records.cancel(); session.records.isPresented = false }
                     .keyboardShortcut(.escape, modifiers: [])
-            }.padding(16)
+            }
+            .buttonStyle(.studio)
+            .padding(16)
             Divider()
             if let notice = session.records.notice { Text(notice).foregroundStyle(.orange).padding(8) }
             if let record = session.records.current {
-                if session.records.showsGraph {
-                    HSplitView {
-                        RecordGraphView(workspace: session.records).frame(minWidth: 300)
-                        RecordInspectorView(session: session, record: record).frame(minWidth: 300, idealWidth: 440, maxWidth: 560)
+                // Inline actions in the inspector and graph share one quiet, compact look.
+                Group {
+                    if session.records.showsGraph {
+                        HSplitView {
+                            RecordGraphView(workspace: session.records).frame(minWidth: 300)
+                            RecordInspectorView(session: session, record: record).frame(minWidth: 300, idealWidth: 440, maxWidth: 560)
+                        }
+                    } else {
+                        RecordInspectorView(session: session, record: record)
                     }
-                } else {
-                    RecordInspectorView(session: session, record: record)
                 }
+                .buttonStyle(.studio)
+                .controlSize(.small)
             } else {
                 ContentUnavailableView("No record selected", systemImage: "tablecells", description: Text("Right-click a loaded table or query row and choose Inspect Record."))
             }
@@ -65,7 +77,7 @@ private struct RecordInspectorView: View {
                         Text(identity.locator.map { "\($0.columnName) = \(RecordValuePresentation.summary($0.value))" }.joined(separator: " · "))
                             .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                         Button("Show connections", systemImage: "point.3.connected.trianglepath.dotted") { session.records.showConnections() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.studioPrimary)
                     } else {
                         Text(record.partialCellRead == nil
                              ? "Loaded values only. No proven unique locator is available; record graph and identity-dependent navigation are unavailable."
@@ -167,8 +179,8 @@ private struct RecordRelationshipView: View {
                                         .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                                 }
                                 Spacer(); Image(systemName: "chevron.right")
-                            }.padding(6)
-                        }.buttonStyle(.plain)
+                            }
+                        }.buttonStyle(.studioRow)
                     }
                     HStack {
                         let offset = workspace.offsets[key, default: 0]

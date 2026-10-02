@@ -109,9 +109,10 @@ struct WorkspaceGraphContextLayoutTests {
         }
     }
 
-    @Test @MainActor
-    func directDetailHasStableFullModelFallbackUntilAuthoredModelArrives() async throws {
+    @Test(arguments: [GraphNodeSizeMetric.uniform, .relations]) @MainActor
+    func directDetailHasStableFullModelFallbackUntilAuthoredModelArrives(metric: GraphNodeSizeMetric) async throws {
         try await withSource { source in
+            source.graphNodeSizeMetric = metric
             source.setAutomationVisibleTableIDs(["authors", "posts"])
             source.compactGraphTables(["authors", "posts"], columns: 2)
             let renderer = try WorkspaceGraphRenderer()
@@ -150,6 +151,79 @@ struct WorkspaceGraphContextLayoutTests {
             _ = try await renderer.render()
             #expect(try center("posts", in: renderer) == authoredPosition,
                     "The first authored complete model supersedes generated fallback positions")
+        }
+    }
+
+    @Test @MainActor
+    func nativeMetricClearancePreservesReaderContextAndExactDetailReturn() async throws {
+        try await withSource { source in
+            // Exercise the native metric path on a settled layout, as happens
+            // when the desktop zooms out while the embedded card is inspected.
+            source.restoreAutomationGraphLayout(source.graphLayout.snapshot(for: source.graph))
+            source.graphNodeSizeMetric = .relations
+            let authoredPosition = CGPoint(x: 1_200, y: -200)
+            source.graphLayout.pin(nodeID: "posts", at: authoredPosition)
+            source.markAutomationViewChanged()
+            let renderer = try WorkspaceGraphRenderer()
+            defer { renderer.close() }
+            renderer.synchronize(from: source, revision: "metric-complete-model", width: 900, height: 440)
+            _ = try await renderer.render()
+
+            source.setAutomationVisibleTableIDs(["authors", "posts"])
+            source.compactGraphTables(["authors", "posts"], columns: 2)
+            source.markAutomationViewChanged()
+            renderer.synchronize(from: source, revision: "metric-detail", width: 900, height: 440)
+            _ = try await renderer.render()
+            try renderer.apply(["type": "expand", "table_id": "posts"])
+            let movedPosition = CGPoint(x: 310, y: 70)
+            try renderer.apply(["type": "move", "table_id": "posts", "x": movedPosition.x, "y": movedPosition.y])
+            let inspected = try await renderer.render()
+            let detailZoom = renderer.zoom, detailPan = renderer.pan
+            #expect(try center("posts", in: renderer) == movedPosition)
+
+            try renderer.apply(["type": "context"])
+            _ = try await renderer.render()
+            #expect(try center("posts", in: renderer) == authoredPosition)
+            try renderer.apply(["type": "transform", "tx": 21, "ty": 13])
+            _ = try await renderer.render()
+            let contextZoom = renderer.zoom, contextPan = renderer.pan
+            let nativeBefore = source.graphLayout.snapshot(for: source.graph)
+            let sizingRevision = source.graphNodeSizingLayoutRevision
+            let renderRevision = source.automationViewRevision
+            source.graphZoom = 0.005
+            source.resizeGraphNodesForCurrentMetric(minimumZoom: source.graphZoom)
+            let nativeAfter = source.graphLayout.snapshot(for: source.graph)
+            #expect(nativeAfter != nativeBefore, "The fixture must reach actual native metric clearance")
+            #expect(source.graphNodeSizingLayoutRevision == sizingRevision &+ 1)
+            #expect(source.automationViewRevision == renderRevision &+ 1,
+                    "Automatic sizing must still invalidate the native render receipt")
+
+            renderer.synchronize(from: source, revision: "native-metric-clearance", width: 900, height: 440)
+            _ = try await renderer.render()
+            #expect(renderer.contextMode && renderer.visibleTables.count == source.graph.nodes.count)
+            #expect(Set(renderer.highlightedTables) == ["authors", "posts"])
+            #expect(renderer.zoom == contextZoom && renderer.pan == contextPan)
+            #expect(try center("posts", in: renderer) == authoredPosition)
+            #expect(source.graphLayout.snapshot(for: source.graph) == nativeAfter,
+                    "Embedded synchronization must preserve native metric clearance")
+
+            try renderer.apply(["type": "context"])
+            let returned = try await renderer.render()
+            #expect(!renderer.contextMode && Set(renderer.visibleTables) == ["authors", "posts"])
+            #expect(renderer.selection == ["posts"] && renderer.expandedTables == ["posts"])
+            #expect(try center("posts", in: renderer) == movedPosition)
+            #expect(renderer.zoom == detailZoom && renderer.pan == detailPan)
+            #expect(returned.image == inspected.image,
+                    "Metric inspection must return to the exact detail pixels, positions, and camera")
+
+            source.setAutomationVisibleTableIDs(["posts"])
+            source.graphLayout.pin(nodeID: "posts", at: CGPoint(x: -160, y: 40))
+            source.markAutomationViewChanged()
+            renderer.synchronize(from: source, revision: "authored-after-native-sizing", width: 900, height: 440)
+            _ = try await renderer.render()
+            #expect(renderer.visibleTables == ["posts"] && !renderer.contextMode,
+                    "A subsequent authored instruction must still replace reader inspection")
+            #expect(try center("posts", in: renderer) == CGPoint(x: -160, y: 40))
         }
     }
 

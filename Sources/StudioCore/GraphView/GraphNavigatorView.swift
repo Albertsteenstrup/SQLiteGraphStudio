@@ -26,51 +26,69 @@ struct GraphNavigatorView: View {
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("graph-search")
                 .onChange(of: query) { _, _ in resultPage = 0 }
-            Button("All \(graph.nodes.count) tables · \(grouping.groupCount) groups", action: onOverview)
-                .buttonStyle(.plain)
-                .font(.subheadline.weight(.semibold))
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    Button(action: onOverview) {
+                        Label("All \(graph.nodes.count) tables · \(grouping.groupCount) groups", systemImage: "square.grid.2x2")
+                            .font(.system(size: 12.5, weight: .semibold))
+                    }
+                    .buttonStyle(.studioRow)
                     ForEach(groups) { group in
                         Button { onGroup(group.id) } label: {
                             HStack(spacing: 8) {
                                 Circle().fill(Color(studioHex: group.colorHex) ?? StudioPalette.accent).frame(width: 8, height: 8)
                                 Text(group.label).lineLimit(2)
                                 Spacer(minLength: 8)
-                                Text("\(group.nodeIDs.count)").foregroundStyle(.secondary)
+                                Text("\(group.nodeIDs.count)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
                             }
-                            .padding(.vertical, 7)
-                            .contentShape(Rectangle())
+                            .font(.system(size: 12.5))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.studioRow)
                     }
                     if !term.isEmpty {
-                        Divider().padding(.vertical, 4)
-                        Text("\(matches.count) matching tables").font(.caption).foregroundStyle(.secondary)
+                        Divider().padding(.vertical, 6)
+                        Text("\(matches.count) matching tables")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 2)
                         ForEach(page.ids, id: \.self) { id in
                             Button { onTable(id) } label: {
                                 Label(graph.node(id: id)?.title ?? id, systemImage: "tablecells")
-                                    .font(.system(.body, design: .monospaced))
+                                    .font(.system(size: 12.5, design: .monospaced))
                                     .lineLimit(2)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 7)
-                                    .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.studioRow)
                         }
                     }
                 }
             }
             .frame(maxHeight: 400)
+            .padding(.horizontal, -8)
             if page.count > 1 {
-                HStack {
-                    Button("Previous") { resultPage -= 1 }.disabled(page.index == 0)
-                    Text("\(page.start)–\(page.end) of \(page.total)").font(.caption)
-                    Button("Next") { resultPage += 1 }.disabled(page.index + 1 == page.count)
+                HStack(spacing: 0) {
+                    Button { resultPage -= 1 } label: { Image(systemName: "chevron.left") }
+                        .disabled(page.index == 0)
+                        .help("Previous results")
+                        .accessibilityLabel("Previous")
+                    Text("\(page.start)–\(page.end) of \(page.total)")
+                        .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                    Button { resultPage += 1 } label: { Image(systemName: "chevron.right") }
+                        .disabled(page.index + 1 == page.count)
+                        .help("Next results")
+                        .accessibilityLabel("Next")
                 }
+                .buttonStyle(.studioIcon)
+                .controlSize(.small)
             }
         }
         .padding(16)
         .frame(width: 340)
+        // A popover follows the system appearance even when it opens from the canvas.
+        .studioSurface(.adaptive)
     }
 }

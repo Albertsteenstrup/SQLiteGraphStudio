@@ -81,7 +81,10 @@ public struct StudioCommands: Commands {
 
             if let set = session.migrationSet, set.files.count > 1 {
                 Menu("Replay Migrations Through") {
-                    MigrationVersionMenuContent(set: set) { session.selectMigrationVersion($0) }
+                    MigrationVersionMenuContent(
+                        set: set,
+                        selectedVersion: session.selectedMigrationVersion ?? set.latest?.version
+                    ) { session.selectMigrationVersion($0) }
                 }
                 .disabled(session.isRefreshing)
             }

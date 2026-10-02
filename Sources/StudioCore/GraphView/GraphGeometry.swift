@@ -84,6 +84,33 @@ struct GraphViewportTransform: Sendable, Equatable {
         )
     }
 
+    /// Settle zoom-dependent footprints before centring the camera. The callback
+    /// may move nodes to make room for their minimum screen size at each zoom.
+    static func fit(
+        contentBoundsAtZoom: (CGFloat) -> CGRect,
+        initialZoom: CGFloat,
+        in viewportSize: CGSize,
+        padding: CGFloat = 120,
+        minZoom: CGFloat = 0.45,
+        maxZoom: CGFloat = 1.15
+    ) -> GraphViewportTransform {
+        var proposedZoom = max(minZoom, initialZoom.isFinite ? initialZoom : minZoom)
+        for _ in 0..<8 {
+            let transform = fit(contentBounds: contentBoundsAtZoom(proposedZoom), in: viewportSize,
+                                padding: padding, minZoom: minZoom, maxZoom: maxZoom)
+            // A larger zoom only reduces the minimum world footprint, so the
+            // positions settled at proposedZoom also have clearance at this fit.
+            if transform.zoom >= proposedZoom { return transform }
+            // A small reserve avoids chasing a shrinking fit to floating-point
+            // convergence and keeps the final footprint below the camera's zoom.
+            proposedZoom = max(minZoom, transform.zoom * 0.98)
+        }
+        // Bound the work even for dense imported layouts. Reserving the minimum
+        // allowed zoom guarantees that the final camera cannot grow nodes again.
+        return fit(contentBounds: contentBoundsAtZoom(minZoom), in: viewportSize,
+                   padding: padding, minZoom: minZoom, maxZoom: maxZoom)
+    }
+
     /// Brings `contentBounds` into view with as little camera movement as possible.
     ///
     /// Returns `nil` when it is already on screen. Otherwise the camera centres on it at

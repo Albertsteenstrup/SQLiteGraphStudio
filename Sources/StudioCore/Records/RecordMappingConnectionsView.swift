@@ -28,8 +28,8 @@ struct RecordMappingConnectionsView: View {
                             Spacer()
                             Text(connection.label ?? "Edge").font(.caption).foregroundStyle(.secondary)
                             Image(systemName: "chevron.right")
-                        }.padding(6)
-                    }.buttonStyle(.plain)
+                        }
+                    }.buttonStyle(.studioRow)
                 }
                 HStack {
                     let offset = workspace.offsets[key, default: 0]

@@ -20,7 +20,7 @@ public final class WorkspaceGraphRenderer {
     private let window: NSWindow
     private let defaultsFile: URL
     private var sourceRevision: String?
-    private var sourceAutomationRevision: Int?
+    private var sourceInstructionRevision: Int?
     private var sourceGraphRevision: Int?
     private var sourceLayout: GraphLayoutSnapshot?
     private var fullModelLayout: GraphLayoutSnapshot?
@@ -73,7 +73,10 @@ public final class WorkspaceGraphRenderer {
     public func synchronize(from source: AppSession, revision next: String, width: Int, height: Int) {
         window.appearance = NSApp?.effectiveAppearance
         let resized = hosting.bounds.size != CGSize(width: width, height: height)
-        let followsInstruction = sourceAutomationRevision != source.automationViewRevision || sourceRevision == nil
+        // Native metric clearance increments its sizing and render revisions
+        // together. It invalidates frames without replacing reader inspection.
+        let instructionRevision = source.automationViewRevision &- source.graphNodeSizingLayoutRevision
+        let followsInstruction = sourceInstructionRevision != instructionRevision || sourceRevision == nil
         if resized { window.setContentSize(CGSize(width: width, height: height)) }
         if sourceRevision != next {
             let nextSourceLayout = source.graphLayout.snapshot(for: source.graph)
@@ -114,7 +117,7 @@ public final class WorkspaceGraphRenderer {
                 session.requestAutomationViewport(fitVisibleTables: fits, transitionMilliseconds: 0)
             }
             sourceRevision = next
-            sourceAutomationRevision = source.automationViewRevision
+            sourceInstructionRevision = instructionRevision
             sourceGraphRevision = source.graphRevision
             sourceLayout = nextSourceLayout
             revision &+= 1
@@ -140,6 +143,31 @@ public final class WorkspaceGraphRenderer {
                     GraphCardLayout.nodeSize(title: nodesByID[id]?.title ?? id,
                         descriptor: self.session.descriptor(named: id), style: expanded ? .expanded : .collapsed)
                 }, maxIterations: 140)
+        }
+        if session.graphNodeSizeMetric != .uniform, !session.isSchemaReviewFullModelView {
+            // Reserve metric footprints once for a generated map, before it
+            // becomes the stable baseline. Later inspection restores it exactly.
+            let graph = session.graph
+            let cardSizes = Dictionary(uniqueKeysWithValues: graph.nodes.map { node in
+                (node.id, GraphCardLayout.nodeSize(title: node.title, descriptor: session.descriptor(named: node.id),
+                    style: session.showAllGraphTableCards ? .expanded : .collapsed))
+            })
+            let largeOverview = graph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold
+            let viewport = hosting.bounds.size
+            let insets = largeOverview ? min(68, viewport.height * 0.25) + min(100, viewport.height * 0.25) : 0
+            _ = GraphViewportTransform.fit(contentBoundsAtZoom: { proposedZoom in
+                let reservedSizes = Dictionary(uniqueKeysWithValues: cardSizes.map { id, size in
+                    (id, self.session.graphNodeSizeProfile.layoutSize(for: id, cardSize: size, minimumZoom: proposedZoom))
+                })
+                layout.resizeNodes(for: graph, sizes: reservedSizes)
+                return graph.nodes.reduce(CGRect.null) { bounds, node in
+                    let center = layout.position(for: node.id), size = reservedSizes[node.id]!
+                    return bounds.union(CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                                               width: size.width, height: size.height))
+                }
+            }, initialZoom: session.graphZoom,
+               in: CGSize(width: viewport.width, height: max(100, viewport.height - insets)),
+               padding: largeOverview ? 36 : 120, minZoom: largeOverview ? 0.005 : 0.45)
         }
         return layout.snapshot(for: session.graph)
     }

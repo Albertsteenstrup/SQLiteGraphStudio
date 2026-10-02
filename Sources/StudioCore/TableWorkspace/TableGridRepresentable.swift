@@ -1049,22 +1049,21 @@ private struct HeaderPopoverContent: View {
                     .foregroundStyle(StudioPalette.secondaryText)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
                 Button(action: onSortAscending) {
                     rowLabel("Sort ascending", systemImage: "arrow.up")
                 }
-                .buttonStyle(.plain)
 
                 Button(action: onSortDescending) {
                     rowLabel("Sort descending", systemImage: "arrow.down")
                 }
-                .buttonStyle(.plain)
 
                 Button(action: onClearSort) {
                     rowLabel("Clear sort", systemImage: currentSort?.columnName == column.name ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 }
-                .buttonStyle(.plain)
             }
+            .buttonStyle(.studioRow)
+            .padding(.horizontal, -8)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Filter")
@@ -1077,19 +1076,18 @@ private struct HeaderPopoverContent: View {
                         onApplyFilter(filterText)
                     }
 
-                HStack {
-                    Button("Apply") {
-                        onApplyFilter(filterText)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StudioPalette.accent)
-
+                HStack(spacing: 6) {
+                    Spacer()
                     Button("Clear") {
                         filterText = ""
                         onClearFilter()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(StudioPalette.accent)
+                    .buttonStyle(.studio)
+
+                    Button("Apply") {
+                        onApplyFilter(filterText)
+                    }
+                    .buttonStyle(.studioPrimary)
                 }
             }
 
@@ -1102,7 +1100,8 @@ private struct HeaderPopoverContent: View {
                 } label: {
                     rowLabel("Delete column", systemImage: "trash")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.studioRow)
+                .padding(.horizontal, -8)
             }
         }
         .padding(14)
@@ -1111,18 +1110,17 @@ private struct HeaderPopoverContent: View {
             RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(StudioPalette.cardSurfaceTop)
         )
+        .studioSurface(.light)
     }
 
     private func rowLabel(_ title: String, systemImage: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
-                .foregroundStyle(StudioPalette.primaryText)
+                .frame(width: 16)
             Text(title)
-                .foregroundStyle(StudioPalette.primaryText)
             Spacer()
         }
-        .font(.subheadline.weight(.medium))
-        .padding(.vertical, 2)
+        .font(.system(size: 12.5, weight: .medium))
     }
 }
 

@@ -16,6 +16,8 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 
 - Reuse loaded migration schema definitions during source-revision checks, invalidating on every catalog assignment and keeping file freshness checks active. Capture graph pixels after the drawing receipt settles so image updates match node hit regions.
 
+- Native metric sizing keeps cards separated without resetting embedded inspection. Render-only sessions preserve cached context/detail positions and cameras; sizing-only source updates refresh their facts and frames without acting as new agent navigation.
+
 - Remove the native player and saved-story reader, including file-picker/Finder registration and restoration of old story tabs. Explanations are exclusively embedded MCP steps: no local speech, timed advancement, native-window visibility acknowledgement, or native fallback on card release/expiry/disconnect. Keep portable files and captured table/query evidence available through MCP.
 
 - Animate embedded camera/focus changes, data-panel transitions and captions. Capture the graph for its final layout before committing a step, preserve image proportions, and acknowledge visibility only after motion settles. Respect reduced motion and cancel superseded transitions on navigation, gestures, source changes and teardown.
@@ -35,12 +37,26 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - The viewer preserves positional columns and exact decimal text, distinguishes SQL NULL/empty/binary values, and labels clipped cells and capped query results. Previous/Next and page reload use the same context, workspace and source; query pages never rerun SQL. Stale requests retain the last fetched page with an error.
 - The bundled database-explore skill prefers the live Graph Studio card for visual explanations and embedded rows for standalone data reads.
 
+## Studio Controls
+
+- Files: Sources/StudioCore/Support/StudioControls.swift and the views that use it
+- Change: In-app buttons, menus, tabs and pickers use shared minimal styles instead of the system's bezeled push buttons and pop-up menus: `.studioPrimary` (one solid ink capsule per surface), `.studio`, `.studioQuiet`, round `.studioIcon` buttons, `.studioRow` list rows, `StudioMenu`, `StudioSelect`, `StudioSegmentedPicker` and `studioTabChrome`. Read-only lists (table indexes, triggers, constraints, generated and identity columns, review notes) open in a `StudioPopoverList` popover rather than a menu of dimmed items.
+- Dropdowns: `StudioMenu` draws its menu as well as its trigger. The trigger is an ordinary studio button that stays lit while open; the menu is a popover panel of drawn rows (`StudioMenuItem`, `StudioMenuChoice`/`StudioMenuPicker` with a leading check, `StudioMenuToggle` with a switch, `StudioMenuHeader`, `StudioMenuDivider`) instead of an `NSMenu` with the system's blue highlight. `StudioSubmenu` drills into another page of the same panel with a back row, so there is never a second floating menu. Toggles keep the panel open so several can be flipped in one visit; commands and choices close it and then run. Long pages scroll under a pinned back row.
+- Menu-bar parity: the rows detect whether they are inside a studio dropdown and otherwise draw as ordinary `Button`, `Toggle`, `Menu` and `Divider`, so `GraphVisualToggles` and `MigrationVersionMenuContent` stay one definition shared by the graph's options dropdown and the native menu bar (View ▸ Graph Visuals, Database ▸ Replay Migrations Through). The applied migration is marked with a check in both.
+- Form pickers: `StudioSelect` replaces the system pop-up button for the table filter's Column and Match fields and the Alter Table column picker.
+- Shared styles now also draw the workspace tab strip (`studioTabChrome`, `StudioTabCloseButton`, `.studioIconTinted`), the pane header's maximize button, both "Exit Full Screen" capsules (one `ExitFullScreenButton`), the metadata dismiss button and the graph's "Back to Content" pill, each declaring `.studioSurface(.light)` where it sits on the fixed light palette.
+- Table pane: search, filter and a `‹ 1–10 ›` pager share one row; **Count exactly** sits beside the row count; the metadata counts are chips.
+- Appearance: panes, the graph canvas and their chrome use the fixed light `StudioPalette`, so views there declare `.studioSurface(.light)`. Popovers, sheets and material overlays follow the system appearance, and the controls on them switch to light ink in Dark Mode.
+- Status: ACTIVE
+
 ## Workspace Input and Startup
 
 - Normal launch starts with an empty workspace. Sources open through an explicit file/folder choice, Open Recent, Finder, or launch arguments; the app no longer automatically restores datasets from the prior session.
 - Supported file formats are available through the welcome screen's **Supported formats** information button.
 - Metadata issues can be dismissed without discarding their diagnostics. Their panel owns its scrolling, wheel and pinch gestures, and returns when the source or diagnostics change.
 - The graph's native event observer passes clicks through to underlying controls. The informational minimap also passes clicks through, keeping table, search, filter, split and view controls reachable.
+- The workspace divider's drag is measured in the coordinate space of the fixed-size pane row, not the divider's own. The divider moves with the split, so its own space makes it trail the pointer at about half speed and swing back and forth when the pointer stops. `WorkspaceSplitViewTests` drags the real divider with synthetic mouse events to guard this (it skips when the session cannot deliver gestures, such as a locked screen).
+- A window resize or divider step builds the graph scene once. The graph keeps its last pane size in a reference-typed box instead of `@State`, and `AppSession.updateWorkspaceWidth` stores the compact layout only when it changes, so resizing does not re-run the whole root view.
 
 ## One Graph Studio Window for Coding Agents
 
@@ -74,7 +90,8 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - **Storage**: one key, `SQLiteGraphStudio.graph-visuals-disabled`, holding the names of the visuals turned OFF. A visual added in a later version therefore arrives on with no migration, and a name that no longer exists is ignored rather than discarding the rest
 - **Replaces**: the unpersisted `session.showClusterHalos` and the view-local `showCardinals` state. `GraphVisualToggles` is the single definition of the list, rendered by both the menu bar and the graph's own options menu
 - **Group Colors and Group Titles are independent**: titles used to be gated on the halo flag. Now each switch does only what it says — with colours off, group names still draw, in plain ink
-- **Group colour styling**: inferred and uncoloured groups use muted slate and gray tones suited to the cool canvas. Small maps avoid fallback-colour collisions. At overview zoom, a light card surface remains visible beneath a faint group tint; group borders stay subtle until hovered or selected. Explicit sidecar colours remain available.
+- **Group colour styling**: inferred and uncoloured groups use 24 saturated colours to distinguish groups on the cool canvas, with no fallback-colour repeats until the palette is exhausted. Overview marks use stronger colour opacity so their group identity remains visible at full-map zoom. A light card surface remains visible beneath a faint group tint; group borders stay subtle until hovered or selected. Explicit sidecar colours remain available.
+- **Node size differences and clearance**: Fields, Rows, and Relations use the full catalog's observed count range for overview dimensions from 0.55× to 3× Uniform. Larger nodes claim their footprint first and neighbours move outward by the required clearance, without a physics relayout. The same geometry drives rendering, relation anchors, pointer targets, and fitting. Camera fitting settles clearance at its target zoom before centring; temporary focus layouts resize independently around their readable, anchored root. Space includes hover growth and the minimum marker size when zoomed far out; equal and unknown counts remain neutral.
 - **Status**: ✅ ACTIVE
 
 ### Zoomed-Out Relations

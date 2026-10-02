@@ -83,7 +83,7 @@ Field rules:
 - `id` — short, lowercase, no spaces. Used internally and in error messages.
 - `label` — human-readable name shown on graph groups, in the table picker, and in table tooltips (e.g. "Authentication & Users").
 - `tables` — exact case-sensitive table IDs; PostgreSQL uses schema-qualified IDs such as `public.orders`. Names not in the schema are skipped.
-- `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. Omit it by default to use the app's muted, stable palette; include it only for a requested custom colour.
+- `color` — optional six-digit `#RRGGBB` hex colour used for group labels, halos, table borders, and picker markers. Omit it by default to use the app's distinct, stable palette; include it only for a requested custom colour.
 - `overviewTables` — optional ordered list of at most 16 distinct, exact table IDs. PostgreSQL uses schema-qualified IDs. Unknown IDs are ignored when drawing so the sidecar can survive schema changes; check against the current catalog before saving.
 
 ## Workflow

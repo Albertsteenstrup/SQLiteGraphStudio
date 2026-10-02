@@ -291,11 +291,13 @@ public struct GraphGrouping: Sendable, Hashable {
         return "#\(value.uppercased())"
     }
 
-    // Low-saturation hues retain group identity on the cool gray canvas.
-    // Each is dark enough for small headings on the light graph background.
+    // Saturated hues make groups distinct on the cool gray canvas. Keep enough
+    // colours for larger overviews before repeating, and dark enough for headings.
     private static let fallbackPalette = [
-        "#56677D", "#5D706E", "#6D6578", "#706A60", "#5C6D78", "#6F696D",
-        "#65715E", "#646B75", "#596F73", "#71666A", "#606D69", "#6B6C72",
+        "#2563EB", "#047857", "#C2410C", "#9333EA", "#BE123C", "#0E7490",
+        "#9B5E07", "#4338CA", "#147C3B", "#BE185D", "#0369A1", "#7E22CE",
+        "#B91C1C", "#4A780E", "#0F766E", "#A21CAF", "#9A3412", "#1E40AF",
+        "#854D0E", "#6D28D9", "#166534", "#9D174D", "#155E75", "#6B21A8",
     ]
 
     private static func fallbackColor(for id: String, used: inout Set<Int>) -> String {

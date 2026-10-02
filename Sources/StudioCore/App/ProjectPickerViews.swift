@@ -44,7 +44,7 @@ struct ProjectScanOverlayView: View {
             }
 
             Button("Cancel", action: onCancel)
-                .controlSize(.regular)
+                .buttonStyle(.studio)
         }
         .padding(28)
         .frame(minWidth: 380)
@@ -117,10 +117,12 @@ struct ProjectCandidatePickerView: View {
                     session.dismissProjectCandidates()
                     dismiss()
                 }
+                .buttonStyle(.studio)
                 .keyboardShortcut(.cancelAction)
                 Button("Open") {
                     if let candidate = selected { open(candidate) }
                 }
+                .buttonStyle(.studioPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(selected == nil)
             }
@@ -181,9 +183,12 @@ private struct ProjectCandidateRow: View {
 }
 
 /// The list of versions, newest first. Long histories are grouped so a menu
-/// over hundreds of migrations stays navigable.
+/// over hundreds of migrations stays navigable. The studio rows draw as a
+/// dropdown in the app and as ordinary items in the menu bar, and mark the
+/// applied version.
 struct MigrationVersionMenuContent: View {
     let set: MigrationSet
+    var selectedVersion: String?
     let select: (String) -> Void
 
     private static let groupSize = 40
@@ -195,7 +200,7 @@ struct MigrationVersionMenuContent: View {
         } else {
             ForEach(Array(stride(from: 0, to: files.count, by: Self.groupSize)), id: \.self) { start in
                 let group = Array(files[start..<min(start + Self.groupSize, files.count)])
-                Menu(groupTitle(group)) {
+                StudioSubmenu(groupTitle(group)) {
                     ForEach(group) { file in button(for: file) }
                 }
             }
@@ -208,7 +213,10 @@ struct MigrationVersionMenuContent: View {
     }
 
     private func button(for file: MigrationFile) -> some View {
-        Button(file.version == set.latest?.version ? "\(file.displayLabel)  (latest)" : file.displayLabel) {
+        StudioMenuChoice(
+            file.version == set.latest?.version ? "\(file.displayLabel)  (latest)" : file.displayLabel,
+            isSelected: file.version == selectedVersion
+        ) {
             select(file.version)
         }
     }
@@ -230,15 +238,18 @@ struct MigrationVersionPicker: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(StudioPalette.secondaryText)
-            Menu {
-                MigrationVersionMenuContent(set: set) { selection = $0 }
+            StudioMenu(.secondary, width: 320) {
+                MigrationVersionMenuContent(set: set, selectedVersion: resolved?.version) { selection = $0 }
             } label: {
-                Text(resolved.map { $0.version == set.latest?.version ? "\($0.displayLabel)  (latest)" : $0.displayLabel } ?? "—")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(resolved.map { $0.version == set.latest?.version ? "\($0.displayLabel)  (latest)" : $0.displayLabel } ?? "—")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8.5, weight: .bold))
+                }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .controlSize(.small)
             .help("Replay the migrations up to and including this one")
         }
     }
@@ -259,45 +270,44 @@ struct MigrationVersionControl: View {
 
     var body: some View {
         if let set, let appliedIndex {
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 Button {
                     session.selectMigrationVersion(set.files[appliedIndex - 1].version)
                 } label: {
-                    Image(systemName: "chevron.left").font(.caption2.weight(.bold))
+                    Image(systemName: "chevron.left")
                 }
-                .buttonStyle(.plain)
                 .disabled(appliedIndex == 0 || session.isRefreshing)
                 .help("Step back one migration")
+                .accessibilityLabel("Previous migration")
 
-                Menu {
-                    MigrationVersionMenuContent(set: set) { session.selectMigrationVersion($0) }
+                StudioMenu(.quiet, width: 320) {
+                    MigrationVersionMenuContent(set: set, selectedVersion: set.files[appliedIndex].version) {
+                        session.selectMigrationVersion($0)
+                    }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "square.stack.3d.up")
-                            .font(.caption2.weight(.semibold))
+                            .font(.system(size: 10, weight: .semibold))
                         Text("\(appliedIndex + 1) / \(set.files.count)")
-                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .monospacedDigit()
                     }
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
                 .help(session.migrationReplaySummary ?? "Choose which migration to replay through")
 
                 Button {
                     session.selectMigrationVersion(set.files[appliedIndex + 1].version)
                 } label: {
-                    Image(systemName: "chevron.right").font(.caption2.weight(.bold))
+                    Image(systemName: "chevron.right")
                 }
-                .buttonStyle(.plain)
                 .disabled(appliedIndex >= set.files.count - 1 || session.isRefreshing)
                 .help("Step forward one migration")
+                .accessibilityLabel("Next migration")
             }
-            .foregroundStyle(StudioPalette.primaryText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(StudioPalette.chromeFillStrong))
-            .overlay { Capsule().stroke(StudioPalette.border, lineWidth: 1) }
+            .buttonStyle(.studioIcon)
+            .controlSize(.small)
+            .studioSurface(.light)
+            .padding(2)
+            .background(Capsule().fill(Color.black.opacity(0.045)))
         }
     }
 }

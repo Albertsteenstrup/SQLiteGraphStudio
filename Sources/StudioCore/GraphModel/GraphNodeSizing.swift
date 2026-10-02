@@ -53,12 +53,17 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
     let metric: GraphNodeSizeMetric
     let areas: [String: CGFloat]
     let unknownIDs: Set<String>
+    private let minimumArea: CGFloat
+    private let maximumArea: CGFloat
 
     static let uniform = GraphNodeSizeProfile(metric: .uniform, areas: [:], unknownIDs: [])
 
     init(metric: GraphNodeSizeMetric, tables: [TableSummary], rowCounts: [String: Int], relationCounts: [String: Int]) {
         self.metric = metric
-        guard metric != .uniform else { areas = [:]; unknownIDs = []; return }
+        guard metric != .uniform else {
+            areas = [:]; unknownIDs = []; minimumArea = 0; maximumArea = 0
+            return
+        }
         var counts: [String: Int] = [:]
         var unknown: Set<String> = []
         for table in tables {
@@ -75,7 +80,10 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
         let maximum = max(1, counts.values.max() ?? 0)
         let denominator = log1p(Double(maximum))
         // Log compression stops a million-row table from overwhelming smaller ones.
-        areas = counts.mapValues { 0.12 + 0.88 * CGFloat(log1p(Double($0)) / denominator) }
+        let areas = counts.mapValues { 0.12 + 0.88 * CGFloat(log1p(Double($0)) / denominator) }
+        self.areas = areas
+        minimumArea = areas.values.min() ?? 0
+        maximumArea = areas.values.max() ?? 0
         unknownIDs = unknown
     }
 
@@ -83,6 +91,30 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
         self.metric = metric
         self.areas = areas
         self.unknownIDs = unknownIDs
+        minimumArea = areas.values.min() ?? 0
+        maximumArea = areas.values.max() ?? 0
+    }
+
+    /// Use the full observed range, so even modest differences in field/link counts
+    /// are visible. Equal counts and missing row counts keep a neutral footprint.
+    func dimensionScale(for id: String) -> CGFloat {
+        guard metric != .uniform, let area = areas[id], maximumArea > minimumArea else { return 1 }
+        return 0.55 + 2.45 * (area - minimumArea) / (maximumArea - minimumArea)
+    }
+
+    /// Reserve the largest footprint through the zoom transition, including the
+    /// three-pixel marker minimum, hover emphasis, and a readable focus root.
+    func layoutSize(for id: String, cardSize: CGSize, minimumZoom: CGFloat, isFocusRoot: Bool = false) -> CGSize {
+        guard metric != .uniform else { return cardSize }
+        let factor = dimensionScale(for: id)
+        let zoom = max(0.005, minimumZoom.isFinite ? minimumZoom : 1)
+        let minimum = 3 / zoom
+        let readableScale = isFocusRoot ? GraphReadableCardScale.focusedScale(for: zoom) / zoom : 1
+        let hoverScale = GraphHoverPresentation.cardScale(hovered: true, connected: false)
+        return CGSize(
+            width: max(cardSize.width * readableScale, min(cardSize.width, GraphCardLayout.collapsedWidth(title: "", hovered: false)) * factor, minimum) * hoverScale,
+            height: max(cardSize.height * readableScale, min(cardSize.height, GraphCardLayout.collapsedHeight) * factor, minimum) * hoverScale
+        )
     }
 
     static func emphasis(at zoom: CGFloat) -> CGFloat {
@@ -94,11 +126,10 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
     func markerFrame(for id: String, frame: CGRect, zoom: CGFloat) -> CGRect {
         guard metric != .uniform else { return GraphExploration.markerFrame(for: frame) }
         let emphasis = Self.emphasis(at: zoom)
-        let area = areas[id] ?? 0.45
-        let factor = sqrt(area)
+        let factor = dimensionScale(for: id)
         // All metrics converge toward one common marker footprint, independent of
-        // title length and expanded column count. It fits inside the original card
-        // allocation, so zooming never moves nodes or introduces new overlaps.
+        // title length and expanded column count. The layout reserves this larger
+        // footprint and pushes neighbouring nodes away when the metric changes.
         let safeZoom = zoom.isFinite ? max(0, zoom) : 0
         let baseWidth = GraphCardLayout.collapsedWidth(title: "", hovered: false) * safeZoom
         let baseHeight = GraphCardLayout.collapsedHeight * safeZoom
