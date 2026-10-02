@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct SchemaGraphView: View {
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     /// Offscreen renders skip every transition so a snapshot shows the settled view.
     private var reduceMotion: Bool { systemReduceMotion || session.rendersOffscreen }
     @Environment(\.controlActiveState) private var controlActiveState
@@ -61,6 +62,31 @@ public struct SchemaGraphView: View {
     /// Whether a graph decoration is switched on in View ▸ Graph Visuals.
     private func shows(_ visual: GraphVisual) -> Bool {
         session.graphVisuals.isEnabled(visual)
+    }
+
+    // Context subjects need a chromatic cue independent of the app's neutral accent.
+    private var contextSubjectTint: Color {
+        colorScheme == .dark
+            ? Color(red: 0.38, green: 0.65, blue: 1.0)
+            : Color(red: 0.14, green: 0.40, blue: 0.78)
+    }
+
+    private var contextSubjectLabelSurface: Color {
+        colorScheme == .dark
+            ? Color(red: 0.13, green: 0.23, blue: 0.38)
+            : Color(red: 0.88, green: 0.93, blue: 1.0)
+    }
+
+    private var contextSubjectLabelInk: Color {
+        colorScheme == .dark
+            ? Color(red: 0.78, green: 0.88, blue: 1.0)
+            : Color(red: 0.10, green: 0.29, blue: 0.58)
+    }
+
+    private var contextNeutralInk: Color {
+        colorScheme == .dark
+            ? Color(red: 0.64, green: 0.69, blue: 0.76)
+            : Color(red: 0.38, green: 0.43, blue: 0.50)
     }
 
     /// Relation signals redraw every frame, so on top of the reader's own preference they
@@ -221,7 +247,7 @@ public struct SchemaGraphView: View {
                             }
                         }
                         .padding(20)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
                     }
                     if !session.rendersOffscreen {
                         graphOverlayControls(size: geometry.size)
@@ -296,14 +322,14 @@ public struct SchemaGraphView: View {
                 let visible = session.graphVisibleTableIDs
                 if let focusRoot = graphFocusTableRelation?.tableID ?? tableFocusNodeID,
                    !visible.contains(focusRoot) {
-                    clearGraphFocusSession(animated: false, restoreViewport: false)
+                    clearGraphFocusSession(animated: false, restoreViewport: false, collapsesFocusedTable: false)
                     layoutRevision &+= 1
                 }
             }
             .onChange(of: session.automationFocusResetRevision) { _, _ in
                 // A later focus_keys action in the same point takes precedence.
                 guard session.automationFocusCommand == nil else { return }
-                clearGraphFocusSession(animated: false, restoreViewport: false)
+                clearGraphFocusSession(animated: false, restoreViewport: false, collapsesFocusedTable: false)
                 layoutRevision &+= 1
             }
             .onChange(of: session.automationFocusCommand?.id) { _, _ in
@@ -428,6 +454,7 @@ public struct SchemaGraphView: View {
         }).union(geometry.renderPlan.markerIDs.filter {
             geometry.markerFrames[$0]?.intersects(viewport) == true
         })
+        let embeddedNodeFrames = embeddedHitFrames(geometry: geometry, displayedTableIDs: displayedTableIDs, viewport: viewport)
         let hoverNeighbors = hoverNeighborIDs(reviewLens: reviewLens)
         let hoverSummaryIDs = shows(.hoverPreviews) && reviewLens == nil && !session.isSchemaReviewFullModelView ? GraphHoverPresentation.summaryIDs(
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil, connectedIDs: hoverNeighbors,
@@ -520,7 +547,9 @@ public struct SchemaGraphView: View {
             .allowsHitTesting(false)
 
             Canvas { context, canvasSize in
-                drawClusterTitles(in: &context, canvasSize: canvasSize)
+                let nameFrames = !session.graphContextTableIDs.isEmpty && zoom < effectiveDetailZoom
+                    ? contextNameLabelPlacements(geometry: geometry, viewport: viewport).map(\.frame) : []
+                drawClusterTitles(in: &context, canvasSize: canvasSize, contextNameFrames: nameFrames)
             }
             .allowsHitTesting(false)
 
@@ -558,7 +587,8 @@ public struct SchemaGraphView: View {
                         guard isGraphViewVisible else { return }
                         session.acknowledgeAutomationViewRendered(
                             revision: revision,
-                            displayedTableIDs: displayedTableIDs
+                            displayedTableIDs: displayedTableIDs,
+                            nodeFrames: embeddedNodeFrames
                         )
                     }
                 }
@@ -611,8 +641,6 @@ public struct SchemaGraphView: View {
                 let scrollOffset = cardScrollOffsets[node.id] ?? 0
                 let showsCardShadow = shows(.cardShadows) && session.schemaReview == nil
 
-                let isMultiSelected = session.selectedGraphNodeIDs.count > 1 && session.selectedGraphNodeIDs.contains(node.id)
-
                 GraphNodeCardView(
                     node: node,
                     descriptor: descriptor,
@@ -625,7 +653,6 @@ public struct SchemaGraphView: View {
                     outgoingEdges: outgoingEdges,
                     incomingEdges: incomingEdges,
                     isSelected: session.selectedGraphNodeIDs.contains(node.id),
-                    isMultiSelected: isMultiSelected,
                     viewportZoom: displayZoom,
                     displayStyle: displayStyle,
                     isFocusRoot: isFocusRoot,
@@ -676,6 +703,7 @@ public struct SchemaGraphView: View {
                 .position(screenCenter(for: node.id, in: size))
                 .opacity(focusOpacity(for: focusPlan?.tierForTable(node.id)))
                 .opacity(reviewCardOpacity(for: node.id, lens: reviewLens))
+                .opacity(contextCardOpacity(for: node.id))
                 .shadow(
                     color: showsCardShadow
                         ? StudioPalette.shadow.opacity(session.showAllGraphTableCards ? 0.38 : 0.8)
@@ -689,6 +717,14 @@ public struct SchemaGraphView: View {
             if let reviewLens, zoom < effectiveDetailZoom {
                 Canvas { context, _ in
                     drawReviewNameLabels(in: &context, geometry: geometry, lens: reviewLens, viewport: CGRect(origin: .zero, size: size))
+                }
+                .allowsHitTesting(false)
+                .zIndex(8)
+            }
+
+            if !session.graphContextTableIDs.isEmpty, zoom < effectiveDetailZoom {
+                Canvas { context, _ in
+                    drawContextNameLabels(in: &context, geometry: geometry, viewport: viewport)
                 }
                 .allowsHitTesting(false)
                 .zIndex(8)
@@ -1005,20 +1041,27 @@ public struct SchemaGraphView: View {
             else { color = clusterBorderColor(for: id) ?? StudioPalette.accent }
             let isHovered = !session.isSchemaReviewFullModelView && hoveredNodeID == id
             let connected = !session.isSchemaReviewFullModelView && connectedIDs.contains(id)
+            let isChosen = session.selectedGraphNodeIDs.contains(id)
             let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
             if let reviewLens {
                 drawReviewMark(in: &context, id: id, path: path, color: color,
-                               lens: reviewLens, isPointed: isHovered || connected)
+                               lens: reviewLens, isPointed: isHovered || connected, isChosen: isChosen)
             } else {
-                let emphasis = isHovered || connected ? 0.78 : 0.62
+                let subject = session.graphContextTableIDs.contains(id)
+                let emphasis = !session.graphContextTableIDs.isEmpty
+                    ? (subject || isHovered || isChosen ? 0.98 : 0.46)
+                    : (isChosen ? 0.98 : (isHovered || connected ? 0.78 : 0.62))
                 let isUnknown = !session.isSchemaReviewFullModelView && session.graphNodeSizeProfile.unknownIDs.contains(id)
-                context.fill(path, with: .color(color.opacity(isUnknown ? emphasis * 0.45 : emphasis)))
+                let tint = subject || isChosen ? contextSubjectTint : color
+                let opacity = isUnknown && !isChosen && session.graphContextTableIDs.isEmpty ? emphasis * 0.45 : emphasis
+                context.fill(path, with: .color(tint.opacity(opacity)))
                 if isUnknown {
-                    context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                    // Unknown-size dashes keep their meaning; choosing a mark
+                    // changes its fill, never adds or recolours a selection border.
+                    let unknownTint = subject ? contextSubjectTint : color
+                    context.stroke(path, with: .color(unknownTint.opacity(subject ? 0.9 : 0.6)),
+                                   style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
                 }
-            }
-            if session.selectedGraphNodeIDs.contains(id) {
-                context.stroke(path, with: .color(StudioPalette.primaryText), lineWidth: 1.5)
             }
         }
     }
@@ -1029,9 +1072,10 @@ public struct SchemaGraphView: View {
     /// A review never uses the dashed "size unknown" outline: it has no row data, so the
     /// row metric would dash every table, and dashes already mean "removed" here.
     private func drawReviewMark(in context: inout GraphicsContext, id: String, path: Path,
-                                color: Color, lens: SchemaReviewLens, isPointed: Bool) {
+                                color: Color, lens: SchemaReviewLens, isPointed: Bool, isChosen: Bool) {
         if !lens.isFocused {
-            context.fill(path, with: .color(color.opacity(isPointed ? 0.5 : 0.28)))
+            let fill = isChosen ? contextSubjectTint.opacity(0.94) : color.opacity(isPointed ? 0.5 : 0.28)
+            context.fill(path, with: .color(fill))
             return
         }
         let kind = lens.kind(forTable: id)
@@ -1041,7 +1085,8 @@ public struct SchemaGraphView: View {
         case .faded: isPointed ? 0.6 : 0.34
         case .context: isPointed ? 0.62 : 0.26
         }
-        context.fill(path, with: .color(color.opacity(fill * (kind == .removed ? 0.6 : 1))))
+        let tint = isChosen ? contextSubjectTint : color
+        context.fill(path, with: .color(tint.opacity((isChosen ? 0.94 : fill) * (kind == .removed ? 0.6 : 1))))
         let dash: [CGFloat] = kind == .removed ? [3, 2] : []
         switch emphasis {
         case .subject:
@@ -1061,6 +1106,64 @@ public struct SchemaGraphView: View {
         case .subject: return 1
         case .faded: return 0.5
         case .context: return lens.isFocused ? 0.5 : 0.72
+        }
+    }
+
+    private func contextCardOpacity(for id: String) -> Double {
+        session.graphContextTableIDs.isEmpty || session.graphContextTableIDs.contains(id)
+            || hoveredNodeID == id || session.selectedGraphNodeIDs.contains(id) ? 1 : 0.55
+    }
+
+    private func embeddedHitFrames(geometry: GraphInteractionGeometry, displayedTableIDs: Set<String>, viewport: CGRect) -> [String: CGRect] {
+        var frames = geometry.anchorMap.nodeCards.mapValues(\.frame)
+            .filter { displayedTableIDs.contains($0.key) }
+        if !session.graphContextTableIDs.isEmpty, zoom < effectiveDetailZoom {
+            for placement in contextNameLabelPlacements(geometry: geometry, viewport: viewport) {
+                frames[placement.id] = frames[placement.id].map { $0.union(placement.frame) } ?? placement.frame
+            }
+        }
+        return frames
+    }
+
+    /// Names the highlighted subject at screen size while its neighbours remain a map.
+    private func contextNameLabelPlacements(geometry: GraphInteractionGeometry, viewport: CGRect) -> [GraphNameLabelLayout.Placement] {
+        var candidates: [GraphNameLabelLayout.Candidate] = []
+        var seen: Set<String> = []
+        func add(_ id: String, pinned: Bool) {
+            guard seen.insert(id).inserted, candidates.count < 64 else { return }
+            guard let anchor = reviewLabelAnchor(for: id, geometry: geometry), anchor.intersects(viewport),
+                  let node = session.graph.node(id: id) else { return }
+            let entry = scenePreparation.nameLabels.entry(title: node.title, symbol: "")
+            candidates.append(.init(id: id, anchor: anchor, size: entry.size, isPinned: pinned))
+        }
+        if let hoveredNodeID, draggedNodeID == nil { add(hoveredNodeID, pinned: true) }
+        if let chosen = session.selectedGraphNodeID { add(chosen, pinned: true) }
+        session.selectedGraphNodeIDs.sorted().forEach { add($0, pinned: false) }
+        let subjects = session.graphContextTableIDs.sorted { lhs, rhs in
+            let lhsDegree = session.graph.neighbors(of: lhs).count
+            let rhsDegree = session.graph.neighbors(of: rhs).count
+            return lhsDegree == rhsDegree ? lhs < rhs : lhsDegree > rhsDegree
+        }
+        subjects.forEach { add($0, pinned: false) }
+        // The complete highlighted set stays visible as marks; only a few hub names
+        // belong over a full catalog. Pointing or choosing a table claims first place.
+        return Array(GraphNameLabelLayout.place(candidates, in: viewport.insetBy(dx: 4, dy: 4)).prefix(6))
+    }
+
+    private func drawContextNameLabels(in context: inout GraphicsContext, geometry: GraphInteractionGeometry, viewport: CGRect) {
+        for placement in contextNameLabelPlacements(geometry: geometry, viewport: viewport) {
+            guard let node = session.graph.node(id: placement.id) else { continue }
+            let entry = scenePreparation.nameLabels.entry(title: node.title, symbol: "")
+            let shape = Path(roundedRect: placement.frame, cornerRadius: StudioCornerRadius.row)
+            let subject = session.graphContextTableIDs.contains(placement.id)
+            let surface = subject ? contextSubjectLabelSurface
+                : (colorScheme == .dark ? Color(red: 0.20, green: 0.23, blue: 0.28) : StudioPalette.cardSurfaceTop)
+            let ink = subject ? contextSubjectLabelInk
+                : (colorScheme == .dark ? Color.white.opacity(0.92) : StudioPalette.primaryText)
+            context.fill(shape, with: .color(surface))
+            context.draw(Text(entry.title).font(.system(size: GraphNameLabelLayout.fontSize, weight: .semibold))
+                .foregroundStyle(ink),
+                at: CGPoint(x: placement.frame.minX + GraphNameLabelLayout.horizontalPadding, y: placement.frame.midY), anchor: .leading)
         }
     }
 
@@ -1095,14 +1198,15 @@ public struct SchemaGraphView: View {
         for placement in GraphNameLabelLayout.place(candidates, in: viewport.insetBy(dx: 4, dy: 4)) {
             guard let entry = entries[placement.id] else { continue }
             let kind = lens.kind(forTable: placement.id)
-            let isChosen = placement.id == hovered || session.selectedGraphNodeIDs.contains(placement.id)
+            let isHovered = placement.id == hovered
+            let isSelected = session.selectedGraphNodeIDs.contains(placement.id)
             let frame = placement.frame
             let shape = Path(roundedRect: frame, cornerRadius: 5)
             let border = kind == .unchanged ? StudioPalette.borderStrong
-                : kind.tint.opacity(lens.emphasis(forTable: placement.id) == .subject || isChosen ? 0.9 : 0.45)
-            context.fill(shape, with: .color(StudioPalette.cardSurfaceTop.opacity(0.96)))
+                : kind.tint.opacity(lens.emphasis(forTable: placement.id) == .subject || isHovered ? 0.9 : 0.45)
+            context.fill(shape, with: .color(isSelected ? StudioPalette.selectionSurfaceTop : StudioPalette.cardSurfaceTop.opacity(0.96)))
             context.stroke(shape, with: .color(border),
-                           style: StrokeStyle(lineWidth: isChosen ? 1.5 : 1, dash: kind == .removed ? [3, 2] : []))
+                           style: StrokeStyle(lineWidth: isHovered ? 1.5 : 1, dash: kind == .removed ? [3, 2] : []))
             var x = frame.minX + GraphNameLabelLayout.horizontalPadding
             if !entry.symbol.isEmpty {
                 context.draw(Text(entry.symbol).font(font).foregroundStyle(kind.tint),
@@ -1157,7 +1261,7 @@ public struct SchemaGraphView: View {
         }
     }
 
-    private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize) {
+    private func drawClusterTitles(in context: inout GraphicsContext, canvasSize: CGSize, contextNameFrames: [CGRect] = []) {
         // Table focus already names every visible card. Large group headings
         // can cross the expanded hub and hide its fields.
         guard graphFocusPlan == nil else { return }
@@ -1186,7 +1290,7 @@ public struct SchemaGraphView: View {
             let areaA = a.width * a.height, areaB = b.width * b.height
             return areaA == areaB ? ($0.label ?? "") < ($1.label ?? "") : areaA > areaB
         } : clusterTitleCache.entries
-        var occupiedLabels: [CGRect] = []
+        var occupiedLabels = contextNameFrames.map { $0.insetBy(dx: -6, dy: -4) }
 
         for entry in entries {
             guard let label = entry.label, !label.isEmpty else { continue }
@@ -1213,7 +1317,7 @@ public struct SchemaGraphView: View {
                     .foregroundStyle(shows(.groupColors) ? entry.color : StudioPalette.secondaryText)
             )
             var drawPoint = labelPoint
-            if isOverview {
+            if isOverview || !contextNameFrames.isEmpty {
                 let measured = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
                 let options = [labelPoint,
                                CGPoint(x: labelPoint.x, y: labelPoint.y - 18),
@@ -1306,7 +1410,7 @@ public struct SchemaGraphView: View {
             partial.isNull ? frame : partial.union(frame)
         }
         let padded = bounds.insetBy(dx: -padding, dy: -padding)
-        let path = Path(roundedRect: padded, cornerRadius: min(max(padded.height / 4, 18), 52))
+        let path = Path(roundedRect: padded, cornerRadius: StudioCornerRadius.surface)
         let minY = frames.map(\.minY).min() ?? bounds.minY
         let centroidX = frames.map(\.midX).reduce(0, +) / CGFloat(max(frames.count, 1))
         let labelAnchor = CGPoint(x: centroidX, y: minY - labelGap)
@@ -1347,12 +1451,12 @@ public struct SchemaGraphView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: tooltipMaxWidth, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(Color(NSColor.windowBackgroundColor))
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .stroke(StudioPalette.borderSoft, lineWidth: 1)
         )
         .frame(maxWidth: tooltipMaxWidth, alignment: .leading)
@@ -1381,7 +1485,7 @@ public struct SchemaGraphView: View {
         hoverHighlight: GraphRelationHighlight?,
         reviewLens: SchemaReviewLens?
     ) -> GraphEdgeLayerPlan? {
-        let mode = GraphEdgeLayerPlan.mode(isOverview: isOverviewOnly,
+        let mode = GraphEdgeLayerPlan.mode(isOverview: isOverviewOnly && session.graphContextTableIDs.isEmpty,
                                            isSchemaReview: session.schemaReview != nil,
                                            showsOverviewRelations: shows(.overviewRelations),
                                            hasHover: hoverHighlight != nil)
@@ -1417,7 +1521,10 @@ public struct SchemaGraphView: View {
         } ?? renderedGraph.edges
 
         let viewport = CGRect(origin: .zero, size: viewportSize)
-        let focusedHubID = session.isSchemaReviewFullModelView ? nil : (graphFocusTableRelation?.tableID ?? tableFocusNodeID)
+        let contextIDs = session.graphContextTableIDs
+        let focusedHubID = session.isSchemaReviewFullModelView || !contextIDs.isEmpty
+            ? nil : (graphFocusTableRelation?.tableID ?? tableFocusNodeID)
+        let laneOffsets = GraphEdgeRouting.laneOffsets(for: renderedGraph.edges)
         var renders: [GraphEdgeRender] = []
         renders.reserveCapacity(min(candidates.count, 512))
         for edge in candidates {
@@ -1433,12 +1540,14 @@ public struct SchemaGraphView: View {
             }
             guard let anchors = anchorMap.edgeAnchors(for: edge) else { continue }
 
-            var (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
-            // Both versions of an edited FK remain visible even with equal endpoints.
-            if session.schemaReview != nil && !session.isSchemaReviewFullModelView {
-                if edge.id.hasPrefix("before:") { control1.x -= 18; control2.x -= 18 }
-                if edge.id.hasPrefix("after:") { control1.x += 18; control2.x += 18 }
-            }
+            let curve = GraphEdgeRouting.curve(anchors: anchors,
+                sourceFrame: anchorMap.card(for: edge.sourceID)?.frame,
+                targetFrame: anchorMap.card(for: edge.targetID)?.frame,
+                laneOffset: laneOffsets[edge.id, default: 0], isSelfLink: edge.sourceID == edge.targetID)
+            // Stable lanes already separate both versions of an edited FK.
+            // Further x shifts could reverse the outward card-side tangent.
+            let control1 = curve.control1
+            let control2 = curve.control2
             var path = Path()
             path.move(to: anchors.source)
             path.addCurve(to: anchors.target, control1: control1, control2: control2)
@@ -1450,7 +1559,8 @@ public struct SchemaGraphView: View {
                 control2: control2,
                 path: path,
                 // A review highlights a table's changes, never its unchanged relations.
-                isHighlighted: highlighted.contains(edge.id) && reviewEmphasis != .context
+                isHighlighted: (contextIDs.isEmpty ? highlighted.contains(edge.id)
+                    : contextIDs.contains(edge.sourceID) && contextIDs.contains(edge.targetID)) && reviewEmphasis != .context
             ))
         }
         return renders
@@ -1462,7 +1572,8 @@ public struct SchemaGraphView: View {
 
     private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan) {
         let focusedTable = plan.focusPlan?.isActive == true
-        let focusedHubID = graphFocusTableRelation?.tableID ?? tableFocusNodeID
+        let contextIDs = session.graphContextTableIDs
+        let focusedHubID = contextIDs.isEmpty ? graphFocusTableRelation?.tableID ?? tableFocusNodeID : nil
         let baseOpacity = (focusedTable ? 0.95 : (session.showAllGraphTableCards ? 0.48 : 0.34)) * plan.inkScale * (plan.reviewLens == nil ? 1 : 0.7)
         let baseWidth = (focusedTable ? 1.5 : (session.showAllGraphTableCards ? 1.25 : 1.05)) * plan.inkScale
 
@@ -1475,6 +1586,8 @@ public struct SchemaGraphView: View {
             }
         }
 
+        var occupiedCardinalityFrames: [CGRect] = []
+        let cardFrames = anchorMap.nodeCards.values.map(\.frame)
         for render in renders {
             let edge = render.edge
             let anchors = render.anchors
@@ -1488,20 +1601,27 @@ public struct SchemaGraphView: View {
                 continue
             }
             let change = plan.reviewLens?.kind(forEdge: edge.id) ?? .unchanged
+            if !contextIDs.isEmpty, change == .unchanged, !isHighlighted {
+                let boundary = contextIDs.contains(edge.sourceID) || contextIDs.contains(edge.targetID)
+                context.stroke(path, with: .color(contextNeutralInk.opacity(boundary ? 0.44 : 0.24)),
+                               style: StrokeStyle(lineWidth: boundary ? 1.05 : 0.8, lineCap: .round, lineJoin: .round))
+                continue
+            }
             if let lens = plan.reviewLens, change != .unchanged, reviewEmphasis(of: render, lens: lens) == .faded {
                 // A change outside the reader's focus stays findable without competing with it.
                 context.stroke(path, with: .color(change.tint.opacity(0.22)),
                                style: StrokeStyle(lineWidth: 1.25, lineCap: .round, dash: change == .removed ? [6, 4] : []))
                 continue
             }
+            let highlightedInk = contextIDs.isEmpty ? StudioPalette.edgeHighlight : contextSubjectTint.opacity(0.80)
             let strokeColor = change != .unchanged ? change.tint : isHighlighted
-                ? StudioPalette.edgeHighlight
+                ? highlightedInk
                 : StudioPalette.edgeNeutral.opacity(baseOpacity)
 
             if isHighlighted, change == .unchanged {
                 context.stroke(
                     path,
-                    with: .color(StudioPalette.edgeHighlight.opacity(0.12)),
+                    with: .color(highlightedInk.opacity(0.12)),
                     style: StrokeStyle(lineWidth: 5.2, lineCap: .round, lineJoin: .round)
                 )
             }
@@ -1529,12 +1649,17 @@ public struct SchemaGraphView: View {
             if isHighlighted {
                 drawDirectionMarker(in: &context, from: anchors.source, control1: render.control1,
                                     control2: render.control2, to: anchors.target,
-                                    color: change != .unchanged ? change.tint : StudioPalette.edgeHighlight)
-                if shows(.relationshipLabels) {
-                    drawCardinalityLabels(in: &context, edge: edge, start: anchors.source,
-                                          control1: render.control1, control2: render.control2, end: anchors.target,
-                                          showSource: edge.sourceID != focusedHubID,
-                                          showTarget: edge.targetID != focusedHubID)
+                                    color: change != .unchanged ? change.tint : highlightedInk)
+                if shows(.relationshipLabels), contextIDs.isEmpty || zoom >= effectiveDetailZoom {
+                    let curve = GraphEdgeRouting.Curve(start: anchors.source, control1: render.control1,
+                                                       control2: render.control2, end: anchors.target)
+                    let sourceLabel = edge.sourceID == focusedHubID ? nil
+                        : GraphCardinalityLabelPlacement.position(on: curve, atSource: true,
+                                                                  cardFrames: cardFrames, occupied: &occupiedCardinalityFrames)
+                    let targetLabel = edge.targetID == focusedHubID ? nil
+                        : GraphCardinalityLabelPlacement.position(on: curve, atSource: false,
+                                                                  cardFrames: cardFrames, occupied: &occupiedCardinalityFrames)
+                    drawCardinalityLabels(in: &context, edge: edge, sourcePoint: sourceLabel, targetPoint: targetLabel)
                 }
             }
         }
@@ -1579,12 +1704,8 @@ public struct SchemaGraphView: View {
     private func drawCardinalityLabels(
         in context: inout GraphicsContext,
         edge: GraphEdge,
-        start: CGPoint,
-        control1: CGPoint,
-        control2: CGPoint,
-        end: CGPoint,
-        showSource: Bool = true,
-        showTarget: Bool = true
+        sourcePoint: CGPoint?,
+        targetPoint: CGPoint?
     ) {
         let (sourceSymbol, targetSymbol): (String, String) = {
             switch edge.cardinality {
@@ -1594,9 +1715,6 @@ public struct SchemaGraphView: View {
             case .manyToMany: return ("*", "*")
             }
         }()
-
-        let sourcePoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.18)
-        let targetPoint = bezierPoint(start: start, control1: control1, control2: control2, end: end, t: 0.82)
 
         let labelFont = Font.system(size: 11, weight: .bold, design: .monospaced)
         let strokeColor = Color.white
@@ -1609,11 +1727,11 @@ public struct SchemaGraphView: View {
             (-1,  1), (0,  1), (1,  1),
         ]
         for (dx, dy) in offsets {
-            if showSource {
+            if let sourcePoint {
                 let strokeText = Text(sourceSymbol).font(labelFont).foregroundStyle(strokeColor)
                 context.draw(strokeText, at: CGPoint(x: sourcePoint.x + dx, y: sourcePoint.y + dy), anchor: .center)
             }
-            if showTarget {
+            if let targetPoint {
                 let strokeText2 = Text(targetSymbol).font(labelFont).foregroundStyle(strokeColor)
                 context.draw(strokeText2, at: CGPoint(x: targetPoint.x + dx, y: targetPoint.y + dy), anchor: .center)
             }
@@ -1622,22 +1740,14 @@ public struct SchemaGraphView: View {
         let sourceText = Text(sourceSymbol).font(labelFont).foregroundStyle(fillColor)
         let targetText = Text(targetSymbol).font(labelFont).foregroundStyle(fillColor)
 
-        if showSource { context.draw(sourceText, at: sourcePoint, anchor: .center) }
-        if showTarget { context.draw(targetText, at: targetPoint, anchor: .center) }
+        if let sourcePoint { context.draw(sourceText, at: sourcePoint, anchor: .center) }
+        if let targetPoint { context.draw(targetText, at: targetPoint, anchor: .center) }
     }
 
     private func edgeControlPoints(from start: CGPoint, to end: CGPoint) -> (control1: CGPoint, control2: CGPoint) {
-        let horizontalDelta = end.x - start.x
-        let controlOffset = max(32, abs(horizontalDelta) * 0.34)
-        let control1 = CGPoint(
-            x: start.x + (horizontalDelta >= 0 ? controlOffset : -controlOffset),
-            y: start.y
-        )
-        let control2 = CGPoint(
-            x: end.x - (horizontalDelta >= 0 ? controlOffset : -controlOffset),
-            y: end.y
-        )
-        return (control1, control2)
+        let curve = GraphEdgeRouting.curve(anchors: GraphEdgeAnchors(source: start, target: end),
+                                          sourceFrame: nil, targetFrame: nil)
+        return (curve.control1, curve.control2)
     }
 
     private func edgePath(from start: CGPoint, to end: CGPoint) -> Path {
@@ -1653,8 +1763,12 @@ public struct SchemaGraphView: View {
         guard let anchors = anchorMap.edgeAnchors(for: edge) else {
             return .zero
         }
-        let (control1, control2) = edgeControlPoints(from: anchors.source, to: anchors.target)
-        return bezierPoint(start: anchors.source, control1: control1, control2: control2, end: anchors.target, t: 0.5)
+        let curve = GraphEdgeRouting.curve(anchors: anchors,
+            sourceFrame: anchorMap.card(for: edge.sourceID)?.frame,
+            targetFrame: anchorMap.card(for: edge.targetID)?.frame,
+            laneOffset: GraphEdgeRouting.laneOffsets(for: renderedGraph.edges)[edge.id, default: 0],
+            isSelfLink: edge.sourceID == edge.targetID)
+        return curve.point(at: 0.5)
     }
 
     private func graphOverlayControls(size: CGSize) -> some View {
@@ -1693,8 +1807,8 @@ public struct SchemaGraphView: View {
                 graphControlsHeight = height
                 if graphFocusPlan != nil { fitGraphFocusViewport(in: size) }
             }
-            .background(StudioPalette.chromeFill, in: RoundedRectangle(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).stroke(StudioPalette.border, lineWidth: 1) }
+            .background(StudioPalette.chromeFill, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
+            .overlay { RoundedRectangle(cornerRadius: StudioCornerRadius.surface).stroke(StudioPalette.border, lineWidth: 1) }
             .shadow(color: StudioPalette.shadow.opacity(0.45), radius: 10, y: 5)
             .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -2205,13 +2319,14 @@ public struct SchemaGraphView: View {
     private func clearGraphFocusSession(
         animated: Bool = true,
         restoreViewport: Bool = true,
-        clearSavedViewport: Bool = true
+        clearSavedViewport: Bool = true,
+        collapsesFocusedTable: Bool = true
     ) {
         guard graphFocusTableRelation != nil || tableFocusNodeID != nil || !pulledGraphPositions.isEmpty else { return }
         let savedViewport = preGraphFocusViewport
         let applyClear = {
             pulledGraphPositions.removeAll()
-            if tableFocusNodeID != nil || graphFocusTableRelation != nil { session.setExpandedGraphNode(nil) }
+            if collapsesFocusedTable, tableFocusNodeID != nil || graphFocusTableRelation != nil { session.setExpandedGraphNode(nil) }
             graphFocusTableRelation = nil
             tableFocusNodeID = nil
             tappedRelationTarget = nil
@@ -3196,7 +3311,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let outgoingEdges: [GraphEdge]
     let incomingEdges: [GraphEdge]
     let isSelected: Bool
-    let isMultiSelected: Bool
     let viewportZoom: CGFloat
     let displayStyle: GraphNodeCardStyle
     let isFocusRoot: Bool
@@ -3250,29 +3364,19 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                         )
                     )
                 }
-                let strokeWidth = schemaChange == nil ? borderLineWidth : (isSelected ? 2.5 : 1)
+                let strokeWidth = schemaChange == nil ? borderLineWidth : 1
                 let strokeColor: Color = if let colorOnlyChange, colorOnlyChange != .unchanged {
                     colorOnlyChange.tint
-                } else if let schemaChange, isSelected {
-                    schemaChange.kind == .unchanged ? StudioPalette.accent : schemaChange.kind.tint
-                } else if isMultiSelected {
-                    StudioPalette.accent
+                } else if let schemaChange, schemaChange.kind != .unchanged {
+                    schemaChange.kind.tint
                 } else {
                     borderColor
                 }
-                let dash: [CGFloat] = schemaChange?.kind == .removed && isSelected ? [6, 4] : []
+                let dash: [CGFloat] = schemaChange?.kind == .removed ? [6, 4] : []
                 backgroundShape.strokeBorder(strokeColor, style: StrokeStyle(lineWidth: strokeWidth, dash: dash))
             }
         }
         .clipShape(backgroundShape)
-        .overlay {
-            if isSelected && schemaChange == nil {
-                backgroundShape
-                    .stroke(StudioPalette.accent.opacity(0.88), lineWidth: 2)
-                    .padding(-5)
-                    .allowsHitTesting(false)
-            }
-        }
         .opacity(schemaChange?.kind == .removed ? 0.6 : 1)
         .scaleEffect(isDragging ? 1.012 : 1)
         .contentShape(backgroundShape)
@@ -3384,7 +3488,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .padding(.horizontal, 8)
         .frame(height: GraphCardLayout.expandedRowHeight)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.row, style: .continuous)
                 .fill(rowHighlightFill(for: relationStyle))
         )
         .background {
@@ -3407,7 +3511,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var backgroundShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: showsDetailRows ? 22 : 18, style: .continuous)
+        RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
     }
 
     private var backgroundFill: AnyShapeStyle {
@@ -3460,10 +3564,9 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     }
 
     private var borderColor: Color {
-        if let clusterColor       { return clusterColor.opacity(isHovered || isSelected ? 0.9 : 0.62) }
+        if let clusterColor       { return clusterColor.opacity(isHovered ? 0.9 : 0.62) }
         if isHovered                { return Color.black.opacity(0.26) }
         if highlightState != .empty { return Color.black.opacity(0.22) }
-        if isSelected               { return Color.black.opacity(0.20) }
         return Color.black.opacity(0.11)
     }
 
@@ -3471,13 +3574,10 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         let zoom = max(viewportZoom, 0.2)
         let zoomOutEmphasis = max(pow(zoom, 1.45), 0.16)
         let filledClusterCap: CGFloat = clusterFillOpacity > 0 ? 6 : .greatestFiniteMagnitude
-        if isMultiSelected {
-            return min(3.2 / zoomOutEmphasis, filledClusterCap)
-        }
         if clusterColor != nil {
-            return min((isHovered || isSelected ? 2.5 : 1.6) / zoomOutEmphasis, filledClusterCap)
+            return min((isHovered ? 2.5 : 1.6) / zoomOutEmphasis, filledClusterCap)
         }
-        return (isSelected || isHovered ? 1.5 : 1.0) / zoomOutEmphasis
+        return (isHovered ? 1.5 : 1.0) / zoomOutEmphasis
     }
 
 
@@ -4153,7 +4253,7 @@ struct GraphMinimapView: View {
     var body: some View {
         ZStack {
             // Background
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(StudioPalette.chromeFill.opacity(0.95))
             
             // Graph content
@@ -4187,7 +4287,7 @@ struct GraphMinimapView: View {
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .stroke(StudioPalette.border, lineWidth: 1)
         }
         .shadow(color: StudioPalette.shadow.opacity(0.5), radius: 12, y: 8)

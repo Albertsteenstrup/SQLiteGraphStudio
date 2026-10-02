@@ -77,8 +77,8 @@ struct RecordGraphView: View {
                                 }
                                 if workspace.recordGraph.root?.id == node.id { Text("ROOT").font(.system(size: 8, weight: .bold)) }
                             }.padding(10).frame(width: 155)
-                            .background(workspace.current?.id == node.id ? Color.accentColor.opacity(0.2) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(workspace.current?.id == node.id ? Color.accentColor : .secondary.opacity(0.4)))
+                            .background(workspace.current?.id == node.id ? Color.accentColor.opacity(0.2) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
+                            .overlay(RoundedRectangle(cornerRadius: StudioCornerRadius.surface).stroke(workspace.current?.id == node.id ? Color.accentColor : .secondary.opacity(0.4)))
                         }.buttonStyle(.plain).scaleEffect(transform.zoom).position(position)
                         .simultaneousGesture(DragGesture(minimumDistance: 5).onChanged { value in
                             let origin = nodeDragOrigins[node.id] ?? positions[node.id] ?? .zero
@@ -127,7 +127,7 @@ struct RecordGraphView: View {
                                             }
                                         } else { Text("Page complete").font(.caption2) }
                                     }
-                                }.padding(8).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                                }.padding(8).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
                             }
                         }
                     }.padding(8)

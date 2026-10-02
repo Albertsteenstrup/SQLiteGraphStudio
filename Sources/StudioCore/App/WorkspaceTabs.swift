@@ -7,6 +7,7 @@ public enum WorkspaceTabKind: String, CaseIterable, Codable, Identifiable, Senda
     case workspace
     case preview
     case comparison
+    // Decode legacy restoration snapshots; new native tabs never use this kind.
     case explanation
     case artifact
 
@@ -36,7 +37,6 @@ public enum WorkspaceTabKind: String, CaseIterable, Codable, Identifiable, Senda
         switch url.pathExtension.lowercased() {
         case "sgpreview": .preview
         case "sgreview": .comparison
-        case "sgexplanation": .explanation
         default: .workspace
         }
     }
@@ -199,6 +199,12 @@ public final class WorkspaceTabController {
         guard !urls.isEmpty else { return [] }
         var opened: [WorkspaceTab] = []
         for url in urls {
+            if url.pathExtension.lowercased() == "sgexplanation" {
+                activeSession?.presentedError = SQLiteUserError(kind: .invalidInput,
+                    message: "Saved explanations are opened in the embedded MCP view.",
+                    recoverySuggestion: "Open this file through your coding agent with studio_open_explanation.")
+                continue
+            }
             let normalized = url.resolvingSymlinksInPath().standardizedFileURL
             let kind = WorkspaceTabKind.inferred(for: url)
             let replaced = kind == .comparison || kind == .preview ? reviewTab(replacedBy: normalized, kind: kind) : nil
@@ -299,7 +305,7 @@ public final class WorkspaceTabController {
     /// omitted. SQL text is retained only for unsaved editor drafts and is never
     /// executed as part of a later restore.
     public func makeRestorationSnapshot() -> WorkspaceRestorationSnapshot {
-        let states = tabs.map { tab in
+        let states = tabs.filter { $0.kind != .explanation && $0.session.historicalExplanationArtifact == nil }.map { tab in
             if let deferred = tab.deferredRestoration { return deferred }
             return WorkspaceTabRestorationState(
                 id: tab.id,
@@ -309,7 +315,8 @@ public final class WorkspaceTabController {
                 session: restorationState(for: tab.session)
             )
         }
-        return WorkspaceRestorationSnapshot(tabs: states, activeTabID: activeTabID)
+        let active = states.contains(where: { $0.id == activeTabID }) ? activeTabID : states.first?.id
+        return WorkspaceRestorationSnapshot(tabs: states, activeTabID: active)
     }
 
     /// Rebuilds the saved tabs and browsing state. A missing or unsupported source
@@ -328,10 +335,16 @@ public final class WorkspaceTabController {
 
         await closeAllAndWait()
 
+        // Old native story tabs remain portable MCP artifacts, not app documents.
+        let savedTabs = snapshot.tabs.filter { tab in
+            tab.kind != .explanation && (tab.sourceDocumentPath.map {
+                URL(fileURLWithPath: $0).pathExtension.lowercased() != "sgexplanation"
+            } ?? true)
+        }
         var restoredTabs: [WorkspaceTab] = []
         var resolvedIDs: [UUID: UUID] = [:]
         var seenIDs = Set<UUID>()
-        for savedTab in snapshot.tabs.prefix(48) {
+        for savedTab in savedTabs.prefix(48) {
             let id = seenIDs.insert(savedTab.id).inserted ? savedTab.id : UUID()
             if resolvedIDs[savedTab.id] == nil { resolvedIDs[savedTab.id] = id }
             restoredTabs.append(WorkspaceTab(
@@ -348,7 +361,7 @@ public final class WorkspaceTabController {
         tabs = restoredTabs
         activeTabID = snapshot.activeTabID.flatMap { resolvedIDs[$0] } ?? restoredTabs.first?.id
 
-        for (tab, savedTab) in zip(restoredTabs, snapshot.tabs.prefix(restoredTabs.count)) {
+        for (tab, savedTab) in zip(restoredTabs, savedTabs.prefix(restoredTabs.count)) {
             if tab.id != activeTabID {
                 tab.deferredRestoration = savedTab
                 continue
@@ -477,7 +490,7 @@ public final class WorkspaceTabController {
     }
 
     private func restorationDocumentPath(for session: AppSession) -> String? {
-        guard let url = (session.historicalExplanationURL ?? session.databaseTarget?.fileURL ?? session.databaseURL)?.standardizedFileURL else { return nil }
+        guard let url = (session.databaseTarget?.fileURL ?? session.databaseURL)?.standardizedFileURL else { return nil }
         if case .migrations? = session.databaseTarget { return url.path }
         guard DatabaseDocument.supportedExtensions.contains(url.pathExtension.lowercased()) else { return nil }
         return url.path

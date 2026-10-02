@@ -62,12 +62,14 @@ public final class LivePresentationController {
     public private(set) var pendingPoints: [Point] = []
     public private(set) var displayedHistory: [Point] = []
     public private(set) var needsViewReplay = false
+    public private(set) var usesStepNavigation = false
 
     @ObservationIgnored private let narrator: StudioSpeechNarrator?
     @ObservationIgnored private let narrationPlayback: NarrationPlayback?
     @ObservationIgnored private let clock = ContinuousClock()
     @ObservationIgnored private var inputFinished = false
     @ObservationIgnored private var isPaused = false
+    @ObservationIgnored private var continuousPlayback = false
     @ObservationIgnored private var pauseAtPointEnd = false
     @ObservationIgnored private var statusBeforePause: Status?
     @ObservationIgnored private var forwardHistory: [Point] = []
@@ -106,8 +108,39 @@ public final class LivePresentationController {
         !forwardHistory.isEmpty || !pendingPoints.isEmpty
     }
 
+    public var currentPointNumber: Int { currentPoint == nil ? 0 : displayedHistory.count + 1 }
+    public var pointCount: Int { displayedHistory.count + (currentPoint == nil ? 0 : 1) + forwardHistory.count + pendingPoints.count }
+
     /// Keep the next caption out of view while the graph is still moving into place.
     public var hasVisibleCurrentPoint: Bool { hasBecomeVisible && !needsViewReplay }
+
+    /// A viewer can draw the caption once actions have finished, before it
+    /// acknowledges that both the caption and the rendered view are visible.
+    public var hasAppliedCurrentPoint: Bool { hasApplied && !needsViewReplay }
+
+    /// Embedded explanations follow the reader or the coding agent. Retain the
+    /// current point and history, but stop local speech and timed advancement.
+    @discardableResult
+    public func enableStepNavigation() -> Bool {
+        guard !usesStepNavigation else { return false }
+        let previous = activeStatus
+        usesStepNavigation = true
+        currentRunID = UUID()
+        cancelVisibleWork(stopNarrator: true)
+        continuousPlayback = false
+        pauseAtPointEnd = false
+        isPaused = false
+        statusBeforePause = nil
+        status = previous
+        switch previous {
+        case .interrupted, .failed: return true
+        default: break
+        }
+        if let currentPoint, hasBecomeVisible, !needsViewReplay {
+            publish(.waitingForNext(pointID: currentPoint.id))
+        }
+        return true
+    }
 
     public func append(_ point: Point) {
         append([point])
@@ -120,9 +153,9 @@ public final class LivePresentationController {
 
         if currentPoint == nil {
             activateNextPoint()
-        } else if !isPaused, case .waitingForPoints = activeStatus {
+        } else if !usesStepNavigation, !isPaused, case .waitingForPoints = activeStatus {
             advanceToNextPoint()
-        } else if !isPaused, case .completed = activeStatus {
+        } else if !usesStepNavigation, !isPaused, case .completed = activeStatus {
             advanceToNextPoint()
         }
     }
@@ -134,11 +167,11 @@ public final class LivePresentationController {
         inputFinished = false
         if currentPoint == nil {
             activateNextPoint()
-        } else if !isPaused, case .waitingForPoints = activeStatus, !pendingPoints.isEmpty {
+        } else if !usesStepNavigation, !isPaused, case .waitingForPoints = activeStatus, !pendingPoints.isEmpty {
             advanceToNextPoint()
-        } else if !isPaused, case .completed = activeStatus, !pendingPoints.isEmpty {
+        } else if !usesStepNavigation, !isPaused, case .completed = activeStatus, !pendingPoints.isEmpty {
             advanceToNextPoint()
-        } else if !isPaused, case .completed = activeStatus, let currentPoint {
+        } else if !usesStepNavigation, !isPaused, case .completed = activeStatus, let currentPoint {
             publish(.waitingForPoints(pointID: currentPoint.id))
         }
     }
@@ -172,8 +205,12 @@ public final class LivePresentationController {
               hasApplied,
               !hasBecomeVisible else { return }
         hasBecomeVisible = true
-        remainingHold = (currentPoint?.minimumVisibleTime ?? .zero)
-            + (currentPoint?.additionalHold ?? .zero)
+        var minimum = currentPoint?.minimumVisibleTime ?? .zero
+        if continuousPlayback, currentPoint?.advancePolicy == .manual, minimum == .zero {
+            let words = currentPoint?.caption.split(whereSeparator: \.isWhitespace).count ?? 0
+            minimum = .milliseconds(min(15_000, max(2_000, words * 333 + 500)))
+        }
+        remainingHold = minimum + (currentPoint?.additionalHold ?? .zero)
         didFinishHold = remainingHold <= .zero
 
         let narration = currentPoint?.narration?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -232,7 +269,26 @@ public final class LivePresentationController {
         }
     }
 
+    /// An explicit Play runs the queued explanation, including points that the
+    /// author left for manual inspection. Resume alone preserves that policy.
+    public func play() {
+        if usesStepNavigation { resume(); return }
+        continuousPlayback = true
+        if case .completed = status {
+            let sequence = displayedHistory + (currentPoint.map { [$0] } ?? []) + forwardHistory + pendingPoints
+            guard !sequence.isEmpty else { return }
+            displayedHistory.removeAll()
+            replaceCurrentAndPending(with: sequence)
+            finishInput()
+        } else if isPaused {
+            resume()
+        } else {
+            maybeAdvance(runID: currentRunID)
+        }
+    }
+
     public func next() {
+        if usesStepNavigation, currentPoint != nil, !canGoForward { return }
         pauseAtPointEnd = false
         isPaused = false
         statusBeforePause = nil
@@ -268,6 +324,7 @@ public final class LivePresentationController {
         isPaused = false
         statusBeforePause = nil
         needsViewReplay = false
+        continuousPlayback = false
         publish(.interrupted)
     }
 
@@ -282,6 +339,7 @@ public final class LivePresentationController {
         isPaused = false
         statusBeforePause = nil
         currentPoint = nil
+        continuousPlayback = false
         resetActivationState()
         publish(.interrupted)
     }
@@ -416,6 +474,10 @@ public final class LivePresentationController {
 
     private func startVisibleWork(runID: UUID) {
         guard !isPaused, let point = currentPoint, currentRunID == runID, hasBecomeVisible else { return }
+        if usesStepNavigation {
+            publish(.waitingForNext(pointID: point.id))
+            return
+        }
         startHoldTimer(runID: runID)
         startNarrationIfNeeded(point: point, runID: runID)
         maybeAdvance(runID: runID)
@@ -429,10 +491,11 @@ public final class LivePresentationController {
 
         let duration = remainingHold
         holdStartedAt = clock.now
+        let deadline = clock.now.advanced(by: duration)
         holdTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await self.clock.sleep(for: duration)
+                try await self.clock.sleep(until: deadline)
             } catch {
                 return
             }
@@ -519,6 +582,7 @@ public final class LivePresentationController {
     }
 
     private func maybeAdvance(runID: UUID) {
+        if usesStepNavigation { return }
         guard currentRunID == runID,
               !isPaused,
               let currentPoint,
@@ -533,7 +597,7 @@ public final class LivePresentationController {
             return
         }
 
-        if currentPoint.advancePolicy == .manual {
+        if currentPoint.advancePolicy == .manual, !continuousPlayback {
             publish(.waitingForNext(pointID: currentPoint.id))
         } else if !forwardHistory.isEmpty || !pendingPoints.isEmpty {
             advanceToNextPoint()

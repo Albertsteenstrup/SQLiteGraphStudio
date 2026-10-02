@@ -281,7 +281,10 @@ struct GraphInteractionGeometryTests {
         let anchors = try #require(snapshot.anchorMap.edgeAnchors(for: relation))
         let visibleRow = try #require(snapshot.anchorMap.nodeCards["posts"]?.rowFrames["column_1"])
 
-        #expect(anchors.source == CGPoint(x: visibleRow.maxX, y: visibleRow.midY))
+        // The edge clears the card's outer side while retaining the visible
+        // field's vertical position; the row itself is horizontally inset.
+        #expect(anchors.source == CGPoint(x: 348, y: visibleRow.midY))
+        #expect(anchors.source.x > visibleRow.maxX)
         #expect(anchors.target == CGPoint(x: 20_000, y: 110))
         #expect(snapshot.hitCandidates(at: CGPoint(x: 20_100, y: 110)).isEmpty)
     }
@@ -290,7 +293,8 @@ struct GraphInteractionGeometryTests {
     func detailedScrolledColumnAnchorsRespectDisplayedColumnsAndZoom() throws {
         let cache = GraphInteractionGeometryCache()
         let snapshot = cache.snapshot(
-            frames: ["posts": CGRect(x: 40, y: 40, width: 154, height: 118)],
+            frames: ["posts": CGRect(x: 40, y: 40, width: 154, height: 118),
+                     "authors": CGRect(x: 20_000, y: 40, width: 154, height: 118)],
             viewport: viewport, zoom: 0.5, isLarge: false, emphasized: [], contentRevision: 3,
             roleForNode: { _ in .expandedNode }, descriptorForNode: { _ in descriptor(columnCount: 100) },
             displayedColumnsForNode: { _ in ["column_8", "column_9"] }
@@ -300,6 +304,10 @@ struct GraphInteractionGeometryTests {
 
         #expect(Set(card.rowFrames.keys) == ["column_8", "column_9"])
         #expect(row == GraphCardLayout.rowFrame(columnIndex: 0, in: card.frame, role: .expandedNode, scale: 0.5))
+        let anchors = try #require(snapshot.anchorMap.edgeAnchors(for: edge("posts", "authors", column: "column_8")))
+        // column_8 is the first displayed row after scrolling. At half scale
+        // its midpoint is 74, rather than its original eighth-row position.
+        #expect(anchors.source == CGPoint(x: 194, y: 74))
     }
 
     @Test

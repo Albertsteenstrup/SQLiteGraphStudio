@@ -270,6 +270,12 @@ enum GraphCardLayout {
     }
 }
 
+/// Space between cards leaves room for the line leaving a key row and its
+/// cardinality, rather than merely preventing card bodies from intersecting.
+enum GraphCardClearance {
+    static let minimumGap: CGFloat = 80
+}
+
 /// Packs a chosen set of cards in caller order using their rendered sizes.
 /// Column and row extents keep long names and expanded cards from overlapping.
 enum GraphCompactPlacement {
@@ -282,7 +288,7 @@ enum GraphCompactPlacement {
         for items: [Item],
         columns requestedColumns: Int,
         around center: CGPoint,
-        columnGap: CGFloat = 100,
+        columnGap: CGFloat = 160,
         rowGap: CGFloat = 140
     ) -> [String: CGPoint] {
         var seen = Set<String>()
@@ -390,9 +396,9 @@ struct GraphCardGeometry: Sendable, Equatable {
     func anchor(for columnName: String, toward point: CGPoint) -> CGPoint? {
         guard let rowFrame = rowFrames[columnName] else { return nil }
         if point.x >= frame.midX {
-            return CGPoint(x: rowFrame.maxX, y: rowFrame.midY)
+            return CGPoint(x: frame.maxX, y: rowFrame.midY)
         }
-        return CGPoint(x: rowFrame.minX, y: rowFrame.midY)
+        return CGPoint(x: frame.minX, y: rowFrame.midY)
     }
 
     func nearestSideMidpoint(toward point: CGPoint) -> CGPoint {
@@ -442,6 +448,119 @@ struct GraphAnchorMap: Sendable, Equatable {
         let target = targetCard.anchor(for: edge.targetColumn, toward: source) ?? targetCard.nearestSideMidpoint(toward: source)
 
         return GraphEdgeAnchors(source: source, target: target)
+    }
+}
+
+/// Card-aware tangents keep vertical and return links outside their endpoint
+/// cards. Parallel foreign keys use stable lanes instead of identical curves.
+enum GraphEdgeRouting {
+    struct Curve: Sendable, Equatable {
+        let start: CGPoint
+        let control1: CGPoint
+        let control2: CGPoint
+        let end: CGPoint
+
+        func point(at t: CGFloat) -> CGPoint {
+            bezierPoint(start: start, control1: control1, control2: control2, end: end, t: t)
+        }
+    }
+
+    private struct Pair: Hashable {
+        let first: String
+        let second: String
+    }
+
+    static func laneOffsets(for edges: [GraphEdge], spacing: CGFloat = 24) -> [String: CGFloat] {
+        let groups = Dictionary(grouping: edges) { edge in
+            Pair(first: min(edge.sourceID, edge.targetID), second: max(edge.sourceID, edge.targetID))
+        }
+        var offsets: [String: CGFloat] = [:]
+        for group in groups.values {
+            let ordered = group.sorted {
+                ($0.sourceID, $0.sourceColumn, $0.targetID, $0.targetColumn, $0.id)
+                    < ($1.sourceID, $1.sourceColumn, $1.targetID, $1.targetColumn, $1.id)
+            }
+            for (index, edge) in ordered.enumerated() {
+                let orientation: CGFloat = edge.sourceID <= edge.targetID ? 1 : -1
+                offsets[edge.id] = (CGFloat(index) - CGFloat(ordered.count - 1) / 2) * spacing * orientation
+            }
+        }
+        return offsets
+    }
+
+    static func curve(anchors: GraphEdgeAnchors, sourceFrame: CGRect?, targetFrame: CGRect?,
+                      laneOffset: CGFloat = 0, isSelfLink: Bool = false) -> Curve {
+        let start = anchors.source
+        let end = anchors.target
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let distance = hypot(dx, dy)
+        let offset = max(32, min(180, distance * 0.34))
+        let sourceNormal = outwardNormal(at: start, frame: sourceFrame,
+                                         fallback: CGVector(dx: dx >= 0 ? 1 : -1, dy: 0))
+        let targetNormal = outwardNormal(at: end, frame: targetFrame,
+                                         fallback: CGVector(dx: dx >= 0 ? -1 : 1, dy: 0))
+        let perpendicular = distance > 0 ? CGVector(dx: -dy / distance, dy: dx / distance) : CGVector(dx: 0, dy: 1)
+        if isSelfLink {
+            let reach: CGFloat = max(64, offset) + abs(laneOffset)
+            let tangent = CGVector(dx: -sourceNormal.dy, dy: sourceNormal.dx)
+            return Curve(start: start,
+                         control1: CGPoint(x: start.x + sourceNormal.dx * reach - tangent.dx * 36,
+                                           y: start.y + sourceNormal.dy * reach - tangent.dy * 36),
+                         control2: CGPoint(x: end.x + targetNormal.dx * reach + tangent.dx * 36,
+                                           y: end.y + targetNormal.dy * reach + tangent.dy * 36), end: end)
+        }
+        let lane = CGVector(dx: perpendicular.dx * laneOffset, dy: perpendicular.dy * laneOffset)
+        return Curve(start: start,
+                     control1: laneAdjustedControl(at: start, normal: sourceNormal, reach: offset, lane: lane),
+                     control2: laneAdjustedControl(at: end, normal: targetNormal, reach: offset, lane: lane), end: end)
+    }
+
+    private static func laneAdjustedControl(at point: CGPoint, normal: CGVector, reach: CGFloat,
+                                            lane: CGVector) -> CGPoint {
+        let normalLane = lane.dx * normal.dx + lane.dy * normal.dy
+        let tangentLane = CGVector(dx: lane.dx - normal.dx * normalLane,
+                                   dy: lane.dy - normal.dy * normalLane)
+        // The screen-space lane direction may oppose the card's outward side.
+        // Compress that component smoothly to less than the normal reach;
+        // clamping would make several dense lanes collapse onto one curve.
+        let outwardReach = reach * (1 + 0.75 * normalLane / (reach + abs(normalLane)))
+        return CGPoint(x: point.x + normal.dx * outwardReach + tangentLane.dx,
+                       y: point.y + normal.dy * outwardReach + tangentLane.dy)
+    }
+
+    private static func outwardNormal(at point: CGPoint, frame: CGRect?, fallback: CGVector) -> CGVector {
+        guard let frame, !frame.isNull, !frame.isEmpty else { return fallback }
+        let sides: [(CGFloat, CGVector)] = [
+            (abs(point.x - frame.minX), CGVector(dx: -1, dy: 0)),
+            (abs(point.x - frame.maxX), CGVector(dx: 1, dy: 0)),
+            (abs(point.y - frame.minY), CGVector(dx: 0, dy: -1)),
+            (abs(point.y - frame.maxY), CGVector(dx: 0, dy: 1)),
+        ]
+        return sides.min { $0.0 < $1.0 }!.1
+    }
+}
+
+/// Endpoint labels stay beside their line, outside cards and other labels.
+/// A crowded endpoint omits its duplicate mark rather than stacking unreadable
+/// stars and ones; hovering one relation still exposes its own cardinality.
+enum GraphCardinalityLabelPlacement {
+    static let labelSize = CGSize(width: 14, height: 16)
+
+    static func position(on curve: GraphEdgeRouting.Curve, atSource: Bool,
+                         cardFrames: [CGRect], occupied: inout [CGRect]) -> CGPoint? {
+        let samples: [CGFloat] = atSource ? [0.16, 0.22, 0.28, 0.34, 0.40] : [0.84, 0.78, 0.72, 0.66, 0.60]
+        for t in samples {
+            let point = curve.point(at: t)
+            let rect = CGRect(x: point.x - labelSize.width / 2, y: point.y - labelSize.height / 2,
+                              width: labelSize.width, height: labelSize.height)
+            let clearance = rect.insetBy(dx: -3, dy: -3)
+            guard !cardFrames.contains(where: { $0.intersects(clearance) }),
+                  !occupied.contains(where: { $0.intersects(clearance) }) else { continue }
+            occupied.append(rect)
+            return point
+        }
+        return nil
     }
 }
 

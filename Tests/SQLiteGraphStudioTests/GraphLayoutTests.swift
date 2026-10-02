@@ -108,6 +108,33 @@ struct GraphLayoutTests {
     }
 
     @Test
+    func crowdedCompactLayoutReservesTheRenderedPreviewCardExtents() {
+        let nodes = (0..<29).map {
+            GraphNode(id: "evidence_\($0)", title: "evidence_\($0)", isEditable: false)
+        }
+        let graph = SchemaGraph(nodes: nodes, edges: (1..<nodes.count).map {
+            GraphEdge(id: "support_\($0)", sourceID: nodes[$0].id, targetID: nodes[0].id,
+                      sourceColumn: "claim_id", targetColumn: "id")
+        })
+        let size = CGSize(width: 440, height: 164)
+        let layout = GraphLayoutModel()
+        layout.reset(for: graph)
+        // Size changes can happen after a manual arrangement, without a physics pass.
+        // Collision resolution must still reserve the real card extents.
+        layout.stabilize(graph: graph, presentation: .compact, descriptorLookup: nil,
+                         nodeSizeLookup: { _ in size }, maxIterations: 0)
+
+        let frames = nodes.map { node in
+            let center = layout.position(for: node.id)
+            return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                          width: size.width, height: size.height)
+        }
+        for index in frames.indices {
+            #expect(!frames.prefix(index).contains { $0.insetBy(dx: -30, dy: -30).intersects(frames[index]) })
+        }
+    }
+
+    @Test
     func restoredSnapshotReusesSavedPositionsAndPins() {
         let graph = SchemaGraph(
             nodes: [
@@ -214,13 +241,14 @@ struct GraphLayoutTests {
         }
 
         let graph = SchemaGraph(nodes: nodes, edges: edges)
+        let cardSize = CGSize(width: 280, height: 46)
         let layout = GraphLayoutModel()
         layout.reset(for: graph, presentation: .compact, descriptorLookup: nil)
         layout.stabilize(
             graph: graph,
             presentation: .compact,
             descriptorLookup: nil,
-            nodeSizeLookup: nil,
+            nodeSizeLookup: { _ in cardSize },
             maxIterations: 260
         )
 
@@ -233,8 +261,35 @@ struct GraphLayoutTests {
         let shorterAxis = max(min(width, height), 1)
 
         #expect(longerAxis / shorterAxis <= 2.25)
-        #expect(width <= 3_200)
-        #expect(height <= 3_200)
+        let frames = nodes.map { node -> CGRect in
+            let center = positions[node.id]!
+            return CGRect(x: center.x - cardSize.width / 2, y: center.y - cardSize.height / 2,
+                          width: cardSize.width, height: cardSize.height)
+        }
+        for index in frames.indices {
+            #expect(!frames.prefix(index).contains { $0.intersects(frames[index]) })
+        }
+    }
+
+    @Test
+    func crowdedCompactStabilizationPreservesAPinnedManualArrangement() {
+        let nodes = (0..<70).map {
+            GraphNode(id: "table_\($0)", title: "table_\($0)", isEditable: false)
+        }
+        let graph = SchemaGraph(nodes: nodes, edges: [])
+        let savedPositions = Dictionary(uniqueKeysWithValues: nodes.enumerated().map {
+            ($0.element.id, CGPoint(x: 0, y: CGFloat($0.offset * 130)))
+        })
+        let fixedID = nodes[0].id
+        let snapshot = GraphLayoutSnapshot(positions: savedPositions,
+                                          pinnedPositions: [fixedID: savedPositions[fixedID]!])
+        let layout = GraphLayoutModel()
+        layout.restore(snapshot, for: graph, presentation: .compact, descriptorLookup: nil)
+        layout.stabilize(graph: graph, presentation: .compact, descriptorLookup: nil,
+                         nodeSizeLookup: { _ in CGSize(width: 280, height: 46) }, maxIterations: 0)
+
+        #expect(layout.allPositions(for: graph) == savedPositions)
+        #expect(layout.snapshot(for: graph).pinnedPositions[fixedID] == savedPositions[fixedID])
     }
 
     @Test
@@ -268,12 +323,25 @@ struct GraphLayoutTests {
             maxIterations: 260
         )
 
-        let points = layout.allPositions(for: graph).values
+        let positions = layout.allPositions(for: graph)
+        let points = positions.values
         let width = (points.map(\.x).max() ?? 0) - (points.map(\.x).min() ?? 0)
         let height = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
 
-        #expect(width <= 7_000)
-        #expect(height <= 3_000)
+        #expect(max(width, height) / max(min(width, height), 1) <= 2.25)
+        let frames = nodes.map { node -> CGRect in
+            let size = GraphCardLayout.nodeSize(title: node.title, descriptor: nil, style: .collapsed)
+            let center = positions[node.id]!
+            return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                          width: size.width, height: size.height)
+        }
+        for index in frames.indices {
+            #expect(!frames.prefix(index).contains { $0.intersects(frames[index]) })
+        }
+        let metrics = layout.largeGraphLayoutMetrics
+        #expect(metrics != nil)
+        #expect(metrics!.largestPartition <= LargeGraphLayout.maximumLocalNodeCount)
+        #expect(metrics!.physicsSteps <= metrics!.partitionCount * LargeGraphLayout.maximumPhysicsIterations)
         #expect(!layout.isAnimating)
         #expect(layout.hasSettledLayout)
     }

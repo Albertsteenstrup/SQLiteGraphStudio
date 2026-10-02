@@ -227,7 +227,7 @@
   {
     "name": "studio_update_workspace",
     "title": "Update Workspace",
-    "description": "Activate the specified workspace when requested. The task must already be bound to this workspace; to switch between workspaces, resume the same context with studio_connect_context, its rotating resume_token, and the intended workspace_id first. This build supports only activate=true or activation_intent=foreground; rename and reorder are unavailable. Unsupported or no-op changes fail explicitly.",
+    "description": "Activate the specified workspace when requested. The task must already be bound to this workspace; to switch between workspaces, resume the same context with studio_connect_context, its rotating resume_token, and the intended workspace_id first. This build supports only activate=true or activation_intent=foreground; rename and reorder are unavailable. Unsupported or no-op changes fail explicitly. Include source_id and source_revision when activating a workspace from an embedded view, so changed sources fail before selection.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -270,6 +270,14 @@
         "request_id": {
           "type": "string",
           "description": "Stable idempotency key; reuse it only with identical arguments."
+        },
+        "source_id": {
+          "type": "string",
+          "description": "Optional pinned source identity; a changed source is rejected before activating the workspace."
+        },
+        "source_revision": {
+          "type": "string",
+          "description": "Optional pinned source revision; an obsolete view is rejected before activating the workspace."
         }
       },
       "additionalProperties": true,
@@ -637,7 +645,7 @@
   {
     "name": "studio_show_tables",
     "title": "Show Tables",
-    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. For a whole-model explanation, operation=all gives the domain map; then replace it with a small cross-domain set so exact table names become readable before focusing deeper. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed. For an agent-led explanation, choose the subset because it supports a specific question or claim; changing visibility alone does not explain its significance to the user.",
+    "description": "Show, add, hide or restore named tables in the schema graph and fit the visible set in the viewport. For a whole-model explanation, operation=all gives the domain map; then replace it with a small cross-domain set so exact table names become readable before focusing deeper. The returned visible_table_ids reflect the user's graph filter. For a tighter view of widely separated tables, call studio_arrange_tables with operation=compact; this changes positions without inventing a relationship edge. For a sparse subset of up to eight tables, the app temporarily compacts positions before fitting so names stay readable. Show one table alone when that is the claim, or retain only the context needed. For an agent-led explanation, choose the subset because it supports a specific question or claim; changing visibility alone does not explain its significance to the user. Use operation=all with highlight_table_ids to place a focused group in the whole model; other tables recede and subject names remain readable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -665,6 +673,13 @@
         "request_id": {
           "type": "string",
           "description": "Stable idempotency key; reuse it only with identical arguments."
+        },
+        "highlight_table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "With operation=all, keep these subjects highlighted in the full catalog. An ordinary table scope clears the highlight."
         }
       },
       "additionalProperties": true,
@@ -840,7 +855,7 @@
   {
     "name": "studio_set_camera",
     "title": "Set Camera",
-    "description": "Move the visible schema graph camera. Use mode=fit_visible to fit all currently visible tables, or set zoom (clamped to 0.2–4) and/or explicit pan_x and pan_y coordinates. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000. Do not combine fit_visible with coordinates. The camera eases to its destination by default; set transition_ms from 0 (instant) to 1200 for the intended viewing pace. Reduced Motion makes it instant. This makes the schema pane visible. Read studio_get_view until visual_state is rendered_in_foreground before describing the destination.",
+    "description": "Move the visible schema graph camera. Use mode=fit_visible to fit all currently visible tables, or set zoom (clamped to 0.2\u20134) and/or explicit pan_x and pan_y coordinates. Supply pan_x and pan_y together, each between -1,000,000 and 1,000,000. Do not combine fit_visible with coordinates. The camera eases to its destination by default; set transition_ms from 0 (instant) to 1200 for the intended viewing pace. Reduced Motion makes it instant. This makes the schema pane visible. Read studio_get_view until visual_state is rendered_in_foreground before describing the destination.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1411,6 +1426,367 @@
     }
   },
   {
+    "name": "studio_show_data_inline",
+    "title": "Show data inline",
+    "description": "Show a read-only table page or a captured query result as an embedded grid inside the conversation. Prefer this when showing row data. Provide exactly one table_id or result_id, plus this task's context_id. For tables, optionally project columns, search, filter and sort; for queries, use result_id from a completed studio_run_query job. The reader can page through rows, inspect displayed cells and see the table selection or executed SQL. Graph Studio must already be running with this task's database workspace; this tool does not launch it or change its visible panes. Migration-only sources have no row data. Hosts without MCP Apps receive bounded rows and a text preview. Query caps and clipped cells remain explicitly labelled.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "column_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 512,
+          "uniqueItems": true
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "comparison": {
+                "type": "string",
+                "enum": [
+                  "contains",
+                  "equal",
+                  "notEqual",
+                  "lessThan",
+                  "lessThanOrEqual",
+                  "greaterThan",
+                  "greaterThanOrEqual",
+                  "between",
+                  "isNull",
+                  "isNotNull"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "upper_value": {
+                "type": "string"
+              }
+            }
+          },
+          "maxItems": 100
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "ascending",
+                  "descending"
+                ]
+              }
+            }
+          },
+          "maxItems": 1
+        },
+        "search_text": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "source_revision": {
+          "type": "string",
+          "description": "Exact source revision returned by a previous page; prevents paging a refreshed source."
+        },
+        "result_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact immutable result_id from a completed studio_run_query job. This tool never executes SQL."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "table_id"
+          ],
+          "not": {
+            "required": [
+              "result_id"
+            ]
+          }
+        },
+        {
+          "required": [
+            "result_id"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "table_id"
+                ]
+              },
+              {
+                "required": [
+                  "source_id"
+                ]
+              },
+              {
+                "required": [
+                  "source_revision"
+                ]
+              },
+              {
+                "required": [
+                  "column_ids"
+                ]
+              },
+              {
+                "required": [
+                  "filters"
+                ]
+              },
+              {
+                "required": [
+                  "sort"
+                ]
+              },
+              {
+                "required": [
+                  "search_text"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Show data inline",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "resourceUri": "ui://sqlite-graph-studio/data.html"
+      },
+      "ui/resourceUri": "ui://sqlite-graph-studio/data.html"
+    }
+  },
+  {
+    "name": "studio_data_page",
+    "title": "Data page",
+    "description": "Called by the embedded data view to read another bounded page into the same card. Uses the same table or captured-result selection and exact context_id/workspace/source as studio_show_data_inline. Does not create another view or alter native panes, and never executes SQL. Intended for app controls; models should use studio_show_data_inline.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "column_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 512,
+          "uniqueItems": true
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "comparison": {
+                "type": "string",
+                "enum": [
+                  "contains",
+                  "equal",
+                  "notEqual",
+                  "lessThan",
+                  "lessThanOrEqual",
+                  "greaterThan",
+                  "greaterThanOrEqual",
+                  "between",
+                  "isNull",
+                  "isNotNull"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "upper_value": {
+                "type": "string"
+              }
+            }
+          },
+          "maxItems": 100
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "column_name": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "ascending",
+                  "descending"
+                ]
+              }
+            }
+          },
+          "maxItems": 1
+        },
+        "search_text": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "source_revision": {
+          "type": "string",
+          "description": "Exact source revision returned by a previous page; prevents paging a refreshed source."
+        },
+        "result_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact immutable result_id from a completed studio_run_query job. This tool never executes SQL."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "table_id"
+          ],
+          "not": {
+            "required": [
+              "result_id"
+            ]
+          }
+        },
+        {
+          "required": [
+            "result_id"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "table_id"
+                ]
+              },
+              {
+                "required": [
+                  "source_id"
+                ]
+              },
+              {
+                "required": [
+                  "source_revision"
+                ]
+              },
+              {
+                "required": [
+                  "column_ids"
+                ]
+              },
+              {
+                "required": [
+                  "filters"
+                ]
+              },
+              {
+                "required": [
+                  "sort"
+                ]
+              },
+              {
+                "required": [
+                  "search_text"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Data page",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "visibility": [
+          "app"
+        ]
+      }
+    }
+  },
+  {
     "name": "studio_fetch_rows",
     "title": "Fetch Rows",
     "description": "Read a bounded page from a named table, optionally with typed filters and one sort column. Supply column_ids to project only those values at the database boundary; declared key columns may also be read for identity but are not returned unless requested. Materialized pages reject a cell above 256 KiB, more than 512 columns, or more than 8 MiB of data; narrow the projection or inspect one cell in bounded slices. The current app uses offset paging; stable cursors, exact counts and caller-selected byte budgets are not available.",
@@ -1792,7 +2168,7 @@
   {
     "name": "studio_run_query",
     "title": "Run Query",
-    "description": "Start one read-only SELECT, VALUES, or WITH query as a cancellable job and return promptly with job_id. Poll studio_get_job for queued/running/completed/failed/cancelled status; on completion it returns result_id and a small preview capped at 10 rows, 20 columns, and 256 text characters per cell. Materialization rejects a cell above 256 KiB, more than 512 columns, or more than 8 MiB of data; select fewer fields/rows or use SQL to return a bounded expression. Call studio_show_query_results with result_id when the user should see the result grid, and studio_fetch_query_results for more bounded pages. Use row_limit (maximum 500) and timeout_seconds (1–30, default 30); timeout_ms remains an accepted legacy timeout input. Use studio_cancel_job when the user changes direction. Cancelled or stale-source queries never publish a result.",
+    "description": "Start one read-only SELECT, VALUES, or WITH query as a cancellable job and return promptly with job_id. Poll studio_get_job for queued/running/completed/failed/cancelled status; on completion it returns result_id and a small preview capped at 10 rows, 20 columns, and 256 text characters per cell. Materialization rejects a cell above 256 KiB, more than 512 columns, or more than 8 MiB of data; select fewer fields/rows or use SQL to return a bounded expression. Prefer studio_show_data_inline with result_id to show the captured grid in the conversation; use studio_show_query_results when the user wants the native app, and studio_fetch_query_results for more bounded pages. Use row_limit (maximum 500) and timeout_seconds (1\u201330, default 30); timeout_ms remains an accepted legacy timeout input. Use studio_cancel_job when the user changes direction. Cancelled or stale-source queries never publish a result.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1949,7 +2325,7 @@
   {
     "name": "studio_get_job",
     "title": "Get Job",
-    "description": "Inspect a query, export, verified speech-asset install, or short speech-test job started by this coding task context. Query jobs return queued/running/completed/failed/cancelled; completion includes result_id and a small bounded result_preview. Call studio_show_query_results to put that captured result in the native grid, or studio_fetch_query_results for another page. Query results are discarded if their source changes or workspace closes. Export and speech jobs include progress and errors. Jobs are private to the creating context; workspace-scoped job details include their exact workspace_id. Speech-asset transfers are app-wide but their job receipt belongs to the creating context; transfer completion does not mean Pocket TTS is ready until model startup succeeds.",
+    "description": "Inspect a query, export, verified speech-asset install, or short speech-test job started by this coding task context. Query jobs return queued/running/completed/failed/cancelled; completion includes result_id and a small bounded result_preview. Prefer studio_show_data_inline to show that captured result in the conversation; use studio_show_query_results for the native grid, or studio_fetch_query_results for another page. Query results are discarded if their source changes or workspace closes. Export and speech jobs include progress and errors. Jobs are private to the creating context; workspace-scoped job details include their exact workspace_id. Speech-asset transfers are app-wide but their job receipt belongs to the creating context; transfer completion does not mean Pocket TTS is ready until model startup succeeds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2013,7 +2389,7 @@
   {
     "name": "studio_start_presentation",
     "title": "Start Presentation",
-    "description": "Start a live visual explanation in the selected workspace with caption/narration points and supported graph actions. For a requested explanation, use a narrated presentation by default unless the user or saved preference asks for silence; view actions alone do not speak. Choose one focused point or a longer sequence according to the question and available evidence: orient first when useful, then deepen through schema, code, relationships, or bounded rows; for a value question, show the decisive data first. There is no fixed step count. Each point applies its actions and completes graph camera/focus motion before revealing its caption, starting narration, or counting viewing time. Each agent-chosen point must explain why the shown table, key, row, or result matters to the user's question. Ground that reason in inspected schema or keys, observed values, relevant code or documentation, or a clearly labeled domain interpretation; a caption that only names a table is insufficient. Match the claim to what its actions actually show; use focused points and fit/compact related tables when necessary. Add points only when the subject or evidence meaningfully changes. set_camera actions accept transition_ms from 0 to 1200 (default 420). A manual graph gesture supersedes pending motion and immediately pauses speech on a visible point; a gesture during preparation leaves the point failed for retry or revision. Text-only point hold defaults to a caption-length reading time and can be overridden in timing. narration_mode=app_default follows the saved source preference, then the global preference (enabled by default); enabled and disabled explicitly override it. Set activation_intent=foreground only for an explicit user visualization request. A background presentation waits without narration; otherwise the app keeps the currently visible workspace and audio in control. Read studio_get_presentation to verify current state. With narration enabled, caption text is spoken when a point omits narration; pass narration as an empty string only for an intentionally silent point. Set target_table_id on a point that makes a claim about one table, so the app selects it after the other actions. Use show_tables for a small legible scope and open_table for meaningful bounded values when the source contains rows. An overview point may include set_node_sizing with show_tables when field, available-row, or declared-relation differences support the claim; the new scale is rendered before that point speaks. Do not cycle through metrics without a question-relevant reason.",
+    "description": "Start an explanation exclusively for the embedded MCP view, with short captions and supported graph actions. Use studio_show_workspace_inline to display it. The reader or MCP moves through explicit Back/Next steps; the native app has no player or story reader. Local speech and timed advancement remain disabled, including for legacy narration/timing fields. Explain the rendered evidence through the coding agent's text or audio, then move the view with studio_control_presentation back/next. Choose one focused point or a longer sequence according to the question and evidence, with no fixed step count. Each point must explain why its table, key, row, or result matters, grounded in inspected schema, observed values, relevant code, or labelled interpretation. Use target_table_id for the visual subject, show_tables for a legible scope, open_table for necessary bounded values, and explicit query pane actions for query evidence. Graph-only points fill the card. Camera/focus and layout transitions settle before inline visibility is acknowledged; the native window cannot acknowledge a point. activation_intent=foreground selects the task workspace but does not activate the app. Closing, expiry or disconnect pauses the explanation without a native fallback. Read studio_get_presentation to verify point_visible before claiming evidence is shown. An intermediate show_context action with table_ids shows the full catalog and highlights that group; show_tables returns to detail.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2034,11 +2410,11 @@
               },
               "caption": {
                 "type": "string",
-                "description": "Required point caption, which the user can reveal as an optional transcript during audio playback. Keep it concise but meaningful: explain what the shown item establishes or why it matters to the user's question, based on inspected schema or keys, observed values, relevant code or documentation, or a clearly labeled domain interpretation. Merely saying 'This is the contract table' is insufficient. Do not describe UI staging or routine source limitations. If narration is omitted, this text is also spoken."
+                "description": "Required caption displayed in the embedded view. Explain what the visible evidence establishes or why it matters, based on inspected schema, observed values, code, or labelled interpretation. Keep it concise and meaningful; merely naming the table or describing UI staging is insufficient."
               },
               "narration": {
                 "type": "string",
-                "description": "Optional spoken explanation of the same question-relevant, supported claim. It may be fuller than the caption when depth helps; the app keeps player controls visible while collapsing spoken text by default. If distinct from the caption, add useful context rather than just naming the visible table. Do not narrate graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
+                "description": "Optional archived explanation text retained for saved artifacts. The presentation does not synthesize or play it; the coding agent supplies conversation text or audio."
               },
               "actions": {
                 "type": "array",
@@ -2049,7 +2425,7 @@
               },
               "timing": {
                 "type": "object",
-                "description": "Optional minimum_visible_ms, extra_hold_ms, and advance=manual. Give complex views time to inspect; do not impose a fixed slide pace. Spoken points wait for narration to finish before advancing.",
+                "description": "Legacy authored timing metadata (minimum_visible_ms, extra_hold_ms, advance). Prefer advance=manual. All embedded explanations wait for explicit reader or MCP navigation regardless of these values.",
                 "additionalProperties": true
               },
               "evidence_refs": {
@@ -2091,8 +2467,8 @@
         },
         "narration_mode": {
           "type": "string",
-          "default": "app_default",
-          "description": "Follow the saved source/global narration preference, or explicitly enable or disable speech for this presentation.",
+          "default": "disabled",
+          "description": "Compatibility setting accepted for older clients. Presentation speech is always disabled; use the coding agent's own text or audio.",
           "enum": [
             "app_default",
             "enabled",
@@ -2108,7 +2484,8 @@
           "enum": [
             "foreground",
             "background"
-          ]
+          ],
+          "description": "foreground selects this task's workspace; background preserves the current selection. Neither starts a native player or activates the app window."
         }
       },
       "additionalProperties": true,
@@ -2158,11 +2535,11 @@
               },
               "caption": {
                 "type": "string",
-                "description": "Required point caption, which the user can reveal as an optional transcript during audio playback. Keep it concise but meaningful: explain what the shown item establishes or why it matters to the user's question, based on inspected schema or keys, observed values, relevant code or documentation, or a clearly labeled domain interpretation. Merely saying 'This is the contract table' is insufficient. Do not describe UI staging or routine source limitations. If narration is omitted, this text is also spoken."
+                "description": "Required caption displayed in the embedded view. Explain what the visible evidence establishes or why it matters, based on inspected schema, observed values, code, or labelled interpretation. Keep it concise and meaningful; merely naming the table or describing UI staging is insufficient."
               },
               "narration": {
                 "type": "string",
-                "description": "Optional spoken explanation of the same question-relevant, supported claim. It may be fuller than the caption when depth helps; the app keeps player controls visible while collapsing spoken text by default. If distinct from the caption, add useful context rather than just naming the visible table. Do not narrate graph controls or source bookkeeping. When omitted and narration is enabled, the caption is spoken; an explicit empty string keeps this point silent."
+                "description": "Optional archived explanation text retained for saved artifacts. The presentation does not synthesize or play it; the coding agent supplies conversation text or audio."
               },
               "actions": {
                 "type": "array",
@@ -2173,7 +2550,7 @@
               },
               "timing": {
                 "type": "object",
-                "description": "Optional minimum_visible_ms, extra_hold_ms, and advance=manual. Give complex views time to inspect; do not impose a fixed slide pace. Spoken points wait for narration to finish before advancing.",
+                "description": "Legacy authored timing metadata (minimum_visible_ms, extra_hold_ms, advance). Prefer advance=manual. All embedded explanations wait for explicit reader or MCP navigation regardless of these values.",
                 "additionalProperties": true
               },
               "evidence_refs": {
@@ -2239,7 +2616,7 @@
   {
     "name": "studio_control_presentation",
     "title": "Control Presentation",
-    "description": "Pause, continue, go back/next, repeat, end or return from an active presentation. The `set_speed` control returns TOOL_UNAVAILABLE in this app build.",
+    "description": "Control this task's embedded explanation with back/next, repeat to restore a changed point, pause, continue, end or return. Each point waits for explicit navigation. Continue resumes or restarts steps without timed playback or local speech. Cleanup remains available through MCP even though the embedded card has no Play or End buttons. The native app has no presentation controls. set_speed returns TOOL_UNAVAILABLE.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2282,7 +2659,7 @@
   {
     "name": "studio_get_presentation",
     "title": "Get Presentation",
-    "description": "Read the current point, playback status and rendered visibility for a presentation created by this coding task context in its bound workspace. Use this before claiming a point was shown or heard, and after reconnecting or revising playback. This build does not provide history cursors or separate pending-point pagination.",
+    "description": "Read the current embedded point, step number/count, status and acknowledged rendered visibility for this task's explanation. Check point_visible before claiming it was shown. Presentations always use navigation_mode=steps and presentation_surface=embedded with narration disabled. Native window exposure alone cannot make a point visible. History cursors and separate pending-point pagination are unavailable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2797,10 +3174,16 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "path": { "type": "string", "minLength": 1, "maxLength": 4096,
-                  "description": "Path to a saved .sgreview comparison or .sgpreview proposal." }
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Path to a saved .sgreview comparison or .sgpreview proposal."
+        }
       },
-      "required": ["path"],
+      "required": [
+        "path"
+      ],
       "additionalProperties": false
     },
     "annotations": {
@@ -2835,26 +3218,52 @@
           "items": {
             "type": "object",
             "properties": {
-              "set": { "type": "integer", "minimum": 0, "description": "Zero-based change-set index from the review." },
+              "set": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based change-set index from the review."
+              },
               "paragraphs": {
-                "type": "array", "minItems": 1, "maxItems": 8,
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
                 "items": {
-                  "type": "array", "minItems": 1, "maxItems": 40,
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 40,
                   "items": {
                     "type": "object",
                     "properties": {
-                      "text": { "type": "string", "minLength": 1, "maxLength": 500 },
-                      "table": { "type": "string", "description": "Exact table ID for a clickable table or field reference." },
-                      "field": { "type": "string", "description": "Exact field name; requires table." },
-                      "relation": { "type": "string", "description": "Exact relation ID; cannot be combined with table or field." }
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      },
+                      "table": {
+                        "type": "string",
+                        "description": "Exact table ID for a clickable table or field reference."
+                      },
+                      "field": {
+                        "type": "string",
+                        "description": "Exact field name; requires table."
+                      },
+                      "relation": {
+                        "type": "string",
+                        "description": "Exact relation ID; cannot be combined with table or field."
+                      }
                     },
-                    "required": ["text"],
+                    "required": [
+                      "text"
+                    ],
                     "additionalProperties": false
                   }
                 }
               }
             },
-            "required": ["set", "paragraphs"],
+            "required": [
+              "set",
+              "paragraphs"
+            ],
             "additionalProperties": false
           }
         },
@@ -3119,7 +3528,7 @@
   {
     "name": "studio_save_explanation",
     "title": "Save Explanation",
-    "description": "Save only points that have actually appeared in the live presentation, and only when the user requests a saved explanation. The artifact captures a credential-free schema snapshot, captions and saved words, point timing/actions/evidence references, and only rows named in included_result_scope. Set result_ids to query-result IDs whose current displayed page was used; set table_pages to already loaded table pages with exact table_id/offset/limit. This build captures at most 1,000 rows, clips long cell text, records omissions, and never stores SQL or a source locator. The artifact is atomic and never overwrites an existing file. Offline replay applies saved graph/layout/table selections and shows captured table/query pages referenced by each point; unreferenced saved pages remain available in the manual historical view. Replay never contacts the original source.",
+    "description": "Save only points that have actually appeared in the live presentation, and only when the user requests a saved explanation. The artifact captures a credential-free schema snapshot, captions and saved words, point timing/actions/evidence references, and only rows named in included_result_scope. Set result_ids to query-result IDs whose current displayed page was used; set table_pages to already loaded table pages with exact table_id/offset/limit. This build captures at most 1,000 rows, clips long cell text, records omissions, and never stores SQL or a source locator. The artifact is atomic and never overwrites an existing file. Offline replay applies saved graph/layout/table selections and shows captured table/query pages referenced by each point; unreferenced saved pages remain inspectable through MCP artifact tools. Replay never contacts the original source.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3202,7 +3611,7 @@
   {
     "name": "studio_open_explanation",
     "title": "Open Explanation",
-    "description": "Open a saved .sgexplanation into a dedicated offline tab. No source is reopened or queried, even if its original file still exists. start_mode=manual shows the captured graph, saved rows, result values, and point list without starting playback; start_mode=replay plays saved captions/words while applying supported graph/layout/table selections and showing only captured table/query pages referenced by each point. Other saved pages remain available in the manual historical view. A missing capture is labelled; replay never fetches fresh data. The capture time, source-identity hash, and historical status remain visible. create_workspace must be true or omitted; an existing live tab is never replaced.",
+    "description": "Import a saved .sgexplanation into a dedicated offline model for embedded MCP use. Native file opening, story reading and story-tab restoration are unavailable. No original source is reopened or queried. start_mode=replay exposes saved captions as manual embedded steps with supported graph/layout/table actions and only captured table/query pages referenced by each point. No local speech or automatic playback. start_mode=manual returns the saved point list and captured model for MCP inspection without starting steps. Other saved pages remain inspectable through studio_inspect_artifact. Captured data is labelled historical and missing evidence never fetches fresh data. create_workspace must be true or omitted; an existing live tab is never replaced.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3423,7 +3832,7 @@
   {
     "name": "studio_configure_speech",
     "title": "Configure Speech",
-    "description": "Enable or disable Graph Studio narration with settings.enabled (boolean) or settings.narration (enabled/disabled). Scope may be general, source, or temporary; durable=false also makes the choice temporary. General and source choices apply to future presentations using narration_mode=app_default. A temporary choice returns narration_mode_for_next_presentation for the agent to pass explicitly. This build uses streamed macOS speech immediately and prefers verified Pocket TTS after its assets and worker are ready. Voice, provider, and speed selection return TOOL_UNAVAILABLE; this tool does not download a model or capture a microphone.",
+    "description": "Retain a legacy narration preference for compatibility. Embedded explanations always have local narration disabled and use the coding agent's text/audio. This call cannot enable a native player or timed presentation. Voice/provider/speed changes remain unavailable. Explicit studio_test_speech diagnostics are separate.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3565,6 +3974,189 @@
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
+    }
+  },
+  {
+    "name": "studio_show_workspace_inline",
+    "description": "Show a live native Graph Studio graph inside the conversation, using a dedicated embedded rendering surface. Use Back/Next step navigation, controlled by the reader or studio_control_presentation. Embedded steps wait for explicit movement and suppress local speech, so Codex audio can explain them. There are no Play or End buttons; closing the card releases its view lease. Graph-only points use the whole card; rows appear only for points with an open_table action or an explicitly requested query pane. Pan, zoom, fit and select tables directly in the card. Use this task's exact context_id and selected workspace. Showing the view does not activate a window or modify the database. Source or workspace changes retain the labelled last frame and stop following. The Graph Studio icon in the header opens this exact workspace in the native app. Explanations and saved-story navigation exist only here, with a current/total counter and natural transitions. Card release, expiry or disconnect pauses the explanation without displaying native controls. Click a node to select it, double-click to expand, drag it to separate relationships, and use Context to highlight the current group in the full catalog and return.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "source_revision": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 1200,
+          "default": 960
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "resourceUri": "ui://sqlite-graph-studio/workspace.html"
+      },
+      "ui/resourceUri": "ui://sqlite-graph-studio/workspace.html"
+    }
+  },
+  {
+    "name": "studio_workspace_frame",
+    "description": "Update the existing embedded native graph and optional point data. App-only: models use studio_show_workspace_inline. The viewer can pan, zoom, fit and select in its own native graph surface; inspection pauses the embedded explanation at its current step. The native app never displays a player. Frames and acknowledgements are pinned to this task, source, workspace and viewer. The workspace surface remains available for older clients. No screen capture or database writes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "source_revision": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 1200,
+          "default": 960
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "after_frame_revision": {
+          "type": "string"
+        },
+        "viewer_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "inline_view_state": {
+          "type": "string",
+          "enum": [
+            "start",
+            "acknowledged",
+            "released"
+          ]
+        },
+        "rendered_point_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maximum_frame_age_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5000,
+          "default": 0,
+          "description": "Reuse a recent frame only while the source, graph surface, point and data revision are unchanged."
+        },
+        "defer_until_ready": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep the decoded frame while native drawing finishes the current point, with a bounded snapshot fallback."
+        },
+        "render_surface": {
+          "type": "string",
+          "enum": [
+            "graph",
+            "workspace"
+          ],
+          "default": "workspace"
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 240,
+          "maximum": 720,
+          "default": 440
+        },
+        "graph_actions": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "click",
+                  "transform",
+                  "fit",
+                  "select",
+                  "expand",
+                  "move",
+                  "context"
+                ]
+              },
+              "x": {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              },
+              "y": {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              },
+              "tx": {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              },
+              "ty": {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000
+              },
+              "table_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "ui": {
+        "visibility": [
+          "app"
+        ]
+      }
     }
   }
 ]

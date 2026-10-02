@@ -18,8 +18,6 @@ final class StudioAutomationCoordinator {
         let workspaceID: UUID
         let title: String
         let controller: LivePresentationController
-        let narrator: StudioSpeechNarrator?
-        let narrationEnabled: Bool
         var returnCheckpointID: String?
         var returnWorkspaceID: UUID?
         var revision = 1
@@ -32,18 +30,16 @@ final class StudioAutomationCoordinator {
         var replayOmissions: [UUID: [String]] = [:]
         var displayedPointOrder: [UUID] = []
         var displayedPointIDs: Set<UUID> = []
-        var captionRendered: Set<UUID> = []
         var requiredRenderRevision: [UUID: Int] = [:]
 
-        init(ownerClientID: String, ownerContextID: String, workspaceID: UUID, title: String, narrator: StudioSpeechNarrator?) {
+        init(ownerClientID: String, ownerContextID: String, workspaceID: UUID, title: String) {
             id = "presentation:" + UUID().uuidString
             self.ownerClientID = ownerClientID
             self.ownerContextID = ownerContextID
             self.workspaceID = workspaceID
             self.title = title
-            self.narrator = narrator
-            narrationEnabled = narrator != nil
-            controller = LivePresentationController(narrator: narrator)
+            controller = LivePresentationController()
+            controller.enableStepNavigation()
         }
     }
 
@@ -70,6 +66,7 @@ final class StudioAutomationCoordinator {
         let selected: Set<String>
         let expanded: Set<String>
         let visible: Set<String>?
+        let contextTables: Set<String>
         let zoom: CGFloat
         let pan: CGSize
         let positions: GraphLayoutSnapshot
@@ -233,6 +230,43 @@ final class StudioAutomationCoordinator {
     private var presentations: [String: PresentationState] = [:]
     private var presentationTasks: [String: Task<Void, Never>] = [:]
     private var currentPresentationIDByWorkspace: [UUID: String] = [:]
+    private struct InlineFrame {
+        let revision: String
+        let viewRevision: String
+        var presentationID: String?
+        var presentationRevision: Int?
+        let pointID: UUID?
+        let externalPointID: String?
+        let ready: Bool
+        let renderedRevision: Int?
+        let capturedAt: ContinuousClock.Instant
+        let bounds: CGRect?
+        let logicalWidth: Int
+        let width: Int
+        let height: Int
+        let appearance: NSAppearance.Name?
+        var surface = "workspace"
+        var rendererRevision: Int?
+        var dataRevision: String?
+    }
+    private struct InlineViewer {
+        let id: String
+        let contextID: String
+        let clientID: String
+        let sourceID: String
+        let sourceRevision: String
+        var expiresAt: ContinuousClock.Instant
+        var usesStepNavigation = false
+        var servedFrame: InlineFrame?
+        var displayedFrame: InlineFrame?
+        var renderWaitRevision: String?
+        var renderWaitSince: ContinuousClock.Instant?
+    }
+    private var inlineViewers: [UUID: InlineViewer] = [:]
+    @ObservationIgnored private var embeddedGraphRenderers: [UUID: WorkspaceGraphRenderer] = [:]
+    private var migrationRevisionDefinitions: [UUID: (graphRevision: Int, source: String, version: String, parts: [String])] = [:]
+    @ObservationIgnored private var inlineViewerExpiryTasks: [UUID: Task<Void, Never>] = [:]
+    private let inlineViewerLifetime: Duration
     private var checkpoints: [String: ViewCheckpoint] = [:]
     private var receipts: [String: Receipt] = [:]
     private var inFlightReceipts: [String: String] = [:]
@@ -242,6 +276,7 @@ final class StudioAutomationCoordinator {
     private let speechAssetManager = PocketTTSAssetDownloadManager()
     private var annotationSourceByWorkspace: [UUID: String] = [:]
     @ObservationIgnored private var visibilityObservers: [NSObjectProtocol] = []
+    let workspaceFrameCaptures = WorkspaceFrameCaptureRegistry()
     private static let contextRetention: TimeInterval = 24 * 60 * 60
     private static let maximumRetainedContexts = 128
     private static let maximumReceipts = 4_096
@@ -261,14 +296,18 @@ final class StudioAutomationCoordinator {
 
     init(
         workspaces: WorkspaceTabController,
+        inlineViewerLifetime: Duration = .seconds(12),
         openDocument: @escaping @MainActor (AppSession, URL) async -> Void = { session, url in
             await session.openDocument(url: url)
         }
     ) {
         self.workspaces = workspaces
+        self.inlineViewerLifetime = inlineViewerLifetime
         self.openDocument = openDocument
         workspaces.onActiveTabChanged = { [weak self] activeID in
-            self?.pausePresentationsOutside(activeID)
+            guard let self else { return }
+            for id in Array(self.inlineViewers.keys) where id != activeID { self.clearInlineViewer(id) }
+            self.pausePresentationsOutside(activeID)
         }
         workspaces.onTabClosed = { [weak self] closedID in
             self?.releaseWorkspace(closedID)
@@ -280,7 +319,9 @@ final class StudioAutomationCoordinator {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, !self.hasVisibleAppWindow else { return }
-                    self.pausePresentationsOutside(nil)
+                    let inlineWorkspace = self.workspaces.tabs.first(where: { $0.id == self.workspaces.activeTabID })
+                        .flatMap { self.inlineViewer(in: $0) == nil ? nil : $0.id }
+                    self.pausePresentationsOutside(inlineWorkspace)
                     self.stopSpeechTestsForHiddenWindow()
                 }
             })
@@ -293,7 +334,7 @@ final class StudioAutomationCoordinator {
         return app.windows.contains {
             // AppKit can report an active SwiftUI window as occluded while a
             // local agent's host is switching focus. An active window is still
-            // safe to narrate; inactive windows must be genuinely exposed.
+            // exposed for native inspection; inactive windows must be genuinely visible.
             $0.isVisible && !$0.isMiniaturized && (app.isActive || $0.occlusionState.contains(.visible))
         }
     }
@@ -328,6 +369,8 @@ final class StudioAutomationCoordinator {
     }
 
     private func releaseWorkspace(_ workspaceID: UUID) {
+        migrationRevisionDefinitions.removeValue(forKey: workspaceID)
+        clearInlineViewer(workspaceID)
         workspaces.tabs.first(where: { $0.id == workspaceID })?.session.selectHistoricalExplanationPoint(externalPointID: nil)
         workspaceOwners.removeValue(forKey: workspaceID)
         cancelQueryJobs(workspaceID: workspaceID)
@@ -374,75 +417,302 @@ final class StudioAutomationCoordinator {
         }
     }
 
-    var activePresentation: LivePresentationController? {
-        guard let state = currentPresentationState,
-              state.controller.currentPoint != nil,
-              state.controller.status != .interrupted else { return nil }
-        return state.controller
+    private func inlineViewer(in tab: WorkspaceTab) -> InlineViewer? {
+        guard workspaces.activeTabID == tab.id, let viewer = inlineViewers[tab.id],
+              viewer.expiresAt > .now,
+              workspaceOwners[tab.id] == viewer.contextID,
+              viewer.sourceID == sourceID(tab), viewer.sourceRevision == sourceRevision(tab) else { return nil }
+        return viewer
     }
 
-    var activePresentationTitle: String? {
-        activePresentation == nil ? nil : currentPresentationState?.title
+    private func clearInlineViewer(_ workspaceID: UUID) {
+        inlineViewerExpiryTasks.removeValue(forKey: workspaceID)?.cancel()
+        embeddedGraphRenderers.removeValue(forKey: workspaceID)?.close()
+        guard inlineViewers.removeValue(forKey: workspaceID) != nil else { return }
+        if let id = currentPresentationIDByWorkspace[workspaceID], let state = presentations[id] {
+            state.controller.pause()
+            state.revision += 1
+        }
     }
 
-    var activePresentationID: String? {
-        activePresentation == nil ? nil : currentPresentationState?.id
+    private func renewInlineViewer(_ args: [String: Any], tab: WorkspaceTab, context: Context, clientID: String) throws -> Bool {
+        let id = string(args, "viewer_id") ?? "legacy:\(context.id)"
+        guard !id.isEmpty, id.count <= 128 else {
+            throw Failure(code: "INVALID_ARGUMENT", detail: "viewer_id must contain between 1 and 128 characters.")
+        }
+        let previous = inlineViewer(in: tab)
+        if let previous, previous.id != id, string(args, "inline_view_state") != "start" {
+            throw Failure(code: "VIEW_SUPERSEDED", detail: "A newer embedded view is following this workspace. This card will keep its last frame.")
+        }
+        let changed = previous?.id != id
+        var viewer = changed ? InlineViewer(id: id, contextID: context.id, clientID: clientID,
+                                            sourceID: sourceID(tab), sourceRevision: sourceRevision(tab), expiresAt: .now)
+            : previous!
+        viewer.expiresAt = .now.advanced(by: inlineViewerLifetime)
+        if let surface = string(args, "render_surface") { viewer.usesStepNavigation = surface == "graph" }
+        inlineViewers[tab.id] = viewer
+        if viewer.usesStepNavigation,
+           let state = currentPresentationIDByWorkspace[tab.id].flatMap({ presentations[$0] }) {
+            let wasCompleted = state.controller.status == .completed
+            if state.controller.enableStepNavigation() {
+                state.revision += 1
+                if wasCompleted { startPresentationLoop(state) }
+            }
+        }
+        inlineViewerExpiryTasks[tab.id]?.cancel()
+        inlineViewerExpiryTasks[tab.id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do { try await Task.sleep(for: self.inlineViewerLifetime) } catch { return }
+            guard !Task.isCancelled, let active = self.inlineViewers[tab.id],
+                  active.id == id, active.expiresAt <= .now else { return }
+            self.clearInlineViewer(tab.id)
+        }
+        return changed
     }
 
-    private var currentPresentationState: PresentationState? {
-        guard let workspaceID = workspaces.activeTabID,
-              let id = currentPresentationIDByWorkspace[workspaceID] else { return nil }
-        return presentations[id]
+    @discardableResult
+    private func acknowledgeInlineFrame(_ args: [String: Any], tab: WorkspaceTab) -> Bool {
+        guard var viewer = inlineViewer(in: tab), let frame = viewer.servedFrame,
+              string(args, "after_frame_revision") == frame.revision,
+              frame.viewRevision == viewRevision(tab) else { return false }
+        if frame.surface == "graph", !isCurrentEmbeddedFrame(frame, in: tab) { return false }
+        // Modern viewers acknowledge the caption as well as the decoded image.
+        // Older cards can still acknowledge their native frame while upgrading.
+        if frame.pointID != nil && !viewer.id.hasPrefix("legacy:"),
+           string(args, "rendered_point_id") != frame.externalPointID { return false }
+        viewer.displayedFrame = frame
+        inlineViewers[tab.id] = viewer
+        if let id = frame.presentationID, let state = presentations[id] { maybeMarkPointVisible(state) }
+        return true
+    }
+
+    private func inlinePointReady(_ state: PresentationState, in tab: WorkspaceTab) -> Bool {
+        guard let point = state.controller.currentPoint, state.controller.hasAppliedCurrentPoint else { return false }
+        if let frame = inlineViewer(in: tab)?.servedFrame, frame.surface == "graph" {
+            return frame.ready && frame.pointID == point.id && frame.viewRevision == viewRevision(tab)
+                && isCurrentEmbeddedFrame(frame, in: tab)
+        }
+        return state.requiredRenderRevision[point.id].map { tab.session.automationRenderedViewRevision == $0 } ?? true
+    }
+
+    private func embeddedWorkspaceFrame(_ args: [String: Any], tab: WorkspaceTab, context: Context,
+                                        width: Int, maximumAge: Int) async throws -> [String: Any] {
+        let height = args["height"] as? Int ?? 440
+        guard (240...720).contains(height) else { throw Failure(code: "INVALID_ARGUMENT", detail: "Graph height must be between 240 and 720 points.") }
+        let actions = args["graph_actions"] as? [[String: Any]] ?? []
+        guard actions.count <= 8, args["graph_actions"] == nil || args["graph_actions"] is [[String: Any]] else {
+            throw Failure(code: "INVALID_ARGUMENT", detail: "Provide at most eight graph actions.")
+        }
+        do { for action in actions { try WorkspaceGraphRenderer.validate(action) } }
+        catch { throw Failure(code: "INVALID_ARGUMENT", detail: "The embedded graph action is invalid.") }
+        let validTableIDs = Set(tab.session.graph.nodes.map(\.id))
+        guard actions.allSatisfy({ action in
+            (action["table_id"] as? String).map { validTableIDs.contains($0) } ?? true
+        }) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "An embedded action names a table outside this source.") }
+        let renderer: WorkspaceGraphRenderer
+        if let existing = embeddedGraphRenderers[tab.id] { renderer = existing }
+        else {
+            renderer = try WorkspaceGraphRenderer()
+            embeddedGraphRenderers[tab.id] = renderer
+        }
+        let viewerID = inlineViewer(in: tab)?.id
+        func payload(_ previous: InlineFrame, cached: Bool = false) -> [String: Any] {
+            var result = viewPayload(tab)
+            result["format"] = "sqlite-graph-studio/workspace-view"
+            result["render_surface"] = "graph"
+            result["title"] = tab.title
+            result["width"] = previous.width
+            result["height"] = previous.height
+            result["frame_revision"] = previous.revision
+            result["unchanged"] = true
+            result["image_cached"] = cached
+            result["visible_table_ids"] = renderer.visibleTables
+            result["rendered_table_ids"] = renderer.nodes.compactMap { $0["table_id"] as? String }
+            result["selected_table_ids"] = renderer.selection
+            result["expanded_table_ids"] = renderer.expandedTables
+            result["graph"] = ["width": renderer.size.width, "height": renderer.size.height,
+                "zoom": renderer.zoom, "min_zoom": renderer.minimumZoom, "max_zoom": 2.4,
+                "pan_x": renderer.pan.width, "pan_y": renderer.pan.height,
+                "selection": renderer.selection, "expanded_table_ids": renderer.expandedTables,
+                "nodes": renderer.nodes, "context_mode": renderer.contextMode,
+                "highlight_table_ids": renderer.highlightedTables, "visible_table_ids": renderer.visibleTables]
+            result["data_view"] = embeddedDataView(in: tab).map { $0 as Any } ?? NSNull()
+            if let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id] {
+                result["presentation"] = presentationPayload(state)
+            }
+            return result
+        }
+        if !actions.isEmpty {
+            guard let served = inlineViewer(in: tab)?.servedFrame, served.surface == "graph", served.ready,
+                  string(args, "after_frame_revision") == served.revision,
+                  served.viewRevision == viewRevision(tab), isCurrentEmbeddedFrame(served, in: tab) else {
+                throw Failure(code: "STALE_VIEW", detail: "The graph changed before this gesture. Retry from its current frame.")
+            }
+            if let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id] {
+                guard served.pointID == state.controller.currentPoint?.id,
+                      state.controller.hasAppliedCurrentPoint || state.controller.needsViewReplay else {
+                    throw Failure(code: "STALE_VIEW", detail: "The explanation moved to another point before this gesture.")
+                }
+                state.controller.pause()
+                state.revision += 1
+            }
+            do { for action in actions { try renderer.apply(action) } }
+            catch { throw Failure(code: "INVALID_ARGUMENT", detail: "The embedded graph action is invalid.") }
+        }
+        for _ in 0..<4 {
+            _ = try sourceWorkspace(args, context: context, allowHistorical: true)
+            guard workspaces.activeTabID == tab.id, inlineViewer(in: tab)?.id == viewerID else {
+                throw Failure(code: "VIEW_SUPERSEDED", detail: "This embedded view is no longer following the workspace.")
+            }
+            let state = currentPresentationIDByWorkspace[tab.id].flatMap { presentations[$0] }
+            if let state, case .preparing = state.controller.status {
+                if let previous = inlineViewer(in: tab)?.servedFrame,
+                   string(args, "after_frame_revision") == previous.revision { return payload(previous) }
+            }
+            let point = state?.controller.currentPoint
+            let view = viewRevision(tab)
+            renderer.synchronize(from: tab.session, revision: view, width: width, height: height)
+            let dataView = embeddedDataView(in: tab)
+            let dataBytes = dataView.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) } ?? Data()
+            let dataRevision = fingerprint(dataBytes.base64EncodedString())
+            if actions.isEmpty, maximumAge > 0,
+               let previous = inlineViewer(in: tab)?.servedFrame, previous.surface == "graph", previous.ready,
+               previous.pointID == point?.id, previous.viewRevision == view,
+               previous.rendererRevision == renderer.revision,
+               previous.dataRevision == dataRevision,
+               previous.appearance == NSApp?.effectiveAppearance.name,
+               previous.capturedAt.duration(to: .now) < .milliseconds(maximumAge),
+               string(args, "after_frame_revision") == previous.revision {
+                var proof = previous
+                proof.presentationID = state?.id
+                proof.presentationRevision = state?.revision
+                inlineViewers[tab.id]?.servedFrame = proof
+                return payload(proof, cached: true)
+            }
+            let frame: WorkspaceGraphRenderer.Frame
+            do { frame = try await renderer.render() }
+            catch { throw Failure(code: "VIEW_NOT_RENDERED", detail: "The embedded graph is preparing. Retry its current frame.") }
+            _ = try sourceWorkspace(args, context: context, allowHistorical: true)
+            guard workspaces.activeTabID == tab.id, inlineViewer(in: tab)?.id == viewerID else {
+                throw Failure(code: "VIEW_SUPERSEDED", detail: "This embedded view stopped following while its graph was drawing.")
+            }
+            guard viewRevision(tab) == view, state?.controller.currentPoint?.id == point?.id else { continue }
+            let currentData = embeddedDataView(in: tab)
+            let currentDataBytes = currentData.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) } ?? Data()
+            guard currentDataBytes == dataBytes else { continue }
+            let revision = fingerprint(frame.image.base64EncodedString() + dataBytes.base64EncodedString())
+            var proof = InlineFrame(revision: revision, viewRevision: view, presentationID: state?.id,
+                presentationRevision: state?.revision, pointID: point?.id,
+                externalPointID: point.map { state?.externalIDs[$0.id] ?? $0.id.uuidString },
+                ready: (state.map { $0.controller.hasAppliedCurrentPoint || $0.controller.needsViewReplay } ?? true)
+                    && dataView?["loading"] as? Bool != true,
+                renderedRevision: tab.session.automationViewRevision, capturedAt: .now,
+                bounds: CGRect(origin: .zero, size: renderer.size), logicalWidth: width,
+                width: frame.width, height: frame.height, appearance: NSApp?.effectiveAppearance.name)
+            proof.surface = "graph"
+            proof.rendererRevision = renderer.revision
+            proof.dataRevision = dataRevision
+            inlineViewers[tab.id]?.servedFrame = proof
+            var result = payload(proof)
+            result["unchanged"] = string(args, "after_frame_revision") == revision
+            if string(args, "after_frame_revision") != revision {
+                result["image"] = frame.image.base64EncodedString()
+                result["mimeType"] = frame.mimeType
+            }
+            return result
+        }
+        throw Failure(code: "VIEW_NOT_RENDERED", detail: "The workspace changed while its embedded graph was preparing. Retry the current point.")
+    }
+
+    private func isCurrentEmbeddedFrame(_ frame: InlineFrame, in tab: WorkspaceTab) -> Bool {
+        let data = embeddedDataView(in: tab).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) } ?? Data()
+        return frame.rendererRevision == embeddedGraphRenderers[tab.id]?.revision
+            && frame.dataRevision == fingerprint(data.base64EncodedString())
+            && frame.appearance == NSApp?.effectiveAppearance.name
+    }
+
+    /// Rows appear only when this point explicitly requests data. An already
+    /// open desktop grid does not consume space in a graph-only explanation.
+    private func embeddedDataView(in tab: WorkspaceTab) -> [String: Any]? {
+        guard let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id],
+              let point = state.controller.currentPoint, state.controller.hasAppliedCurrentPoint,
+              let action = state.actions[point.id]?.last(where: {
+                  string($0, "type") == "open_table" || string($0, "type") == "set_layout"
+                    && (string($0, "left_pane") == "query" || string($0, "right_pane") == "query")
+              }) else { return nil }
+        if let captured = tab.session.historicalReplayView {
+            let rowLimit = 10, columnLimit = 20
+            if string(action, "type") == "open_table",
+               let name = string(action, "table_id"),
+               let page = captured.tablePages.first(where: { $0.tableID == name }) {
+                return ["kind": "table", "historical": true, "table_id": name, "title": name,
+                    "offset": page.displayedOffset,
+                    "columns": page.columns.prefix(columnLimit).map { ["name": $0.name, "type": $0.type] },
+                    "rows": page.rows.prefix(rowLimit).map { row in
+                        var payload = capturedRowPayload(row, maximumColumns: columnLimit, maximumCellCharacters: 256)
+                        payload["index"] = payload.removeValue(forKey: "ordinal")
+                        return payload
+                    }, "has_more": page.omittedRows > 0 || page.rows.count > rowLimit,
+                    "omitted_column_count": max(0, page.columns.count - columnLimit)]
+            }
+            if string(action, "type") == "set_layout", let result = captured.queryResults.first {
+                return ["kind": "query", "historical": true, "title": "Captured query result", "offset": result.displayedOffset,
+                    "columns": result.columns.prefix(columnLimit).map { ["name": $0.name, "type": $0.type] },
+                    "rows": result.rows.prefix(rowLimit).map { row in
+                        var payload = capturedRowPayload(row, maximumColumns: columnLimit, maximumCellCharacters: 256)
+                        payload["index"] = payload.removeValue(forKey: "ordinal")
+                        return payload
+                    }, "has_more": result.omittedRows > 0 || result.rows.count > rowLimit,
+                    "source_truncated": result.sourceWasTruncated,
+                    "other_captured_result_count": max(0, captured.queryResults.count - 1),
+                    "omitted_column_count": max(0, result.columns.count - columnLimit)]
+            }
+            return nil
+        }
+        func cellPayload(_ value: SQLiteValue) -> [String: Any] {
+            var cell = valuePayload(value)
+            if let text = cell["value"] as? String, text.count > 256 {
+                cell["value"] = String(text.prefix(256)); cell["truncated"] = true
+            }
+            return cell
+        }
+        if string(action, "type") == "set_layout", let query = tab.session.queryWorkspace.activeQuery {
+            return ["kind": "query", "title": query.title, "offset": 0, "loading": query.isRunning,
+                "columns": query.result.columns.prefix(20).map { ["name": $0.name, "type": $0.typeLabel] },
+                "rows": query.result.rows.prefix(10).enumerated().map { index, row in
+                    ["index": index, "values": row.values.prefix(20).map(cellPayload)] as [String: Any]
+                }, "has_more": query.result.rows.count > 10,
+                "omitted_column_count": max(0, query.result.columns.count - 20), "source_truncated": query.result.isTruncated]
+        }
+        guard string(action, "type") == "open_table",
+              let name = string(action, "table_id"),
+              let table = tab.session.openTabs.first(where: { $0.descriptor.name == name }), !table.isLoading else { return nil }
+        let columnLimit = 20, rowLimit = 10
+        let columns = Array(table.descriptor.columns.prefix(columnLimit))
+        let rows = table.chunk.rows.prefix(rowLimit).enumerated().map { index, row -> [String: Any] in
+            let values = row.values.prefix(columnLimit).enumerated().map { column, value -> [String: Any] in
+                if row.omittedColumnIndices.contains(column) { return ["type": "omitted", "value": "Large value · inspect in slices"] }
+                return cellPayload(value)
+            }
+            return ["index": table.chunk.offset + index, "values": values]
+        }
+        return ["kind": "table", "table_id": name, "title": table.title, "offset": table.chunk.offset,
+            "columns": columns.map { ["name": $0.name, "type": $0.typeLabel] }, "rows": rows,
+            "has_more": table.chunk.hasMore || table.chunk.rows.count > rowLimit,
+            "omitted_column_count": max(0, table.descriptor.columns.count - columnLimit)]
     }
 
     private func clearHistoricalReplaySelection(for state: PresentationState) {
         workspaces.tabs.first(where: { $0.id == state.workspaceID })?.session.selectHistoricalExplanationPoint(externalPointID: nil)
     }
 
-    func captionRendered(pointID: UUID) {
-        guard let state = currentPresentationState, state.controller.currentPoint?.id == pointID else { return }
-        state.captionRendered.insert(pointID)
-        maybeMarkPointVisible(state)
-    }
-
-    func userControlPresentation(_ control: String) {
-        guard let state = currentPresentationState else { return }
-        let hadCompleted = state.controller.status == .completed
-        let priorPointID = state.controller.currentPoint?.id
-        switch control {
-        case "pause": state.controller.pause()
-        case "continue": state.controller.resume()
-        case "back": state.controller.back()
-        case "next": state.controller.next()
-        case "repeat": state.controller.retryCurrent()
-        case "end":
-            state.controller.end()
-            presentationTasks.removeValue(forKey: state.id)?.cancel()
-            clearHistoricalReplaySelection(for: state)
-        case "return":
-            state.controller.end()
-            presentationTasks.removeValue(forKey: state.id)?.cancel()
-            clearHistoricalReplaySelection(for: state)
-            if let checkpointID = state.returnCheckpointID,
-               let tab = workspaces.tabs.first(where: { $0.id == state.workspaceID }) {
-                try? restoreView(checkpointID, in: tab)
-            }
-            if let priorWorkspace = state.returnWorkspaceID {
-                workspaces.activate(priorWorkspace)
-            }
-        default: return
-        }
-        if let pointID = state.controller.currentPoint?.id, pointID != priorPointID {
-            state.captionRendered.remove(pointID)
-            state.requiredRenderRevision.removeValue(forKey: pointID)
-        }
-        if hadCompleted && ["back", "next", "repeat"].contains(control) {
-            startPresentationLoop(state)
-        }
-        state.revision += 1
-    }
-
     func close() async {
+        migrationRevisionDefinitions.removeAll()
+        for task in inlineViewerExpiryTasks.values { task.cancel() }
+        inlineViewerExpiryTasks.removeAll()
+        inlineViewers.removeAll()
+        for renderer in embeddedGraphRenderers.values { renderer.close() }
+        embeddedGraphRenderers.removeAll()
         for observer in visibilityObservers { NotificationCenter.default.removeObserver(observer) }
         visibilityObservers.removeAll()
         cancelQueryJobs()
@@ -469,6 +739,7 @@ final class StudioAutomationCoordinator {
     /// context continues to own its workspaces and receipts until explicit
     /// native transfer or bounded retention expires. Transient jobs are stopped.
     func disconnectClient(_ clientID: String) {
+        for id in Array(inlineViewers.keys) where inlineViewers[id]?.clientID == clientID { clearInlineViewer(id) }
         let disconnectedContextIDs = contexts.values.filter { $0.clientID == clientID }.map(\.id)
         for contextID in disconnectedContextIDs { cancelQueryJobs(contextID: contextID) }
         for state in presentations.values where contexts[state.ownerContextID]?.clientID == clientID {
@@ -525,6 +796,7 @@ final class StudioAutomationCoordinator {
     }
 
     private func expireContext(_ contextID: String) {
+        for id in Array(inlineViewers.keys) where inlineViewers[id]?.contextID == contextID { clearInlineViewer(id) }
         cancelQueryJobs(contextID: contextID)
         guard contexts.removeValue(forKey: contextID) != nil else { return }
         let ownedWorkspaceIDs = workspaceOwners.compactMap { $0.value == contextID ? $0.key : nil }
@@ -577,6 +849,7 @@ final class StudioAutomationCoordinator {
     func releaseActiveWorkspaceForTransfer() {
         guard let tabID = workspaces.activeTabID,
               let ownerID = workspaceOwners.removeValue(forKey: tabID) else { return }
+        clearInlineViewer(tabID)
         cancelQueryJobs(workspaceID: tabID, contextID: ownerID)
         if contexts[ownerID]?.workspaceID == tabID {
             contexts[ownerID]?.workspaceID = nil
@@ -628,7 +901,8 @@ final class StudioAutomationCoordinator {
             }
             let payload = try await execute(name, args, contextID: contextID, clientID: clientID)
             synchronizeManualGraphHooks()
-            let response = Self.result("Graph Studio returned \(name). Check structured status for visibility and completion.", payload)
+            let response = Self.result("Graph Studio returned \(name). Check structured status for visibility and completion.", payload,
+                                       maximumBytes: name == "studio_workspace_frame" ? 3_800_000 : 1_048_576)
             if let pendingReceipt {
                 inFlightReceipts.removeValue(forKey: pendingReceipt.key)
                 storeReceipt(pendingReceipt, response: response)
@@ -919,7 +1193,12 @@ final class StudioAutomationCoordinator {
             try bind(context.id, workspace: tab.id)
             return workspacePayload(tab)
         case "studio_update_workspace":
-            let tab = try workspace(args, context: context)
+            let tab: WorkspaceTab
+            if args["source_id"] != nil || args["source_revision"] != nil {
+                tab = try sourceWorkspace(args, context: context, allowHistorical: true)
+            } else {
+                tab = try workspace(args, context: context)
+            }
             let changes = args["changes"] as? [String: Any] ?? args
             guard !changes.isEmpty, Set(changes.keys).isSubset(of: ["activate", "activation_intent"]),
                   bool(changes, "activate") == true || string(changes, "activation_intent") == "foreground" else {
@@ -934,6 +1213,144 @@ final class StudioAutomationCoordinator {
                     "active_workspace_id": visibleActiveWorkspaceID(for: context.id)]
         case "studio_get_view":
             return viewPayload(try workspace(args, context: context))
+        case "studio_workspace_frame":
+            let tab = try sourceWorkspace(args, context: context, allowHistorical: true)
+            if string(args, "inline_view_state") == "released" {
+                let id = string(args, "viewer_id") ?? "legacy:\(context.id)"
+                if inlineViewers[tab.id]?.id == id { clearInlineViewer(tab.id) }
+                var payload = viewPayload(tab)
+                payload["format"] = "sqlite-graph-studio/workspace-view"
+                payload["unchanged"] = true
+                return payload
+            }
+            guard workspaces.activeTabID == tab.id else {
+                throw Failure(code: "WORKSPACE_NOT_ACTIVE", detail: "This workspace is no longer the displayed Graph Studio workspace. The inline view will keep its last frame; select this workspace deliberately to resume.")
+            }
+            let width = args["width"] as? Int ?? 960
+            guard (320...1200).contains(width) else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "Frame width must be between 320 and 1200 points; captures use twice that pixel resolution.")
+            }
+            let maximumAge = args["maximum_frame_age_ms"] as? Int ?? 0
+            guard (0...5_000).contains(maximumAge) else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "maximum_frame_age_ms must be between 0 and 5000.")
+            }
+            let surface = string(args, "render_surface") ?? "workspace"
+            guard ["graph", "workspace"].contains(surface) else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "render_surface must be graph or workspace.")
+            }
+            _ = try renewInlineViewer(args, tab: tab, context: context, clientID: clientID)
+            let acknowledged = acknowledgeInlineFrame(args, tab: tab)
+            if string(args, "inline_view_state") == "acknowledged" {
+                // The decoded image and caption are already in the viewer.
+                // Confirm them without drawing or encoding the same workspace again.
+                var payload = viewPayload(tab)
+                payload["format"] = "sqlite-graph-studio/workspace-view"
+                payload["frame_acknowledged"] = acknowledged
+                if let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id] {
+                    payload["presentation"] = presentationPayload(state)
+                }
+                return payload
+            }
+            if surface == "graph" {
+                return try await embeddedWorkspaceFrame(args, tab: tab, context: context, width: width, maximumAge: maximumAge)
+            }
+            func retainedFrame(_ previous: InlineFrame) -> [String: Any] {
+                var payload = viewPayload(tab)
+                payload["format"] = "sqlite-graph-studio/workspace-view"
+                payload["title"] = tab.title
+                payload["width"] = previous.width
+                payload["height"] = previous.height
+                payload["frame_revision"] = previous.revision
+                payload["unchanged"] = true
+                if let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id] {
+                    payload["presentation"] = presentationPayload(state)
+                }
+                return payload
+            }
+            if let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id],
+               case .preparing = state.controller.status,
+               let previous = inlineViewer(in: tab)?.servedFrame,
+               string(args, "after_frame_revision") == previous.revision {
+                // Give point actions and table loads the main actor. Recapturing
+                // the old view here delays the very point the player is waiting for.
+                return retainedFrame(previous)
+            }
+            if bool(args, "defer_until_ready") == true,
+               let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id],
+               state.controller.hasAppliedCurrentPoint, !inlinePointReady(state, in: tab),
+               let previous = inlineViewer(in: tab)?.servedFrame,
+               string(args, "after_frame_revision") == previous.revision {
+                let revision = viewRevision(tab)
+                if inlineViewers[tab.id]?.renderWaitRevision != revision {
+                    inlineViewers[tab.id]?.renderWaitRevision = revision
+                    inlineViewers[tab.id]?.renderWaitSince = .now
+                }
+                workspaceFrameCaptures.prepare(workspaceID: tab.id)
+                await Task.yield()
+                guard workspaces.activeTabID == tab.id else {
+                    throw Failure(code: "WORKSPACE_NOT_ACTIVE", detail: "The displayed workspace changed while its view was preparing.")
+                }
+                _ = try sourceWorkspace(args, context: context, allowHistorical: true)
+                if !inlinePointReady(state, in: tab),
+                   let since = inlineViewers[tab.id]?.renderWaitSince,
+                   since.duration(to: .now) < .milliseconds(1_200) {
+                    return retainedFrame(previous)
+                }
+            }
+            let state = currentPresentationIDByWorkspace[tab.id].flatMap { presentations[$0] }
+            let sceneCanBeCached = !tab.session.records.isPresented
+                && tab.session.leftPane.kind != .query && tab.session.rightPane.kind != .query
+                && tab.session.activeTab?.isLoading != true
+            if maximumAge > 0, NSApp?.isActive != true, sceneCanBeCached,
+               let previous = inlineViewer(in: tab)?.servedFrame, previous.ready,
+               state.map({ inlinePointReady($0, in: tab) }) ?? true,
+               previous.pointID == state?.controller.currentPoint?.id,
+               previous.viewRevision == viewRevision(tab),
+               previous.renderedRevision == tab.session.automationRenderedViewRevision,
+               !tab.session.isSchemaPaneVisiblyDisplayed || previous.renderedRevision == tab.session.automationViewRevision,
+               previous.logicalWidth == width,
+               previous.bounds == workspaceFrameCaptures.bounds(workspaceID: tab.id),
+               previous.appearance == NSApp?.effectiveAppearance.name,
+               previous.capturedAt.duration(to: .now) < .milliseconds(maximumAge),
+               string(args, "after_frame_revision") == previous.revision {
+                var proof = previous
+                proof.presentationID = state?.id
+                proof.presentationRevision = state?.revision
+                inlineViewers[tab.id]?.servedFrame = proof
+                var payload = retainedFrame(previous)
+                payload["image_cached"] = true
+                return payload
+            }
+            let frame: (image: Data, mimeType: String, width: Int, height: Int)
+            do { frame = try workspaceFrameCaptures.capture(workspaceID: tab.id, maximumWidth: width) }
+            catch WorkspaceFrameCaptureRegistry.CaptureError.unavailable {
+                throw Failure(code: "VIEW_NOT_RENDERED", detail: "The workspace view is still preparing. Retry after Graph Studio has rendered it.")
+            }
+            var payload = viewPayload(tab)
+            payload["format"] = "sqlite-graph-studio/workspace-view"
+            payload["title"] = tab.title
+            payload["width"] = frame.width
+            payload["height"] = frame.height
+            let revision = fingerprint(frame.image.base64EncodedString())
+            payload["frame_revision"] = revision
+            payload["unchanged"] = string(args, "after_frame_revision") == revision
+            if string(args, "after_frame_revision") != revision {
+                payload["image"] = frame.image.base64EncodedString()
+                payload["mimeType"] = frame.mimeType
+            }
+            if let id = currentPresentationIDByWorkspace[tab.id], let state = presentations[id] {
+                payload["presentation"] = presentationPayload(state)
+            }
+            let point = state?.controller.currentPoint
+            let capturedProof = InlineFrame(revision: revision, viewRevision: viewRevision(tab),
+                presentationID: state?.id, presentationRevision: state?.revision,
+                pointID: point?.id, externalPointID: point.map { state?.externalIDs[$0.id] ?? $0.id.uuidString },
+                ready: state.map { inlinePointReady($0, in: tab) } ?? true,
+                renderedRevision: tab.session.automationRenderedViewRevision, capturedAt: .now,
+                bounds: workspaceFrameCaptures.bounds(workspaceID: tab.id), logicalWidth: width,
+                width: frame.width, height: frame.height, appearance: NSApp?.effectiveAppearance.name)
+            inlineViewers[tab.id]?.servedFrame = capturedProof
+            return payload
         case "studio_set_layout":
             let tab = try workspace(args, context: context)
             let session = tab.session
@@ -1038,6 +1455,11 @@ final class StudioAutomationCoordinator {
             let requested = Set(strings(args, "table_ids") ?? [])
             guard requested.isSubset(of: valid) else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "One or more table IDs do not exist in this source.") }
             let operation = string(args, "operation") ?? "replace"
+            let highlights = Set(strings(args, "highlight_table_ids") ?? [])
+            guard (args["highlight_table_ids"] == nil || strings(args, "highlight_table_ids") != nil),
+                  highlights.isSubset(of: valid), highlights.isEmpty || operation == "all" else {
+                throw Failure(code: "INVALID_ARGUMENT", detail: "highlight_table_ids needs valid table IDs and operation=all.")
+            }
             let prior = session.automationVisibleTableIDs ?? valid
             let next: Set<String>?
             switch operation {
@@ -1048,6 +1470,7 @@ final class StudioAutomationCoordinator {
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "operation must be replace, add, remove, or all.")
             }
             session.requestAutomationFocusReset()
+            session.graphContextTableIDs = highlights
             session.setAutomationVisibleTableIDs(next)
             compactSparseAutomationSubset(session)
             session.revealSchemaForAutomation()
@@ -1385,7 +1808,7 @@ final class StudioAutomationCoordinator {
             query.projectedColumns = requestedColumns
             let chunk = try await reader.fetchChunk(query: query, descriptor: descriptor)
             try verifySource(tab, id: expectedSourceID, revision: expectedSourceRevision, context: context)
-            return ["source_id": sourceID(tab), "table_id": name, "source_revision": sourceRevision(tab), "offset": chunk.offset,
+            return ["workspace_id": tab.id.uuidString, "source_id": sourceID(tab), "table_id": name, "source_revision": sourceRevision(tab), "offset": chunk.offset,
                     "limit": chunk.limit, "has_more": chunk.hasMore,
                     "columns": selectedColumns,
                     "rows": chunk.rows.enumerated().map { index, row in
@@ -1680,7 +2103,7 @@ final class StudioAutomationCoordinator {
                     tab.session.queryWorkspace.queries[index].executedSQL = saved.sql
                 }
             }
-            return queryPayload(saved.result, id: id, tab: tab,
+            return queryPayload(saved.result, sql: saved.sql, id: id, tab: tab,
                                 offset: offset, limit: limit)
         case "studio_export":
             return try await startExport(args, context: context, clientID: clientID)
@@ -1741,10 +2164,9 @@ final class StudioAutomationCoordinator {
                 saved["narration"] = enabled ? "enabled" : "disabled"
                 UserDefaults.standard.set(saved, forKey: key)
             }
-            return ["scope": scope, "narration_enabled": enabled, "persisted": persists,
-                    "narration_mode_for_next_presentation": enabled ? "enabled" : "disabled",
-                    "provider_id": "macos-av-speech",
-                    "note": persists ? "The saved preference applies when narration_mode is app_default." : "Pass the returned narration_mode to the next presentation for this temporary choice."]
+            return ["scope": scope, "requested_enabled": enabled, "narration_enabled": false, "persisted": persists,
+                    "narration_mode_for_next_presentation": "disabled",
+                    "note": "Legacy preference retained. Embedded explanations use the coding agent's text/audio; Graph Studio presentation speech remains disabled."]
         case "studio_manage_speech_assets":
             return try await manageSpeechAssets(args, context: context, clientID: clientID)
         case "studio_test_speech":
@@ -2116,7 +2538,7 @@ final class StudioAutomationCoordinator {
                 sourceRevisionHash: sha256(sourceAtStart), schema: schema, points: savedPoints,
                 queryResults: included.results, tablePages: included.pages,
                 warnings: ["Historical snapshot captured at \(now.formatted(.iso8601)). Only the selected displayed rows are saved.",
-                           "Offline replay restores graph and layout actions with the captured table/query pages referenced by each point. Other saved pages remain available in the manual historical view."]
+                           "Offline replay restores graph and layout actions with the captured table/query pages referenced by each point. Other saved pages can be inspected through MCP artifact tools."]
             )
             let destination = try explanationDestination(args, extension: "sgexplanation")
             let url = try HistoricalExplanationStore.write(artifact, to: destination)
@@ -2139,7 +2561,7 @@ final class StudioAutomationCoordinator {
             }
             let returnWorkspaceID = workspaces.activeTabID
             try requireAutomationWorkspaceCapacity(openingDocument: true)
-            let tab = workspaces.createTab(kind: .explanation, title: artifact.title, activate: true)
+            let tab = workspaces.createTab(kind: .artifact, title: artifact.title, activate: true)
             try claimWorkspace(tab.id, for: context.id)
             tab.session.openHistoricalExplanation(artifact, from: url)
             guard tab.session.historicalExplanationArtifact != nil else {
@@ -2150,6 +2572,7 @@ final class StudioAutomationCoordinator {
             try bind(context.id, workspace: tab.id)
             var payload: [String: Any] = ["workspace_id": tab.id.uuidString,
                 "artifact_id": string(args, "artifact_id") ?? url.path, "title": artifact.title,
+                "source_id": sourceID(tab), "source_revision": sourceRevision(tab),
                 "historical": true, "captured_at": artifact.capturedAt.formatted(.iso8601),
                 "source_identity_hash": artifact.sourceIdentityHash,
                 "visual_state": visualState(tab), "captured_result_count": artifact.queryResults.count,
@@ -2236,19 +2659,14 @@ final class StudioAutomationCoordinator {
             guard ["app_default", "enabled", "disabled"].contains(narrationMode) else {
                 throw Failure(code: "INVALID_ARGUMENT", detail: "narration_mode must be app_default, enabled, or disabled.")
             }
-        let localNarrator = StudioSpeechNarrator()
-            let narrationRequested = narrationMode == "enabled" ||
-                (narrationMode == "app_default" && prefersNarration(for: tab))
-            let narration = narrationRequested && localNarrator.isSpeechAvailable
             let state = PresentationState(ownerClientID: clientID, ownerContextID: context.id,
-                                          workspaceID: tab.id, title: string(args, "title") ?? "Explore the data model",
-                                          narrator: narration ? localNarrator : nil)
+                                          workspaceID: tab.id, title: string(args, "title") ?? "Explore the data model")
             state.returnCheckpointID = captureView(tab)
             if (string(args, "activation_intent") == "foreground" || bool(args, "activate") == true),
                let activeWorkspace = workspaces.activeTabID, activeWorkspace != tab.id {
                 state.returnWorkspaceID = activeWorkspace
             }
-            let points = try rawPoints.map { try makePoint($0, state: state, narration: narration) }
+            let points = try rawPoints.map { try makePoint($0, state: state) }
             for active in Array(presentations.values) where active.workspaceID == tab.id {
                 active.controller.end()
                 presentationTasks.removeValue(forKey: active.id)?.cancel()
@@ -2257,18 +2675,13 @@ final class StudioAutomationCoordinator {
             }
             if string(args, "activation_intent") == "foreground" || bool(args, "activate") == true {
                 workspaces.activate(tab.id)
-                NSApp?.activate(ignoringOtherApps: true)
             }
             presentations[state.id] = state
             currentPresentationIDByWorkspace[tab.id] = state.id
             try bind(context.id, workspace: tab.id)
             state.controller.append(points)
             startPresentationLoop(state)
-            var payload = presentationPayload(state)
-            if !narration && narrationRequested {
-                payload["speech_warning"] = "Local speech is unavailable; this presentation continues with captions."
-            }
-            return payload
+            return presentationPayload(state)
         case "studio_update_presentation":
             let state = try presentation(args, context: context)
             guard state.controller.status != .interrupted else {
@@ -2278,7 +2691,7 @@ final class StudioAutomationCoordinator {
                 throw Failure(code: "STALE_VIEW", detail: "The presentation changed. Read studio_get_presentation and revise the pending points.")
             }
             let rawPoints = args["points"] as? [[String: Any]] ?? []
-            let points = try rawPoints.map { try makePoint($0, state: state, narration: state.narrationEnabled) }
+            let points = try rawPoints.map { try makePoint($0, state: state) }
             let wasCompleted = state.controller.status == .completed
             switch string(args, "operation") ?? "append" {
             case "append": state.controller.append(points)
@@ -2295,12 +2708,15 @@ final class StudioAutomationCoordinator {
             state.revision += 1
             return presentationPayload(state)
         case "studio_control_presentation":
+            if args["source_id"] != nil || args["source_revision"] != nil {
+                _ = try sourceWorkspace(args, context: context, allowHistorical: true)
+            }
             let state = try presentation(args, context: context)
             let hadCompleted = state.controller.status == .completed
             let priorPointID = state.controller.currentPoint?.id
             switch string(args, "control") ?? "" {
             case "pause": state.controller.pause()
-            case "continue": state.controller.resume()
+            case "continue": state.controller.play()
             case "back": state.controller.back()
             case "next": state.controller.next()
             case "repeat": state.controller.retryCurrent()
@@ -2328,10 +2744,9 @@ final class StudioAutomationCoordinator {
             default: throw Failure(code: "INVALID_ARGUMENT", detail: "Unknown presentation control.")
             }
             if let pointID = state.controller.currentPoint?.id, pointID != priorPointID {
-                state.captionRendered.remove(pointID)
                 state.requiredRenderRevision.removeValue(forKey: pointID)
             }
-            if hadCompleted && ["back", "next", "repeat"].contains(string(args, "control") ?? "") {
+            if hadCompleted && ["back", "next", "repeat", "continue"].contains(string(args, "control") ?? "") {
                 startPresentationLoop(state)
             }
             state.revision += 1
@@ -2471,12 +2886,12 @@ final class StudioAutomationCoordinator {
             }
             let points: [LivePresentationController.Point]
             if scopeKind == "displayed" {
-                guard let current = state.controller.currentPoint, state.captionRendered.contains(current.id) else {
+                guard let current = state.controller.currentPoint, state.displayedPointIDs.contains(current.id) else {
                     throw Failure(code: "OBJECT_NOT_FOUND", detail: "There is no currently visible explanation caption to export.")
                 }
                 points = [current]
             } else {
-                let currentPoints = state.controller.currentPoint.map { state.captionRendered.contains($0.id) ? [$0] : [] } ?? []
+                let currentPoints = state.controller.currentPoint.map { state.displayedPointIDs.contains($0.id) ? [$0] : [] } ?? []
                 points = state.controller.displayedHistory + currentPoints
             }
             guard !points.isEmpty else { throw Failure(code: "OBJECT_NOT_FOUND", detail: "This presentation has no visible captions yet.") }
@@ -2874,9 +3289,6 @@ final class StudioAutomationCoordinator {
         guard workspaces.activeTabID == tab.id else {
             throw Failure(code: "WORKSPACE_NOT_VISIBLE", detail: "Speech samples play only for the visible workspace. Activate this workspace, then retry.")
         }
-        guard !hasNarrationInProgress() else {
-            throw Failure(code: "AUDIO_IN_USE", detail: "A presentation is already speaking. Pause or end it before testing another speech sample.")
-        }
         guard !speechJobs.values.contains(where: {
             $0.kind == "speech_test" && ["queued", "running", "cancelling"].contains($0.status)
         }) else {
@@ -2949,27 +3361,9 @@ final class StudioAutomationCoordinator {
     }
 
     private func activeSpeechNarrator() -> StudioSpeechNarrator? {
-        for state in presentations.values where state.narrationEnabled {
-            switch state.controller.status {
-            case .generatingAudio, .speaking, .waitingForSpeech:
-                return state.narrator
-            default:
-                continue
-            }
-        }
         return speechJobs.values.first(where: {
             $0.kind == "speech_test" && ["queued", "running"].contains($0.status)
         })?.narrator
-    }
-
-    private func hasNarrationInProgress() -> Bool {
-        presentations.values.contains { state in
-            guard state.narrationEnabled else { return false }
-            switch state.controller.status {
-            case .generatingAudio, .speaking, .waitingForSpeech: return true
-            default: return false
-            }
-        }
     }
 
     private func stopSpeechTestsForHiddenWindow() {
@@ -3091,9 +3485,10 @@ final class StudioAutomationCoordinator {
         return tab
     }
 
-    private func sourceWorkspace(_ args: [String: Any], context: Context) throws -> WorkspaceTab {
+    private func sourceWorkspace(_ args: [String: Any], context: Context,
+                                 allowHistorical: Bool = false) throws -> WorkspaceTab {
         let tab = try workspace(args, context: context)
-        guard tab.session.databaseTarget != nil else { throw Failure(code: "SOURCE_REQUIRED", detail: "Open a live database source in this workspace first. Historical explanation workspaces remain offline.") }
+        guard tab.session.databaseTarget != nil || (allowHistorical && tab.session.historicalExplanationArtifact != nil) else { throw Failure(code: "SOURCE_REQUIRED", detail: "Open a live database source in this workspace first. Historical explanation workspaces remain offline.") }
         if let requested = string(args, "source_id"), requested != sourceID(tab) {
             throw Failure(code: "STALE_SOURCE", detail: "The requested source_id is no longer attached to this workspace.")
         }
@@ -3151,7 +3546,13 @@ final class StudioAutomationCoordinator {
         return reader
     }
 
-    private func sourceID(_ tab: WorkspaceTab) -> String { tab.session.databaseTarget?.identity ?? "none" }
+    private func sourceID(_ tab: WorkspaceTab) -> String {
+        if let target = tab.session.databaseTarget { return target.identity }
+        if let artifact = tab.session.historicalExplanationArtifact {
+            return "historical:\(artifact.id.uuidString):\(artifact.sourceIdentityHash):\(artifact.sourceRevisionHash)"
+        }
+        return "none"
+    }
 
     private func requireRows(in tab: WorkspaceTab) throws {
         guard tab.session.databaseCapabilities.canBrowseRows else {
@@ -3182,6 +3583,7 @@ final class StudioAutomationCoordinator {
             selected: session.selectedGraphNodeIDs,
             expanded: session.expandedGraphNodeIDs,
             visible: session.automationVisibleTableIDs,
+            contextTables: session.graphContextTableIDs,
             zoom: session.graphZoom,
             pan: session.graphPan,
             positions: session.graphLayout.snapshot(for: session.graph),
@@ -3210,6 +3612,7 @@ final class StudioAutomationCoordinator {
         let session = tab.session
         let valid = Set(session.graph.nodes.map(\.id))
         session.setAutomationVisibleTableIDs(point.visible?.intersection(valid))
+        session.graphContextTableIDs = point.contextTables.intersection(valid)
         session.setGraphSelection(point.selected.intersection(valid))
         session.expandedGraphNodeIDs = point.expanded.intersection(valid)
         session.graphZoom = point.zoom
@@ -3248,15 +3651,6 @@ final class StudioAutomationCoordinator {
 
     private func preferencesKey(for tab: WorkspaceTab) -> String {
         "SQLiteGraphStudio.explanation-preferences.source." + fingerprint(sourceID(tab))
-    }
-
-    private func prefersNarration(for tab: WorkspaceTab) -> Bool {
-        let global = UserDefaults.standard.dictionary(forKey: "SQLiteGraphStudio.explanation-preferences.global") as? [String: String] ?? [:]
-        let source = UserDefaults.standard.dictionary(forKey: preferencesKey(for: tab)) as? [String: String] ?? [:]
-        switch (source["narration"] ?? global["narration"] ?? "enabled").lowercased() {
-        case "disabled", "off", "false", "no", "visual_only": return false
-        default: return true
-        }
     }
 
     private func artifactDestination(_ args: [String: Any], ext: String) throws -> URL {
@@ -3341,7 +3735,7 @@ final class StudioAutomationCoordinator {
         let fields: Set<String>
         switch type {
         case "show_tables": fields = ["type", "table_ids", "mode"]
-        case "select_objects", "expand_tables": fields = ["type", "table_ids"]
+        case "select_objects", "expand_tables", "show_context": fields = ["type", "table_ids"]
         case "focus_keys": fields = ["type", "table_id", "table_ids", "source_column", "target_column", "relation_id"]
         case "set_camera": fields = ["type", "mode", "zoom", "pan_x", "pan_y"]
         case "arrange_tables": fields = ["type", "table_ids", "x", "y"]
@@ -3355,7 +3749,7 @@ final class StudioAutomationCoordinator {
 
     private func livePoint(from captured: HistoricalExplanationArtifact.Point,
                            state: PresentationState) throws -> LivePresentationController.Point {
-        let supported: Set<String> = ["show_tables", "select_objects", "expand_tables", "focus_keys", "set_camera",
+        let supported: Set<String> = ["show_tables", "show_context", "select_objects", "expand_tables", "focus_keys", "set_camera",
                                       "arrange_tables", "set_node_sizing", "set_layout", "open_table"]
         var kept: [[String: Any]] = []
         var omitted = Set(captured.replayOmissions)
@@ -3377,7 +3771,7 @@ final class StudioAutomationCoordinator {
                        "extra_hold_ms": captured.extraHoldMilliseconds,
                        "advance": captured.advance],
         ]
-        let point = try makePoint(raw, state: state, narration: state.narrationEnabled)
+        let point = try makePoint(raw, state: state)
         state.externalIDs[point.id] = captured.id
         state.savedNarration[point.id] = captured.narration ?? ""
         state.savedTiming[point.id] = (captured.minimumVisibleMilliseconds, captured.extraHoldMilliseconds, captured.advance)
@@ -3389,13 +3783,8 @@ final class StudioAutomationCoordinator {
     private func startHistoricalReplay(_ artifact: HistoricalExplanationArtifact,
                                        workspace tab: WorkspaceTab, returnTo workspaceID: UUID?,
                                        context: Context) throws -> PresentationState {
-        let preferences = UserDefaults.standard.dictionary(forKey: "SQLiteGraphStudio.explanation-preferences.global") as? [String: String] ?? [:]
-        let preference = (preferences["narration"] ?? "enabled").lowercased()
-        let narrator = StudioSpeechNarrator()
-        let narrationEnabled = !["disabled", "off", "false", "no", "visual_only"].contains(preference) && narrator.isSpeechAvailable
         let state = PresentationState(ownerClientID: context.clientID, ownerContextID: context.id,
-                                      workspaceID: tab.id, title: artifact.title,
-                                      narrator: narrationEnabled ? narrator : nil)
+                                      workspaceID: tab.id, title: artifact.title)
         // There is no preceding live view inside this isolated offline workspace.
         state.returnCheckpointID = nil
         state.returnWorkspaceID = workspaceID
@@ -3710,13 +4099,11 @@ final class StudioAutomationCoordinator {
         session.compactGraphTables(ids, columns: columns)
     }
 
-    private func makePoint(_ raw: [String: Any], state: PresentationState, narration: Bool) throws -> LivePresentationController.Point {
+    private func makePoint(_ raw: [String: Any], state: PresentationState) throws -> LivePresentationController.Point {
         let caption = try requiredString(raw, "caption")
         guard caption.count <= 2_000 else { throw Failure(code: "LIMIT_REACHED", detail: "A presentation point caption must be at most 2,000 characters.") }
-        // A caption-only point should still speak when the user's narration
-        // preference is enabled. An explicit empty narration stays silent.
-        let spoken = narration ? (raw["narration"] == nil ? caption : string(raw, "narration")) : nil
-        guard (spoken?.count ?? 0) <= 5_000 else { throw Failure(code: "LIMIT_REACHED", detail: "A narration point must be at most 5,000 characters.") }
+        let savedNarration = string(raw, "narration") ?? ""
+        guard savedNarration.count <= 5_000 else { throw Failure(code: "LIMIT_REACHED", detail: "A narration point must be at most 5,000 characters.") }
         var actions = raw["actions"] as? [[String: Any]] ?? []
         if let target = string(raw, "target_table_id") {
             actions.append(["type": "select_objects", "table_ids": [target]])
@@ -3724,16 +4111,16 @@ final class StudioAutomationCoordinator {
         guard actions.count <= 12 else { throw Failure(code: "LIMIT_REACHED", detail: "A point can have at most 12 visual actions.") }
         let timing = raw["timing"] as? [String: Any] ?? [:]
         let readingTime = min(15_000, max(2_000, caption.split(whereSeparator: \.isWhitespace).count * 333 + 500))
-        let defaultMinimum = spoken?.isEmpty == false ? 2_000 : readingTime
+        let defaultMinimum = readingTime
         let minimum = min(60_000, max(0, timing["minimum_visible_ms"] as? Int ?? defaultMinimum))
         let hold = min(60_000, max(0, timing["extra_hold_ms"] as? Int ?? 0))
-        let point = LivePresentationController.Point(caption: caption, narration: spoken,
+        let point = LivePresentationController.Point(caption: caption, narration: nil,
             minimumVisibleTime: .milliseconds(minimum), additionalHold: .milliseconds(hold),
             advancePolicy: string(timing, "advance") == "manual" ? .manual : .automatic)
         state.actions[point.id] = actions
         state.pointsByID[point.id] = point
         state.externalIDs[point.id] = string(raw, "point_id") ?? point.id.uuidString
-        state.savedNarration[point.id] = spoken ?? ""
+        state.savedNarration[point.id] = savedNarration
         state.savedTiming[point.id] = (minimum, hold, string(timing, "advance") == "manual" ? "manual" : "automatic")
         state.savedEvidence[point.id] = try evidenceReferences(raw["evidence_refs"])
         return point
@@ -3776,7 +4163,7 @@ final class StudioAutomationCoordinator {
         let checkpointID = captureView(tab)
         defer { checkpoints.removeValue(forKey: checkpointID) }
         do {
-            let allowed: Set<String> = ["show_tables", "select_objects", "expand_tables", "focus_keys", "set_camera",
+            let allowed: Set<String> = ["show_tables", "show_context", "select_objects", "expand_tables", "focus_keys", "set_camera",
                                         "arrange_tables", "set_node_sizing", "set_layout", "open_table"]
             let validIDs = Set(session.graph.nodes.map(\.id))
             for action in actions {
@@ -3845,6 +4232,7 @@ final class StudioAutomationCoordinator {
                     let all = Set(session.graph.nodes.map(\.id))
                     let existing = session.automationVisibleTableIDs ?? all
                     session.requestAutomationFocusReset()
+                    session.graphContextTableIDs = []
                     switch string(action, "mode") ?? "replace" {
                     case "replace": session.setAutomationVisibleTableIDs(ids)
                     case "add": session.setAutomationVisibleTableIDs(existing.union(ids))
@@ -3852,7 +4240,16 @@ final class StudioAutomationCoordinator {
                     case "all": session.setAutomationVisibleTableIDs(nil)
                     default: throw Failure(code: "INVALID_ARGUMENT", detail: "Invalid show_tables mode.")
                     }
-                    compactSparseAutomationSubset(session)
+                    session.requestAutomationViewport(fitVisibleTables: true)
+                    needsGraphRender = true
+                case "show_context":
+                    let ids = Set(strings(action, "table_ids") ?? [])
+                    guard !ids.isEmpty else { throw Failure(code: "INVALID_ARGUMENT", detail: "show_context needs the tables to highlight.") }
+                    session.requestAutomationFocusReset()
+                    session.graphContextTableIDs = ids
+                    session.setAutomationVisibleTableIDs(nil)
+                    session.clearGraphSelection()
+                    session.expandedGraphNodeIDs = []
                     session.requestAutomationViewport(fitVisibleTables: true)
                     needsGraphRender = true
                 case "select_objects":
@@ -3939,6 +4336,7 @@ final class StudioAutomationCoordinator {
                 }
             }
             guard isCurrentPoint(state, id: pointID) else { return }
+            if needsGraphRender { compactSparseAutomationSubset(session) }
             let isHistoricalReplay = session.historicalExplanationArtifact != nil
             if isHistoricalReplay {
                 session.selectHistoricalExplanationPoint(externalPointID: state.externalIDs[pointID])
@@ -3968,11 +4366,17 @@ final class StudioAutomationCoordinator {
 
     private func maybeMarkPointVisible(_ state: PresentationState) {
         guard let point = state.controller.currentPoint,
-              state.captionRendered.contains(point.id),
-              hasVisibleAppWindow,
               workspaces.activeTabID == state.workspaceID,
               let tab = workspaces.tabs.first(where: { $0.id == state.workspaceID }) else { return }
-        if let required = state.requiredRenderRevision[point.id], tab.session.automationRenderedViewRevision != required { return }
+        let viewer = inlineViewer(in: tab)
+        let frame = viewer?.displayedFrame
+        let inlineVisible = frame?.ready == true && frame?.pointID == point.id
+            && frame?.presentationID == state.id && frame?.presentationRevision == state.revision
+            && frame?.viewRevision == viewRevision(tab)
+        guard inlineVisible else { return }
+        if inlineVisible, frame?.surface == "graph" {
+            guard let frame, isCurrentEmbeddedFrame(frame, in: tab) else { return }
+        } else if let required = state.requiredRenderRevision[point.id], tab.session.automationRenderedViewRevision != required { return }
         state.controller.markVisible(pointID: point.id)
         switch state.controller.status {
         case .visible, .generatingAudio, .speaking, .waitingForSpeech, .waitingForHold, .waitingForNext, .waitingForPoints, .paused:
@@ -3989,8 +4393,17 @@ final class StudioAutomationCoordinator {
                 "title": state.title, "revision": state.revision, "status": statusLabel(state.controller.status),
                 "current_point_id": nullable(current.map { state.externalIDs[$0.id] ?? $0.id.uuidString }),
                 "current_caption": nullable(current?.caption),
-                "narration_enabled": state.narrationEnabled,
-                "current_point_has_audio": current?.narration?.isEmpty == false,
+                "point_number": state.controller.currentPointNumber,
+                "point_count": state.controller.pointCount,
+                "navigation_mode": "steps",
+                "presentation_surface": "embedded",
+                "view_ready": tab.map { inlinePointReady(state, in: $0) } ?? false,
+                "point_visible": state.controller.hasVisibleCurrentPoint,
+                "needs_view_replay": state.controller.needsViewReplay,
+                "can_go_back": state.controller.canGoBack,
+                "can_go_forward": state.controller.canGoForward,
+                "narration_enabled": false,
+                "current_point_has_audio": false,
                 "pending_point_ids": state.controller.pendingPoints.map { state.externalIDs[$0.id] ?? $0.id.uuidString },
                 "completed_point_ids": state.controller.displayedHistory.map { state.externalIDs[$0.id] ?? $0.id.uuidString },
                 "visual_state": tab.map(visualState) ?? "workspace_closed"]
@@ -4034,13 +4447,27 @@ final class StudioAutomationCoordinator {
         parts.append(contentsOf: session.tables.map { "\($0.id):\($0.columnCount):\($0.objectType.rawValue)" }.sorted())
         parts.append(contentsOf: session.graph.edges.map { "\($0.id):\($0.sourceID):\($0.targetID):\($0.sourceColumn):\($0.targetColumn)" }.sorted())
         if let set = session.migrationSet {
-            parts.append("migration_version:\(session.selectedMigrationVersion ?? "latest")")
+            let version = session.selectedMigrationVersion ?? "latest"
+            let identity = sourceID(tab)
+            parts.append("migration_version:\(version)")
             // The replayed schema is authoritative for this workspace. Include
             // its full definitions so an equally sized, timestamp-preserving
             // edit still produces a new revision after the model is refreshed.
-            parts.append(contentsOf: session.tables.compactMap { session.descriptor(named: $0.id) }
-                .map { String(reflecting: $0) }.sorted())
-            parts.append(contentsOf: session.migrationDiagnostics.map { String(reflecting: $0) }.sorted())
+            // Loaded descriptors are immutable between catalog assignments;
+            // every assignment advances graphRevision, even for equal graphs.
+            // Serialize and fingerprint once, rather than repeatedly hashing
+            // the full definitions during frame/ACK checks.
+            if let cached = migrationRevisionDefinitions[tab.id], cached.graphRevision == session.graphRevision,
+               cached.source == identity, cached.version == version {
+                parts.append(contentsOf: cached.parts)
+            } else {
+                let definitions = session.tables.compactMap { session.descriptor(named: $0.id) }
+                    .map { String(reflecting: $0) }.sorted()
+                    + session.migrationDiagnostics.map { String(reflecting: $0) }.sorted()
+                let signature = ["migration_schema:\(fingerprint(definitions.joined(separator: "|")))"]
+                migrationRevisionDefinitions[tab.id] = (session.graphRevision, identity, version, signature)
+                parts.append(contentsOf: signature)
+            }
             for file in set.files(through: session.selectedMigrationVersion) {
                 let attrs = try? FileManager.default.attributesOfItem(atPath: file.url.path)
                 let modified = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
@@ -4057,15 +4484,31 @@ final class StudioAutomationCoordinator {
 
     private func viewRevision(_ tab: WorkspaceTab) -> String {
         let session = tab.session
+        let layout = session.graphLayout.snapshot(for: session.graph)
+        func positions(_ points: [String: CGPoint]) -> String {
+            points.keys.sorted().map { id in
+                let point = points[id]!
+                return "\(id):\(point.x):\(point.y)"
+            }.joined(separator: ",")
+        }
         return fingerprint([tab.id.uuidString, sourceID(tab), session.leftPane.kind.rawValue, session.rightPane.kind.rawValue,
                             String(Double(session.workspaceSplitFraction)), session.maximizedPaneSide?.rawValue ?? "split",
                             session.activePaneSide.rawValue,
                             session.selectedGraphNodeIDs.sorted().joined(separator: ","),
                             session.expandedGraphNodeIDs.sorted().joined(separator: ","),
+                            session.graphContextTableIDs.sorted().joined(separator: ","),
                             (session.automationVisibleTableIDs ?? []).sorted().joined(separator: ","),
                             String(Double(session.graphZoom)), String(Double(session.graphPan.width)), String(Double(session.graphPan.height)),
                             session.graphNodeSizeMetric.rawValue, String(session.automationViewRevision),
+                            session.graphVisuals.disabledVisuals.map(\.rawValue).sorted().joined(separator: ","),
+                            String(session.showAllGraphTableCards), String(session.showClusterHalos),
+                            String(session.graphRevision), String(session.graphGroupingRevision), String(session.schemaSidecarRevision),
+                            String(session.automationFocusResetRevision),
+                            session.automationFocusCommand?.id.uuidString ?? "no-focus",
+                            positions(layout.positions), positions(layout.pinnedPositions),
                             session.activeTab?.id.uuidString ?? "no-table",
+                            String(tab.session.activeTab?.revision ?? 0), String(tab.session.activeTab?.isLoading ?? false),
+                            session.graphVisibleTableIDs.sorted().map { "\($0):\(session.graphRowCounts[$0] ?? -1)" }.joined(separator: ","),
                             String(describing: session.activeTab?.queryState),
                             session.queryWorkspace.activeQueryID?.uuidString ?? "no-query",
                             session.records.current?.id ?? "no-record",
@@ -4123,6 +4566,7 @@ final class StudioAutomationCoordinator {
                 "left_pane": session.leftPane.kind.rawValue, "right_pane": session.rightPane.kind.rawValue,
                 "split_fraction": Double(session.workspaceSplitFraction), "maximized_pane": nullable(session.maximizedPaneSide?.rawValue),
                 "selected_table_ids": session.selectedGraphNodeIDs.sorted(), "expanded_table_ids": session.expandedGraphNodeIDs.sorted(),
+                "highlight_table_ids": session.graphContextTableIDs.sorted(),
                 "visible_table_ids": session.graphVisibleTableIDs.sorted(), "zoom": Double(session.graphZoom),
                 "rendered_table_ids": session.automationRenderedTableIDs.sorted(), "visual_state": visualState(tab),
                 "pan": ["x": Double(session.graphPan.width), "y": Double(session.graphPan.height)],
@@ -4134,6 +4578,10 @@ final class StudioAutomationCoordinator {
     }
 
     private func visualState(_ tab: WorkspaceTab) -> String {
+        if let frame = inlineViewer(in: tab)?.displayedFrame, frame.ready, frame.viewRevision == viewRevision(tab),
+           frame.surface != "graph" || isCurrentEmbeddedFrame(frame, in: tab) {
+            return "rendered_inline"
+        }
         guard workspaces.activeTabID == tab.id, hasVisibleAppWindow else { return "applied_in_background" }
         guard tab.session.isSchemaPaneVisiblyDisplayed else { return "graph_not_visible" }
         return tab.session.automationRenderedViewRevision == tab.session.automationViewRevision ? "rendered_in_foreground" : "applied_waiting_for_render"
@@ -4364,9 +4812,9 @@ final class StudioAutomationCoordinator {
          "error": nullable(table.inlineErrorMessage), "view_revision": viewRevision(workspace)]
     }
 
-    private func queryPayload(_ result: QueryResult, id: String, tab: WorkspaceTab, offset: Int = 0, limit: Int = 100) -> [String: Any] {
+    private func queryPayload(_ result: QueryResult, sql: String, id: String, tab: WorkspaceTab, offset: Int = 0, limit: Int = 100) -> [String: Any] {
         let page = Array(result.rows.dropFirst(offset).prefix(limit))
-        return ["result_id": id, "workspace_id": tab.id.uuidString, "row_count": result.rows.count,
+        return ["result_id": id, "workspace_id": tab.id.uuidString, "executed_sql": sql, "row_count": result.rows.count,
          "offset": offset, "returned_rows": page.count, "has_more": offset + page.count < result.rows.count,
          "source_truncated": result.isTruncated,
          "columns": result.columns.map { ["id": $0.id, "name": $0.name, "type": $0.typeLabel] as [String: Any] },
@@ -4497,13 +4945,13 @@ final class StudioAutomationCoordinator {
         }
     }
 
-    private static func result(_ message: String, _ structured: [String: Any], error: Bool = false) -> Data {
+    private static func result(_ message: String, _ structured: [String: Any], error: Bool = false, maximumBytes: Int = 1_048_576) -> Data {
         let response: [String: Any] = ["content": [["type": "text", "text": message]], "structuredContent": structured, "isError": error]
         guard let data = try? JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]) else {
             return Data("{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"Result serialization failed.\"}]}".utf8)
         }
-        guard data.count <= 1_048_576 else {
-            return Data("{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"The tool response exceeded 1 MiB. Narrow the tables, columns, or row limit and retry.\"}],\"structuredContent\":{\"error\":{\"code\":\"LIMIT_REACHED\",\"recovery\":\"Narrow the request and retry.\"}}}".utf8)
+        guard data.count <= maximumBytes else {
+            return Data("{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"The tool response exceeded its bounded size. Narrow the tables, columns, or row limit and retry.\"}],\"structuredContent\":{\"error\":{\"code\":\"LIMIT_REACHED\",\"recovery\":\"Narrow the request and retry.\"}}}".utf8)
         }
         return data
     }

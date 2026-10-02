@@ -73,8 +73,6 @@ struct SchemaReviewWorkspaceView: View {
     }
 
     private var selected: SchemaTableChange? { session.selectedGraphNodeID.flatMap { session.schemaReviewChanges[$0] } }
-    private var historicalArtifact: HistoricalExplanationArtifact? { session.historicalExplanationArtifact }
-    private var isHistoricalExplanation: Bool { historicalArtifact != nil }
 
     var body: some View {
         let order = TableOrder(session.schemaReviewChanges)
@@ -96,7 +94,7 @@ struct SchemaReviewWorkspaceView: View {
                                 .padding(.horizontal, 8).padding(.vertical, 4)
                                 .background(Color.blue.opacity(0.1), in: Capsule())
                         }
-                        if !isHistoricalExplanation && review.proposal == nil && !review.notes.isEmpty {
+                        if review.proposal == nil && !review.notes.isEmpty {
                             Menu {
                                 ForEach(Array(review.notes.enumerated()), id: \.offset) { _, note in Text(note) }
                             } label: {
@@ -108,16 +106,11 @@ struct SchemaReviewWorkspaceView: View {
                             .accessibilityLabel("Review notes")
                         }
                     }
-                        Text(isHistoricalExplanation ? "Historical capture · \(review.headRef)" : "\(review.baseRef) → \(review.headRef)")
+                        Text("\(review.baseRef) → \(review.headRef)")
                             .font(.caption.monospaced()).lineLimit(1).textSelection(.enabled)
                 }
                 Spacer()
-                if isHistoricalExplanation {
-                    Text("\(order.all.count) captured \(order.all.count == 1 ? "table" : "tables")").font(.callout)
-                    Label("Offline snapshot", systemImage: "clock.arrow.circlepath").foregroundStyle(.secondary)
-                } else {
-                    changeSummary(order).font(.callout)
-                }
+                changeSummary(order).font(.callout)
             }
             .padding(.horizontal, 16)
             GeometryReader { geometry in
@@ -130,28 +123,21 @@ struct SchemaReviewWorkspaceView: View {
                     .contentShape(Rectangle())
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text(isHistoricalExplanation ? "Captured tables" : "Tables").font(.headline)
+                        Text("Tables").font(.headline)
                         Spacer()
-                        if !isHistoricalExplanation && !session.isSchemaReviewFullModelView {
+                        if !session.isSchemaReviewFullModelView {
                             Toggle("Changes only", isOn: $onlyChanges).toggleStyle(.checkbox)
                         }
                     }
                     TextField("Find a table", text: $search).textFieldStyle(.roundedBorder)
                     tableList(order).frame(minHeight: 100, idealHeight: 170, maxHeight: 220)
                     Divider()
-                    if let historicalArtifact {
-                        HistoricalExplanationDetailsView(artifact: historicalArtifact, selectedTable: selected?.table,
-                                                        replayView: session.historicalReplayView,
-                                                        currentLeftPane: session.leftPane.kind,
-                                                        currentRightPane: session.rightPane.kind)
-                    } else {
-                        changeSetBar()
-                    }
-                    if historicalArtifact == nil, session.isSchemaReviewFullModelView, let table = selected?.after {
+                    changeSetBar()
+                    if session.isSchemaReviewFullModelView, let table = selected?.after {
                         SchemaReviewAfterTableDetail(table: table, relations: review.after.relations)
-                    } else if historicalArtifact == nil, let selected, !session.isSchemaReviewFullModelView {
+                    } else if let selected, !session.isSchemaReviewFullModelView {
                         SchemaReviewTableDetail(change: selected, relations: review.relationChanges, isPreview: review.proposal != nil)
-                    } else if historicalArtifact == nil { allChangesSummary(order.changed) }
+                    } else { allChangesSummary(order.changed) }
                 }
                 .padding(16)
                 .frame(minWidth: 320, idealWidth: geometry.size.width * 0.44, maxWidth: .infinity)
@@ -160,11 +146,9 @@ struct SchemaReviewWorkspaceView: View {
                 .clipped()
               }
             }
-            if isHistoricalExplanation || review.proposal != nil {
+            if review.proposal != nil {
                 HStack {
-                    Text(isHistoricalExplanation
-                        ? "Historical schema and explicitly saved rows · no live source or queries · values may be truncated"
-                        : "Preview · no SQL executed · updates automatically")
+                    Text("Preview · no SQL executed · updates automatically")
                         .font(.caption).foregroundStyle(.secondary)
                     if let error = session.schemaPreviewReloadError {
                         Label("Preview update failed", systemImage: "exclamationmark.triangle")
@@ -178,7 +162,6 @@ struct SchemaReviewWorkspaceView: View {
             }
         }
         .padding(.vertical, 16)
-        .onAppear { if isHistoricalExplanation { onlyChanges = false } }
         .task(id: review.proposal == nil ? nil : session.databaseURL) {
             guard review.proposal != nil else { return }
             while !Task.isCancelled {
@@ -247,8 +230,8 @@ struct SchemaReviewWorkspaceView: View {
                 SchemaChangeBadge(change: change)
             }
             .padding(8)
-            .background(isSelected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .background(isSelected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: StudioCornerRadius.row))
+            .contentShape(RoundedRectangle(cornerRadius: StudioCornerRadius.row))
             .opacity(kind == .removed ? 0.7 : 1)
         }
         .buttonStyle(.plain)
@@ -338,184 +321,6 @@ private struct SchemaReviewAfterTableDetail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .id(table.id)
-    }
-}
-
-private struct HistoricalExplanationDetailsView: View {
-    let artifact: HistoricalExplanationArtifact
-    let selectedTable: SchemaReviewSnapshot.Table?
-    let replayView: HistoricalExplanationArtifact.CapturedReplayView?
-    let currentLeftPane: PaneContentKind
-    let currentRightPane: PaneContentKind
-
-    private var tablePages: [HistoricalExplanationArtifact.CapturedTablePage] {
-        selectedTable.map { table in artifact.tablePages.filter { $0.tableID == table.id } } ?? []
-    }
-
-    private var replayPane: PaneContentKind? {
-        guard let replayView else { return nil }
-        let right = replayView.rightPane.flatMap(PaneContentKind.init(rawValue:))
-        let left = replayView.leftPane.flatMap(PaneContentKind.init(rawValue:))
-        if let right, right != .schema { return right }
-        if let left, left != .schema { return left }
-        if !replayView.tablePages.isEmpty && replayView.queryResults.isEmpty { return .tables }
-        if replayView.tablePages.isEmpty && !replayView.queryResults.isEmpty { return .query }
-        return right ?? left ?? (currentRightPane == .schema ? currentLeftPane : currentRightPane)
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(selectedTable?.displayName ?? "Saved explanation")
-                    .font(.headline).textSelection(.enabled)
-                Text("Captured \(artifact.capturedAt.formatted(date: .abbreviated, time: .shortened)) · historical data")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let replayView {
-                    historicalReplayContent(replayView)
-                } else {
-                    if let selectedTable {
-                        Text("Fields").font(.subheadline.bold())
-                        ForEach(selectedTable.columns) { column in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(column.name).font(.caption.monospaced())
-                                Spacer(minLength: 4)
-                                Text(column.description).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        if !tablePages.isEmpty {
-                            ForEach(Array(tablePages.enumerated()), id: \.offset) { _, tablePage in
-                                CapturedExplanationRows(label: "Saved table rows from row \(tablePage.displayedOffset + 1)",
-                                    columns: tablePage.columns, rows: tablePage.rows, omittedRows: tablePage.omittedRows)
-                            }
-                        } else {
-                            Text("No table rows were included for this table.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    if !artifact.queryResults.isEmpty {
-                        Divider()
-                        Text("Captured query results").font(.subheadline.bold())
-                        ForEach(artifact.queryResults, id: \.resultID) { result in
-                            CapturedExplanationRows(label: "Result · rows from \(result.displayedOffset + 1)",
-                                columns: result.columns, rows: result.rows, omittedRows: result.omittedRows)
-                        }
-                    }
-                    if !artifact.points.isEmpty {
-                        Divider()
-                        Text("Explanation captions").font(.subheadline.bold())
-                        ForEach(artifact.points, id: \.id) { point in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(point.caption).font(.caption)
-                                if let narration = point.narration, !narration.isEmpty {
-                                    Text(narration).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 4)
-        }
-    }
-
-    @ViewBuilder
-    private func historicalReplayContent(_ view: HistoricalExplanationArtifact.CapturedReplayView) -> some View {
-        Text(view.caption).font(.subheadline.weight(.medium)).textSelection(.enabled)
-        Text("Showing only rows saved for this explanation step. The original source is not contacted.")
-            .font(.caption).foregroundStyle(.secondary)
-
-        switch replayPane {
-        case .some(.schema):
-            if let selectedTable {
-                Text("Fields · \(selectedTable.displayName)").font(.subheadline.bold())
-                ForEach(selectedTable.columns) { column in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(column.name).font(.caption.monospaced())
-                        Spacer(minLength: 4)
-                        Text(column.description).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Text("No table is selected for this step.").font(.caption).foregroundStyle(.secondary)
-            }
-        case .some(.tables):
-            Text("Captured table rows").font(.subheadline.bold())
-            if view.tablePages.isEmpty {
-                Text("No table rows were included for this step.").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(view.tablePages.enumerated()), id: \.offset) { _, page in
-                    let name = artifact.schema.tables.first(where: { $0.id == page.tableID })?.displayName ?? page.tableID
-                    CapturedExplanationRows(label: "\(name) · rows from \(page.displayedOffset + 1)",
-                        columns: page.columns, rows: page.rows, omittedRows: page.omittedRows)
-                }
-            }
-        case .some(.query):
-            Text("Captured query results").font(.subheadline.bold())
-            if view.queryResults.isEmpty {
-                Text("No query rows were included for this step.").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(view.queryResults, id: \.resultID) { result in
-                    CapturedExplanationRows(label: "Result · rows from \(result.displayedOffset + 1)",
-                        columns: result.columns, rows: result.rows, omittedRows: result.omittedRows)
-                }
-            }
-        case .none:
-            if view.tablePages.isEmpty && view.queryResults.isEmpty {
-                Text("No table or query rows were included for this step.").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(view.tablePages.enumerated()), id: \.offset) { _, page in
-                    let name = artifact.schema.tables.first(where: { $0.id == page.tableID })?.displayName ?? page.tableID
-                    CapturedExplanationRows(label: "\(name) · rows from \(page.displayedOffset + 1)",
-                        columns: page.columns, rows: page.rows, omittedRows: page.omittedRows)
-                }
-                ForEach(view.queryResults, id: \.resultID) { result in
-                    CapturedExplanationRows(label: "Result · rows from \(result.displayedOffset + 1)",
-                        columns: result.columns, rows: result.rows, omittedRows: result.omittedRows)
-                }
-            }
-        }
-    }
-}
-
-private struct CapturedExplanationRows: View {
-    let label: String
-    let columns: [HistoricalExplanationArtifact.CapturedColumn]
-    let rows: [HistoricalExplanationArtifact.CapturedRow]
-    let omittedRows: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label).font(.caption.bold())
-            ScrollView(.horizontal) {
-                VStack(alignment: .leading, spacing: 2) {
-                    row(columns.map(\.name), header: true)
-                    ForEach(Array(rows.prefix(50)), id: \.ordinal) { item in
-                        row(item.values.map(display), header: false)
-                    }
-                }
-            }
-            if omittedRows > 0 {
-                Text("\(omittedRows) additional rows were not captured.").font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func row(_ values: [String], header: Bool) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            ForEach(Array(values.enumerated()), id: \.offset) { _, value in
-                Text(value).font(header ? .caption2.bold().monospaced() : .caption2.monospaced())
-                    .lineLimit(2).frame(width: 110, alignment: .leading)
-            }
-        }
-    }
-
-    private func display(_ cell: HistoricalExplanationArtifact.CapturedCell) -> String {
-        if let value = cell.value { return cell.truncated ? String(value.prefix(120)) + "…" : value }
-        if cell.type == "null" { return "NULL" }
-        if cell.type == "blob" { return "<\(cell.byteCount ?? 0) bytes>" }
-        if cell.type == "redacted" { return "Redacted" }
-        return "—"
     }
 }
 

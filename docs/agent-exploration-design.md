@@ -1,6 +1,6 @@
 # Agent-driven exploration in SQLite Graph Studio
 
-Design from the requirements interview, completed 22 September 2026. This document describes the intended product, not implemented behavior. The companion [MCP catalog](agent-exploration-mcp-tools.md) defines the proposed tools; the [delivery and validation plan](agent-exploration-validation.md) covers the complete scope.
+Historical design from the requirements interview, completed 22 September 2026. The October embedded-only direction supersedes its native narration, timed playback, player controls and saved-story reader requirements. Current explanations use manual Back/Next steps and the coding agent's text or audio; the native app has no explanation player. See the [MCP catalog](agent-exploration-mcp-tools.md) and [implementation status](agent-exploration-implementation-status.md) for current behavior. The remaining sections preserve the earlier design record.
 
 ## Product direction
 

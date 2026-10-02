@@ -52,6 +52,10 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
                 path: call.arguments["path"] as? String ?? "",
                 workingDirectory: call.workingDirectory
             )
+        case DataInlineView.toolName, DataInlineView.pageToolName:
+            return DataInlineView.result(call, transport: transport)
+        case WorkspaceInlineView.toolName, WorkspaceInlineView.frameToolName:
+            return WorkspaceInlineView.result(call, transport: transport)
         case SchemaReviewInlineView.toolName:
             // Rendered by the host from the file alone; the app is never contacted.
             if call.arguments["explanations"] != nil && !(call.arguments["explanations"] is [[String: Any]]) {

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data</title>
+<style>
+:root { color-scheme: light dark; --fb-bg: #fff; --fb-bg-2: #f6f5f1; --fb-text: #1f1e1c; --fb-muted: #66645e; --fb-border: #deddd7; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --fb-bg: #1f1f1e; --fb-bg-2: #282826; --fb-text: #f2f1ed; --fb-muted: #b7b5ad; --fb-border: #444440; }
+}
+:root[data-theme="dark"] { --fb-bg: #1f1f1e; --fb-bg-2: #282826; --fb-text: #f2f1ed; --fb-muted: #b7b5ad; --fb-border: #444440; }
+:root {
+  --bg: var(--color-background-primary, var(--fb-bg)); --bg-2: var(--color-background-secondary, var(--fb-bg-2));
+  --text: var(--color-text-primary, var(--fb-text)); --muted: var(--color-text-secondary, var(--fb-muted));
+  --border: var(--color-border-primary, var(--fb-border));
+  --font: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  --mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; color: var(--text); background: transparent; font: 13px/1.45 var(--font); }
+body { padding: 12px; }
+h1 { font-size: 16px; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
+.scope, .note { color: var(--muted); font-size: 12px; }
+.scope { margin: 3px 0 10px; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.toolbar .position { flex: 1; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { background: var(--bg-2); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, summary:focus-visible, .grid:focus-visible { outline: 2px solid #669cf3; outline-offset: 2px; }
+.grid { max-height: 340px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+table { width: 100%; border-collapse: separate; border-spacing: 0; font: 12px/1.5 var(--mono); }
+th, td { padding: 0; text-align: left; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr > :last-child { border-right: 0; }
+tbody tr:last-child > * { border-bottom: 0; }
+thead th { position: sticky; top: 0; z-index: 1; padding: 7px 10px; background: var(--bg-2); font-weight: 600; }
+thead .type { display: block; color: var(--muted); font: 10px/1.4 var(--font); font-weight: 400; }
+.row-number { width: 40px; padding: 7px 10px; color: var(--muted); background: var(--bg-2); font-weight: 400; text-align: right; font-variant-numeric: tabular-nums; }
+.cell { display: block; width: 100%; max-width: 320px; min-width: 72px; padding: 7px 10px; border: 0; border-radius: 0; background: transparent; text-align: left; font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.cell.numeric { text-align: right; }
+.cell.special { color: var(--muted); font-style: italic; }
+.cell.partial::after { content: " · partial"; color: var(--muted); font: 10px var(--font); }
+.empty { padding: 24px 10px; color: var(--muted); text-align: center; }
+.status { margin: 0 0 10px; color: var(--muted); }
+.status.error, .warning { color: var(--color-text-danger, #b85326); }
+.note { margin: 8px 0 0; }
+details { margin-top: 10px; }
+summary { color: var(--muted); cursor: pointer; }
+pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin: 8px 0 0; font: 12px/1.5 var(--mono); }
+.detail { margin-top: 10px; }
+.detail-header { display: flex; align-items: center; gap: 8px; }
+.detail-header strong { flex: 1; overflow-wrap: anywhere; }
+@media (max-width: 400px) { body { padding: 8px; } .toolbar { gap: 6px; } .toolbar .position { flex-basis: 100%; } button { padding: 4px 8px; } }
+</style>
+</head>
+<body>
+<p id="status" class="status" role="status">Loading data…</p>
+<main id="view" hidden>
+  <h1 id="title"></h1>
+  <div id="scope" class="scope"></div>
+  <div id="grid" class="grid" tabindex="0" aria-label="Read-only data grid">
+    <table id="table"><thead id="head"></thead><tbody id="rows"></tbody></table>
+    <div id="empty" class="empty" hidden>No rows in this page.</div>
+  </div>
+  <div class="toolbar">
+    <span id="position" class="position" aria-live="polite"></span>
+    <button id="reload" type="button">Refresh page</button>
+    <button id="prev" type="button">Previous</button>
+    <button id="next" type="button">Next</button>
+  </div>
+  <p id="warning" class="note warning" hidden></p>
+  <p id="note" class="note"></p>
+  <details id="selection"><summary id="selection-label"></summary><pre id="selection-text"></pre></details>
+  <section id="detail" class="detail" aria-label="Cell value" hidden>
+    <div class="detail-header"><strong id="detail-title"></strong><button id="close" type="button" aria-label="Close cell value">Close ×</button></div>
+    <pre id="detail-value" tabindex="0"></pre><p id="detail-note" class="note"></p>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const state = { data: null, args: null, input: null, generation: 0, busy: false, blocked: false };
+  const pending = new Map();
+  let nextID = 1;
+  let lastSize = "";
+  const post = message => window.parent.postMessage(message, "*");
+  const notify = (method, params) => post({ jsonrpc: "2.0", method, params: params || {} });
+  function request(method, params) {
+    const id = nextID++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error("The data request timed out. Try reloading this page.")); }, 45000);
+      pending.set(id, { resolve, reject, timer });
+      post({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+  function reportSize() {
+    const width = Math.ceil(document.documentElement.clientWidth);
+    const height = Math.ceil(document.body.getBoundingClientRect().height);
+    const size = width + "x" + height;
+    if (size !== lastSize) { lastSize = size; notify("ui/notifications/size-changed", { width, height }); }
+  }
+  new ResizeObserver(() => requestAnimationFrame(reportSize)).observe(document.body);
+  function applyHostContext(context) {
+    if (!context || typeof context !== "object") return;
+    if (context.theme === "light" || context.theme === "dark") document.documentElement.dataset.theme = context.theme;
+    const variables = context.styles && context.styles.variables;
+    if (variables && typeof variables === "object") {
+      for (const [key, value] of Object.entries(variables)) {
+        if (key.startsWith("--") && typeof value === "string") document.documentElement.style.setProperty(key, value);
+      }
+    }
+  }
+  function status(message, isError) {
+    $("status").textContent = message;
+    $("status").className = isError ? "status error" : "status";
+    $("status").hidden = !message;
+    requestAnimationFrame(reportSize);
+  }
+  function textOf(result) {
+    return (result.content || []).filter(item => item.type === "text").map(item => item.text).join("\n");
+  }
+  function failure(result) {
+    const info = result.structuredContent && result.structuredContent.error || {};
+    const error = new Error(info.message || textOf(result) || "This data page is unavailable.");
+    error.code = info.code;
+    return error;
+  }
+  function showError(error) {
+    state.busy = false;
+    state.blocked = ["STALE_SOURCE", "OBJECT_NOT_FOUND", "CONTEXT_EXPIRED", "CONTEXT_WORKSPACE_MISMATCH", "CONTEXT_REQUIRED", "WORKSPACE_IN_USE"].includes(error.code);
+    status(error.message + (state.data ? " The last fetched page is still shown." : ""), true);
+    updateControls();
+  }
+  function handleResult(result) {
+    state.generation++;
+    state.busy = false;
+    if (result.isError) { showError(failure(result)); return; }
+    const data = result.structuredContent;
+    if (!data || data.format !== "sqlite-graph-studio/data-view" || !Array.isArray(data.columns) || !Array.isArray(data.rows)) {
+      showError(new Error("This result has no data grid to show.")); return;
+    }
+    const meta = result._meta && result._meta.dataView;
+    const route = meta && meta.arguments || state.input;
+    state.args = route && route.context_id ? { ...route } : null;
+    if (state.args) {
+      for (const key of ["workspace_id", "source_id", "source_revision"]) {
+        if (typeof data[key] === "string") state.args[key] = data[key];
+      }
+      state.args.offset = data.offset || 0;
+      state.args.limit = data.page_size || state.args.limit || 50;
+      state.args.title = data.title;
+    }
+    state.data = data;
+    state.blocked = false;
+    status(state.args ? "" : "Saved page. Reconnect Graph Studio to load more rows.");
+    render();
+  }
+  function updateControls() {
+    const unavailable = state.busy || state.blocked || !state.args;
+    $("grid").setAttribute("aria-busy", String(state.busy));
+    $("reload").disabled = unavailable;
+    $("prev").disabled = unavailable || !state.data || state.data.offset <= 0;
+    $("next").disabled = unavailable || !state.data || !state.data.has_more;
+  }
+  function cellLabel(cell) {
+    if (cell.type === "null") return "NULL";
+    if (cell.type === "blob") return "Binary · " + (cell.byte_count || 0) + " bytes";
+    const value = cell.value == null ? "" : String(cell.value);
+    return value === "" ? '""' : value;
+  }
+  function showCell(cell, name, row, trigger) {
+    $("detail-title").textContent = "Row " + row + " · " + name + " · " + (cell.type || "value");
+    $("detail-value").textContent = cellLabel(cell);
+    $("detail-note").textContent = cell.type === "blob" ? "Binary contents are omitted from this page."
+      : cell.truncated ? "Partial value. This page contains only the first 4,096 characters. Ask to inspect the value in slices."
+      : cell.type === "null" ? "SQL NULL." : "Exact value from the fetched page.";
+    $("detail").hidden = false;
+    $("detail-value").focus({ preventScroll: true });
+    $("close").onclick = () => { $("detail").hidden = true; trigger.focus({ preventScroll: true }); reportSize(); };
+    reportSize();
+  }
+  function render() {
+    const data = state.data;
+    $("view").hidden = false;
+    $("title").textContent = data.title || data.table_id || "Query result";
+    $("table").setAttribute("aria-label", $("title").textContent);
+    $("scope").textContent = data.kind === "query" ? "Query · Captured result · Read only" : "Table · Live rows · Read only";
+    const columns = data.columns.map((column, index) => typeof column === "string" ? { name: column, id: index } : column);
+    const header = document.createElement("tr");
+    const corner = document.createElement("th"); corner.scope = "col"; corner.textContent = "Row"; corner.className = "row-number"; header.appendChild(corner);
+    for (const column of columns) {
+      const th = document.createElement("th"); th.scope = "col"; th.textContent = column.name;
+      if (column.type) { const type = document.createElement("span"); type.className = "type"; type.textContent = column.type; th.appendChild(type); }
+      header.appendChild(th);
+    }
+    $("head").replaceChildren(header);
+    const body = document.createDocumentFragment();
+    data.rows.forEach((row, index) => {
+      const tr = document.createElement("tr");
+      const number = (data.offset || 0) + index + 1;
+      const label = document.createElement("th"); label.scope = "row"; label.className = "row-number"; label.textContent = number; tr.appendChild(label);
+      columns.forEach((column, position) => {
+        const td = document.createElement("td");
+        const cell = row.values && row.values[position];
+        if (cell) {
+          const button = document.createElement("button"); button.type = "button"; button.className = "cell";
+          if (["integer", "real", "numeric", "decimal", "double", "float"].includes(cell.type)) button.classList.add("numeric");
+          if (cell.type === "null" || cell.type === "blob" || cell.value === "") button.classList.add("special");
+          if (cell.truncated) button.classList.add("partial");
+          button.textContent = cellLabel(cell);
+          button.setAttribute("aria-label", "Inspect row " + number + ", " + column.name + ", column " + (position + 1));
+          button.addEventListener("click", () => showCell(cell, column.name, number, button));
+          td.appendChild(button);
+        } else { td.textContent = "—"; }
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    $("rows").replaceChildren(body);
+    $("empty").hidden = data.rows.length > 0;
+    $("detail").hidden = true;
+    const range = data.rows.length ? "Rows " + ((data.offset || 0) + 1) + "–" + ((data.offset || 0) + data.rows.length) : "No rows in this page";
+    $("position").textContent = range + (data.kind === "query" ? " · " + data.row_count + " captured" : "");
+    $("reload").textContent = data.kind === "query" ? "Reload page" : "Refresh page";
+    $("warning").hidden = !data.source_truncated;
+    $("warning").textContent = "Partial query result: the query reached its row cap. " + data.row_count + " rows were captured.";
+    $("note").textContent = data.kind === "query" ? "Pages use the same captured result. Reloading a page does not rerun SQL."
+      : "Live pages may change as the database changes. No total row count is assumed.";
+    $("selection-label").textContent = data.kind === "query" ? "Executed SQL" : "Table selection";
+    const args = state.args || {};
+    const comparisons = { contains: "contains", equal: "=", notEqual: "≠", lessThan: "<", lessThanOrEqual: "≤", greaterThan: ">", greaterThanOrEqual: "≥", between: "between", isNull: "is NULL", isNotNull: "is not NULL" };
+    const selection = ["Table: " + data.table_id, "Columns: " + columns.map(column => column.name).join(", ")];
+    if (args.search_text) selection.push("Search: " + args.search_text);
+    for (const filter of args.filters || []) {
+      let line = filter.column_name + " " + (comparisons[filter.comparison || "equal"] || filter.comparison);
+      if (!["isNull", "isNotNull"].includes(filter.comparison)) line += " " + JSON.stringify(filter.value || "");
+      if (filter.comparison === "between") line += " and " + JSON.stringify(filter.upper_value || "");
+      selection.push("Filter: " + line);
+    }
+    for (const sort of args.sort || []) selection.push("Order: " + sort.column_name + " " + (sort.direction === "descending" ? "DESC" : "ASC"));
+    $("selection-text").textContent = data.kind === "query" ? data.executed_sql || "SQL is unavailable for this saved page." : selection.join("\n");
+    updateControls();
+    requestAnimationFrame(reportSize);
+  }
+  async function loadPage(offset) {
+    if (state.busy || state.blocked || !state.args) return;
+    const generation = ++state.generation;
+    state.busy = true;
+    status("Loading data…");
+    updateControls();
+    try {
+      const result = await request("tools/call", { name: "studio_data_page", arguments: { ...state.args, offset } });
+      if (state.generation !== generation) return;
+      handleResult(result || {});
+    } catch (error) {
+      if (state.generation === generation) showError(error);
+    }
+  }
+  $("reload").addEventListener("click", () => loadPage(state.data.offset || 0));
+  $("prev").addEventListener("click", () => loadPage(Math.max(0, (state.data.offset || 0) - state.args.limit)));
+  $("next").addEventListener("click", () => loadPage((state.data.offset || 0) + state.data.rows.length));
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !$("detail").hidden) { event.preventDefault(); $("close").click(); }
+  });
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && !message.method) {
+      const waiting = pending.get(message.id);
+      if (waiting) { pending.delete(message.id); clearTimeout(waiting.timer); message.error ? waiting.reject(new Error(message.error.message || "Request failed")) : waiting.resolve(message.result); }
+      return;
+    }
+    switch (message.method) {
+      case "ui/notifications/tool-input":
+        state.input = message.params && message.params.arguments;
+        state.generation++; state.busy = true; status("Loading data…"); updateControls(); break;
+      case "ui/notifications/tool-result": handleResult(message.params || {}); break;
+      case "ui/notifications/tool-cancelled":
+        state.generation++; showError(new Error("The data request was cancelled.")); break;
+      case "ui/notifications/host-context-changed": applyHostContext(message.params); break;
+      case "ui/resource-teardown":
+        state.generation++;
+        for (const waiting of pending.values()) { clearTimeout(waiting.timer); waiting.reject(new Error("The data view was closed.")); }
+        pending.clear();
+        if (message.id !== undefined) post({ jsonrpc: "2.0", id: message.id, result: {} });
+        break;
+      case "ping": if (message.id !== undefined) post({ jsonrpc: "2.0", id: message.id, result: {} }); break;
+      default: if (message.id !== undefined) post({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
+    }
+  });
+  request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "SQLite Graph Studio data", version: "1.0.0" }, appCapabilities: { availableDisplayModes: ["inline"] } })
+    .then(result => applyHostContext(result && result.hostContext)).catch(() => {}).finally(() => notify("ui/notifications/initialized"));
+})();
+</script>
+</body>
+</html>

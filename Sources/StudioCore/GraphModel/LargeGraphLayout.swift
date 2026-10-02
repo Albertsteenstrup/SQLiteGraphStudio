@@ -135,7 +135,7 @@ enum LargeGraphLayout {
             }
         }
 
-        let nodeGap: CGFloat = presentation == .compact ? 24 : 36
+        let nodeGap = GraphCardClearance.minimumGap
         let pieceGap: CGFloat = presentation == .compact ? 48 : 72
         let groupGap: CGFloat = presentation == .compact ? 112 : 160
         var metrics = LargeGraphLayoutMetrics()

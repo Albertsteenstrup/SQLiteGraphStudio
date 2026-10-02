@@ -4,9 +4,12 @@ import SwiftUI
 
 public struct StudioRootView: View {
     @State private var workspaceTabs: WorkspaceTabController
+    private let frameCaptures: WorkspaceFrameCaptureRegistry?
 
-    public init(session: AppSession, workspaceTabs: WorkspaceTabController? = nil) {
+    public init(session: AppSession, workspaceTabs: WorkspaceTabController? = nil,
+                frameCaptures: WorkspaceFrameCaptureRegistry? = nil) {
         _workspaceTabs = State(initialValue: workspaceTabs ?? WorkspaceTabController(initialSession: session))
+        self.frameCaptures = frameCaptures
     }
 
     public var body: some View {
@@ -17,6 +20,12 @@ public struct StudioRootView: View {
                     session: activeTab.session,
                     chooseSource: { workspaceTabs.presentOpenPanel() }
                 )
+                .background {
+                    if let frameCaptures {
+                        WorkspaceFrameRegistration(workspaceID: activeTab.id, registry: frameCaptures)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .id(activeTab.id)
             } else {
                 Color.clear
@@ -157,7 +166,10 @@ private struct WorkspaceSessionRootView: View {
         ZStack {
             rootBackground
 
-            if let review = session.schemaReview {
+            if session.historicalExplanationArtifact != nil {
+                SchemaGraphView(session: session)
+                    .padding(WorkspaceCompactLayout.workspaceInset)
+            } else if let review = session.schemaReview {
                 SchemaReviewWorkspaceView(session: session, review: review)
             } else if session.hasOpenDatabase {
                 WorkspaceLayoutView(session: session)
@@ -189,6 +201,7 @@ private struct WorkspaceSessionRootView: View {
         .overlay {
             if let scan = session.projectScan {
                 ProjectScanOverlayView(state: scan) { session.cancelProjectScan() }
+                    .background(WorkspaceFrameCaptureRegion())
             } else if let progress = session.documentOpenProgress {
                 VStack(spacing: 14) {
                     ProgressView()
@@ -196,7 +209,8 @@ private struct WorkspaceSessionRootView: View {
                     Button("Cancel") { session.cancelDocumentOpen() }
                 }
                 .padding(28)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
+                .background(WorkspaceFrameCaptureRegion())
             }
         }
         .overlay(alignment: .bottom) {
@@ -222,7 +236,7 @@ private struct WorkspaceSessionRootView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: 620)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
                 }
                 if !session.metadataDiagnostics.isEmpty, !metadataIssuesDismissed {
                     HStack(alignment: .top, spacing: 8) {
@@ -250,7 +264,7 @@ private struct WorkspaceSessionRootView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: 620)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
                     .background(GraphInputExclusionRegion())
                 }
                 if let refreshToast = session.refreshToast {
@@ -275,6 +289,7 @@ private struct WorkspaceSessionRootView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .background(WorkspaceFrameCaptureRegion())
             .padding(.bottom, 20)
         }
         .overlay(alignment: .top) {
@@ -509,6 +524,7 @@ private struct WorkspaceLayoutView: View {
 
                 if fullscreenSide == nil || isCompactSinglePane {
                     WorkspaceDockView(session: session, visibleKinds: visiblePaneKinds)
+                        .background(WorkspaceFrameCaptureRegion())
                         .padding(.bottom, 18)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -600,13 +616,14 @@ private struct PaneShell: View {
                 PaneContentView(session: session, kind: paneState.kind, side: side)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(RoundedRectangle(cornerRadius: 32, style: .continuous)
+            .background(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(StudioPalette.chromeFill.opacity(0.88)))
             .overlay {
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
+            .background(WorkspaceFrameCaptureRegion(cornerRadius: StudioCornerRadius.surface))
 
             paneHeader
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -669,7 +686,7 @@ private struct PaneShell: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: showsDatabaseName)
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .background(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
             .fill(isMaximized || (isDropTargeted || session.activePaneSide == side)
                   ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill))
         .padding(.horizontal, 18)
@@ -677,7 +694,7 @@ private struct PaneShell: View {
         .padding(.bottom, 4)
         // Use contentShape so only the visible pill intercepts events,
         // not the transparent padding area where graph controls live.
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
         .onTapGesture { session.setActivePaneSide(side) }
     }
 
@@ -736,19 +753,19 @@ private struct WorkspacePaneContainer: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .fill(StudioPalette.chromeFill.opacity(0.88))
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .stroke(borderColor, lineWidth: isDropTargeted || session.activePaneSide == side ? 1.4 : 1.0)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
             
             paneHeader
                 .zIndex(100)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
         .onTapGesture {
             session.setActivePaneSide(side)
         }
@@ -782,7 +799,7 @@ private struct WorkspacePaneContainer: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill((isDropTargeted || session.activePaneSide == side) ? StudioPalette.chromeFillStrong : StudioPalette.chromeFill)
         )
         .padding(.horizontal, 18)
@@ -812,8 +829,8 @@ private struct PaneHeaderIconButton: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(StudioPalette.secondaryText)
                 .frame(width: 30, height: 30)
-                .background(StudioPalette.headerSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .background(StudioPalette.headerSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .help(title)
@@ -842,7 +859,7 @@ private struct WorkspaceDockView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .studioGlassCard(cornerRadius: 24, tint: Color.white, strokeOpacity: 0.12)
+        .studioGlassCard(cornerRadius: StudioCornerRadius.surface, tint: Color.white, strokeOpacity: 0.12)
     }
 }
 
@@ -950,9 +967,9 @@ private struct OpenTablePickerView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .stroke(StudioPalette.borderSoft)
             }
             .frame(minWidth: 460, minHeight: 340, maxHeight: 480)
@@ -1048,7 +1065,7 @@ private struct OpenTablePickerView: View {
                 .padding(.vertical, 7)
                 .padding(.horizontal, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                         .fill(isSelected ? StudioPalette.selectionSurfaceTop : .clear)
                 )
             }
@@ -1182,7 +1199,7 @@ private struct EmptyDatabaseView: View {
         .frame(maxWidth: 620)
         .padding(.horizontal, 36)
         .padding(.vertical, 42)
-        .studioGlassCard(cornerRadius: 30, tint: Color.white, strokeOpacity: 0.14)
+        .studioGlassCard(cornerRadius: StudioCornerRadius.surface, tint: Color.white, strokeOpacity: 0.14)
     }
 }
 
@@ -1195,7 +1212,7 @@ private struct StudioAppLogoView: View {
             .resizable()
             .interpolation(.high)
             .frame(width: 76, height: 76)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
             .shadow(color: StudioPalette.shadow.opacity(0.18), radius: 18, y: 10)
     }
 }
@@ -1232,14 +1249,14 @@ private struct RecentDatabaseRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(StudioPalette.chromeFillStrong.opacity(0.72))
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .stroke(StudioPalette.borderSoft)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
     }
 }
 
@@ -1270,14 +1287,14 @@ private struct MaximizedPaneView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .fill(StudioPalette.chromeFill.opacity(0.88))
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .stroke(StudioPalette.border, lineWidth: 1.4)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
             // Note: clipShape is applied to the content VStack only, so maximizedHeader
             // and its menus can overflow the clip boundary without being clipped.
 
@@ -1324,7 +1341,7 @@ private struct MaximizedPaneView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(StudioPalette.chromeFillStrong)
         )
         .padding(.horizontal, 18)
@@ -1390,7 +1407,7 @@ private struct CreateTableSheetView: View {
                 .frame(height: 110)
                 .scrollContentBackground(.hidden)
                 .background(StudioPalette.editorSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
 
             HStack {
                 Spacer()
@@ -1538,7 +1555,7 @@ private struct RefreshToastView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: 440)
-        .studioGlassCard(cornerRadius: 22, tint: Color.white, strokeOpacity: 0.12)
+        .studioGlassCard(cornerRadius: StudioCornerRadius.surface, tint: Color.white, strokeOpacity: 0.12)
         .accessibilityLabel(message)
     }
 }
@@ -1582,7 +1599,7 @@ private struct SkillsToastView: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        .studioGlassCard(cornerRadius: 24, tint: Color.white, strokeOpacity: 0.12)
+        .studioGlassCard(cornerRadius: StudioCornerRadius.surface, tint: Color.white, strokeOpacity: 0.12)
     }
 }
 
@@ -1612,9 +1629,9 @@ private struct SkillsPickerView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(StudioPalette.gridSurface, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                     .stroke(StudioPalette.borderSoft)
             }
             .frame(minWidth: 500, minHeight: 240, maxHeight: 420)
@@ -1764,7 +1781,7 @@ private struct SkillsPickerView: View {
                         .padding(10)
                 }
                 .frame(maxHeight: 200)
-                .background(StudioPalette.editorSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(StudioPalette.editorSurface, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }

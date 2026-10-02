@@ -1,5 +1,11 @@
 import SwiftUI
 
+public enum StudioCornerRadius {
+    public static let surface: CGFloat = 8
+    public static let control: CGFloat = 6
+    public static let row: CGFloat = 4
+}
+
 public enum StudioPalette {
     public static let accent = Color.black.opacity(0.92)
     public static let accentSoft = Color.black.opacity(0.72)
@@ -78,7 +84,7 @@ public struct StudioGlassCardModifier: ViewModifier {
 
 public extension View {
     func studioGlassCard(
-        cornerRadius: CGFloat = 18,
+        cornerRadius: CGFloat = StudioCornerRadius.surface,
         tint: Color? = nil,
         strokeOpacity: Double = 0.14
     ) -> some View {

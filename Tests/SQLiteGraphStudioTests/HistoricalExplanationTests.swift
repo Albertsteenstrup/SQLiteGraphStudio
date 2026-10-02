@@ -52,7 +52,7 @@ import Testing
         #expect(try Data(contentsOf: url) == saved)
     }
 
-    @Test func historicalArtifactOpensOfflineWithCapturedGraphAndRows() async throws {
+    @Test func historicalModelImportsOfflineForEmbeddedMCPWithCapturedGraphAndRows() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("capture.sgexplanation")
         try HistoricalExplanationStore.write(artifact(), to: url)
@@ -61,7 +61,7 @@ import Testing
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let session = AppSession(userDefaults: defaults)
-        await session.openDocument(url: url)
+        session.openHistoricalExplanation(try HistoricalExplanationStore.load(url), from: url)
 
         #expect(session.presentedError == nil)
         #expect(session.historicalExplanationArtifact?.tablePages.first?.rows.first?.values.first?.value == "42")
@@ -111,7 +111,7 @@ import Testing
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let session = AppSession(userDefaults: defaults)
-        await session.openDocument(url: url)
+        session.openHistoricalExplanation(try HistoricalExplanationStore.load(url), from: url)
         #expect(session.databaseURL == nil)
         #expect(session.databaseTarget == nil)
 
@@ -138,32 +138,52 @@ import Testing
         #expect(session.databaseTarget == nil)
     }
 
-    @Test func historicalExplanationTabRestoresFromItsOfflineArtifactPath() async throws {
+    @Test func nativeOpenRejectsSavedStoriesAndRestorationKeepsOrdinaryWorkspaces() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("capture.sgexplanation")
         try HistoricalExplanationStore.write(artifact(), to: url)
-
+        let fileBytes = try Data(contentsOf: url)
         let suite = "HistoricalExplanationRestoreTests.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let original = WorkspaceTabController(initialSession: AppSession(userDefaults: defaults))
+        let session = AppSession(userDefaults: defaults)
+        let original = WorkspaceTabController(initialSession: session)
+        let firstID = try #require(original.activeTabID)
+        session.graphZoom = 0.8
+        await session.openDocument(url: url)
+        #expect(session.presentedError?.message.contains("embedded MCP") == true)
+        #expect(session.historicalExplanationArtifact == nil)
+        #expect(session.graphZoom == 0.8)
         let openedTab = await original.openDocument(url, activate: true)
-        let tab = try #require(openedTab)
+        #expect(openedTab == nil)
+        #expect(original.tabs.count == 1 && original.activeTabID == firstID)
+        #expect(!DatabaseDocument.supportedExtensions.contains("sgexplanation"))
+
+        let offline = original.createTab(kind: .artifact, title: "Captured model")
+        offline.session.openHistoricalExplanation(try HistoricalExplanationStore.load(url), from: url)
         let savedState = original.makeRestorationSnapshot()
-        let savedExplanation = try #require(savedState.tabs.first(where: { $0.id == tab.id }))
-        #expect(savedExplanation.kind == .explanation)
-        #expect(savedExplanation.sourceDocumentPath == url.standardizedFileURL.path)
+        #expect(savedState.tabs.map(\.id) == [firstID])
+        #expect(savedState.activeTabID == firstID, "Embedded offline models must not become native restored story tabs")
 
+        let secondID = UUID()
+        let legacy = WorkspaceRestorationSnapshot(tabs: [
+            .init(id: UUID(), kind: .explanation, title: "Old story", sourceDocumentPath: url.path,
+                  session: .init(graphZoom: 1.6)),
+            .init(id: firstID, kind: .workspace, title: "First ordinary workspace", sourceDocumentPath: nil,
+                  session: .init(graphZoom: 0.8)),
+            .init(id: UUID(), kind: .artifact, title: "Old story artifact", sourceDocumentPath: url.path,
+                  session: .init(graphZoom: 2)),
+            .init(id: secondID, kind: .workspace, title: "Second ordinary workspace", sourceDocumentPath: nil,
+                  session: .init(graphZoom: 1.2)),
+        ], activeTabID: secondID)
         let restored = WorkspaceTabController(initialSession: AppSession(userDefaults: defaults))
-        await restored.restoreWorkspace(from: savedState)
-        let reopened = try #require(restored.activeTab)
-        #expect(reopened.kind == .explanation)
-        #expect(reopened.session.historicalExplanationArtifact?.title == "Items overview")
-        #expect(reopened.session.historicalExplanationURL == url.standardizedFileURL)
-        #expect(reopened.session.databaseURL == nil)
-        #expect(reopened.session.databaseTarget == nil)
-        #expect(reopened.session.graph.contains(nodeID: "items"))
-
+        await restored.restoreWorkspace(from: legacy)
+        #expect(restored.tabs.map(\.id) == [firstID, secondID])
+        #expect(restored.activeTabID == secondID)
+        #expect(restored.activeTab?.session.graphZoom == 1.2,
+                "Filtering legacy stories must not pair a remaining workspace with another tab's state")
+        #expect(restored.activeTab?.session.historicalExplanationArtifact == nil)
+        #expect(try Data(contentsOf: url) == fileBytes)
         await restored.closeAllAndWait()
         await original.closeAllAndWait()
     }

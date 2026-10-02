@@ -128,6 +128,44 @@ struct ProjectScanIntegrationTests {
         ], context: context)
         #expect(errorCode(invalidVersion) == "INVALID_ARGUMENT")
 
+        let stable = try await call(coordinator, "studio_get_view", ["context_id": context], context: context)
+        let stableRevision = try #require(payload(stable)["source_revision"] as? String)
+        let repeated = try await call(coordinator, "studio_get_view", ["context_id": context], context: context)
+        #expect(payload(repeated)["source_revision"] as? String == stableRevision)
+        // Exercise cache invalidation with equal object/key counts and identical
+        // file size and timestamp. A refreshed definition still changes identity.
+        let migration = migrations.appendingPathComponent("0001_customer.sql")
+        let stamp = try #require(FileManager.default.attributesOfItem(atPath: migration.path)[.modificationDate] as? Date)
+        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: migrations.path)
+        let directoryStamp = try #require(directoryAttributes[.modificationDate] as? Date)
+        let workspaceID = try #require(payload(stable)["workspace_id"] as? String)
+        let session = try #require(tabs.tabs.first { $0.id.uuidString == workspaceID }).session
+        let priorSQL = try String(contentsOf: migration, encoding: .utf8)
+        let changedSQL = priorSQL.replacingOccurrences(of: "name TEXT", with: "name BLOB")
+        #expect(changedSQL.utf8.count == priorSQL.utf8.count)
+        try changedSQL.write(to: migration, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: migration.path)
+        // Atomic replacement changes its containing directory's stamp too,
+        // which is another input to source_revision.
+        try FileManager.default.setAttributes([.modificationDate: directoryStamp], ofItemAtPath: migrations.path)
+        let refreshed = try await call(coordinator, "studio_refresh_source", [
+            "context_id": context, "request_id": UUID().uuidString,
+        ], context: context)
+        #expect(refreshed["isError"] as? Bool == false)
+        // refresh_started returns before replay finishes. Wait for the loaded
+        // definition, so the revision check actually exercises cache invalidation.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while session.descriptor(named: "customer")?.columns.first(where: { $0.name == "name" })?.declaredType != "BLOB",
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(session.descriptor(named: "customer")?.columns.first(where: { $0.name == "name" })?.declaredType == "BLOB")
+        try FileManager.default.setAttributes([.modificationDate: directoryStamp], ofItemAtPath: migrations.path)
+        let refreshedDirectoryAttributes = try FileManager.default.attributesOfItem(atPath: migrations.path)
+        #expect(refreshedDirectoryAttributes[.size] as? NSNumber == directoryAttributes[.size] as? NSNumber)
+        let afterRefresh = try await call(coordinator, "studio_get_view", ["context_id": context], context: context)
+        #expect(payload(afterRefresh)["source_revision"] as? String != stableRevision)
+
         await coordinator.close()
         await tabs.closeAllAndWait()
     }

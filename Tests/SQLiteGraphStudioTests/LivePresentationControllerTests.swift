@@ -4,6 +4,61 @@ import Testing
 
 struct LivePresentationControllerTests {
     @Test @MainActor
+    func stepNavigationWaitsForExplicitMovementAndKeepsTheLastStep() async throws {
+        let first = LivePresentationController.Point(caption: "First", narration: "Spoken by Codex.", minimumVisibleTime: .milliseconds(10))
+        let second = LivePresentationController.Point(caption: "Second", minimumVisibleTime: .zero)
+        let third = LivePresentationController.Point(caption: "Third", minimumVisibleTime: .zero)
+        var speechStarted = false
+        let controller = LivePresentationController(narrationPlayback: { _, _ in speechStarted = true; return true })
+        controller.enableStepNavigation()
+        controller.append([first, second])
+        controller.finishInput()
+        controller.markApplied(pointID: first.id)
+        controller.markVisible(pointID: first.id)
+        controller.play()
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(!speechStarted)
+        #expect(controller.currentPoint?.id == first.id)
+        #expect(controller.status == .waitingForNext(pointID: first.id))
+        controller.next()
+        controller.markApplied(pointID: second.id)
+        controller.markVisible(pointID: second.id)
+        #expect(controller.currentPointNumber == 2)
+        controller.next()
+        #expect(controller.currentPoint?.id == second.id, "Next at the boundary must retain the final graph and caption")
+        controller.append(third)
+        #expect(controller.currentPoint?.id == second.id, "Appending evidence must not change the reader's step")
+        controller.back()
+        controller.markApplied(pointID: first.id)
+        controller.markVisible(pointID: first.id)
+        #expect(controller.currentPointNumber == 1)
+        controller.next()
+        #expect(controller.currentPoint?.id == second.id)
+        controller.next()
+        #expect(controller.currentPoint?.id == third.id)
+        #expect(controller.pointCount == 3)
+    }
+
+    @Test @MainActor
+    func switchingToStepsCancelsAnActiveTimerWithoutLosingHistory() async throws {
+        let first = LivePresentationController.Point(caption: "First", minimumVisibleTime: .milliseconds(20))
+        let second = LivePresentationController.Point(caption: "Second")
+        let controller = LivePresentationController()
+        controller.append([first, second])
+        controller.markApplied(pointID: first.id)
+        controller.markVisible(pointID: first.id)
+        controller.enableStepNavigation()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(controller.currentPoint?.id == first.id)
+        #expect(controller.status == .waitingForNext(pointID: first.id))
+        controller.next()
+        controller.markApplied(pointID: second.id)
+        controller.markVisible(pointID: second.id)
+        controller.back()
+        #expect(controller.currentPoint?.id == first.id)
+    }
+
+    @Test @MainActor
     func narrationAndMinimumHoldMustBothFinishAfterRendererAcknowledgesVisibility() async throws {
         let first = LivePresentationController.Point(
             caption: "First",
@@ -73,6 +128,63 @@ struct LivePresentationControllerTests {
         controller.interrupt()
         controller.markVisible(pointID: first.id)
         #expect(controller.status == .interrupted)
+    }
+
+    @Test @MainActor
+    func explicitPlayAdvancesManualPointsAndReplaysACompletedSequence() async throws {
+        let first = LivePresentationController.Point(caption: "First", minimumVisibleTime: .milliseconds(15), advancePolicy: .manual)
+        let second = LivePresentationController.Point(caption: "Second", minimumVisibleTime: .milliseconds(15), advancePolicy: .manual)
+        let controller = LivePresentationController()
+        controller.append([first, second])
+        controller.finishInput()
+        controller.markApplied(pointID: first.id)
+        controller.markVisible(pointID: first.id)
+        let waitingDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while controller.status != .waitingForNext(pointID: first.id), ContinuousClock.now < waitingDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(controller.status == .waitingForNext(pointID: first.id))
+
+        controller.play()
+        #expect(controller.currentPoint?.id == second.id)
+        #expect(controller.status == .preparing(pointID: second.id))
+        controller.markApplied(pointID: second.id)
+        controller.markVisible(pointID: second.id)
+        controller.pause()
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(controller.status == .paused(pointID: second.id))
+        controller.play()
+        let completionDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while controller.status != .completed, ContinuousClock.now < completionDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(controller.status == .completed)
+
+        controller.play()
+        #expect(controller.currentPoint?.id == first.id)
+        #expect(controller.currentPointNumber == 1)
+        #expect(controller.pointCount == 2)
+        #expect(controller.status == .preparing(pointID: first.id))
+        #expect(!controller.hasVisibleCurrentPoint, "Replay must wait for a fresh renderer acknowledgement")
+    }
+
+    @Test @MainActor
+    func playingAZeroHoldManualSequenceStillGivesTheNextCaptionReadingTime() async throws {
+        let first = LivePresentationController.Point(caption: "First", minimumVisibleTime: .zero, advancePolicy: .manual)
+        let second = LivePresentationController.Point(caption: "An editor is optional.", minimumVisibleTime: .zero, advancePolicy: .manual)
+        let controller = LivePresentationController()
+        controller.append([first, second])
+        controller.finishInput()
+        controller.markApplied(pointID: first.id)
+        controller.markVisible(pointID: first.id)
+        controller.play()
+        #expect(controller.currentPoint?.id == second.id)
+        controller.markApplied(pointID: second.id)
+        controller.markVisible(pointID: second.id)
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(controller.currentPoint?.id == second.id)
+        #expect(controller.status != .completed, "Play must not flash an unreadable zero-hold manual point")
+        controller.end()
     }
 
     @Test @MainActor

@@ -75,8 +75,95 @@ struct GraphGeometryTests {
 
         #expect(anchors.source.y == expectedSource.midY)
         #expect(anchors.target.y == expectedTarget.midY)
-        #expect(anchors.source.x == expectedSource.maxX)
-        #expect(anchors.target.x == expectedTarget.minX)
+        #expect(anchors.source.x == postsFrame.maxX)
+        #expect(anchors.target.x == authorsFrame.minX)
+    }
+
+    @Test func verticalLinksLeaveAndEnterThroughTheirCardSides() {
+        let sourceFrame = CGRect(x: 0, y: 0, width: 440, height: 100)
+        let targetFrame = CGRect(x: 0, y: 240, width: 440, height: 100)
+        let curve = GraphEdgeRouting.curve(
+            anchors: GraphEdgeAnchors(source: CGPoint(x: 220, y: 100), target: CGPoint(x: 220, y: 240)),
+            sourceFrame: sourceFrame, targetFrame: targetFrame)
+        #expect(curve.control1.y > sourceFrame.maxY)
+        #expect(curve.control2.y < targetFrame.minY)
+        for step in 1..<20 {
+            let point = curve.point(at: CGFloat(step) / 20)
+            #expect(!sourceFrame.contains(point))
+            #expect(!targetFrame.contains(point))
+        }
+    }
+
+    @Test func parallelForeignKeysKeepDistinctLanesAcrossInputOrder() {
+        let edges = ["author_id", "editor_id", "tenant_id"].map { column in
+            GraphEdge(id: column, sourceID: "posts", targetID: "authors", sourceColumn: column, targetColumn: "id")
+        }
+        let lanes = GraphEdgeRouting.laneOffsets(for: edges)
+        #expect(Set(lanes.values).count == 3)
+        #expect(lanes == GraphEdgeRouting.laneOffsets(for: edges.reversed()))
+        let anchors = GraphEdgeAnchors(source: CGPoint(x: 100, y: 50), target: CGPoint(x: 300, y: 50))
+        let midpoints = edges.map { edge in
+            GraphEdgeRouting.curve(anchors: anchors,
+                sourceFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+                targetFrame: CGRect(x: 300, y: 0, width: 100, height: 100),
+                laneOffset: lanes[edge.id]!).point(at: 0.5)
+        }
+        #expect(Set(midpoints.map(\.y)).count == 3)
+    }
+
+    @Test func crowdedCardinalityLabelsAvoidCardsAndOneAnother() {
+        let frames = [CGRect(x: 0, y: 0, width: 100, height: 100),
+                      CGRect(x: 300, y: 0, width: 100, height: 100)]
+        let curve = GraphEdgeRouting.curve(
+            anchors: GraphEdgeAnchors(source: CGPoint(x: 100, y: 50), target: CGPoint(x: 300, y: 50)),
+            sourceFrame: frames[0], targetFrame: frames[1])
+        var occupied: [CGRect] = []
+        var omitted = false
+        for _ in 0..<8 {
+            if GraphCardinalityLabelPlacement.position(on: curve, atSource: true,
+                                                       cardFrames: frames, occupied: &occupied) == nil {
+                omitted = true
+            }
+        }
+        #expect(!occupied.isEmpty)
+        #expect(omitted)
+        for index in occupied.indices {
+            #expect(!frames.contains { $0.intersects(occupied[index]) })
+            #expect(!occupied.prefix(index).contains { $0.insetBy(dx: -3, dy: -3).intersects(occupied[index]) })
+        }
+    }
+
+    @Test func manyParallelVerticalForeignKeysKeepOutwardTangentsAndDistinctPaths() {
+        let source = CGRect(x: 0, y: 0, width: 440, height: 236)
+        let target = CGRect(x: 0, y: 320, width: 440, height: 236)
+        let columns = (0..<11).map { "a_key_\($0)" } + ["z_key"]
+        let edges = columns.map {
+            GraphEdge(id: $0, sourceID: "a", targetID: "b", sourceColumn: $0, targetColumn: "id")
+        }
+        let lanes = GraphEdgeRouting.laneOffsets(for: edges)
+        #expect(lanes["z_key"] == 132)
+
+        let sides: [(CGFloat, CGFloat)] = [(0, -1), (440, 1)]
+        for (sideX, direction) in sides {
+            let anchors = GraphEdgeAnchors(source: CGPoint(x: sideX, y: 80),
+                                           target: CGPoint(x: sideX, y: 400))
+            let curves = edges.map {
+                GraphEdgeRouting.curve(anchors: anchors, sourceFrame: source, targetFrame: target,
+                                       laneOffset: lanes[$0.id]!)
+            }
+            #expect(Set(curves.map { $0.point(at: 0.5).x }).count == edges.count)
+            for curve in curves {
+                #expect((curve.control1.x - sideX) * direction > 0)
+                #expect((curve.control2.x - sideX) * direction > 0)
+                // Large positive and negative lanes used to enter the card
+                // immediately, including the reported right-side t=0.05 case.
+                for step in 1..<20 {
+                    let point = curve.point(at: CGFloat(step) / 20)
+                    #expect(!source.contains(point))
+                    #expect(!target.contains(point))
+                }
+            }
+        }
     }
 
     @Test

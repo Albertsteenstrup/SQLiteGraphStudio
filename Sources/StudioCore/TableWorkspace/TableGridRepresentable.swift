@@ -996,7 +996,7 @@ private struct HeaderDescriptionTooltip: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(width: 230, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
     }
 }
 
@@ -1108,7 +1108,7 @@ private struct HeaderPopoverContent: View {
         .padding(14)
         .frame(width: 280, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .fill(StudioPalette.cardSurfaceTop)
         )
     }

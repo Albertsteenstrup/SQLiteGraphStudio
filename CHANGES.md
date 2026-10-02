@@ -2,6 +2,39 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## Surface Corners
+
+- Use subtle 8-point corners for workspace panes, graph cards and content panels, with 6-point controls and 4-point row highlights. Keep borders, clipping, hit areas and native workspace captures aligned across the app and embedded MCP views.
+
+## Graph Selection Appearance
+
+- Show selected nodes through their background tint. Remove the extra selection outline and selection-specific border emphasis from the shared graph renderer, including cards, multi-selection and overview marks, so the native app and embedded MCP views match. Keep ordinary card, group and schema-change borders.
+
+## Embedded Data in Coding-Agent Conversations
+
+- Embedded graph inspection stays usable after selecting or moving a node. Nodes can be expanded and dragged; zoom commits a fresh Retina frame, preferring lossless text. A full-model context toggle and agent-directed context points highlight a focused group across the complete schema. Card-size-aware layout and separated relationship lanes improve edge and cardinality legibility. Stable caption/status space reduces embedded-card resize churn during audio.
+
+- Reuse loaded migration schema definitions during source-revision checks, invalidating on every catalog assignment and keeping file freshness checks active. Capture graph pixels after the drawing receipt settles so image updates match node hit regions.
+
+- Remove the native player and saved-story reader, including file-picker/Finder registration and restoration of old story tabs. Explanations are exclusively embedded MCP steps: no local speech, timed advancement, native-window visibility acknowledgement, or native fallback on card release/expiry/disconnect. Keep portable files and captured table/query evidence available through MCP.
+
+- Animate embedded camera/focus changes, data-panel transitions and captions. Capture the graph for its final layout before committing a step, preserve image proportions, and acknowledge visibility only after motion settles. Respect reduced motion and cancel superseded transitions on navigation, gestures, source changes and teardown.
+
+- Show a compact current/total page count, such as 1/4, between Back and Next in the embedded view. Keep it synchronized with reader and MCP navigation.
+
+- Add the same Graph Studio logo shortcut as the embedded diff. Clicking it selects the card's validated workspace and brings the paired native app forward, preserving the current explanation step. Check source identity/revision and context ownership before selecting the workspace.
+
+- Replace the embedded player with Back/Next step navigation and a counter. The reader or MCP chooses when to move; timers and local speech are suppressed so Codex audio can accompany the graph. The final step stays visible and appending points preserves the current step. Remove Play/End from the card, release its lease on closure, and retain MCP cleanup controls.
+
+- Render the live card through a dedicated native graph surface, using the same graph view as embedded reviews. Prefer a full-width graph and show selectable bounded rows only for points requesting table or query evidence. Embedded pan, zoom, selection and Fit preview immediately and preserve the current step without moving the desktop viewport. The renderer uses already loaded facts, does not require a visible app window, and confirms graph/data readiness for each requested step. Preserve explicit table expansions when a point leaves relation focus, and draw settled fields instead of capturing their expansion animation.
+
+- Confirm decoded points without recapturing an image, and poll promptly while a view is preparing. Retain the last frame while point actions run. Prepare native drawing before snapshotting transitions and reuse recent unchanged background frames, invalidating them on view, row, render, geometry and appearance changes. Back/Next and MCP navigation are the only ways to advance embedded explanations.
+
+- `studio_show_workspace_inline` renders the task's graph and requested bounded data in one live card with Back/Next and a page count. No native player appears when the card closes, expires or disconnects. Twice-resolution captures prefer lossless PNG for sharp labels. The connection survives hosts omitting private result metadata, and ended explanations stop showing a preparation status. Acknowledgements are pinned to the viewer, source, frame and current point. Background frame reads keep step controls available and cannot overwrite a newer controlled point.
+- `studio_show_data_inline` presents read-only table pages and captured query results through MCP Apps. It uses the task's running database workspace without opening native table or query panes. Other hosts receive a bounded text preview and structured rows.
+- The viewer preserves positional columns and exact decimal text, distinguishes SQL NULL/empty/binary values, and labels clipped cells and capped query results. Previous/Next and page reload use the same context, workspace and source; query pages never rerun SQL. Stale requests retain the last fetched page with an error.
+- The bundled database-explore skill prefers the live Graph Studio card for visual explanations and embedded rows for standalone data reads.
+
 ## Workspace Input and Startup
 
 - Normal launch starts with an empty workspace. Sources open through an explicit file/folder choice, Open Recent, Finder, or launch arguments; the app no longer automatically restores datasets from the prior session.
@@ -185,9 +218,8 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - **File**: `Sources/StudioCore/GraphView/SchemaGraphView.swift`
 - **Feature**: Clear visual indication when multiple nodes are selected
 - **Implementation**:
-  - Accent-colored border (3px) around all selected nodes when count > 1
+  - Background tint on selected nodes, including multiple selections and overview marks
   - Selection rectangle with accent color during shift+drag
-  - Enhanced shadow on selected nodes
 - **Status**: ✅ ACTIVE
 
 ## Important Notes
@@ -199,3 +231,7 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 ---
 
 Last updated: 2026-04-23 (17:30 - Cluster spacing to 0, multi-selection visual feedback, PK/FK hover-only highlighting, directional arrows)
+
+## Live inline Graph Studio workspace
+
+Visual explanations embed Graph Studio’s rendered graph in one live MCP App card. Back/Next or MCP navigation select manual steps; requested table or query evidence appears alongside the graph. Captures are scoped to the exact task/workspace/source, exclude the tab bar and desktop, and stop with an explicitly retained last frame when the workspace or source is unavailable. The standalone data grid remains available for row-only requests.

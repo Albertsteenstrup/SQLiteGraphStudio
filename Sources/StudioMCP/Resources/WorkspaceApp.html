@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQLite Graph Studio</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; padding: 12px; color: var(--color-text-primary, CanvasText); font: 13px/1.45 var(--font-sans, -apple-system, system-ui, sans-serif); }
+header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+strong { font-size: 14px; }
+#source { color: var(--color-text-secondary, GrayText); overflow-wrap: anywhere; }
+#following { margin-left: auto; min-width: 15ch; text-align: right; font-size: 12px; color: var(--color-text-secondary, GrayText); }
+#surface { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+#surface.with-data { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+#canvas { position: relative; height: 440px; overflow: hidden; border-radius: 8px; border: 1px solid var(--color-border-primary, GrayText); background: var(--color-background-secondary, Canvas); cursor: grab; touch-action: none; }
+#canvas.panning { cursor: grabbing; }
+#frame, .frame-ghost { display: block; position: absolute; transform-origin: 0 0; user-select: none; pointer-events: none; }
+#graph-toolbar { position: absolute; right: 8px; top: 8px; z-index: 3; max-width: calc(100% - 16px); display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+#graph-toolbar button { min-height: 28px; padding: 3px 8px; font-size: 12px; }
+#node-drag { position: absolute; overflow: hidden; pointer-events: none; z-index: 2; border-radius: 8px; box-shadow: 0 6px 18px #0003; }
+#node-drag img { position: absolute; max-width: none; }
+#canvas.over-node { cursor: default; }
+#canvas.dragging-node { cursor: grabbing; }
+#data-panel { min-width: 0; height: 440px; display: flex; flex-direction: column; }
+#data-title, .data-ghost h2 { font-size: 14px; margin: 0 0 8px; max-height: 2.9em; overflow: auto; }
+.data-grid { min-height: 0; flex: 1; max-height: 405px; overflow: auto; border: 1px solid var(--color-border-primary, GrayText); border-radius: 8px; }
+.data-grid table { width: 100%; border-collapse: separate; border-spacing: 0; font: 12px/1.5 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.data-grid th, .data-grid td { padding: 7px 10px; text-align: left; white-space: pre; border-bottom: 1px solid var(--color-border-primary, GrayText); }
+.data-grid th { position: sticky; top: 0; background: var(--color-background-secondary, Canvas); z-index: 1; }
+.data-grid th small { display: block; font: 10px/1.4 var(--font-sans, system-ui); font-weight: 400; color: var(--color-text-secondary, GrayText); }
+.data-grid .special { color: var(--color-text-secondary, GrayText); font-style: italic; }
+.data-grid .row-number { color: var(--color-text-secondary, GrayText); text-align: right; }
+#data-note, .data-ghost p { font-size: 12px; color: var(--color-text-secondary, GrayText); margin: 6px 0 0; max-height: 4.35em; overflow: auto; }
+.data-ghost { position: absolute; pointer-events: none; z-index: 2; }
+@media (max-width: 640px) { #surface.with-data { grid-template-columns: minmax(0, 1fr); } #canvas { height: 360px; } #data-panel { height: 310px; } .data-grid { max-height: 260px; } }
+#caption { margin: 12px 0 0; height: 4.35em; overflow: auto; white-space: pre-wrap; overscroll-behavior: contain; }
+#navigation { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; font: inherit; color: inherit; border: 1px solid var(--color-border-primary, GrayText); border-radius: 6px; background: var(--color-background-primary, Canvas); padding: 5px 10px; cursor: pointer; }
+button:disabled { opacity: .4; cursor: default; }
+button:focus-visible { outline: 2px solid #669cf3; outline-offset: 2px; }
+button svg { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; }
+.brand { border: 0; background: transparent; padding: 2px 6px 2px 2px; min-height: 28px; gap: 7px; }
+.brand img { width: 22px; height: 22px; display: block; }
+.brand:hover { background: var(--color-background-secondary, Canvas); }
+#position { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; color: var(--color-text-secondary, GrayText); }
+#status { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 3; margin: 0; padding: 5px 8px; max-height: 3.9em; overflow: auto; overscroll-behavior: contain; border-radius: 6px; background: var(--color-background-primary, Canvas); color: var(--color-text-secondary, GrayText); }
+#status:empty { display: none; }
+#status.error { color: var(--color-text-danger, #b85326); }
+</style>
+</head>
+<body>
+<header><button id="open-app" class="brand" type="button" title="Open this workspace in Graph Studio" aria-label="Open this workspace in SQLite Graph Studio" disabled><img alt="" src="data:image/png;base64,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"><strong>SQLite Graph Studio</strong></button><span id="source"></span><span id="following">Connecting…</span></header>
+<div id="surface">
+  <div id="canvas" tabindex="0" role="group" aria-label="Live schema graph. Drag tables to move them, double-click to expand, drag empty space to pan, pinch or scroll to zoom, F to fit.">
+    <img id="frame" hidden draggable="false" alt="Graph Studio's native schema graph">
+    <div id="node-drag" hidden aria-hidden="true"></div>
+    <div id="graph-toolbar"><button id="expand" hidden disabled title="Expand or collapse the selected table (Enter)">Expand table</button><button id="context" hidden disabled title="Highlight these tables in the full model">Show in full model</button><button id="fit" title="Fit graph (F)" disabled>Fit</button></div>
+    <p id="status" role="status">Loading Graph Studio…</p>
+  </div>
+  <section id="data-panel" hidden aria-label="Data for this explanation point">
+    <h2 id="data-title"></h2><div id="data-grid" class="data-grid" tabindex="0"><table><thead id="data-head"></thead><tbody id="data-rows"></tbody></table></div>
+    <p id="data-note"></p>
+  </section>
+</div>
+<p id="caption"></p>
+<div id="navigation" role="group" aria-label="Explanation steps">
+  <button id="back" disabled aria-label="Previous step"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 4.6L8 12l7.4 7.4 1.4-1.4-6-6 6-6z"/></svg><span>Back</span></button>
+  <span id="position" aria-live="polite" aria-atomic="true">Live workspace</span>
+  <button id="next" disabled aria-label="Next step"><span>Next</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.6 4.6L16 12l-7.4 7.4-1.4-1.4 6-6-6-6z"/></svg></button>
+  <button id="restore" hidden>Restore step</button>
+</div>
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const pending = new Map();
+  let id = 0, args = null, data = null, toolInput = null, lastResult = null,
+      generation = 0, frameEpoch = 0, frameBusy = false, controlBusy = false,
+      renderedPointID = null, acknowledgedFrame = null, pollSoon = false,
+      stopped = false, openBusy = false, transientFailures = 0, timer, dataKey = null, gestureTimer,
+      motion = null, layoutPending = false, settled = false, frameBox = null, frameGraph = null;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const identity = () => ({s:1,tx:0,ty:0});
+  const compose = (a,b) => ({s:a.s*b.s,tx:a.s*b.tx+a.tx,ty:a.s*b.ty+a.ty});
+  const inverse = a => ({s:1/a.s,tx:-a.tx/a.s,ty:-a.ty/a.s});
+  const isIdentity = a => Math.abs(a.s-1)<1e-6 && Math.abs(a.tx)<.01 && Math.abs(a.ty)<.01;
+  let local = identity(), sent = identity(), queuedActions = [];
+  function preview() { $("frame").style.transform = `matrix(${local.s},0,0,${local.s},${local.tx},${local.ty})`; }
+  function resetGestures() {
+    if(drag){try{$("canvas").releasePointerCapture(drag.pointerId);}catch{}drag=null;}
+    $("node-drag").hidden=true; $("canvas").classList.remove('panning','dragging-node');
+    local=identity(); sent=identity(); queuedActions=[]; clearTimeout(gestureTimer); preview();
+  }
+  function graphSize() { return {width:Math.min(1200,Math.max(320,Math.round($("canvas").clientWidth))),height:Math.min(720,Math.max(240,Math.round($("canvas").clientHeight)))}; }
+  // Measure the target columns in this task, then restore them before the browser
+  // paints. The old view stays readable while its correctly sized frame loads.
+  function sizeForLayout(view) {
+    const surface=$("surface"), panel=$("data-panel"), hadData=surface.classList.contains('with-data'), hidden=panel.hidden;
+    surface.classList.toggle('with-data',!!view); panel.hidden=!view;
+    const size=graphSize();
+    surface.classList.toggle('with-data',hadData); panel.hidden=hidden;
+    return size;
+  }
+  function fittedFrame(info, image) {
+    const width=info.graph?.width || image.naturalWidth, height=info.graph?.height || image.naturalHeight;
+    const scale=Math.min($("canvas").clientWidth/width,$("canvas").clientHeight/height);
+    return {width:width*scale,height:height*scale,left:($("canvas").clientWidth-width*scale)/2,
+      top:($("canvas").clientHeight-height*scale)/2,scale};
+  }
+  function placeFrame(image, box) {
+    for(const key of ['width','height','left','top'])image.style[key]=box[key]+'px';
+  }
+  function finishMotion() {
+    if(motion)for(const animation of motion.animations) { try { animation.finish(); } catch {} }
+  }
+  function cancelMotion() {
+    if(!motion)return;
+    const previous=motion; motion=null;
+    clearTimeout(previous.deadline);
+    for(const animation of previous.animations)animation.cancel();
+    for(const element of previous.ghosts)element.remove();
+    $("surface").style.overflow='';
+    previous.resolve(false);
+  }
+  function interruptMotionForGesture() {
+    if(!motion)return;
+    cancelMotion(); frameEpoch++; frameBusy=false; renderedPointID=null; settled=true;
+    $("surface").setAttribute('aria-busy','false'); controls();
+  }
+  function cameraBetween(from, fromBox, to, toBox) {
+    if(!from || !to || ![from.zoom,from.pan_x,from.pan_y,to.zoom,to.pan_x,to.pan_y].every(Number.isFinite))return null;
+    const scale=to.zoom*toBox.scale/(from.zoom*fromBox.scale);
+    const tx=toBox.left+toBox.scale*(to.width/2+to.pan_x)-fromBox.left-scale*fromBox.scale*(from.width/2+from.pan_x);
+    const ty=toBox.top+toBox.scale*(to.height/2+to.pan_y)-fromBox.top-scale*fromBox.scale*(from.height/2+from.pan_y);
+    // Large jumps between unrelated parts of a model read better as a short fade.
+    if(!Number.isFinite(scale) || scale<.5 || scale>2 || Math.hypot(tx,ty)>Math.max(toBox.width,toBox.height)*1.25)return null;
+    return `matrix(${scale},0,0,${scale},${tx},${ty})`;
+  }
+  function animateView(before, imageChanged, dataChanged, captionChanged) {
+    if(!before || reducedMotion.matches || typeof $("frame").animate!=='function')return Promise.resolve(true);
+    const surface=$("surface"), canvas=$("canvas"), after=canvas.getBoundingClientRect();
+    const layoutChanged=Math.abs(before.canvas.width-after.width)>.5 || Math.abs(before.surface.height-surface.getBoundingClientRect().height)>.5;
+    if(!imageChanged && !dataChanged && !captionChanged && !layoutChanged)return Promise.resolve(true);
+    const duration=layoutChanged?320:260, animations=[], ghosts=[];
+    const animate=(element,frames,ms=duration)=>animations.push(element.animate(frames,{duration:ms,easing:'cubic-bezier(.22,.68,0,1)'}));
+    if(imageChanged || layoutChanged) {
+      const ghost=before.image; ghost.className='frame-ghost'; ghost.removeAttribute('id'); ghost.alt=''; ghost.setAttribute('aria-hidden','true');
+      placeFrame(ghost,before.box); ghost.style.transform='none'; canvas.insertBefore(ghost,$("frame")); ghosts.push(ghost);
+      const forward=cameraBetween(before.graph,before.box,data.graph,frameBox);
+      const backward=cameraBetween(data.graph,frameBox,before.graph,before.box);
+      animate(ghost,[{opacity:1,transform:'none'},{opacity:0,transform:forward || 'none'}]);
+      animate($("frame"),[{opacity:0,transform:backward || 'none'},{opacity:1,transform:'none'}]);
+    }
+    if(layoutChanged) {
+      // Resize the clipping viewport, never stretch its text or graph bitmap.
+      animate(canvas,[{width:before.canvas.width+'px'},{width:after.width+'px'}]);
+      const height=surface.getBoundingClientRect().height;
+      if(Math.abs(before.surface.height-height)>.5) {
+        surface.style.overflow='hidden';
+        animate(surface,[{height:before.surface.height+'px'},{height:height+'px'}]);
+      }
+    }
+    if(dataChanged) {
+      if(before.panel) {
+        const ghost=before.panel; ghost.removeAttribute('id');
+        for(const element of ghost.querySelectorAll('[id]'))element.removeAttribute('id');
+        for(const element of ghost.querySelectorAll('[tabindex]'))element.removeAttribute('tabindex');
+        ghost.className='data-ghost'; ghost.setAttribute('aria-hidden','true'); ghost.inert=true;
+        Object.assign(ghost.style,{left:before.panelRect.left-before.surface.left+'px',top:before.panelRect.top-before.surface.top+'px',width:before.panelRect.width+'px'});
+        surface.append(ghost); ghosts.push(ghost);
+        animate(ghost,[{opacity:1,transform:'translateX(0)'},{opacity:0,transform:'translateX(8px)'}],180);
+      }
+      if(!$("data-panel").hidden)animate($("data-panel"),[{opacity:0,transform:'translateX(12px)'},{opacity:1,transform:'translateX(0)'}]);
+    }
+    if(captionChanged && !$("caption").hidden)animate($("caption"),[{opacity:0,transform:'translateY(4px)'},{opacity:1,transform:'translateY(0)'}],180);
+    return new Promise(resolve=>{
+      const current={animations,ghosts,resolve}; motion=current;
+      // Hosts can composite a card while WebKit reports it hidden and throttles
+      // its timeline. Finish at the target state before acknowledging visibility.
+      current.deadline=setTimeout(()=>{if(motion===current)finishMotion();},duration+120);
+      Promise.all(animations.map(animation=>animation.finished)).then(()=>{
+        if(motion!==current)return;
+        clearTimeout(current.deadline);
+        motion=null;
+        for(const animation of animations)animation.cancel();
+        for(const element of ghosts)element.remove();
+        surface.style.overflow=''; resolve(true);
+      }).catch(()=>{if(motion===current)cancelMotion();});
+    });
+  }
+  reducedMotion.addEventListener('change',()=>{if(reducedMotion.matches)finishMotion();});
+  function interactive() { return !!(args && data && frameGraph && !$("frame").hidden && data.render_surface==='graph' && !stopped && !controlBusy && !layoutPending &&
+    (!data.presentation || data.presentation.view_ready || data.presentation.needs_view_replay)); }
+  const post = message => window.parent.postMessage(message, "*");
+  const notify = (method, params = {}) => post({jsonrpc:"2.0", method, params});
+  function request(method, params) {
+    const requestID = ++id;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(requestID);
+        const error = new Error("Reconnecting to Graph Studio…"); error.code = "HOST_TIMEOUT"; reject(error);
+      }, 15000);
+      pending.set(requestID, {resolve, reject, timeout});
+      post({jsonrpc:"2.0", id:requestID, method, params});
+    });
+  }
+  let reportedSize=null, resizeQueued=false;
+  const resize = () => {
+    const size={width:document.documentElement.clientWidth,height:Math.ceil(document.body.getBoundingClientRect().height)};
+    if(reportedSize && size.width===reportedSize.width && size.height===reportedSize.height)return;
+    reportedSize=size; notify("ui/notifications/size-changed",size);
+  };
+  new ResizeObserver(() => {if(!resizeQueued){resizeQueued=true;requestAnimationFrame(()=>{resizeQueued=false;resize();});}}).observe(document.body);
+  function status(message, error = false) { $("status").textContent = message; $("status").className = error ? "error" : ""; }
+  const terminal = p => !p || ["idle", "completed", "interrupted"].includes(p.status);
+  function controls() {
+    const p = data && data.presentation;
+    $("open-app").disabled = !args || openBusy;
+    $("fit").hidden = !data || data.render_surface !== "graph";
+    $("fit").disabled = !interactive();
+    $("context").hidden = !data || data.render_surface !== "graph" || !Array.isArray(frameGraph?.nodes);
+    $("context").disabled = !interactive();
+    $("context").textContent = frameGraph?.context_mode ? "Return to detail" : "Show in full model";
+    $("context").setAttribute('aria-pressed',String(!!frameGraph?.context_mode));
+    const selected=frameGraph?.selection || [];
+    $("expand").hidden = selected.length!==1;
+    $("expand").disabled = !interactive();
+    $("expand").textContent = frameGraph?.expanded_table_ids?.includes(selected[0]) ? "Collapse table" : "Expand table";
+    const active = !!(args && p && (p.current_point_id || p.status === "completed" && p.point_count) && !stopped);
+    $("back").disabled = !active || controlBusy || p.can_go_back === false;
+    $("next").disabled = !active || controlBusy || p.can_go_forward === false;
+    $("restore").hidden = !p || !(p.needs_view_replay || p.status === "failed");
+    $("restore").disabled = !active || controlBusy;
+    $("following").textContent = stopped ? "Last captured view" : !args ? "Saved view" :
+      p?.needs_view_replay ? "Exploring graph" : !p || !p.current_point_id ? "Live workspace" : p.view_ready === false || !settled ? "Preparing step…" : "Ready";
+    const number = p && (p.point_number || (p.current_point_id ? (p.completed_point_ids || []).length + 1 : 0));
+    const count = p && (p.point_count || number + (p.pending_point_ids || []).length);
+    const position = number && count ? number + "/" + count : "Live workspace";
+    if ($("position").textContent !== position) $("position").textContent = position;
+  }
+  function hostContext(context) {
+    if (!context) return;
+    if (["light", "dark"].includes(context.theme)) document.documentElement.style.colorScheme = context.theme;
+    for (const [key, value] of Object.entries(context.styles && context.styles.variables || {})) {
+      if (key.startsWith("--") && typeof value === "string") document.documentElement.style.setProperty(key, value);
+    }
+  }
+  function renderData(view) {
+    const key = JSON.stringify(view || null);
+    if (key === dataKey) return;
+    dataKey = key;
+    $("data-panel").hidden = !view;
+    $("surface").classList.toggle("with-data", !!view);
+    $("data-head").replaceChildren(); $("data-rows").replaceChildren();
+    if (!view) return;
+    $("data-title").textContent = view.title || "Data";
+    const head = document.createElement("tr");
+    const corner = document.createElement("th"); corner.textContent="#"; corner.scope="col"; head.append(corner);
+    for (const column of view.columns || []) {
+      const th=document.createElement("th"); th.scope="col"; th.textContent=typeof column==='string'?column:column.name;
+      if (column.type) { const type=document.createElement("small"); type.textContent=column.type; th.append(type); }
+      head.append(th);
+    }
+    $("data-head").append(head);
+    for (const [index,row] of (view.rows || []).entries()) {
+      const tr=document.createElement("tr"), number=document.createElement("td");
+      number.textContent=String((row.index ?? (view.offset || 0)+index)+1); number.className="row-number"; tr.append(number);
+      for (const cell of row.values || []) {
+        const td=document.createElement("td");
+        const value=cell.type==='null'?'NULL':cell.type==='redacted'?'Redacted':cell.type==='blob'?`Binary · ${cell.byte_count || 0} bytes`:
+          cell.value===''?'""':cell.value==='NULL'?'"NULL"':String(cell.value ?? "");
+        td.textContent=value+(cell.truncated?'… · partial':'');
+        td.title=(cell.type || "value")+': '+value+(cell.truncated?' (partial value)':'');
+        if (['null','blob','omitted','redacted'].includes(cell.type)) td.className="special";
+        tr.append(td);
+      }
+      $("data-rows").append(tr);
+    }
+    const count=(view.rows || []).length, offset=view.offset || 0;
+    $("data-note").textContent=count?`Rows ${offset+1}–${offset+count}`:'No rows in this page';
+    if (view.historical) $("data-note").textContent='Captured data · '+$("data-note").textContent;
+    if (view.has_more) $("data-note").textContent+=' · More rows available';
+    if (view.source_truncated) $("data-note").textContent+=' · Partial query result';
+    if (view.omitted_column_count) $("data-note").textContent+=` · ${view.omitted_column_count} columns omitted`;
+    if (view.other_captured_result_count) $("data-note").textContent+=` · ${view.other_captured_result_count} other captured results`;
+  }
+  function failure(result) {
+    const e = result.structuredContent && result.structuredContent.error || {};
+    const error = new Error(e.message || (result.content || []).filter(x => x.type === "text").map(x => x.text).join("\n") || "This workspace is unavailable.");
+    error.code = e.code || "TOOL_ERROR";
+    return error;
+  }
+  function schedule(immediate = false) {
+    clearTimeout(timer);
+    // Waiting on a step still follows frames and retains the embedded view lease.
+    // Hidden WebKit cards can remain visibly composited, so keep their heartbeat.
+    const p = data && data.presentation;
+    const preparing = p && ["preparing", "applied_waiting_for_render"].includes(p.status) && !p.view_ready;
+    const delay = immediate || pollSoon ? 0 : transientFailures ? Math.min(10000, 1000 * 2 ** transientFailures) :
+      preparing ? 180 : document.hidden ? 1500 : 750;
+    pollSoon = false;
+    if (args && !stopped) timer = setTimeout(poll, delay);
+  }
+  async function apply(result, expectedGeneration, expectedEpoch = frameEpoch, allowMotion = true) {
+    const current=()=>expectedGeneration===generation && expectedEpoch===frameEpoch;
+    let info, p, ready, view, next;
+    // A point can change the graph/data split. Obtain the frame at its final
+    // viewport size before committing either half, including initial mounting.
+    for(let attempt=0;attempt<3;attempt++) {
+      if(!current())return;
+      if(result.isError)throw failure(result);
+      info=result.structuredContent;
+      if(!info || info.format!=="sqlite-graph-studio/workspace-view")throw new Error("No Graph Studio workspace view was returned.");
+      if(args && ["workspace_id","source_id","source_revision"].some(key=>args[key]!==info[key])) {
+        const error=new Error("The workspace or source changed. Show this view again to reconnect."); error.code="STALE_SOURCE"; throw error;
+      }
+      p=info.presentation;
+      ready=p && p.current_point_id && (p.view_ready===true || p.point_visible===true ||
+        p.view_ready===undefined && !["preparing","applied_waiting_for_render"].includes(p.status));
+      if(args && p && p.current_point_id && !ready && !p.needs_view_replay && !terminal(p) && !$("frame").hidden) {
+        // Keep the preceding evidence intact until both halves of the new point
+        // are renderable; preparation must not close and reopen the data panel.
+        data=info; renderedPointID=null; settled=false; layoutPending=false;
+        status("Preparing next point…"); controls(); return;
+      }
+      view=!p || ready || p.needs_view_replay?info.data_view:null;
+      const size=sizeForLayout(view);
+      if(args && info.render_surface==='graph' && info.graph &&
+        (Math.abs(info.graph.width-size.width)>1 || Math.abs(info.graph.height-size.height)>1)) {
+        if(attempt===2) { const error=new Error("The graph viewport is changing. Retrying this step…"); error.code='STALE_VIEW'; throw error; }
+        layoutPending=true; settled=false; controls();
+        result=await request("tools/call",{name:"studio_workspace_frame",arguments:{...args,...size,
+          after_frame_revision:info.frame_revision,maximum_frame_age_ms:5000,defer_until_ready:true}});
+        continue;
+      }
+      const image=(result.content || []).find(x=>x.type==='image' && ['image/jpeg','image/png'].includes(x.mimeType));
+      if(image) {
+        next=new Image(); next.src='data:'+image.mimeType+';base64,'+image.data; await next.decode();
+      } else {
+        if(!info.unchanged || $("frame").hidden)throw new Error("Graph Studio returned no image for this view.");
+        next=$("frame");
+      }
+      break;
+    }
+    if(!current())return;
+    layoutPending=false;
+    const frame=$("frame"), panel=$("data-panel"), caption=$("caption");
+    const before=frameBox && !frame.hidden?{image:frame.cloneNode(),box:frameBox,graph:frameGraph,
+      canvas:$("canvas").getBoundingClientRect(),surface:$("surface").getBoundingClientRect(),
+      panel:!panel.hidden?panel.cloneNode(true):null,panelRect:panel.getBoundingClientRect()}:null;
+    const imageChanged=frame.src!==next.src, dataChanged=dataKey!==JSON.stringify(view || null);
+    const captionText=p && p.needs_view_replay?"View changed. Restore this step to return to the explanation.":ready?p.current_caption || "":"";
+    const captionChanged=caption.textContent!==captionText;
+    frame.src=next.src; frame.hidden=false;
+    local=compose(local,inverse(sent)); sent=identity();
+    // Native gesture frames already include the browser's preview transform.
+    // Keep gestures immediate and animate only authored changes or navigation.
+    allowMotion=allowMotion && isIdentity(local);
+    data=info; transientFailures=0; renderedPointID=null; settled=false;
+    $("source").textContent = info.title || "";
+    renderData(view);
+    frameBox=fittedFrame(info,next); frameGraph=info.graph; placeFrame(frame,frameBox); preview();
+    if(!drag)$("node-drag").hidden=true;
+    caption.textContent=captionText;
+    $("surface").setAttribute('aria-busy','true');
+    status(!args ? "Saved native view. Show this workspace again to follow new states." :
+      p && p.current_point_id && !ready && !p.needs_view_replay && !terminal(p) ? "Preparing next point…" : "");
+    controls(); resize();
+    if(!await animateView(allowMotion?before:null,imageChanged,dataChanged,captionChanged) || !current())return;
+    settled=true;
+    $("surface").setAttribute('aria-busy','false');
+    renderedPointID=ready && !p.needs_view_replay?p.current_point_id:null;
+    controls(); resize();
+    if (args && ready && p.point_visible === false && !p.needs_view_replay) {
+      const proof = JSON.stringify([info.frame_revision, info.view_revision, p.presentation_id, p.revision, p.current_point_id]);
+      if (proof !== acknowledgedFrame) {
+        const receipt = await request("tools/call", {name:"studio_workspace_frame", arguments:{...args,
+          inline_view_state:"acknowledged", after_frame_revision:info.frame_revision, rendered_point_id:renderedPointID}});
+        if (expectedGeneration !== generation || expectedEpoch !== frameEpoch) return;
+        if (receipt.isError) throw failure(receipt);
+        const confirmation = receipt.structuredContent;
+        if (confirmation && confirmation.frame_acknowledged === true) {
+          acknowledgedFrame = proof;
+          const updated = confirmation.presentation;
+          if (updated && updated.presentation_id === p.presentation_id && updated.current_point_id === p.current_point_id && updated.view_ready) {
+            data.presentation = updated; controls();
+          } else pollSoon = true;
+        } else pollSoon = true;
+      }
+    }
+  }
+  function showError(error) {
+    const retryable = ["VIEW_NOT_RENDERED", "STALE_VIEW", "HOST_TIMEOUT", "HOST_REQUEST_FAILED", "APP_NOT_RUNNING", "APP_BRIDGE_UNAVAILABLE", "BRIDGE_UNAVAILABLE"].includes(error.code);
+    cancelMotion(); layoutPending=false; settled=false; resetGestures();
+    $("node-drag").hidden=true;
+    $("surface").setAttribute('aria-busy','false');
+    stopped = !retryable;
+    transientFailures++;
+    status(error.message + (data ? " The last captured view is still shown." : ""), true);
+    controls();
+  }
+  async function poll() {
+    if (!args || frameBusy || controlBusy || stopped) return;
+    const expected = generation, epoch = frameEpoch;
+    frameBusy = true;
+    try {
+      const dimensions = data && data.render_surface==='graph' ? graphSize() : {};
+      const actions=[];
+      if (!isIdentity(local)) {
+        const box=frameBox || {scale:1,left:0,top:0};
+        actions.push({type:'transform',scale:local.s,tx:(local.tx+(local.s-1)*box.left)/box.scale,ty:(local.ty+(local.s-1)*box.top)/box.scale});
+      }
+      actions.push(...queuedActions.splice(0,8-actions.length)); sent={...local};
+      if(queuedActions.length)pollSoon=true;
+      await apply(await request("tools/call", {name:"studio_workspace_frame", arguments:{...args,
+        ...dimensions, ...(actions.length?{graph_actions:actions}:{}),
+        after_frame_revision:data && data.frame_revision, rendered_point_id:renderedPointID,
+        maximum_frame_age_ms:5000, defer_until_ready:true}}), expected, epoch, !actions.length);
+    } catch (error) { if (expected === generation && epoch === frameEpoch) showError(error); }
+    finally { if (expected === generation && epoch === frameEpoch) { frameBusy = false; controls(); schedule(); } }
+  }
+  function release(route = args) {
+    if (route) request("tools/call", {name:"studio_workspace_frame", arguments:{...route, inline_view_state:"released"}}).catch(() => {});
+  }
+  function routeFor(result) {
+    const info = result && result.structuredContent;
+    if (!info || info.format !== "sqlite-graph-studio/workspace-view") return null;
+    const privateRoute = result._meta && result._meta.workspaceView && result._meta.workspaceView.arguments;
+    const viewer = info.viewer || {};
+    const context = viewer.context_id || privateRoute && privateRoute.context_id || toolInput && toolInput.context_id;
+    const viewerID = viewer.viewer_id || privateRoute && privateRoute.viewer_id;
+    if (!context || !viewerID) return null;
+    return {context_id:context, viewer_id:viewerID, workspace_id:info.workspace_id, source_id:info.source_id,
+      source_revision:info.source_revision, width:viewer.width || privateRoute && privateRoute.width || toolInput && toolInput.width || 960,
+      render_surface:info.render_surface || viewer.render_surface || privateRoute && privateRoute.render_surface || 'workspace', title:info.title};
+  }
+  async function receive(result) {
+    if (!result || !result.structuredContent || result.structuredContent.format !== "sqlite-graph-studio/workspace-view") return;
+    lastResult = result;
+    const route = routeFor(result);
+    // Some hosts also notify for UI-initiated calls. Their RPC response owns
+    // frame ordering; reinitializing here would release the viewer mid-playback.
+    if (args && (!route || ["context_id", "viewer_id", "workspace_id", "source_id", "source_revision"].every(key => args[key] === route[key]))) return;
+    if (args) release(args);
+    cancelMotion(); layoutPending=false; settled=false; frameBox=null; frameGraph=null;
+    clearTimeout(timer); generation++; frameEpoch++; frameBusy = false; controlBusy = false; openBusy = false; renderedPointID = null; acknowledgedFrame = null; pollSoon = false; stopped = false;
+    resetGestures();
+    args = route;
+    const expected = generation;
+    try { await apply(result, expected); schedule(true); }
+    catch (error) {
+      if (expected === generation) {
+        showError(error);
+        // Initial viewport preparation can fail before data or a canvas observer
+        // can drive polling. Reuse the capped reconnect timer for this route.
+        schedule();
+      }
+    }
+  }
+  $("open-app").onclick = async () => {
+    if (!args || openBusy) return;
+    const expected = generation, target = {...args};
+    openBusy = true; controls();
+    try {
+      const activated = await request("tools/call", {name:"studio_update_workspace", arguments:{
+        context_id:target.context_id, workspace_id:target.workspace_id,
+        source_id:target.source_id, source_revision:target.source_revision,
+        changes:{activate:true}, request_id:"inline-open-" + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16)).join("-")}});
+      if (expected !== generation) return;
+      if (activated.isError) throw failure(activated);
+      const opened = await request("tools/call", {name:"studio_launch", arguments:{foreground_intent:true, wait_ms:10000}});
+      if (expected !== generation) return;
+      if (opened.isError) throw failure(opened);
+    } catch (error) { if (expected === generation) status(error.message || "Graph Studio could not open this workspace.", true); }
+    finally { if (expected === generation) { openBusy = false; controls(); } }
+  };
+  for (const key of ["back", "next", "restore"]) $(key).onclick = async () => {
+    if (!args || controlBusy || stopped || !data || !data.presentation) return;
+    const expected = generation;
+    // A step change supersedes an older frame read without disabling navigation.
+    cancelMotion(); layoutPending=false; settled=false;
+    frameEpoch++; frameBusy = false; renderedPointID = null; controlBusy = true; controls(); clearTimeout(timer);
+    resetGestures();
+    try {
+      const control = key === "restore" ? "repeat" : key;
+      const result = await request("tools/call", {name:"studio_control_presentation", arguments:{context_id:args.context_id, workspace_id:args.workspace_id,
+        source_id:args.source_id, source_revision:args.source_revision, presentation_id:data.presentation.presentation_id,
+        request_id:"inline-control-" + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16)).join("-"), control}});
+      if (result.isError) throw failure(result);
+    } catch (error) { if (expected === generation) showError(error); }
+    finally { if (expected === generation) { controlBusy = false; controls(); poll(); } }
+  };
+  function queueGesture(transform) {
+    if (!interactive()) return;
+    interruptMotionForGesture();
+    local=compose(transform,local); preview();
+    clearTimeout(gestureTimer);
+    gestureTimer=setTimeout(()=>{pollSoon=true;if(!frameBusy)poll();},100);
+  }
+  function zoomAt(factor,point) {
+    const camera=data && data.graph;
+    if (camera) {
+      const current=camera.zoom*local.s;
+      factor=Math.max(camera.min_zoom,Math.min(camera.max_zoom,current*factor))/current;
+    }
+    if (Number.isFinite(factor) && factor>0) queueGesture({s:factor,tx:(1-factor)*point.x,ty:(1-factor)*point.y});
+  }
+  function graphAction(action) {
+    if (!interactive()) return;
+    interruptMotionForGesture();
+    queuedActions.push(action); pollSoon=true; if(!frameBusy)poll();
+  }
+  $("fit").onclick=()=>graphAction({type:'fit'});
+  $("context").onclick=()=>graphAction({type:'context'});
+  $("expand").onclick=()=>{if(frameGraph?.selection?.length===1)graphAction({type:'expand',table_id:frameGraph.selection[0]});};
+  const canvas=$("canvas");
+  const pointOf=event=>{const rect=canvas.getBoundingClientRect();return {x:event.clientX-rect.left-canvas.clientLeft,y:event.clientY-rect.top-canvas.clientTop};};
+  function nodeAt(point) {
+    if(!frameBox || !frameGraph || !Array.isArray(frameGraph.nodes))return null;
+    const native={x:((point.x-local.tx)/local.s-frameBox.left)/frameBox.scale,
+      y:((point.y-local.ty)/local.s-frameBox.top)/frameBox.scale};
+    // A selected card wins if the reader is separating overlapping tables.
+    const selected=new Set(frameGraph.selection || []);
+    for(const node of frameGraph.nodes.filter(node=>node && typeof node.table_id==='string')
+      .sort((a,b)=>Number(selected.has(a.table_id))-Number(selected.has(b.table_id))).reverse()) {
+      if(node && typeof node.table_id==='string' && [node.x,node.y,node.width,node.height].every(Number.isFinite) &&
+        native.x>=node.x && native.x<=node.x+node.width && native.y>=node.y && native.y<=node.y+node.height)return node;
+    }
+    return null;
+  }
+  function nodePreview(current, dx, dy) {
+    const ghost=$("node-drag"), box=current.nodeBox;
+    if(ghost.hidden) {
+      const image=$("frame").cloneNode(); image.removeAttribute('id'); image.removeAttribute('style'); image.alt='';
+      Object.assign(image.style,{width:current.imageBox.width+'px',height:current.imageBox.height+'px',
+        left:current.imageBox.left-box.left+'px',top:current.imageBox.top-box.top+'px'});
+      ghost.replaceChildren(image); ghost.hidden=false;
+      Object.assign(ghost.style,{width:box.width+'px',height:box.height+'px'});
+    }
+    ghost.style.left=box.left+dx+'px'; ghost.style.top=box.top+dy+'px';
+  }
+  let scrollsGraph=false,lastPointer=null,drag=null,lastScale=1;
+  canvas.addEventListener('pointermove',event=>{
+    if(lastPointer && (event.screenX!==lastPointer.x || event.screenY!==lastPointer.y))scrollsGraph=true;
+    lastPointer={x:event.screenX,y:event.screenY};
+    if(!drag)canvas.classList.toggle('over-node',!!nodeAt(pointOf(event)));
+    if(!drag || !interactive())return;
+    const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
+    if(!drag.moved && Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)<4)return;
+    drag.moved=true;drag.x=event.clientX;drag.y=event.clientY;
+    if(drag.node) {
+      canvas.classList.add('dragging-node');
+      nodePreview(drag,event.clientX-drag.startX,event.clientY-drag.startY);
+    } else {canvas.classList.add('panning');queueGesture({s:1,tx:dx,ty:dy});}
+  });
+  canvas.addEventListener('pointerleave',()=>{scrollsGraph=false;lastPointer=null;canvas.classList.remove('over-node');});
+  canvas.addEventListener('pointerdown',event=>{
+    if(event.button!==0 || event.target.closest('button, #status') || !interactive())return;
+    interruptMotionForGesture();
+    scrollsGraph=true;canvas.focus({preventScroll:true});canvas.setPointerCapture(event.pointerId);
+    $("node-drag").hidden=true;
+    const point=pointOf(event), node=event.altKey?null:nodeAt(point), scale=frameBox.scale*local.s;
+    drag={pointerId:event.pointerId,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,point,moved:false,node,
+      modelScale:frameGraph.zoom*scale,
+      nodeBox:node?{left:local.tx+local.s*frameBox.left+node.x*scale,top:local.ty+local.s*frameBox.top+node.y*scale,width:node.width*scale,height:node.height*scale}:null,
+      imageBox:{left:local.tx+local.s*frameBox.left,top:local.ty+local.s*frameBox.top,width:frameBox.width*local.s,height:frameBox.height*local.s}};
+  });
+  const endDrag=event=>{
+    if(!drag)return;
+    const current=drag;drag=null;canvas.classList.remove('panning','dragging-node');
+    try{canvas.releasePointerCapture(event.pointerId);}catch{}
+    if(event.type==='pointerup' && interactive()) {
+      if(current.node && current.moved && [current.node.center_x,current.node.center_y,current.modelScale].every(Number.isFinite) && current.modelScale>0) {
+        graphAction({type:'move',table_id:current.node.table_id,
+          x:current.node.center_x+(event.clientX-current.startX)/current.modelScale,
+          y:current.node.center_y+(event.clientY-current.startY)/current.modelScale});
+      } else if(current.moved)queueGesture({s:1,tx:event.clientX-current.x,ty:event.clientY-current.y});
+      else if(current.node)graphAction({type:'select',table_id:current.node.table_id});
+      else {
+        const box=frameBox || {scale:1,left:0,top:0};
+        graphAction({type:'click',x:(current.point.x-box.left)/box.scale,y:(current.point.y-box.top)/box.scale});
+      }
+    } else $("node-drag").hidden=true;
+  };
+  canvas.addEventListener('pointerup',endDrag);canvas.addEventListener('pointercancel',endDrag);
+  canvas.addEventListener('dblclick',event=>{
+    if(event.target.closest('button, #status') || !interactive())return;
+    const node=nodeAt(pointOf(event));
+    if(node){event.preventDefault();graphAction({type:'expand',table_id:node.table_id});}
+  });
+  canvas.addEventListener('wheel',event=>{
+    if(event.target.closest('#status') || !interactive() || !scrollsGraph && !event.ctrlKey)return;
+    event.preventDefault();
+    if(event.ctrlKey)zoomAt(Math.exp(-event.deltaY*.01),pointOf(event));
+    else if(event.wheelDeltaY && Math.abs(event.wheelDeltaY)%120===0)zoomAt(Math.exp(Math.max(-3,Math.min(3,event.wheelDeltaY/120))*.15),pointOf(event));
+    else queueGesture({s:1,tx:-event.deltaX,ty:-event.deltaY});
+  },{passive:false});
+  canvas.addEventListener('gesturestart',event=>{if(!interactive())return;event.preventDefault();lastScale=1;});
+  canvas.addEventListener('gesturechange',event=>{if(!interactive())return;event.preventDefault();zoomAt(event.scale/lastScale,pointOf(event));lastScale=event.scale;});
+  canvas.addEventListener('keydown',event=>{
+    if(!interactive() || event.target!==canvas)return;
+    if(event.key.toLowerCase()==='f'){event.preventDefault();graphAction({type:'fit'});}
+    else if(event.key==='Enter' && frameGraph.selection?.length===1){event.preventDefault();graphAction({type:'expand',table_id:frameGraph.selection[0]});}
+    else if(['+','=','-'].includes(event.key)){event.preventDefault();zoomAt(event.key==='-'?1/1.15:1.15,{x:canvas.clientWidth/2,y:canvas.clientHeight/2});}
+    else if(event.key.startsWith('Arrow')){event.preventDefault();queueGesture({s:1,tx:event.key==='ArrowLeft'?30:event.key==='ArrowRight'?-30:0,ty:event.key==='ArrowUp'?30:event.key==='ArrowDown'?-30:0});}
+  });
+  new ResizeObserver(()=>{if(args && data && data.render_surface==='graph' && !motion && !layoutPending){pollSoon=true;if(!frameBusy && !controlBusy)schedule(true);}}).observe(canvas);
+  document.addEventListener("visibilitychange", () => {if(document.hidden)finishMotion(); schedule();});
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent) return;
+    const m = event.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && pending.has(m.id) && ("result" in m || "error" in m)) {
+      const p = pending.get(m.id); pending.delete(m.id); clearTimeout(p.timeout);
+      if (m.error) { const error = new Error(m.error.message || "Reconnecting to Graph Studio…"); error.code = "HOST_REQUEST_FAILED"; p.reject(error); }
+      else p.resolve(m.result);
+    } else if (m.method === "ui/notifications/tool-result") receive(m.params);
+    else if (m.method === "ui/notifications/tool-input") { toolInput = m.params && m.params.arguments; if (!args && lastResult) receive(lastResult); }
+    else if (m.method === "ui/notifications/host-context-changed") hostContext(m.params);
+    else if (m.method === "ui/notifications/tool-cancelled") { release(); cancelMotion(); layoutPending=false; clearTimeout(timer); generation++; stopped = true; status("View cancelled. The last captured state remains visible."); controls(); }
+    else if (m.method === "ui/resource-teardown") { release(); cancelMotion(); layoutPending=false; clearTimeout(timer); generation++; stopped = true; for (const p of pending.values()) { clearTimeout(p.timeout); p.reject(new Error("View closed.")); } pending.clear(); post({jsonrpc:"2.0", id:m.id, result:{}}); }
+    else if (m.method === "ping") post({jsonrpc:"2.0", id:m.id, result:{}});
+  });
+  request("ui/initialize", {appInfo:{name:"SQLite Graph Studio",version:"1.1.0"},protocolVersion:"2026-01-26",appCapabilities:{}})
+    .then(result => { hostContext(result.hostContext); notify("ui/notifications/initialized"); resize(); })
+    .catch(error => status(error.message, true));
+})();
+</script>
+</body>
+</html>

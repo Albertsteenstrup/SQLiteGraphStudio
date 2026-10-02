@@ -6,7 +6,50 @@ import Testing
 @Suite(.serialized)
 struct ToolContractEdgeTests {
     @Test @MainActor
-    func sparseSubsetCompactsAndNarratedPointSelectsItsSubject() async throws {
+    func tablePagesCarryTheirWorkspaceAndRejectAReplacedSourceWithoutChangingPanes() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sgs-data-page-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = folder.appendingPathComponent("first.sqlite")
+        let second = folder.appendingPathComponent("second.sqlite")
+        try SampleFixtureBuilder.buildFixture(at: first)
+        try SampleFixtureBuilder.buildFixture(at: second)
+        let tabs = WorkspaceTabController(initialSession: AppSession())
+        let coordinator = StudioAutomationCoordinator(workspaces: tabs)
+        let connected = await invoke(coordinator, "studio_connect_context", ["client_task_id": "data-page"])
+        let context = try #require(payload(connected)["context_id"] as? String)
+        let opened = await invoke(coordinator, "studio_open_source", [
+            "context_id": context, "request_id": UUID().uuidString, "source_path": first.path,
+        ], context: context)
+        let workspace = try #require(payload(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspace })
+        let paneBefore = tab.session.paneState(for: tab.session.activePaneSide).kind
+        let tabsBefore = tab.session.openTabs.count
+        let page = await invoke(coordinator, "studio_fetch_rows", [
+            "context_id": context, "workspace_id": workspace, "table_id": "authors",
+            "column_ids": ["name", "id"], "limit": 2,
+        ], context: context)
+        #expect(page["isError"] as? Bool == false)
+        #expect(payload(page)["workspace_id"] as? String == workspace)
+        #expect(payload(page)["columns"] as? [String] == ["name", "id"])
+        #expect((payload(page)["rows"] as? [[String: Any]])?.count == 2)
+        #expect(tab.session.openTabs.count == tabsBefore)
+        #expect(tab.session.paneState(for: tab.session.activePaneSide).kind == paneBefore)
+        let source = try #require(payload(page)["source_id"] as? String)
+        let revision = try #require(payload(page)["source_revision"] as? String)
+        await tab.session.openDocument(url: second)
+        let stale = await invoke(coordinator, "studio_fetch_rows", [
+            "context_id": context, "workspace_id": workspace, "table_id": "authors",
+            "source_id": source, "source_revision": revision, "offset": 2, "limit": 2,
+        ], context: context)
+        #expect(errorCode(stale) == "STALE_SOURCE")
+        #expect(payload(stale)["rows"] == nil)
+        await coordinator.close()
+        await tabs.closeAllAndWait()
+    }
+
+    @Test @MainActor
+    func sparseSubsetCompactsAndEmbeddedPointSelectsItsSubjectWithoutLocalSpeech() async throws {
         let fixture = FileManager.default.temporaryDirectory
             .appendingPathComponent("sgs-readable-point-\(UUID().uuidString).sqlite")
         try SampleFixtureBuilder.buildFixture(at: fixture)
@@ -36,6 +79,14 @@ struct ToolContractEdgeTests {
         #expect(width > 250 && width < 900)
 
         let target = ids[1]
+        let configured = await invoke(coordinator, "studio_configure_speech", [
+            "context_id": context, "request_id": UUID().uuidString,
+            "settings": ["enabled": true], "scope": "temporary",
+        ], context: context)
+        #expect(configured["isError"] as? Bool == false)
+        #expect(payload(configured)["requested_enabled"] as? Bool == true)
+        #expect(payload(configured)["narration_enabled"] as? Bool == false)
+        #expect(payload(configured)["narration_mode_for_next_presentation"] as? String == "disabled")
         let started = await invoke(coordinator, "studio_start_presentation", [
             "context_id": context, "workspace_id": workspace, "request_id": UUID().uuidString,
             "narration_mode": "enabled", "activation_intent": "foreground",
@@ -43,8 +94,8 @@ struct ToolContractEdgeTests {
                         "timing": ["advance": "manual"]]],
         ], context: context)
         #expect(started["isError"] as? Bool == false)
-        #expect(payload(started)["narration_enabled"] as? Bool == true)
-        #expect(payload(started)["current_point_has_audio"] as? Bool == true)
+        #expect(payload(started)["narration_enabled"] as? Bool == false)
+        #expect(payload(started)["current_point_has_audio"] as? Bool == false)
         for _ in 0..<100 where !tab.session.selectedGraphNodeIDs.contains(target) {
             try await Task.sleep(for: .milliseconds(10))
         }

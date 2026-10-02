@@ -27,8 +27,9 @@ A macOS app for browsing SQLite databases and connecting to PostgreSQL in a stri
 - Schema notes from a sidecar file — table and column descriptions in `<database>.studio.json` show up as hover tooltips on graph nodes, table grids, and query result headers (see the [schema-descriptions](.claude/skills/schema-descriptions/SKILL.md) skill for AI-assisted authoring)
 - AI-authored cluster hints — let an agent group related tables by a chosen lens, defaulting to domain areas but supporting concepts like people, artifacts, departments, workflows, or ownership (via the [graph-clusters](.claude/skills/graph-clusters/SKILL.md) skill)
 - Local MCP bridge — Codex and Claude Code can inspect the active task's source context and request supported schema views through Graph Studio. The bridge reports status without opening the app; launching is an explicit tool action.
+- Embedded data grids — supporting MCP Apps hosts show table rows and captured query results inside the conversation, with paging, cell inspection, and visible result limits.
 - Workspace tabs — each tab keeps its own graph/data split, camera, filters and query drafts. A normal launch starts at the welcome screen; choose a file or use Open Recent to reopen a source.
-- Guided explanations — an agent can show a small set of tables, inspect rows or a read-only result, and add short captioned points with local streamed macOS narration and immediate playback controls.
+- Embedded MCP explanations — an agent can show focused graphs and bounded rows with captions, animated transitions, and Back/Next steps while explaining through its own text or audio.
 
 ## AI Skills
 
@@ -61,6 +62,53 @@ User-wide setup also turns on Codex's `enable_mcp_apps` feature, which Codex nee
 `studio_status` never launches Graph Studio. When a user asks to see a visualization, `studio_launch` opens the app and waits for its private local bridge to become ready. App-bound tools require Graph Studio to be running; tools without an app-side handler return a structured `TOOL_UNAVAILABLE` error. The bridge is local to the same macOS user and does not expose database write operations.
 
 See the [agent exploration implementation status](docs/agent-exploration-implementation-status.md) for current coverage and validation limits.
+
+For a visual explanation inside the conversation, use `studio_show_workspace_inline`. Click a node to select it, double-click or press Enter to expand it, and drag it to reposition it. Drag empty canvas to pan; hold Alt to pan over a node. Use **Show in full model** to highlight the current group in its broader context. Returning to detail restores the prior scope, node positions and camera. Agents can add the same context map between focused explanation steps.
+It uses a dedicated native graph surface, with the same graph drawing as the
+embedded review. The graph takes the full width unless the current point asks
+to open a table or show query results; then a compact, selectable row grid appears
+beside it. One live card follows subsequent view changes,
+with captions and a page count such as 1/4 between Back and Next.
+Each point stays until the
+reader or MCP moves it; the last point remains available for inspection and Back.
+Click the Graph Studio icon in the header to open that workspace in the app.
+There are no Play or End buttons in the embedded view. Codex can explain a step
+through its own text or audio, then advance the same view through MCP. Embedded
+explanations use manual steps without Graph Studio speech or timed advancement.
+Closing the card pauses its explanation; explicit MCP End and Return still handle cleanup.
+Camera and focus changes ease between steps, data panels slide in or out, and
+captions fade in. Frames keep their proportions while the layout changes;
+visibility is confirmed after the final viewport and transition settle. Reduced
+motion uses immediate changes, and navigation or gestures interrupt a transition.
+Caption and status space stays stable to reduce conversation resizing. The embedded
+app cannot control the host's transcript scrolling during a voice conversation.
+Graph frames use twice the logical resolution and prefer lossless PNG for
+readable labels. Decoded, settled frames confirm visible steps even with the native window
+covered. Explanation controls and saved-story reading exist only in the embedded
+MCP view; the native app has no player or story reader. Saved `.sgexplanation`
+files open through `studio_open_explanation`, with captured rows labelled as historical.
+The exact task workspace must be selected in the running app; its desktop window
+does not need to be shown. Pan, zoom, selection and Fit work inside the card,
+with immediate gesture previews. Inspecting the graph keeps the current step and
+uses an independent viewport. Rows come from already loaded pages or query
+results, bounded to 10 rows and 20 columns with explicit partial-cell labels.
+Switching away or changing the source stops updates and labels the retained
+frame. The card draws graph content directly, without capturing app chrome.
+
+To show row data in the conversation, use `studio_show_data_inline` with this task's
+`context_id` and either a `table_id` or a completed query's `result_id`. Table pages
+support column selection, search, typed filters and one sort column. The embedded
+grid has Previous/Next controls, a cell inspector, and the table selection or
+executed SQL. It distinguishes SQL NULL, empty text, binary values and clipped
+values, and labels queries that reached their row cap. Table pages read live
+data; query pages read the same captured result without rerunning SQL.
+
+Graph Studio must already be running with the task's database workspace. Showing
+the grid leaves the native panes alone, and later pages stay bound to the exact
+workspace and source. Hosts without MCP Apps receive a bounded text preview and
+structured rows. Migration-only sources contain no row data; use the native graph
+for those models. `studio_open_table` and `studio_show_query_results` remain
+available when the user wants data in the app.
 
 ## Database schema comparisons
 
@@ -199,7 +247,7 @@ Query history, saved queries and graph layout use a password-free, hashed connec
 
 ## Exploring large schemas
 
-SQLite, PostgreSQL connections, PostgreSQL backups and migration models use the same schema-graph placement path. For more than 128 objects, it divides layout work into neighbourhoods of at most 64 tables. Connected groups of up to 48 keep the force solver's hub-and-neighbour shape, with actual card rectangles separated; bigger or disconnected pieces use compact packing. At the catalog level, weighted cross-group relationships place domains around connected hubs with clearance between groups. This distributed community layout follows the same principles as GRC Platform's graph fabric while retaining Graph Studio's authored group hints and exact card sizes. Authored groups retain their labels and colours, including groups larger than one neighbourhood. Unassigned tables get deterministic local groups based on schema, repeated name prefixes and relationships; these inferred groups are not saved into the sidecar.
+SQLite, PostgreSQL connections, PostgreSQL backups and migration models use the same schema-graph placement path. For more than 128 objects, it divides layout work into neighbourhoods of at most 64 tables. Connected groups of up to 48 keep the force solver's hub-and-neighbour shape, with actual card rectangles separated; bigger or disconnected pieces use compact packing. At the catalog level, weighted cross-group relationships place domains around connected hubs with clearance between groups. This distributed community layout retains Graph Studio's authored group hints and exact card sizes. Authored groups retain their labels and colours, including groups larger than one neighbourhood. Unassigned tables get deterministic local groups based on schema, repeated name prefixes and relationships; these inferred groups are not saved into the sidecar.
 
 At full-model zoom, authored group titles and a few optional `overviewTables` cards provide orientation while the other nodes stay compact. These cards keep the same name, fields and rows pills, and controls as ordinary table cards, but shrink more slowly when zooming out and remain present when the entire graph is fitted. A coding agent can then show a readable subset spanning the main domains and move into a narrower group or table. The sidecar hints guide that presentation; they do not restrict the agent to those tables.
 

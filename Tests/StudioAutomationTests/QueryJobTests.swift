@@ -50,6 +50,18 @@ struct QueryJobTests {
         let firstValues = try #require(rows.first?["values"] as? [[String: Any]])
         #expect(firstValues.first?["value"] as? String == "7")
 
+        let workspaceID = try #require(content(opened)["workspace_id"] as? String)
+        let tab = try #require(tabs.tabs.first { $0.id.uuidString == workspaceID })
+        let queryTabsBeforeFetch = tab.session.queryWorkspace.queries.count
+        let fetched = try await call(coordinator, "studio_fetch_query_results", [
+            "context_id": contextID, "workspace_id": workspaceID, "result_id": resultID, "limit": 1,
+        ], client: "query-client", context: contextID)
+        #expect(fetched["isError"] as? Bool == false)
+        #expect(content(fetched)["workspace_id"] as? String == workspaceID)
+        #expect(content(fetched)["executed_sql"] as? String == "SELECT 7 AS answer")
+        #expect(content(fetched)["returned_rows"] as? Int == 1)
+        #expect(tab.session.queryWorkspace.queries.count == queryTabsBeforeFetch)
+
         let shown = try await call(coordinator, "studio_show_query_results", [
             "context_id": contextID, "request_id": UUID().uuidString, "result_id": resultID,
         ], client: "query-client", context: contextID)

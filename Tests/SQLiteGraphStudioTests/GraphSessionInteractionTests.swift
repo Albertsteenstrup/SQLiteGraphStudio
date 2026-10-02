@@ -1,9 +1,41 @@
 import Foundation
+import GRDB
 import Testing
 @testable import StudioCore
 
 @MainActor
 struct GraphSessionInteractionTests {
+    @Test func compactArrangementReservesCompositeKeyNeighbourPreviews() async throws {
+        let url = TestSupport.temporaryDatabaseURL(named: "compact-preview")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let columns = (0..<16).map { "key_\($0)" }
+        let names = columns.joined(separator: ", ")
+        let definitions = columns.map { "\($0) INTEGER" }.joined(separator: ", ")
+        let database = try DatabaseQueue(path: url.path)
+        try await database.write { db in
+            try db.execute(sql: "CREATE TABLE parent(\(definitions), PRIMARY KEY(\(names)))")
+            try db.execute(sql: "CREATE TABLE child(\(definitions), FOREIGN KEY(\(names)) REFERENCES parent(\(names)))")
+        }
+        try database.close()
+        let suite = "GraphSessionInteractionTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let session = AppSession(userDefaults: defaults)
+        await session.openDatabase(url: url)
+        session.expandedGraphNodeIDs = ["parent"]
+        session.compactGraphTables(["parent", "child"], columns: 1)
+
+        let parentCenter = session.graphLayout.position(for: "parent")
+        let childCenter = session.graphLayout.position(for: "child")
+        // The expanded parent lists seven rows; its child previews all sixteen key
+        // components. Reserving only a collapsed child would cover the parent.
+        let parentBottom = parentCenter.y + (46 + 10 + 12 + 7 * 24) / 2
+        let childTop = childCenter.y - (46 + 10 + 12 + 16 * 24) / 2
+        #expect(childTop - parentBottom >= 80)
+        await session.closeAndWait()
+    }
+
     @Test func marqueePreservesPrimaryUntilItLeavesTheSelection() throws {
         let suite = "GraphSessionInteractionTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

@@ -42,6 +42,6 @@ struct RecordMappingConnectionsView: View {
                     Text(page.hasMore ? "More mapped edges available" : "End of mapped edges").font(.caption2).foregroundStyle(.secondary)
                 }
             }
-        }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+        }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
     }
 }

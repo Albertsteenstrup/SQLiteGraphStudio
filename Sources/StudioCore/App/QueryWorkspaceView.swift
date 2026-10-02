@@ -148,11 +148,11 @@ public struct QueryWorkspaceView: View {
                     .padding(14)
                     .scrollContentBackground(.hidden)
                     .background(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                             .fill(StudioPalette.editorSurface)
                     )
                     .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                             .stroke(StudioPalette.borderSoft)
                     }
                     .frame(minHeight: 150)
@@ -234,11 +234,11 @@ public struct QueryWorkspaceView: View {
                         .foregroundStyle(StudioPalette.primaryText)
                         .frame(width: 32, height: 32)
                         .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous)
                                 .fill(StudioPalette.headerSurface.opacity(0.84))
                         )
                         .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous)
                                 .stroke(StudioPalette.borderSoft)
                         }
                 }
@@ -295,11 +295,11 @@ private struct QueryTabView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous)
                 .fill(isActive ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous)
                 .stroke(isActive ? StudioPalette.border : StudioPalette.borderSoft)
         }
         .onTapGesture { onSelect() }
@@ -350,7 +350,7 @@ private struct QueryPlanView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                         .fill(StudioPalette.gridSurface)
                 )
             } else {
@@ -376,9 +376,9 @@ private struct QueryPlanView: View {
                     }
                 }
                 .background(StudioPalette.gridSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                         .stroke(StudioPalette.borderSoft)
                 }
             }
@@ -418,7 +418,7 @@ private struct QueryResultsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                         .fill(StudioPalette.gridSurface)
                 )
             } else {
@@ -429,9 +429,9 @@ private struct QueryResultsView: View {
                 )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(StudioPalette.gridSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                             .stroke(StudioPalette.borderSoft)
                     }
             }

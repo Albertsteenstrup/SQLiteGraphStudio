@@ -167,7 +167,7 @@ public final class AppSession {
     public var graph: SchemaGraph = .empty {
         didSet { graphRevision &+= 1 }
     }
-    private(set) var graphRevision = 0
+    public private(set) var graphRevision = 0
     public private(set) var schemaMetadataState = SchemaMetadataState()
     public var metadataDiagnostics: [String] {
         migrationDiagnostics.map(\.displayText) + schemaMetadataState.diagnostics
@@ -176,11 +176,11 @@ public final class AppSession {
     public var schemaSidecar: SchemaSidecar = .empty {
         didSet { schemaSidecarRevision &+= 1 }
     }
-    private(set) var schemaSidecarRevision = 0
+    public private(set) var schemaSidecarRevision = 0
     public private(set) var graphGrouping: GraphGrouping = .empty {
         didSet { graphGroupingRevision &+= 1 }
     }
-    private(set) var graphGroupingRevision = 0
+    public private(set) var graphGroupingRevision = 0
     public private(set) var automationGroupHints: [SchemaSidecar.ClusterHint]?
     public var leftPane = WorkspacePaneState(kind: .schema)
     public var rightPane = WorkspacePaneState(kind: .tables)
@@ -197,7 +197,13 @@ public final class AppSession {
     /// A new table scope should leave any prior relation focus, even when its
     /// root table remains in the new subset.
     public private(set) var automationFocusResetRevision = 0
-    public var automationViewportCommand: AutomationGraphViewportCommand?
+    public var automationViewportCommand: AutomationGraphViewportCommand? {
+        didSet {
+            if let command = automationViewportCommand { automationViewportIntent = command }
+        }
+    }
+    /// Preserve the authored camera intent after the desktop consumes its command.
+    public private(set) var automationViewportIntent: AutomationGraphViewportCommand?
     /// Invoked for user-originated graph changes so a presentation can pause progression.
     @ObservationIgnored public var onManualGraphInteraction: (@MainActor () -> Void)?
     public var graphNodeSizeMetric: GraphNodeSizeMetric = .uniform {
@@ -281,6 +287,10 @@ public final class AppSession {
     public private(set) var automationRenderedViewRevision: Int?
     /// Tables included in the last rendered acknowledgement.
     public private(set) var automationRenderedTableIDs: Set<String> = []
+    /// Temporary subjects retained while the complete catalog supplies context.
+    public var graphContextTableIDs: Set<String> = []
+    /// Hit regions from the actual drawn scene, including overview marks and key previews.
+    @ObservationIgnored public private(set) var automationGraphNodeFrames: [String: CGRect] = [:]
     public private(set) var graphRowCounts: [String: Int] = [:] {
         didSet { rebuildGraphNodeSizeProfile() }
     }
@@ -295,6 +305,9 @@ public final class AppSession {
 
     public var graphVisibleTableIDs: Set<String> {
         let nodeIDs = Set(graph.nodes.map(\.id))
+        // Context deliberately shows the complete model, including tables a
+        // saved detail filter would hide. The filter returns with detail mode.
+        if !graphContextTableIDs.isEmpty { return nodeIDs }
         let filtered = Set(tables.filter {
             graphTableFilter.matches(fields: $0.columnCount, rows: graphRowCounts[$0.id] ?? $0.rowCount,
                                      relations: graphRelationCounts[$0.id, default: 0])
@@ -372,18 +385,83 @@ public final class AppSession {
         // A user gesture supersedes in-flight agent camera/focus instructions.
         // Their animation completions must not claim the user's new view.
         automationViewportCommand = nil
+        automationViewportIntent = nil
         automationFocusCommand = nil
         onManualGraphInteraction?()
     }
 
     /// Called after the canvas has drawn the requested graph revision.
-    public func acknowledgeAutomationViewRendered(revision: Int, displayedTableIDs: Set<String>) {
+    public func acknowledgeAutomationViewRendered(revision: Int, displayedTableIDs: Set<String>, nodeFrames: [String: CGRect] = [:]) {
         guard revision == automationViewRevision else { return }
         let visibleIDs = graphVisibleTableIDs
         let acknowledgedIDs = displayedTableIDs.intersection(visibleIDs)
+        automationGraphNodeFrames = nodeFrames.filter { visibleIDs.contains($0.key) }
         guard automationRenderedViewRevision != revision || automationRenderedTableIDs != acknowledgedIDs else { return }
         automationRenderedTableIDs = acknowledgedIDs
         automationRenderedViewRevision = revision
+    }
+
+    /// Copies already loaded graph facts into a render-only session. The embedded
+    /// surface has its own viewport and never opens a database or changes the
+    /// source workspace's camera, preferences, table pages, or render receipts.
+    func synchronizeEmbeddedGraph(from source: AppSession, followsInstruction: Bool = true) {
+        let graphChanged = graph != source.graph
+        let localLayout = !followsInstruction && graphChanged ? graphLayout.snapshot(for: graph) : nil
+        rendersOffscreen = true
+        databaseTarget = source.databaseTarget
+        databaseURL = source.databaseURL
+        schemaReview = source.schemaReview
+        historicalExplanationArtifact = source.historicalExplanationArtifact
+        historicalReplayPointID = source.historicalReplayPointID
+        historicalExplanationURL = source.historicalExplanationURL
+        schemaReviewChanges = source.schemaReviewChanges
+        schemaReviewEdgeChanges = source.schemaReviewEdgeChanges
+        schemaReviewRevision = source.schemaReviewRevision
+        schemaReviewChangeSets = source.schemaReviewChangeSets
+        schemaReviewViewIndex = source.schemaReviewViewIndex
+        schemaReviewAfterTableIDs = source.schemaReviewAfterTableIDs
+        schemaReviewAfterEdgeIDs = source.schemaReviewAfterEdgeIDs
+        schemaReviewCardColumns = source.schemaReviewCardColumns
+        tableDescriptors = source.tableDescriptors
+        tables = source.tables
+        if graph != source.graph { graph = source.graph }
+        schemaSidecar = source.schemaSidecar
+        graphGrouping = source.graphGrouping
+        graphGroupingRevision &+= 1
+        graphRowCounts = source.graphRowCounts
+        graphRelationCounts = source.graphRelationCounts
+        graphNodeSizeMetric = source.graphNodeSizeMetric
+        graphVisuals = source.graphVisuals
+        showAllGraphTableCards = source.showAllGraphTableCards
+        showClusterHalos = source.showClusterHalos
+        // Filters are view state too: their observer refits and collapses the
+        // graph. Ambient desktop updates must not reset embedded inspection.
+        if followsInstruction { graphTableFilter = source.graphTableFilter }
+        if followsInstruction {
+            automationVisibleTableIDs = source.automationVisibleTableIDs
+            selectedGraphNodeID = source.selectedGraphNodeID
+            selectedGraphNodeIDs = source.selectedGraphNodeIDs
+            expandedGraphNodeIDs = source.expandedGraphNodeIDs
+            graphContextTableIDs = source.graphContextTableIDs
+            graphLayout.restore(source.graphLayout.snapshot(for: source.graph), for: graph,
+                presentation: showAllGraphTableCards ? .allCards : .compact,
+                descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] })
+            requestAutomationFocusReset()
+            if let command = source.automationFocusCommand {
+                automationFocusCommand = AutomationGraphFocusCommand(tableID: command.tableID,
+                    sourceColumn: command.sourceColumn, targetColumn: command.targetColumn, relationID: command.relationID)
+            }
+        } else if let localLayout {
+            let ids = Set(graph.nodes.map(\.id))
+            automationVisibleTableIDs = automationVisibleTableIDs.map { $0.intersection(ids) }
+            setGraphSelection(selectedGraphNodeIDs.intersection(ids))
+            expandedGraphNodeIDs.formIntersection(ids)
+            graphContextTableIDs.formIntersection(ids)
+            graphLayout.restore(localLayout, for: graph,
+                presentation: showAllGraphTableCards ? .allCards : .compact,
+                descriptorLookup: { [tableDescriptors] in tableDescriptors[$0] })
+        }
+        markAutomationViewChanged()
     }
 
     private func rebuildGraphNodeSizeProfile() {
@@ -919,12 +997,9 @@ public final class AppSession {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
         if fileExtension == "sgexplanation" {
-            do {
-                let artifact = try HistoricalExplanationStore.load(url)
-                openHistoricalExplanation(artifact, from: url)
-            } catch {
-                presentedError = SQLiteUserError.from(error)
-            }
+            presentedError = SQLiteUserError(kind: .invalidInput,
+                message: "Saved explanations are opened in the embedded MCP view.",
+                recoverySuggestion: "Use studio_open_explanation through your coding agent, then show its workspace inline.")
         } else if exists, isDirectory.boolValue {
             // A folder of versioned SQL files is a migration model; any other
             // folder is a project to search, which is what dropping one on the app
@@ -1371,7 +1446,9 @@ public final class AppSession {
         automationGroupHints = nil
         automationFocusCommand = nil
         automationViewportCommand = nil
+        automationViewportIntent = nil
         automationVisibleTableIDs = nil
+        graphContextTableIDs = []
         schemaMetadataState = SchemaMetadataState()
         leftPane = WorkspacePaneState(kind: .schema)
         rightPane = WorkspacePaneState(kind: .tables)
@@ -1789,9 +1866,21 @@ public final class AppSession {
     /// Temporarily brings a chosen set of tables together without changing the
     /// authored domain layout. The displayed card sizes determine their spacing.
     public func compactGraphTables(_ tableIDs: [String], columns: Int = 3, around center: CGPoint = .zero) {
+        let scope = Set(tableIDs)
+        var previewColumns: [String: Set<String>] = [:]
+        if !showAllGraphTableCards {
+            let rootIDs = expandedGraphNodeIDs.union(automationFocusCommand.map { [$0.tableID] } ?? [])
+            for edge in graph.edges where scope.contains(edge.sourceID) && scope.contains(edge.targetID) {
+                guard rootIDs.contains(edge.sourceID) || rootIDs.contains(edge.targetID) else { continue }
+                previewColumns[edge.sourceID, default: []].insert(edge.sourceColumn)
+                previewColumns[edge.targetID, default: []].insert(edge.targetColumn)
+            }
+        }
         let items = tableIDs.compactMap { id -> GraphCompactPlacement.Item? in
             guard let node = graph.node(id: id) else { return nil }
-            let style: GraphNodeCardStyle = isGraphNodeExpanded(id) ? .expanded : .collapsed
+            let previewCount = tableDescriptors[id]?.columns.filter { previewColumns[id]?.contains($0.name) == true }.count ?? 0
+            let style: GraphNodeCardStyle = isGraphNodeExpanded(id) ? .expanded
+                : (previewCount > 0 ? .preview(rowCount: previewCount) : .collapsed)
             let size = GraphCardLayout.nodeSize(title: node.title, descriptor: tableDescriptors[id], style: style)
             return GraphCompactPlacement.Item(id: id, size: size)
         }
@@ -2279,7 +2368,9 @@ public final class AppSession {
             automationGroupHints = nil
             automationFocusCommand = nil
             automationViewportCommand = nil
+            automationViewportIntent = nil
             automationVisibleTableIDs = nil
+            graphContextTableIDs = []
         }
         databaseTarget = target
         databaseURL = localURL

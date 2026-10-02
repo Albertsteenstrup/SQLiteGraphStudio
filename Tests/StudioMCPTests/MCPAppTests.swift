@@ -52,11 +52,11 @@ final class MCPAppTests: XCTestCase {
         XCTAssertEqual(((context["inputSchema"] as? [String: Any])?["required"] as? [String]), ["path"])
     }
 
-    func testServesOneSelfContainedViewThatNeverTouchesTheNetwork() throws {
+    func testServesSelfContainedViewsThatNeverTouchTheNetwork() throws {
         let server = try initializedServer()
         let list = try object(server.handleMessage(json(["jsonrpc": "2.0", "id": 3, "method": "resources/list"])))
         let resources = (list["result"] as? [String: Any])?["resources"] as? [[String: Any]]
-        XCTAssertEqual(resources?.map { $0["uri"] as? String }, [MCPAppResources.schemaReviewURI])
+        XCTAssertEqual(resources?.map { $0["uri"] as? String }, [MCPAppResources.schemaReviewURI, MCPAppResources.dataURI, MCPAppResources.workspaceURI])
         XCTAssertEqual(resources?.first?["mimeType"] as? String, "text/html;profile=mcp-app")
 
         let read = try object(server.handleMessage(json([
@@ -74,8 +74,10 @@ final class MCPAppTests: XCTestCase {
             XCTAssertTrue(html.contains(handshake), handshake)
         }
         // The host's default sandbox allows no network, and review text must never become markup.
-        for forbidden in ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "fetch(", "XMLHttpRequest", "WebSocket", "<script src", "<link", "@import", "eval("] {
-            XCTAssertFalse(html.contains(forbidden), forbidden)
+        for view in [html, try XCTUnwrap(MCPAppResources.dataHTML), try XCTUnwrap(MCPAppResources.workspaceHTML)] {
+            for forbidden in ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "fetch(", "XMLHttpRequest", "WebSocket", "<script src", "<link", "@import", "eval("] {
+                XCTAssertFalse(view.contains(forbidden), forbidden)
+            }
         }
         // `hidden` is an HTML element property; on the SVG graph only the attribute hides it.
         XCTAssertFalse(html.contains(#"$("graph").hidden"#), "Toggle the graph's hidden attribute instead")

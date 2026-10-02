@@ -48,9 +48,9 @@ struct ProjectScanOverlayView: View {
         }
         .padding(28)
         .frame(minWidth: 380)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(StudioPalette.border, lineWidth: 1)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous).stroke(StudioPalette.border, lineWidth: 1)
         }
         .shadow(color: StudioPalette.shadow, radius: 24, y: 12)
     }

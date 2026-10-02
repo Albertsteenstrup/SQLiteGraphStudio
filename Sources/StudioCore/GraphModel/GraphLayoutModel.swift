@@ -216,6 +216,12 @@ public final class GraphLayoutModel {
             gap: layoutParameters(for: presentation).nodeGap * 0.72,
             maxIterations: overlapIterations
         )
+        rebalanceCrowdedCompactLayoutIfNeeded(
+            graph: graph,
+            presentation: presentation,
+            descriptorLookup: descriptorLookup,
+            nodeSizeLookup: nodeSizeLookup
+        )
         isAnimating = false
         velocities = Dictionary(uniqueKeysWithValues: velocities.keys.map { ($0, .zero) })
         hasSettledLayout = true
@@ -909,7 +915,7 @@ public final class GraphLayoutModel {
                 springStrength: 0.035,
                 centerStrength: 0.018,
                 baseCollisionRadius: 30,
-                nodeGap: 30,
+                nodeGap: Double(GraphCardClearance.minimumGap),
                 linkRadiusFactor: 0.22,
                 damping: 0.86,
                 columnAlignmentStrength: 0,
@@ -927,7 +933,7 @@ public final class GraphLayoutModel {
                     springStrength: 0.036,
                     centerStrength: 0.030,
                     baseCollisionRadius: 78,
-                    nodeGap: 48,
+                    nodeGap: Double(GraphCardClearance.minimumGap),
                     linkRadiusFactor: 0.42,
                     damping: 0.86,
                     columnAlignmentStrength: 0.010,
@@ -944,7 +950,7 @@ public final class GraphLayoutModel {
                 springStrength: 0.026,
                 centerStrength: 0.012,
                 baseCollisionRadius: 120,
-                nodeGap: 68,
+                nodeGap: Double(GraphCardClearance.minimumGap),
                 linkRadiusFactor: 0.42,
                 damping: 0.84,
                 columnAlignmentStrength: 0.014,
@@ -972,7 +978,6 @@ public final class GraphLayoutModel {
 
             for leftIndex in 0..<orderedNodes.count {
                 let leftID = orderedNodes[leftIndex].id
-                let leftPosition = positions[leftID] ?? .zero
                 let leftSize = effectiveLayoutSize(
                     nodeSizeLookup?(leftID) ?? CGSize(width: 120, height: 80),
                     presentation: presentation,
@@ -980,6 +985,8 @@ public final class GraphLayoutModel {
                 )
 
                 for rightIndex in (leftIndex + 1)..<orderedNodes.count {
+                    // Earlier pairs in this pass may already have moved this card.
+                    let leftPosition = positions[leftID] ?? .zero
                     let rightID = orderedNodes[rightIndex].id
                     let rightPosition = positions[rightID] ?? .zero
                     let rightSize = effectiveLayoutSize(
@@ -1104,18 +1111,45 @@ public final class GraphLayoutModel {
         }
     }
 
+    private func rebalanceCrowdedCompactLayoutIfNeeded(
+        graph: SchemaGraph,
+        presentation: GraphPresentationMode,
+        descriptorLookup: ((String) -> EditableTableDescriptor?)?,
+        nodeSizeLookup: ((String) -> CGSize)?
+    ) {
+        guard presentation == .compact,
+              graph.nodes.count > LargeGraphLayout.maximumLocalNodeCount,
+              pinnedPositions.isEmpty
+        else { return }
+
+        let points = graph.nodes.compactMap { positions[$0.id] }
+        let width = (points.map(\.x).max() ?? 0) - (points.map(\.x).min() ?? 0)
+        let height = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
+        guard max(width, height) / max(min(width, height), 1) > 2.25 else { return }
+
+        // Wide, short cards make pairwise collision correction prefer vertical
+        // moves. In a crowded catalog that can form a very tall strip even when
+        // every card is clear. Reuse card-aware community placement instead of
+        // squeezing the strip, which would introduce the same collisions again.
+        // No extra physics pass is needed, and the reader's pins remain intact.
+        layoutLargeGraph(
+            graph: graph,
+            presentation: presentation,
+            descriptorLookup: descriptorLookup,
+            nodeSizeLookup: nodeSizeLookup,
+            previousPositions: positions,
+            maxIterations: 0
+        )
+    }
+
     private func effectiveLayoutSize(
         _ size: CGSize,
         presentation: GraphPresentationMode,
         nodeCount: Int
     ) -> CGSize {
-        guard presentation == .compact else { return size }
-        if nodeCount > 80 {
-            return CGSize(width: min(size.width, 96), height: min(size.height, 38))
-        }
-        if nodeCount > 24 {
-            return CGSize(width: min(size.width, 132), height: min(size.height, 42))
-        }
+        // Overview marks are a zoom-dependent rendering choice. Once the reader
+        // zooms in, these exact cards return, so their layout cannot reserve only
+        // a small marker's bounds in crowded catalogs.
         return size
     }
 

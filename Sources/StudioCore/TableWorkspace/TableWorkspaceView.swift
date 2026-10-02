@@ -93,11 +93,11 @@ public struct TableWorkspaceView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous)
                                 .fill(session.activeTabID == tab.id ? StudioPalette.selectionSurfaceTop : StudioPalette.headerSurface.opacity(0.84))
                         )
                         .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: StudioCornerRadius.control, style: .continuous)
                                 .stroke(session.activeTabID == tab.id ? StudioPalette.border : StudioPalette.borderSoft)
                         }
                     }
@@ -127,8 +127,8 @@ public struct TableWorkspaceView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioPalette.headerSurface))
-                .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(StudioPalette.borderSoft) }
+                .background(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous).fill(StudioPalette.headerSurface))
+                .overlay { RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous).stroke(StudioPalette.borderSoft) }
             }
             schemaMetadataStrip(for: activeTab.descriptor)
 
@@ -155,9 +155,9 @@ public struct TableWorkspaceView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(StudioPalette.gridSurface.opacity(0.96))
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                         .stroke(StudioPalette.borderSoft)
                 }
             } else {
@@ -455,9 +455,9 @@ public struct TableWorkspaceView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(StudioPalette.gridSurface.opacity(0.96))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous)
                 .stroke(StudioPalette.borderSoft)
         }
     }
@@ -522,6 +522,6 @@ private struct TableNameDescriptionTooltip: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(width: 230, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
     }
 }

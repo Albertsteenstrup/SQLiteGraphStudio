@@ -34,7 +34,7 @@ private final class StudioApplicationState {
         self.automation = coordinator
         self.server = StudioAutomationServer(capabilities: [
             "contexts", "workspace-tabs", "schema-discovery", "exact-table-subsets",
-            "table-inspection", "read-only-queries", "streaming-system-speech",
+            "table-inspection", "read-only-queries", "streaming-system-speech", "workspace-frames",
         ]) { name, arguments, contextID, clientID in
             await coordinator.handle(name, arguments: arguments, contextID: contextID, clientID: clientID)
         } clientDisconnectHandler: { clientID in
@@ -240,17 +240,15 @@ struct SQLiteGraphStudioApp: App {
 
     var body: some Scene {
         Window("SQLite Graph Studio", id: "main") {
-            StudioRootView(session: state.initialSession, workspaceTabs: state.tabs)
+            StudioRootView(session: state.initialSession, workspaceTabs: state.tabs,
+                           frameCaptures: state.automation.workspaceFrameCaptures)
                 .frame(
                     minWidth: WorkspaceCompactLayout.windowMinimumWidth,
                     minHeight: WorkspaceCompactLayout.windowMinimumHeight
                 )
-                .overlay(alignment: .bottom) {
-                    LivePresentationOverlay(coordinator: state.automation)
-                        .padding(20)
-                }
                 .overlay(alignment: .topTrailing) {
                     LiveViewAnnotationOverlay(store: state.automation.viewAnnotations, workspaces: state.tabs)
+                        .background(WorkspaceFrameCaptureRegion())
                         .padding(20)
                 }
                 .overlay(alignment: .top) {

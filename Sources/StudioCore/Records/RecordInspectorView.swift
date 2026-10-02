@@ -182,7 +182,7 @@ private struct RecordRelationshipView: View {
                     }
                 }
             }
-        }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+        }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
     }
 }
 
@@ -276,7 +276,7 @@ private struct RecordValueView: View {
                 Button("Read full value") { expanded = true }.font(.caption)
             }
         }
-        .padding(12).background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
+        .padding(12).background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface))
         .task(id: "\(expanded)-\(pretty)") {
             guard expanded else { content = nil; return }
             content = nil

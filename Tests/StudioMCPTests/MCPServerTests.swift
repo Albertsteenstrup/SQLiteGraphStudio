@@ -3,9 +3,8 @@ import XCTest
 @testable import StudioMCP
 
 final class MCPServerTests: XCTestCase {
-    func testCatalogHasAllSixtySevenUniqueDocumentedTools() {
-        XCTAssertEqual(MCPToolCatalog.tools.count, 67)
-        XCTAssertEqual(Set(MCPToolCatalog.names).count, 67)
+    func testCatalogHasUniqueDocumentedTools() {
+        XCTAssertEqual(Set(MCPToolCatalog.names).count, MCPToolCatalog.tools.count)
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_status"))
         XCTAssertTrue(MCPToolCatalog.names.contains("studio_test_speech"))
         for tool in MCPToolCatalog.tools {
@@ -51,7 +50,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(saveExplanation?.contains("never overwrites") == true)
         let openExplanation = MCPToolCatalog.tool(named: "studio_open_explanation")?.json["description"] as? String
         XCTAssertFalse(openExplanation?.hasPrefix("Unavailable in this app build") == true)
-        XCTAssertTrue(openExplanation?.contains("dedicated offline tab") == true)
+        XCTAssertTrue(openExplanation?.contains("dedicated offline model") == true)
         let refreshExplanation = MCPToolCatalog.tool(named: "studio_prepare_explanation_refresh")?.json["description"] as? String
         XCTAssertFalse(refreshExplanation?.hasPrefix("Unavailable in this app build") == true)
         XCTAssertTrue(refreshExplanation?.contains("no old captions or narration") == true)
@@ -124,15 +123,15 @@ final class MCPServerTests: XCTestCase {
         let presentationDescription = presentationTool?["description"] as? String
         let presentationSchema = presentationTool?["inputSchema"] as? [String: Any]
         let presentationProperties = presentationSchema?["properties"] as? [String: Any]
-        XCTAssertTrue(presentationDescription?.contains("saved source preference") == true)
-        XCTAssertEqual((presentationProperties?["narration_mode"] as? [String: Any])?["default"] as? String, "app_default")
+        XCTAssertTrue(presentationDescription?.contains("exclusively for the embedded MCP view") == true)
+        XCTAssertEqual((presentationProperties?["narration_mode"] as? [String: Any])?["default"] as? String, "disabled")
 
         let speechDescription = MCPToolCatalog.tool(named: "studio_get_speech")?.json["description"] as? String
         XCTAssertTrue(speechDescription?.contains("provider actually speaking") == true)
         XCTAssertTrue(speechDescription?.contains("completed asset download is not a successful model startup") == true)
         let configureSpeechDescription = MCPToolCatalog.tool(named: "studio_configure_speech")?.json["description"] as? String
-        XCTAssertTrue(configureSpeechDescription?.contains("Enable or disable Graph Studio narration") == true)
-        XCTAssertTrue(configureSpeechDescription?.contains("Voice, provider, and speed selection return TOOL_UNAVAILABLE") == true)
+        XCTAssertTrue(configureSpeechDescription?.contains("cannot enable a native player") == true)
+        XCTAssertTrue(configureSpeechDescription?.contains("Voice/provider/speed changes remain unavailable") == true)
 
         let manageSpeechTool = MCPToolCatalog.tool(named: "studio_manage_speech_assets")?.json
         let manageSpeechDescription = manageSpeechTool?["description"] as? String
@@ -181,7 +180,7 @@ final class MCPServerTests: XCTestCase {
         ]))
         let response = object(list)
         let tools = (response["result"] as? [String: Any])?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 67)
+        XCTAssertEqual(tools?.compactMap { $0["name"] as? String }, MCPToolCatalog.names)
     }
 
     func testToolCallCarriesTaskAndSourceContext() throws {

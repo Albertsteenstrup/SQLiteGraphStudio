@@ -24,12 +24,15 @@ public enum MCPToolCatalog {
         return entries.map { original in
             var entry = original
             let name = entry["name"] as? String ?? ""
-            if name == SchemaReviewInlineView.toolName {
+            let resourceURI: String? = name == SchemaReviewInlineView.toolName ? MCPAppResources.schemaReviewURI
+                : name == DataInlineView.toolName ? MCPAppResources.dataURI
+                : name == WorkspaceInlineView.toolName ? MCPAppResources.workspaceURI : nil
+            if let resourceURI {
                 var meta = entry["_meta"] as? [String: Any] ?? [:]
                 var ui = meta["ui"] as? [String: Any] ?? [:]
-                ui["resourceUri"] = MCPAppResources.schemaReviewURI
+                ui["resourceUri"] = resourceURI
                 meta["ui"] = ui
-                meta["ui/resourceUri"] = MCPAppResources.schemaReviewURI
+                meta["ui/resourceUri"] = resourceURI
                 entry["_meta"] = meta
             }
             // Tools answered by the helper itself need no coding-task context.
