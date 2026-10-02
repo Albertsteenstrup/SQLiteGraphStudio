@@ -501,6 +501,68 @@ enum LargeGraphLayout {
         return true
     }
 
+    /// Retain the current arrangement while making room for changed footprints.
+    /// Larger nodes claim their space first; neighbours move outward along the
+    /// axis facing the obstacle, rather than being repacked into a new layout.
+    static func separatingNodes(
+        _ positions: [String: CGPoint], sizes: [String: CGSize],
+        preferredAnchors: Set<String> = [], gap: CGFloat = 24
+    ) -> [String: CGPoint] {
+        let orderedIDs = positions.keys.sorted { lhs, rhs in
+            let leftPinned = preferredAnchors.contains(lhs), rightPinned = preferredAnchors.contains(rhs)
+            if leftPinned != rightPinned { return leftPinned }
+            let left = sizes[lhs] ?? .zero, right = sizes[rhs] ?? .zero
+            let leftArea = left.width * left.height, rightArea = right.width * right.height
+            return leftArea == rightArea ? lhs < rhs : leftArea > rightArea
+        }
+        var result: [String: CGPoint] = [:]
+        var index = ObstacleIndex(sizes: sizes, gap: gap)
+        var rightmost = positions.reduce(CGFloat.zero) { edge, entry in
+            max(edge, entry.value.x + (sizes[entry.key]?.width ?? 0) / 2)
+        }
+        for id in orderedIDs {
+            guard let size = sizes[id], let preferred = positions[id] else { continue }
+            var point = preferred
+            var placed = false
+            var checks = 0
+            var pushDirection: CGVector?
+            separation: for _ in 0..<maximumLocalNodeCount {
+                let rect = frame(point, size).insetBy(dx: -gap / 2, dy: -gap / 2)
+                switch index.firstCollision(with: rect, checks: &checks) {
+                case .free:
+                    placed = true
+                case .collision(let obstacle):
+                    let dx = point.x - obstacle.midX, dy = point.y - obstacle.midY
+                    let halfWidth = (rect.width + obstacle.width) / 2
+                    let halfHeight = (rect.height + obstacle.height) / 2
+                    if pushDirection == nil {
+                        pushDirection = abs(dx) / halfWidth >= abs(dy) / halfHeight
+                            ? CGVector(dx: dx >= 0 ? 1 : -1, dy: 0)
+                            : CGVector(dx: 0, dy: dy >= 0 ? 1 : -1)
+                    }
+                    // Continue in the initial outward direction through a chain.
+                    // Reversing at the next obstacle can bounce between neighbours
+                    // indefinitely and send an otherwise local move to the escape shelf.
+                    if let direction = pushDirection, direction.dx != 0 {
+                        point.x += direction.dx > 0 ? obstacle.maxX - rect.minX + 1 : obstacle.minX - rect.maxX - 1
+                    } else {
+                        point.y += pushDirection!.dy > 0 ? obstacle.maxY - rect.minY + 1 : obstacle.minY - rect.maxY - 1
+                    }
+                case .saturated:
+                    break separation
+                }
+                if placed { break }
+            }
+            // A bounded escape beyond every placed rectangle guarantees clearance
+            // even for an imported layout with many coincident nodes.
+            if !placed { point = CGPoint(x: rightmost + gap + size.width / 2 + 1, y: preferred.y) }
+            result[id] = point
+            rightmost = max(rightmost, point.x + size.width / 2)
+            index.insert(id: id, rect: frame(point, size).insetBy(dx: -gap / 2, dy: -gap / 2))
+        }
+        return result
+    }
+
     private static func avoidPins(
         _ positions: [String: CGPoint], sizes: [String: CGSize], pins: [String: CGPoint],
         gap: CGFloat, metrics: inout LargeGraphLayoutMetrics

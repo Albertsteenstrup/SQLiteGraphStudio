@@ -206,6 +206,7 @@ public final class AppSession {
         }
     }
     private(set) var graphNodeSizeProfile: GraphNodeSizeProfile = .uniform
+    private(set) var graphNodeSizingLayoutRevision = 0
     public var showAllGraphTableCards = false
     public var showClusterHalos = true
     /// Which graph decorations are switched on. Persisted, and edited from
@@ -389,7 +390,41 @@ public final class AppSession {
     private func rebuildGraphNodeSizeProfile() {
         let profile = GraphNodeSizeProfile(metric: graphNodeSizeMetric, tables: tables,
                                           rowCounts: graphRowCounts, relationCounts: graphRelationCounts)
-        if profile != graphNodeSizeProfile { graphNodeSizeProfile = profile }
+        if profile != graphNodeSizeProfile {
+            graphNodeSizeProfile = profile
+            resizeGraphNodesForCurrentMetric()
+        }
+    }
+
+    /// Metric changes share one geometry path for native controls and automation.
+    @discardableResult
+    func resizeGraphNodesForCurrentMetric(
+        minimumZoom: CGFloat? = nil, nodeSizeLookup: ((String) -> CGSize)? = nil,
+        focusPositions: [String: CGPoint]? = nil, focusAnchorID: String? = nil
+    ) -> [String: CGPoint]? {
+        guard graphNodeSizeMetric != .uniform, !isSchemaReviewFullModelView,
+              focusPositions != nil || graphLayout.hasSettledLayout, !graph.nodes.isEmpty else { return nil }
+        let nodes = focusPositions.map { positions in graph.nodes.filter { positions[$0.id] != nil } } ?? graph.nodes
+        let sizes = Dictionary(uniqueKeysWithValues: nodes.map { node in
+            // Expanded focus cards live in the temporary map; the overview keeps
+            // its compact footprint when metadata or the metric changes.
+            let style: GraphNodeCardStyle = showAllGraphTableCards ? .expanded : .collapsed
+            let cardSize = nodeSizeLookup?(node.id) ?? GraphCardLayout.nodeSize(
+                title: node.title, descriptor: tableDescriptors[node.id], style: style
+            )
+            return (node.id, graphNodeSizeProfile.layoutSize(for: node.id, cardSize: cardSize,
+                                                            minimumZoom: minimumZoom ?? graphZoom,
+                                                            isFocusRoot: focusPositions != nil && node.id == focusAnchorID))
+        })
+        if let focusPositions {
+            return LargeGraphLayout.separatingNodes(focusPositions, sizes: sizes,
+                                                   preferredAnchors: Set([focusAnchorID].compactMap { $0 }))
+        }
+        if graphLayout.resizeNodes(for: graph, sizes: sizes) {
+            graphNodeSizingLayoutRevision &+= 1
+            markAutomationViewChanged()
+        }
+        return nil
     }
 
     public func cancelGraphFilter() {

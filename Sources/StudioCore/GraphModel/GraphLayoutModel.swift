@@ -114,6 +114,23 @@ public final class GraphLayoutModel {
         Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, position(for: $0.id)) })
     }
 
+    /// Resize settled nodes without running springs, shrinking their footprints,
+    /// or moving unrelated nodes that already have enough space.
+    @discardableResult
+    func resizeNodes(for graph: SchemaGraph, sizes: [String: CGSize]) -> Bool {
+        let current = allPositions(for: graph)
+        let next = LargeGraphLayout.separatingNodes(current, sizes: sizes,
+                                                   preferredAnchors: Set(pinnedPositions.keys))
+        if graph.nodes.count > Self.largeGraphOverviewThreshold { largeNodeSizes = sizes }
+        guard next != current else { return false }
+        positions.merge(next) { _, resized in resized }
+        for id in Array(pinnedPositions.keys) { pinnedPositions[id] = next[id] ?? pinnedPositions[id] }
+        velocities = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, .zero) })
+        isAnimating = false
+        hasSettledLayout = true
+        return true
+    }
+
     public func clearPinnedState() {
         pinnedPositions.removeAll()
     }

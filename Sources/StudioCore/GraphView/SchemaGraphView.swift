@@ -130,6 +130,7 @@ public struct SchemaGraphView: View {
             &+ session.automationViewRevision
             &+ session.graphVisibleTableIDs.hashValue
             &+ session.schemaReviewViewIndex &* 997
+            &+ session.graphNodeSizingLayoutRevision &* 1_009
     }
 
     private var initialViewportDocumentKey: String? {
@@ -242,6 +243,7 @@ public struct SchemaGraphView: View {
             .onAppear {
                 isGraphViewVisible = true
                 viewportSize = geometry.size
+                resizeNodesForCurrentMetric()
                 StudioLog.graph.debug("SchemaGraphView.onAppear settled=\(session.graphLayout.hasSettledLayout, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
                 let hasSessionCamera = initialViewportDocumentKey.map {
                     session.initializedGraphViewportDocument == $0
@@ -360,6 +362,7 @@ public struct SchemaGraphView: View {
                 invalidateClusterTitleCache()
             }
             .onChange(of: session.graphGrouping) { _, _ in
+                resizeNodesForCurrentMetric()
                 invalidateClusterTitleCache()
                 layoutRevision &+= 1
                 if let focusedGroupID, session.graphGrouping.group(id: focusedGroupID) == nil {
@@ -376,7 +379,11 @@ public struct SchemaGraphView: View {
                 clearRelationHoverState()
                 switchPresentationMode(isShowingAllCards: isPresented, in: geometry.size)
             }
+            .onChange(of: session.graphNodeSizeProfile) { _, _ in
+                resizeNodesForCurrentMetric()
+            }
             .onChange(of: zoom) { _, newZoom in
+                resizeNodesForCurrentMetric()
                 scheduleViewportSessionSync(zoom: newZoom, pan: pan)
             }
             .onChange(of: pan) { _, newPan in
@@ -1015,9 +1022,10 @@ public struct SchemaGraphView: View {
                                    reviewLens: SchemaReviewLens?) {
         for (id, mark) in frames {
             let changedKind = session.isSchemaReviewFullModelView ? session.schemaReviewChanges[id]?.kind : nil
+            let groupColor = clusterBorderColor(for: id)
             let color: Color
             if let changedKind, changedKind != .unchanged { color = changedKind.tint }
-            else { color = clusterBorderColor(for: id) ?? StudioPalette.accent }
+            else { color = groupColor ?? StudioPalette.accent }
             let isHovered = !session.isSchemaReviewFullModelView && hoveredNodeID == id
             let connected = !session.isSchemaReviewFullModelView && connectedIDs.contains(id)
             let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
@@ -1025,7 +1033,9 @@ public struct SchemaGraphView: View {
                 drawReviewMark(in: &context, id: id, path: path, color: color,
                                lens: reviewLens, isPointed: isHovered || connected)
             } else {
-                let emphasis = isHovered || connected ? 0.78 : 0.62
+                let emphasis = isHovered || connected
+                    ? (groupColor != nil ? 0.95 : 0.78)
+                    : (groupColor != nil ? 0.86 : 0.62)
                 let isUnknown = !session.isSchemaReviewFullModelView && session.graphNodeSizeProfile.unknownIDs.contains(id)
                 context.fill(path, with: .color(color.opacity(isUnknown ? emphasis * 0.45 : emphasis)))
                 if isUnknown {
@@ -2099,6 +2109,7 @@ public struct SchemaGraphView: View {
         draggedNodeUsesFocusPull = false
         multiNodeDragOrigins = [:]
         layoutRevision &+= 1
+        resizeNodesForCurrentMetric()
         if !session.showAllGraphTableCards {
             session.persistCurrentGraphLayout()
         }
@@ -2292,14 +2303,7 @@ public struct SchemaGraphView: View {
     private func fitGraphFocusViewport(in size: CGSize, animated: Bool = true,
                                        animation: Animation? = nil, completion: (() -> Void)? = nil) {
         guard let plan = effectiveFocusPlan, size != .zero else { return }
-        var bounds = CGRect.null
-        for tableID in plan.visibleTableIDs() {
-            let center = pulledGraphPositions[tableID] ?? session.graphLayout.position(for: tableID)
-            let nodeSize = nodeSize(for: tableID)
-            let frame = CGRect(x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2,
-                               width: nodeSize.width, height: nodeSize.height)
-            bounds = bounds.isNull ? frame : bounds.union(frame)
-        }
+        let bounds = graphFocusContentBounds(for: plan, minimumZoom: zoom)
         guard !bounds.isNull else {
             completion?()
             return
@@ -2313,17 +2317,21 @@ public struct SchemaGraphView: View {
             : (connectionFocus ? 0.5 : (readableSubset ? 0.4 : (isLargeGraph ? 0.01 : 0.22)))
         let fitPadding: CGFloat = denseConnectionFocus ? 24 : (connectionFocus ? 128 : 72)
         let fittingSize = CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset))
-        let naturalFit = GraphViewportTransform.fit(contentBounds: bounds, in: fittingSize,
-                                                    padding: fitPadding, minZoom: 0.01,
-                                                    maxZoom: readableSubset || connectionFocus ? 1.3 : 1.05)
-        var transform = GraphViewportTransform.fit(
-            contentBounds: bounds,
-            in: fittingSize,
-            padding: fitPadding,
-            // The centre card has its own readable scale; the camera can fit
-            // the neighbour page without shrinking the expanded rows.
-            minZoom: minimumZoom,
-            maxZoom: readableSubset || connectionFocus ? 1.3 : 1.05
+        let maximumZoom: CGFloat = readableSubset || connectionFocus ? 1.3 : 1.05
+        var transform: GraphViewportTransform
+        if session.graphNodeSizeMetric != .uniform {
+            transform = GraphViewportTransform.fit(contentBoundsAtZoom: { proposedZoom in
+                resizeNodesForCurrentMetric(minimumZoom: proposedZoom)
+                return graphFocusContentBounds(for: plan, minimumZoom: proposedZoom)
+            }, initialZoom: zoom, in: fittingSize, padding: fitPadding,
+               minZoom: minimumZoom, maxZoom: maximumZoom)
+        } else {
+            transform = GraphViewportTransform.fit(contentBounds: bounds, in: fittingSize,
+                                                   padding: fitPadding, minZoom: minimumZoom, maxZoom: maximumZoom)
+        }
+        let naturalFit = GraphViewportTransform.fit(
+            contentBounds: graphFocusContentBounds(for: plan, minimumZoom: transform.zoom), in: fittingSize,
+            padding: fitPadding, minZoom: 0.01, maxZoom: maximumZoom
         )
         if connectionFocus, !denseConnectionFocus, naturalFit.zoom < minimumZoom,
            let rootID = graphFocusTableRelation?.tableID ?? tableFocusNodeID {
@@ -2332,6 +2340,18 @@ public struct SchemaGraphView: View {
         }
         transform.pan.height += (topInset - bottomInset) / 2
         setViewport(transform, animated: animated, animation: animation, completion: completion)
+    }
+
+    private func graphFocusContentBounds(for plan: GraphFocusPlan, minimumZoom: CGFloat) -> CGRect {
+        plan.visibleTableIDs().reduce(CGRect.null) { bounds, tableID in
+            let center = pulledGraphPositions[tableID] ?? session.graphLayout.position(for: tableID)
+            let size = session.graphNodeSizeProfile.layoutSize(for: tableID, cardSize: nodeSize(for: tableID),
+                                                               minimumZoom: minimumZoom,
+                                                               isFocusRoot: tableID == (graphFocusTableRelation?.tableID ?? tableFocusNodeID))
+            let frame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                               width: size.width, height: size.height)
+            return bounds.union(frame)
+        }
     }
 
     private func graphFocusSummary(focusPlan: GraphFocusPlan) -> String {
@@ -2525,9 +2545,11 @@ public struct SchemaGraphView: View {
         return highlight
     }
 
-    private func graphBoundsAnchorMap() -> GraphAnchorMap {
+    private func graphBoundsAnchorMap(minimumZoom: CGFloat? = nil) -> GraphAnchorMap {
         let nodeCards = Dictionary(uniqueKeysWithValues: renderedGraph.nodes.map { node in
-            let size = nodeSize(for: node.id)
+            let cardSize = nodeSize(for: node.id)
+            let size = session.isSchemaReviewFullModelView ? cardSize
+                : session.graphNodeSizeProfile.layoutSize(for: node.id, cardSize: cardSize, minimumZoom: minimumZoom ?? zoom)
             let center = session.graphLayout.position(for: node.id)
             let frame = CGRect(
                 x: center.x - size.width / 2,
@@ -2555,25 +2577,30 @@ public struct SchemaGraphView: View {
             fitGraphFocusViewport(in: size, animated: animated, animation: animation, completion: completion)
             return
         }
-        let bounds = graphContentBoundsForFit()
         let largeOverview = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold
         let fitMinimumZoom: CGFloat = largeOverview ? 0.005 : 0.45
         let topInset: CGFloat = largeOverview ? min(graphControlsHeight + 20, size.height * 0.25) : 0
         // The minimap and metadata bar occupy the lower edge of a large map.
         // Leave room for the last group instead of fitting its cards behind them.
         let bottomInset: CGFloat = largeOverview ? min(100, size.height * 0.25) : 0
-        var transform = GraphViewportTransform.fit(
-            contentBounds: bounds,
-            in: CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset)),
-            padding: largeOverview ? 36 : 120,
-            minZoom: fitMinimumZoom
-        )
+        let fittingSize = CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset))
+        let padding: CGFloat = largeOverview ? 36 : 120
+        var transform: GraphViewportTransform
+        if session.graphNodeSizeMetric != .uniform, !session.isSchemaReviewFullModelView {
+            transform = GraphViewportTransform.fit(contentBoundsAtZoom: { proposedZoom in
+                resizeNodesForCurrentMetric(minimumZoom: proposedZoom)
+                return graphContentBoundsForFit(minimumZoom: proposedZoom)
+            }, initialZoom: zoom, in: fittingSize, padding: padding, minZoom: fitMinimumZoom)
+        } else {
+            transform = GraphViewportTransform.fit(contentBounds: graphContentBoundsForFit(), in: fittingSize,
+                                                   padding: padding, minZoom: fitMinimumZoom)
+        }
         transform.pan.height += (topInset - bottomInset) / 2
         setViewport(transform, animated: animated, animation: animation, completion: completion)
     }
 
-    private func graphContentBoundsForFit() -> CGRect {
-        graphBoundsAnchorMap().contentBounds
+    private func graphContentBoundsForFit(minimumZoom: CGFloat? = nil) -> CGRect {
+        graphBoundsAnchorMap(minimumZoom: minimumZoom).contentBounds
     }
 
     /// Fit every schema on first open. Large schemas use a bounded overview layout and a
@@ -2653,6 +2680,7 @@ public struct SchemaGraphView: View {
             nodeSizeLookup: { nodeSize(for: $0) },
             maxIterations: presentationMode == .allCards ? 140 : 260
         )
+        resizeNodesForCurrentMetric()
         layoutRevision &+= 1
 
         if persistLayout, !session.showAllGraphTableCards {
@@ -2712,6 +2740,7 @@ public struct SchemaGraphView: View {
             // Restore the same zoom/pan instead of fitting
         }
         invalidateClusterTitleCache()
+        resizeNodesForCurrentMetric()
         if isLargeGraph {
             initialViewport.presentationChanged()
             scheduleInitialViewportFit()
@@ -2728,6 +2757,7 @@ public struct SchemaGraphView: View {
             nodeSizeLookup: { nodeSize(for: $0) },
             maxIterations: presentationMode == .allCards ? 140 : 260
         )
+        resizeNodesForCurrentMetric()
         layoutRevision &+= 1
 
         if persistLayout, !session.showAllGraphTableCards {
@@ -2737,6 +2767,18 @@ public struct SchemaGraphView: View {
         if refit, shouldAutoFit {
             fitGraph(in: size)
         }
+    }
+
+    private func resizeNodesForCurrentMetric(minimumZoom: CGFloat? = nil) {
+        if let resizedFocus = session.resizeGraphNodesForCurrentMetric(
+            minimumZoom: minimumZoom ?? zoom, nodeSizeLookup: nodeSize,
+            focusPositions: pulledGraphPositions.isEmpty ? nil : pulledGraphPositions,
+            focusAnchorID: graphFocusTableRelation?.tableID ?? tableFocusNodeID
+        ) {
+            pulledGraphPositions = resizedFocus
+        }
+        guard session.graphNodeSizeMetric != .uniform, !session.isSchemaReviewFullModelView else { return }
+        invalidateClusterTitleCache()
     }
 
     private func handleHoverChange(_ isHovered: Bool, for nodeID: String) {
