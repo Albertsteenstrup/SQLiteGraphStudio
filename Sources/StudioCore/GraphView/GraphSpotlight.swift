@@ -48,11 +48,24 @@ enum GraphSpotlightLayout {
         expandedIDs: Set<String>, readableRootID: String?, zoom: CGFloat,
         sizing: GraphNodeSizeProfile = .uniform, enlargedIDs: Set<String> = []
     ) -> [String: CGPoint] {
+        let zoom = max(0.005, zoom.isFinite ? zoom : 1)
+        let inspectedIDs = expandedIDs.union(enlargedIDs).union([readableRootID].compactMap { $0 })
+        // Only inspected cards reserve a screen-sized corridor. Giving every
+        // compact overview mark fixed screen padding would prevent a large
+        // catalog from fitting. Background pairs retain the normal world gap.
+        let inspectionPadding = max(0, GraphCardClearance.inspectionScreenGap / zoom
+                                    - GraphCardClearance.minimumGap)
         let footprints = Dictionary(uniqueKeysWithValues: cardSizes.map { id, cardSize in
-            (id, footprint(for: id, cardSize: cardSize, readableRootID: readableRootID, zoom: zoom,
-                           sizing: sizing, enlargedIDs: enlargedIDs))
+            var size = footprint(for: id, cardSize: cardSize, readableRootID: readableRootID, zoom: zoom,
+                                 sizing: sizing, enlargedIDs: enlargedIDs)
+            if inspectedIDs.contains(id) {
+                size.width += 2 * inspectionPadding
+                size.height += 2 * inspectionPadding
+            }
+            return (id, size)
         })
         return LargeGraphLayout.separatingNodes(positions, sizes: footprints,
-                                               preferredAnchors: expandedIDs, gap: 40)
+                                               preferredAnchors: inspectedIDs,
+                                               gap: GraphCardClearance.minimumGap)
     }
 }

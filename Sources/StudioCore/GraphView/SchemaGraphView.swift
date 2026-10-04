@@ -2588,7 +2588,11 @@ public struct SchemaGraphView: View {
             return
         }
         let largeOverview = renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold
-        let fitMinimumZoom: CGFloat = largeOverview ? 0.005 : 0.45
+        // Context cards keep readable screen footprints and endpoint corridors.
+        // Even a small catalog may need overview zoom to fit that extra space
+        // inside a short embedded pane, rather than crop a highlighted table.
+        let contextualOverview = !session.graphContextTableIDs.isEmpty || session.isSchemaReviewFullModelView
+        let fitMinimumZoom: CGFloat = largeOverview || contextualOverview ? 0.005 : 0.45
         let topInset: CGFloat = largeOverview ? min(graphControlsHeight + 20, size.height * 0.25) : 0
         // The minimap and metadata bar occupy the lower edge of a large map.
         // Leave room for the last group instead of fitting its cards behind them.

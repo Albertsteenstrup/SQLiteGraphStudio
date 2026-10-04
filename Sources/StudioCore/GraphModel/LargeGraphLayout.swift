@@ -506,7 +506,7 @@ enum LargeGraphLayout {
     /// axis facing the obstacle, rather than being repacked into a new layout.
     static func separatingNodes(
         _ positions: [String: CGPoint], sizes: [String: CGSize],
-        preferredAnchors: Set<String> = [], gap: CGFloat = 24
+        preferredAnchors: Set<String> = [], gap: CGFloat = GraphCardClearance.minimumGap
     ) -> [String: CGPoint] {
         let orderedIDs = positions.keys.sorted { lhs, rhs in
             let leftPinned = preferredAnchors.contains(lhs), rightPinned = preferredAnchors.contains(rhs)

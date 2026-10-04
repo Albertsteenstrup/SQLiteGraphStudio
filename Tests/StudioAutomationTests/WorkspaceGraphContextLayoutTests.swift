@@ -41,6 +41,9 @@ struct WorkspaceGraphContextLayoutTests {
             let root = try rect(expanded)
             for node in renderer.nodes where node["table_id"] as? String != "posts" {
                 #expect(try !root.intersects(rect(node)))
+                #expect(try !root.insetBy(dx: -36, dy: -36)
+                    .intersects(rect(node).insetBy(dx: -36, dy: -36)),
+                    "Rendered selection must leave 72 screen points for relationship labels")
             }
             #expect(source.graphLayout.snapshot(for: source.graph) == original)
             #expect(source.expandedGraphNodeIDs.isEmpty && source.selectedGraphNodeIDs.isEmpty)

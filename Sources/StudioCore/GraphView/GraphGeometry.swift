@@ -301,6 +301,9 @@ enum GraphCardLayout {
 /// cardinality, rather than merely preventing card bodies from intersecting.
 enum GraphCardClearance {
     static let minimumGap: CGFloat = 80
+    /// Cardinality marks use a fixed screen font, even when cards are enlarged
+    /// against a zoomed-out overview. Reserve room for both ends of a relation.
+    static let inspectionScreenGap: CGFloat = 72
 }
 
 /// Packs a chosen set of cards in caller order using their rendered sizes.

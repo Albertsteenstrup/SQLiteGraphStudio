@@ -381,3 +381,18 @@ renderer confirms expanded changed tables and compact surrounding marks. This
 is renderer evidence, rather than proof that every MCP host mounted that frame.
 Selection and layout remain local presentation changes; these checks require no
 private schema fixture or database rows in the repository.
+
+### Relationship spacing
+
+Inspected cards now reserve at least 72 screen points between their displayed
+footprint and neighbouring cards, including hover enlargement. This clearance
+stays useful at overview zoom because cardinality marks use a fixed screen font.
+Compact background pairs keep the existing 80-unit world gap; metric resizing
+uses that same gap rather than shrinking it to 24 units. Context fitting can use
+overview zoom on short panes even for a small catalog, keeping subjects in view.
+
+Checks cover horizontal and vertical endpoint labels at zooms from 0.05 to 2.4,
+multiple enlarged cards, deterministic dense separation, rendered card spacing,
+reader clicks and context/detail restoration. These checks establish layout and
+renderer behaviour; they do not establish mounting or scroll behaviour in every
+MCP host.

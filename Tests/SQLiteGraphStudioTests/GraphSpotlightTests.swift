@@ -25,6 +25,11 @@ struct GraphSpotlightTests {
         for id in ["a", "b", "context"] {
             for other in ["a", "b", "context"] where id != other {
                 #expect(!frames[id]!.intersects(frames[other]!))
+                if id == "a" || id == "b" {
+                    #expect(!frames[id]!.insetBy(dx: -36, dy: -36)
+                        .intersects(frames[other]!.insetBy(dx: -36, dy: -36)),
+                        "Enlarged tables need a 72-point screen corridor for endpoint labels")
+                }
             }
         }
         #expect(pushed["distant"] == positions["distant"])
@@ -54,13 +59,17 @@ struct GraphSpotlightTests {
         #expect(overview.edgeOpacity(source: "orders", target: "products") == 1)
     }
 
-    @Test(arguments: [CGFloat(0.05), 0.5, 1]) @MainActor
+    @Test(arguments: [CGFloat(0.05), 0.2, 0.5, 1, 2.4]) @MainActor
     func expandingReservesTheDisplayedReadableCardAndKeepsItsLocation(zoom: CGFloat) {
         let original: [String: CGPoint] = ["hub": .zero, "left": .init(x: -250, y: 0),
-                                           "right": .init(x: 250, y: 0), "distant": .init(x: 20_000, y: 0)]
+                                           "right": .init(x: 250, y: 0),
+                                           "above": .init(x: 0, y: -100), "below": .init(x: 0, y: 100),
+                                           "distant": .init(x: 20_000, y: 0)]
         let sizes: [String: CGSize] = ["hub": .init(width: 440, height: 236),
                                       "left": .init(width: 200, height: 46),
                                       "right": .init(width: 200, height: 46),
+                                      "above": .init(width: 200, height: 46),
+                                      "below": .init(width: 200, height: 46),
                                       "distant": .init(width: 200, height: 46)]
         let positions = GraphSpotlightLayout.positions(original, cardSizes: sizes,
             expandedIDs: ["hub"], readableRootID: "hub", zoom: zoom)
@@ -71,11 +80,36 @@ struct GraphSpotlightTests {
         let rootScale = max(zoom, 0.9)
         let hub = CGRect(x: -220 * rootScale, y: -118 * rootScale,
                          width: 440 * rootScale, height: 236 * rootScale)
-        for id in ["left", "right"] {
+        var cardFrames = ["hub": hub]
+        for id in ["left", "right", "above", "below"] {
             let center = positions[id]!
             let frame = CGRect(x: (center.x - 100) * zoom, y: (center.y - 23) * zoom,
                                width: 200 * zoom, height: 46 * zoom)
             #expect(!frame.intersects(hub))
+            #expect(!frame.insetBy(dx: -36, dy: -36)
+                .intersects(hub.insetBy(dx: -36, dy: -36)),
+                "The readable table must retain label space when zooming out")
+            cardFrames[id] = frame
+        }
+        let cards = cardFrames.mapValues { frame in
+            GraphCardGeometry(tableID: "fixture", frame: frame, role: .collapsedNode, descriptor: nil)
+        }
+        let anchors = GraphAnchorMap(nodeCards: cards)
+        for id in ["left", "right", "above", "below"] {
+            let edge = GraphEdge(id: id, sourceID: "hub", targetID: id,
+                                 sourceColumn: "id", targetColumn: "id")
+            guard let endpoints = anchors.edgeAnchors(for: edge) else {
+                Issue.record("Both visible endpoint cards must expose relation anchors")
+                continue
+            }
+            let curve = GraphEdgeRouting.curve(anchors: endpoints, sourceFrame: hub,
+                                              targetFrame: cardFrames[id])
+            var occupied: [CGRect] = []
+            #expect(GraphCardinalityLabelPlacement.position(on: curve, atSource: true,
+                cardFrames: Array(cardFrames.values), occupied: &occupied) != nil)
+            #expect(GraphCardinalityLabelPlacement.position(on: curve, atSource: false,
+                cardFrames: Array(cardFrames.values), occupied: &occupied) != nil,
+                "The reserved corridor must fit cardinality marks at both ends")
         }
         #expect(Set(positions.keys) == Set(original.keys))
         #expect(original["left"] == CGPoint(x: -250, y: 0), "Spotlighting is a temporary layout")

@@ -11,6 +11,7 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 - Spotlight focused tables through contrast: keep their normal surface and clear text, subdue direct neighbours, and dim the wider graph without removing its nodes or hit targets. Selection and context highlighting add no coloured fill or extra outline. Keep ordinary card, group and schema-change borders.
 - Render highlighted context and schema-review subjects as expanded table cards rather than floating name badges. Enlarge them at overview zoom, reserve their displayed footprints, and keep clicks, field scrolling and relationship anchors on the same geometry.
 - Expand chosen tables in place, reserve the enlarged readable card's actual footprint, and push nearby cards outward while retaining distant positions and the authored overview. Share this layout and hit geometry between native and embedded inspection, with motion reduced when requested.
+- Keep an 80-unit baseline gap between cards, including metric resizing. Expanded and highlighted tables additionally reserve at least 72 screen points around neighbouring cards for relationship endpoints and cardinality marks as the camera zooms out; compact background marks keep world-space spacing so the whole model can still fit. Context fitting can zoom out far enough to keep highlighted cards inside short panes.
 
 ## Embedded Data in Coding-Agent Conversations
 

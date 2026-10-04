@@ -39,9 +39,11 @@ struct SchemaReviewRendererTests {
         for id in changedIDs {
             let card = try #require(frames[id], "Changed tables should be present in the full model: \(frames.keys.sorted()); zoom \(review.session.graphZoom)")
             #expect(card.width > 150)
-            #expect(card.height > 60, "A highlight must expose fields, rather than a header or a floating label")
+            #expect(card.height >= card.width * (116.0 / 440.0) - 1,
+                    "The two-field fixture must expose expanded rows, rather than a header or a name label, at its fitted scale")
             for (otherID, other) in frames where otherID != id {
-                #expect(!card.intersects(other), "\(id) should push \(otherID) outside its displayed footprint")
+                #expect(!card.insetBy(dx: -36, dy: -36).intersects(other.insetBy(dx: -36, dy: -36)),
+                        "\(id) should leave a 72-point endpoint corridor beside \(otherID)")
             }
         }
         #expect(frames.keys.contains { $0.hasPrefix("context_") }, "The surrounding catalog stays visible")
@@ -160,17 +162,40 @@ struct SchemaReviewRendererTests {
         #expect(firstSet.state["set"] as? Int == 0)
 
         // Exercise the merged graph gesture path with a real synthetic click on the
-        // visible teams card, rather than only selecting a table by ID.
-        let clicked = try frame([["type": "click", "x": 240, "y": 227]])
-        #expect(clicked.state["selection"] as? [String] == ["teams"])
+        // visible changed card. Locate a blue card's top border in the returned
+        // pixels, so the test exercises the hit target the reader actually sees
+        // rather than assuming spacing leaves the card at a fixed coordinate.
+        func visibleCardHeader(in image: NSBitmapImageRep) -> CGPoint? {
+            for y in 0..<(image.pixelsHigh - 12) {
+                var runStart: Int?
+                for x in 0..<image.pixelsWide {
+                    let color = image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)
+                    let blue = color.map { $0.blueComponent - $0.redComponent > 0.08
+                        && $0.blueComponent - $0.greenComponent > 0.04 } ?? false
+                    if blue {
+                        if runStart == nil { runStart = x }
+                    } else if let start = runStart {
+                        if x - start >= 80 { return CGPoint(x: (start + x) / 2, y: y + 8) }
+                        runStart = nil
+                    }
+                }
+            }
+            return nil
+        }
+        let tap = try #require(visibleCardHeader(in: firstSet.image), "The frame must show a changed table header")
+        let tapX = tap.x, tapY = tap.y
+        let clicked = try frame([["type": "click", "x": tapX, "y": tapY]])
+        let chosen = try #require(clicked.state["selection"] as? [String])
+        #expect(chosen.count == 1 && Set(chosen).isSubset(of: ["users", "teams"]),
+                "Clicking a visible blue header must choose one of this view's changed tables")
         // Clicking the chosen table again returns to every change, as in the app, unless
         // the embedded view closed its details and the reader clicks to see them again.
-        let kept = try frame([["type": "click", "x": 240, "y": 227, "keepChosen": true]])
-        #expect(kept.state["selection"] as? [String] == ["teams"])
-        let unchosen = try frame([["type": "click", "x": 240, "y": 227]])
+        let kept = try frame([["type": "click", "x": tapX, "y": tapY, "keepChosen": true]])
+        #expect(kept.state["selection"] as? [String] == chosen)
+        let unchosen = try frame([["type": "click", "x": tapX, "y": tapY]])
         #expect((unchosen.state["selection"] as? [String])?.isEmpty == true)
-        let chosenAgain = try frame([["type": "click", "x": 240, "y": 227, "keepChosen": true]])
-        #expect(chosenAgain.state["selection"] as? [String] == ["teams"], "Keeping only applies to a chosen table")
+        let chosenAgain = try frame([["type": "click", "x": tapX, "y": tapY, "keepChosen": true]])
+        #expect(chosenAgain.state["selection"] as? [String] == chosen, "Keeping only applies to a chosen table")
 
         let stepped = try frame([["type": "step", "direction": 1]])
         #expect(stepped.state["set"] as? Int == 1)

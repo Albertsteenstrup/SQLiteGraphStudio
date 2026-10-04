@@ -10,7 +10,7 @@ struct GraphNodeResizeLayoutTests {
                       "small": CGPoint(x: 75, y: 0), "distant": CGPoint(x: 5_000, y: 0)]
         let sizes = points.mapValues { _ in CGSize(width: 100, height: 100) }
             .merging(["small": CGSize(width: 20, height: 20)]) { _, smaller in smaller }
-        let result = LargeGraphLayout.separatingNodes(points, sizes: sizes)
+        let result = LargeGraphLayout.separatingNodes(points, sizes: sizes, gap: 24)
         #expect(result["small"] == CGPoint(x: 235, y: 0))
         #expect(result["left"] == points["left"])
         #expect(result["right"] == points["right"])
@@ -29,10 +29,10 @@ struct GraphNodeResizeLayoutTests {
         #expect(layout.resizeNodes(for: graph, sizes: sizes))
         #expect(layout.position(for: "hub") == .zero)
         #expect(layout.position(for: "distant") == points["distant"])
-        #expect(layout.position(for: "left") == CGPoint(x: -275, y: 0))
-        #expect(layout.position(for: "right") == CGPoint(x: 275, y: 0))
-        #expect(layout.position(for: "above") == CGPoint(x: 0, y: -105))
-        #expect(layout.position(for: "below") == CGPoint(x: 0, y: 105))
+        #expect(layout.position(for: "left").x <= -330)
+        #expect(layout.position(for: "right").x >= 330)
+        #expect(layout.position(for: "above").y <= -160)
+        #expect(layout.position(for: "below").y >= 160)
         #expect(!layout.resizeNodes(for: graph, sizes: sizes))
     }
 
@@ -52,7 +52,7 @@ struct GraphNodeResizeLayoutTests {
         let frames = ids.map { id in
             let point = result[id]!, size = sizes[id]!
             return CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
-                          width: size.width, height: size.height).insetBy(dx: -11, dy: -11)
+                          width: size.width, height: size.height).insetBy(dx: -40, dy: -40)
         }
         for i in frames.indices {
             for j in frames.indices where j > i { #expect(!frames[i].intersects(frames[j])) }
@@ -68,7 +68,7 @@ struct GraphNodeResizeLayoutTests {
                        presentation: .compact, descriptorLookup: nil)
         layout.resizeNodes(for: graph, sizes: ["a": CGSize(width: 600, height: 100), "b": CGSize(width: 200, height: 46)])
         #expect(layout.position(for: "a") == .zero)
-        #expect(layout.position(for: "b") == CGPoint(x: 425, y: 0))
+        #expect(layout.position(for: "b").x >= 480)
         let snapshot = layout.snapshot(for: graph)
         #expect(Set(snapshot.pinnedPositions.keys) == ["a", "b"])
         #expect(snapshot.pinnedPositions == snapshot.positions)
