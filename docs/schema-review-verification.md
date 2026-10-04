@@ -362,3 +362,22 @@ current MCP connection's cached viewer limitation above remain unchanged.
 
 Wiki impact: no update needed — this repository has no Wiki source or publishing
 validator; README and canonical documentation cover these user-visible changes.
+
+
+## Expanded subject cards — 2026-10-04
+
+This update supersedes the fixed-size floating name labels described above.
+Highlighted review subjects now use expanded table cards with visible fields.
+Their cards shrink more slowly at overview zoom, while surrounding tables remain
+compact. Temporary separation reserves the enlarged displayed footprints,
+including hover clearance, without saving those movements into the authored
+layout. Field scrolling, clicks and relation endpoints share that geometry.
+The full-model review still includes only the after schema.
+
+Focused checks exercise multiple enlarged cards across zoom levels, the real
+review renderer on a synthetic 183-table catalog, camera movement and clicks,
+and embedded context/detail restoration. A captured frame from the actual
+renderer confirms expanded changed tables and compact surrounding marks. This
+is renderer evidence, rather than proof that every MCP host mounted that frame.
+Selection and layout remain local presentation changes; these checks require no
+private schema fixture or database rows in the repository.

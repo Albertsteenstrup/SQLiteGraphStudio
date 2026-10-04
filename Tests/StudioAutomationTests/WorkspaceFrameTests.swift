@@ -343,8 +343,14 @@ struct WorkspaceFrameTests {
         route["graph_actions"] = [["type": "select", "table_id": "posts"]]
         let selectedFrame = payload(await call(coordinator, "studio_workspace_frame", route))
         #expect((selectedFrame["graph"] as? [String: Any])?["selection"] as? [String] == ["posts"])
+        #expect((selectedFrame["graph"] as? [String: Any])?["expanded_table_ids"] as? [String] == ["posts"],
+                "Selection spotlights and expands the table")
         route["after_frame_revision"] = selectedFrame["frame_revision"]
         route["graph_actions"] = [["type": "expand", "table_id": "posts"]]
+        let collapsedFrame = payload(await call(coordinator, "studio_workspace_frame", route))
+        #expect((collapsedFrame["graph"] as? [String: Any])?["expanded_table_ids"] as? [String] == [],
+                "The expansion control can collapse the selected card")
+        route["after_frame_revision"] = collapsedFrame["frame_revision"]
         let expandedFrame = payload(await call(coordinator, "studio_workspace_frame", route))
         #expect((expandedFrame["graph"] as? [String: Any])?["expanded_table_ids"] as? [String] == ["posts"],
                 "Inspecting a point must keep later gestures usable")
@@ -412,8 +418,12 @@ struct WorkspaceFrameTests {
         route["graph_actions"] = [["type": "select", "table_id": "posts"]]
         frame = payload(await call(coordinator, "studio_workspace_frame", route))
         #expect(graph(frame)["selection"] as? [String] == ["posts"])
+        #expect(graph(frame)["expanded_table_ids"] as? [String] == ["posts"], "Selection expands the spotlight")
         route["after_frame_revision"] = frame["frame_revision"]
         route["graph_actions"] = [["type": "expand", "table_id": "posts"]]
+        frame = payload(await call(coordinator, "studio_workspace_frame", route))
+        #expect(graph(frame)["expanded_table_ids"] as? [String] == [], "The selected spotlight can collapse")
+        route["after_frame_revision"] = frame["frame_revision"]
         frame = payload(await call(coordinator, "studio_workspace_frame", route))
         #expect(graph(frame)["expanded_table_ids"] as? [String] == ["posts"], "An earlier selection must not lock out expansion")
         let beforeZoom = try #require(graph(frame)["zoom"] as? Double)

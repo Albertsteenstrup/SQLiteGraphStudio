@@ -8,7 +8,9 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 
 ## Graph Selection Appearance
 
-- Show selected nodes through their background tint. Remove the extra selection outline and selection-specific border emphasis from the shared graph renderer, including cards, multi-selection and overview marks, so the native app and embedded MCP views match. Keep ordinary card, group and schema-change borders.
+- Spotlight focused tables through contrast: keep their normal surface and clear text, subdue direct neighbours, and dim the wider graph without removing its nodes or hit targets. Selection and context highlighting add no coloured fill or extra outline. Keep ordinary card, group and schema-change borders.
+- Render highlighted context and schema-review subjects as expanded table cards rather than floating name badges. Enlarge them at overview zoom, reserve their displayed footprints, and keep clicks, field scrolling and relationship anchors on the same geometry.
+- Expand chosen tables in place, reserve the enlarged readable card's actual footprint, and push nearby cards outward while retaining distant positions and the authored overview. Share this layout and hit geometry between native and embedded inspection, with motion reduced when requested.
 
 ## Embedded Data in Coding-Agent Conversations
 

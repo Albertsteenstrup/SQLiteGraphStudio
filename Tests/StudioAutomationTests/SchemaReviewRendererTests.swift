@@ -7,6 +7,46 @@ import Testing
 /// Drives Graph Studio's real renderer process the way the inline review view does: the
 /// helper starts it from a clone of the app executable and sends the reader's input.
 struct SchemaReviewRendererTests {
+    @Test @MainActor
+    func fullModelHighlightsAreExpandedCardsWithNeighbourClearance() async throws {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        NSApplication.shared.finishLaunching()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("expanded-review-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var document = Self.review()
+        let context = (0..<180).map { index in
+            SchemaReviewSnapshot.Table(id: "context_\(index)", schema: nil, name: "context_\(index)",
+                kind: "table", columns: document.before.tables[0].columns, metadata: [:])
+        }
+        document.before.tables += context
+        document.after.tables += context
+        let url = folder.appendingPathComponent("change.sgreview")
+        try document.write(to: url)
+        let review = try await RenderedReview(url: url, size: CGSize(width: 1200, height: 800), dark: false,
+                                              fileVersion: ReviewFileVersion(path: url.path))
+        defer { review.close() }
+        review.apply(["type": "set", "index": -1])
+        review.session.requestAutomationViewport(fitVisibleTables: true, transitionMilliseconds: 0)
+        await review.settle()
+        review.session.markAutomationViewChanged()
+        for _ in 0..<4 {
+            _ = try review.frame(scale: 1, png: true)
+            try await Task.sleep(for: .milliseconds(60))
+        }
+        let frames = review.session.automationGraphNodeFrames
+        let changedIDs = ["users", "teams", "audits"]
+        for id in changedIDs {
+            let card = try #require(frames[id], "Changed tables should be present in the full model: \(frames.keys.sorted()); zoom \(review.session.graphZoom)")
+            #expect(card.width > 150)
+            #expect(card.height > 60, "A highlight must expose fields, rather than a header or a floating label")
+            for (otherID, other) in frames where otherID != id {
+                #expect(!card.intersects(other), "\(id) should push \(otherID) outside its displayed footprint")
+            }
+        }
+        #expect(frames.keys.contains { $0.hasPrefix("context_") }, "The surrounding catalog stays visible")
+    }
+
     @Test func selectedReviewCardHasNoOuterHalo() throws {
         let executable = try #require(Self.appExecutable(), "The SQLiteGraphStudio product is built for this test target")
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("review-border-\(UUID().uuidString)", isDirectory: true)
@@ -66,7 +106,12 @@ struct SchemaReviewRendererTests {
         zoomedRequest["actions"] = [["type": "transform", "scale": 1.25, "tx": -100, "ty": -62.5]]
         let zoomed = try renderer.request(zoomedRequest)
         let zoomedImage = try #require(NSBitmapImageRep(data: Data(base64Encoded: zoomed["image"] as? String ?? "") ?? Data()))
-        let expectedBorderX = Int((CGFloat(borderX + 60) * 1.25 - 100).rounded())
+        // Highlighted cards shrink more slowly than the surrounding map. Their
+        // centre follows the camera while their border follows the readable scale.
+        let oldZoom = try #require((camera["zoom"] as? NSNumber)?.doubleValue)
+        let scaleRatio = GraphOverviewAnchors.displayScale(for: oldZoom * 1.25)
+            / GraphOverviewAnchors.displayScale(for: oldZoom)
+        let expectedBorderX = Int((475 - CGFloat(400 - borderX) * scaleRatio).rounded())
         #expect((expectedBorderX - 2...expectedBorderX + 2).contains { x in
             guard let color = zoomedImage.colorAt(x: x, y: midY)?.usingColorSpace(.deviceRGB) else { return false }
             return color.blueComponent - color.redComponent > 0.08
@@ -115,17 +160,17 @@ struct SchemaReviewRendererTests {
         #expect(firstSet.state["set"] as? Int == 0)
 
         // Exercise the merged graph gesture path with a real synthetic click on the
-        // visible users marker, rather than only selecting a table by ID.
+        // visible teams card, rather than only selecting a table by ID.
         let clicked = try frame([["type": "click", "x": 240, "y": 227]])
-        #expect(clicked.state["selection"] as? [String] == ["users"])
+        #expect(clicked.state["selection"] as? [String] == ["teams"])
         // Clicking the chosen table again returns to every change, as in the app, unless
         // the embedded view closed its details and the reader clicks to see them again.
         let kept = try frame([["type": "click", "x": 240, "y": 227, "keepChosen": true]])
-        #expect(kept.state["selection"] as? [String] == ["users"])
+        #expect(kept.state["selection"] as? [String] == ["teams"])
         let unchosen = try frame([["type": "click", "x": 240, "y": 227]])
         #expect((unchosen.state["selection"] as? [String])?.isEmpty == true)
         let chosenAgain = try frame([["type": "click", "x": 240, "y": 227, "keepChosen": true]])
-        #expect(chosenAgain.state["selection"] as? [String] == ["users"], "Keeping only applies to a chosen table")
+        #expect(chosenAgain.state["selection"] as? [String] == ["teams"], "Keeping only applies to a chosen table")
 
         let stepped = try frame([["type": "step", "direction": 1]])
         #expect(stepped.state["set"] as? Int == 1)

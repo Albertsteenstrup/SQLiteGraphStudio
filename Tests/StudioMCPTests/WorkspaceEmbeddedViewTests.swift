@@ -5,6 +5,30 @@ import XCTest
 
 @MainActor
 final class WorkspaceEmbeddedViewTests: XCTestCase {
+    func testMountFetchesTheWorkspaceWhenHostOmitsInitialResult() async throws {
+        for notificationFirst in [false, true] {
+            let notification = notificationFirst
+                ? "event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:window.initial}, '*');"
+                : ""
+            let browser = try host(onCall: """
+              window.initial.structuredContent.viewer.viewer_id=m.params.arguments.viewer_id;
+              \(notification)
+              event.source.postMessage({jsonrpc:'2.0',id:m.id,result:window.initial}, '*');
+            """, inputOnly: true)
+            try await wait("doc()?.getElementById('frame').hidden===false && doc().getElementById('status').textContent===''", browser)
+            let first = try await browser.evaluateJavaScript("window.calls[0]") as? [String: Any]
+            XCTAssertEqual(first?["name"] as? String, "studio_workspace_frame")
+            let arguments = first?["arguments"] as? [String: Any]
+            XCTAssertEqual(arguments?["context_id"] as? String, "my-context")
+            XCTAssertEqual(arguments?["workspace_id"] as? String, "my-workspace")
+            XCTAssertEqual(arguments?["inline_view_state"] as? String, "start")
+            XCTAssertFalse((arguments?["viewer_id"] as? String ?? "").isEmpty)
+            try await wait("window.calls.filter(x=>x.name==='studio_workspace_frame').length >= 3", browser)
+            let released = try await browser.evaluateJavaScript("window.calls.some(x=>x.arguments.inline_view_state==='released')") as? Bool
+            XCTAssertEqual(released, false, "Notification-first startup must retain its active viewer")
+        }
+    }
+
     func testInitialViewportPreparationRetriesWithoutAnotherToolResultNotification() async throws {
         let browser = try host(onCall: """
           const first=window.calls.length===1;
@@ -593,7 +617,7 @@ final class WorkspaceEmbeddedViewTests: XCTestCase {
         XCTAssertEqual(live, true)
     }
 
-    private func host(onCall: String, presentation: Bool = false, stripMetadata: Bool = false, savedOnly: Bool = false, motionPreference: Bool? = nil, setup: String = "") throws -> WKWebView {
+    private func host(onCall: String, presentation: Bool = false, stripMetadata: Bool = false, savedOnly: Bool = false, motionPreference: Bool? = nil, setup: String = "", inputOnly: Bool = false) throws -> WKWebView {
         var html = try XCTUnwrap(MCPAppResources.workspaceHTML)
         if let motionPreference {
             // Supply a browser preference, while using WebKit's real animations.
@@ -632,7 +656,7 @@ final class WorkspaceEmbeddedViewTests: XCTestCase {
             \(onCall)
           }
         });
-        window.addEventListener('load',()=>window.send(window.initial),{once:true});
+        window.addEventListener('load',()=>\(inputOnly ? "document.getElementById('workspace').contentWindow.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-input',params:{arguments:{context_id:'my-context',workspace_id:'my-workspace',width:700}}},'*')" : "window.send(window.initial)"),{once:true});
         </script><iframe id="workspace" style="width:700px;height:600px" srcdoc="\(escaped)"></iframe></body></html>
         """
         let browser = WKWebView(frame: .init(x: 0, y: 0, width: 720, height: 600))

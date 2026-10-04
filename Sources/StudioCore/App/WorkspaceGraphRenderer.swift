@@ -40,7 +40,13 @@ public final class WorkspaceGraphRenderer {
     public var nodes: [[String: Any]] {
         return session.automationGraphNodeFrames.keys.sorted().compactMap { id in
             guard let frame = session.automationGraphNodeFrames[id], frame.intersects(hosting.bounds) else { return nil }
-            let center = session.graphLayout.position(for: id)
+            // Expansion temporarily pushes nearby cards without changing the
+            // authored layout. Input must use that displayed graph position.
+            let displayedCenter = GraphViewportTransform(zoom: zoom, pan: pan)
+                .graphPoint(for: CGPoint(x: frame.midX, y: frame.midY), in: size)
+            let authoredCenter = session.graphLayout.position(for: id)
+            let center = abs(displayedCenter.x - authoredCenter.x) < 0.000_001
+                && abs(displayedCenter.y - authoredCenter.y) < 0.000_001 ? authoredCenter : displayedCenter
             return ["table_id": id, "x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height,
                     "center_x": center.x, "center_y": center.y]
         }
@@ -247,7 +253,11 @@ public final class WorkspaceGraphRenderer {
             session.requestAutomationFocusReset()
             session.requestAutomationViewport(fitVisibleTables: true, transitionMilliseconds: 0)
         case "select":
-            session.setGraphSelection([action["table_id"] as! String])
+            let id = action["table_id"] as! String
+            session.setGraphSelection([id])
+            session.setExpandedGraphNode(id)
+            session.requestAutomationFocusReset()
+            session.setAutomationFocusCommand(AutomationGraphFocusCommand(tableID: id))
         case "expand":
             let id = action["table_id"] as! String
             if session.expandedGraphNodeIDs.contains(id) { session.expandedGraphNodeIDs.remove(id) }
@@ -306,13 +316,22 @@ public final class WorkspaceGraphRenderer {
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { throw RenderError.unavailable }
         bitmap.size = bounds.size
+        // An unexposed hosting view can defer SwiftUI updates until it is
+        // captured. Drive those updates with a small bitmap while the camera
+        // settles, rather than waiting for the command before any capture.
+        let preparationBounds = CGRect(x: bounds.midX, y: bounds.midY, width: 1, height: 1)
+        let preparationBitmap = hosting.bitmapImageRepForCachingDisplay(in: preparationBounds)
         repeat {
             hosting.layoutSubtreeIfNeeded()
             hosting.displayIfNeeded()
             hosting.layer?.displayIfNeeded()
             // Resolve camera/layout first. Repeated large bitmap captures while
             // SwiftUI is applying a command block the bridge and its input queue.
-            if session.automationViewportCommand == nil { hosting.cacheDisplay(in: bounds, to: bitmap) }
+            if session.automationViewportCommand == nil {
+                hosting.cacheDisplay(in: bounds, to: bitmap)
+            } else if let preparationBitmap {
+                hosting.cacheDisplay(in: preparationBounds, to: preparationBitmap)
+            }
             try await Task.sleep(for: .milliseconds(10))
             guard revision == requestedRevision else { throw RenderError.superseded }
             if session.automationViewportCommand == nil,

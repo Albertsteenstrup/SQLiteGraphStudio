@@ -6,6 +6,71 @@ import Testing
 @Suite(.serialized)
 struct WorkspaceGraphContextLayoutTests {
     @Test @MainActor
+    func selectingExpandsInPlaceAndPushesInteractiveContextWithoutEditingTheSource() async throws {
+        try await withSource { source in
+            source.setAutomationVisibleTableIDs(["authors", "posts", "comments", "tags"])
+            let positions: [String: CGPoint] = ["posts": .zero, "authors": .init(x: 270, y: 0),
+                                                "comments": .init(x: 0, y: 190), "tags": .init(x: 630, y: -150)]
+            for (id, point) in positions { source.graphLayout.pin(nodeID: id, at: point) }
+            source.graphZoom = 0.5
+            source.graphPan = .zero
+            source.requestAutomationViewport(fitVisibleTables: false, transitionMilliseconds: 0)
+            source.markAutomationViewChanged()
+            let original = source.graphLayout.snapshot(for: source.graph)
+            let renderer = try WorkspaceGraphRenderer()
+            defer { renderer.close() }
+            renderer.synchronize(from: source, revision: "spotlight-fixture", width: 1_200, height: 700)
+            _ = try await renderer.render()
+            let collapsed = try #require(renderer.nodes.first { $0["table_id"] as? String == "posts" })
+
+            try renderer.apply(["type": "select", "table_id": "posts"])
+            let frame = try await renderer.render()
+            #expect(renderer.selection == ["posts"] && renderer.expandedTables == ["posts"])
+            #expect(Set(renderer.visibleTables) == ["authors", "posts", "comments", "tags"])
+            #expect(renderer.nodes.contains { $0["table_id"] as? String == "tags" },
+                    "A table with no direct relationship to the subject remains drawn and available for inspection")
+            #expect(try center("posts", in: renderer) == .zero)
+            let expanded = try #require(renderer.nodes.first { $0["table_id"] as? String == "posts" })
+            #expect(try #require(expanded["height"] as? CGFloat) > #require(collapsed["height"] as? CGFloat) * 2)
+            #expect(try center("authors", in: renderer).x > positions["authors"]!.x,
+                    "The nearby card must move out of the enlarged footprint")
+            func rect(_ node: [String: Any]) throws -> CGRect {
+                CGRect(x: try #require(node["x"] as? CGFloat), y: try #require(node["y"] as? CGFloat),
+                       width: try #require(node["width"] as? CGFloat), height: try #require(node["height"] as? CGFloat))
+            }
+            let root = try rect(expanded)
+            for node in renderer.nodes where node["table_id"] as? String != "posts" {
+                #expect(try !root.intersects(rect(node)))
+            }
+            #expect(source.graphLayout.snapshot(for: source.graph) == original)
+            #expect(source.expandedGraphNodeIDs.isEmpty && source.selectedGraphNodeIDs.isEmpty)
+
+            let expandedHeightAtZoom = try #require(expanded["height"] as? CGFloat) / renderer.zoom
+            try renderer.apply(["type": "expand", "table_id": "posts"])
+            _ = try await renderer.render()
+            let folded = try #require(renderer.nodes.first { $0["table_id"] as? String == "posts" })
+            #expect(renderer.selection == ["posts"] && renderer.expandedTables.isEmpty)
+            #expect(try #require(folded["height"] as? CGFloat) / renderer.zoom < expandedHeightAtZoom,
+                    "Collapsing must fold the rendered fields, even while the card stays selected")
+            try renderer.apply(["type": "expand", "table_id": "posts"])
+            _ = try await renderer.render()
+
+            // Use the displayed context card's actual hit target after it moved.
+            let author = try #require(renderer.nodes.first { $0["table_id"] as? String == "authors" })
+            let authorFrame = try rect(author)
+            try renderer.apply(["type": "click", "x": authorFrame.midX, "y": authorFrame.midY])
+            _ = try await renderer.render()
+            #expect(renderer.selection == ["authors"] && renderer.expandedTables == ["authors"])
+            #expect(source.graphLayout.snapshot(for: source.graph) == original)
+
+            if let directory = ProcessInfo.processInfo.environment["SGS_SPOTLIGHT_EVIDENCE_DIR"] {
+                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                try frame.image.write(to: URL(fileURLWithPath: directory).appendingPathComponent("embedded-spotlight.png"))
+            }
+        }
+    }
+
+    @Test @MainActor
     func readerContextUsesAuthoredModelPositionsAndRestoresMovedDetail() async throws {
         try await withSource { source in
             let renderer = try WorkspaceGraphRenderer()
