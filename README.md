@@ -15,7 +15,6 @@ Open the DMG, drag SQLite Graph Studio to Applications, and launch. No Xcode or 
 - **SQL and exports** — Run queries with explain plans, cancellation, and bounded results; export loaded or matching rows.
 - **Flexible sources** — Open SQLite files, PostgreSQL connection documents or backups, or search an entire project folder.
 - **Migration models** — Explore schemas from versioned SQL files and step through their history without a database server.
-- **Schema review** — Compare database versions or preview proposed changes before writing migrations.
 
 ## AI coding agents
 
@@ -27,7 +26,7 @@ Or register both clients from Terminal after installing the app in `/Application
 "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP" setup all
 ```
 
-Five included skills: [explore](Skills/database-explore/SKILL.md), [compare](Skills/database-diff/SKILL.md), [preview](Skills/database-preview/SKILL.md), [group tables](Skills/graph-clusters/SKILL.md), and [add descriptions](Skills/schema-descriptions/SKILL.md).
+Three included skills: [explore](Skills/database-explore/SKILL.md), [group tables](Skills/graph-clusters/SKILL.md), and [add descriptions](Skills/schema-descriptions/SKILL.md).
 
 ## Build from source
 

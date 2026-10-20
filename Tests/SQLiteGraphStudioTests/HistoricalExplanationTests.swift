@@ -66,8 +66,6 @@ import Testing
         #expect(session.presentedError == nil)
         #expect(session.historicalExplanationArtifact?.tablePages.first?.rows.first?.values.first?.value == "42")
         #expect(session.historicalExplanationURL == url.standardizedFileURL)
-        #expect(!session.isSchemaReviewFullModelView,
-                "Historical replay must retain its saved visibility, expansion and focus behavior")
         #expect(session.databaseURL == nil)
         #expect(session.databaseTarget == nil)
         #expect(session.databaseCapabilities == .none)

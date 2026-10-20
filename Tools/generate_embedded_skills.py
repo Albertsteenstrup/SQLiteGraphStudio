@@ -13,8 +13,6 @@ SKILLS = {
     "graph-clusters": "graphClustersContent",
     "schema-descriptions": "schemaDescriptionsContent",
     "database-explore": "databaseExploreContent",
-    "database-diff": "databaseDiffContent",
-    "database-preview": "databasePreviewContent",
 }
 
 

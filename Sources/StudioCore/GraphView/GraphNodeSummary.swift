@@ -9,7 +9,6 @@ struct GraphNodeSummary: View {
     var hasDescription = false
     var nameOpacity: Double = 1
     var metadataOpacity: Double = 1
-    var schemaChange: SchemaTableChange? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -23,15 +22,9 @@ struct GraphNodeSummary: View {
 
             Spacer(minLength: 0)
 
-            if schemaChange == nil || schemaChange?.kind == .unchanged {
-                countPill(fieldCount == 1 ? "1 field" : "\(fieldCount) fields", surfaceOpacity: 1)
-            }
-            if let schemaChange {
-                SchemaChangeBadge(change: schemaChange)
-            } else {
-                countPill(rowCount.map { $0 == 1 ? "1 row" : "\(compactRowCount($0)) rows" } ?? "— rows",
-                          surfaceOpacity: 0.74)
-            }
+            countPill(fieldCount == 1 ? "1 field" : "\(fieldCount) fields", surfaceOpacity: 1)
+            countPill(rowCount.map { $0 == 1 ? "1 row" : "\(compactRowCount($0)) rows" } ?? "— rows",
+                      surfaceOpacity: 0.74)
         }
     }
 

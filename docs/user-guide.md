@@ -23,17 +23,15 @@
 
 ## AI Skills
 
-Five optional AI coding agent skills support schema exploration and review:
+Three optional AI coding agent skills support schema exploration and documentation:
 
 - **graph-clusters** — Groups your tables into meaningful clusters. It defaults to domain areas, and you can ask for another lens such as people, artifacts, departments, workflows, or ownership. Run from your AI coding agent.
 - **schema-descriptions** — Annotates your tables and columns with hover descriptions shown in the graph, table grids, and query results. Run from your AI coding agent.
-- **database-diff** — Compares database versions after code review, showing table, field, and foreign-key changes for a PR or local integration. See [the skill](../Skills/database-diff/SKILL.md).
-- **database-preview** — Shows intended schema changes before implementation using a compact plan and cached metadata. Iteration runs without migrations or a database server. See [the skill](../Skills/database-preview/SKILL.md).
 - **database-explore** — Helps an agent inspect the current source and schema through the local MCP bridge, when the app-side action is supported. See [the skill](../Skills/database-explore/SKILL.md).
 
 Download them from inside the app: **Database → AI Skills…** — or from the prompt that appears when you open a database with more than 10 tables. The in-app installer places project skills next to your database or PostgreSQL connection document so agents in that directory can use them. The user-wide MCP setup below also installs the canonical Codex and Claude Code skills in their normal per-user directories.
 
-For Codex, create `.agents/skills` in your repo first; the app installs all five skills there. Use `/skills` or mention a skill such as `$database-diff` or `$database-preview` in Codex to invoke it.
+For Codex, create `.agents/skills` in your repo first; the app installs all three skills there. Use `/skills` or mention a skill such as `$database-explore` in Codex to invoke it.
 
 ### Local MCP bridge
 
@@ -100,73 +98,11 @@ structured rows. Migration-only sources contain no row data; use the native grap
 for those models. `studio_open_table` and `studio_show_query_results` remain
 available when the user wants data in the app.
 
-## Database schema comparisons
-
-Choose **File → Compare Database Schemas…**, select the before and after databases,
-and save the `.sgreview` comparison. SQLite files, PostgreSQL connection documents,
-and custom-format backups are supported; both versions must use the same engine.
-Capture reads schema metadata only. Opening a saved comparison is fully offline.
-
-Unselected tables keep one quiet border. Selecting a changed table colours that
-border green for an addition, blue for an edit, or dashed red for a removal.
-Explicit `+`, `−`, and `~` field counts remain visible without a selection.
-New tables have a **New** badge; removed tables stay visible and faded with
-**Removed**. Edited foreign keys show both old and new links. The table list
-carries the same badges, and table details compare field
-definitions, relations, and available constraints/indexes/triggers. Row data,
-permissions, RLS, routines, and deployment effects still need normal code review.
-
-A comparison frames its first connected set without selecting any table. Changed
-tables are named at a readable size, and relations that did not change stay
-hidden until you zoom in. Choose a table in the list or the graph to see only its
-changes — the relations it gained or lost and the tables they reach — while the
-rest fade; choose it again, or click empty canvas, to return. ⌥⌘↓ and ⌥⌘↑ step
-through changes and bring each one into view. View 1 is the default; Previous
-from there opens **View 0**, the complete model after the changes. View 0 omits
-removed objects, keeps tables at uniform size and opacity, and uses colour alone
-to mark additions and edits. Table cards show their full contents from 10% zoom
-in all review views. Drag the divider between the graph and table list to resize
-the panes in the app.
-
-In the embedded viewer, **Changes in this view** can contain assistant-written
-explanations with clickable table, field, and relation names. Its expanded or
-collapsed state carries between views. Table details have a **Close ×** button
-and support **Escape**; closing either panel releases its space in the embed.
-Dragging and zooming move the current frame immediately; after a short pause,
-the viewer requests a fresh native frame to sharpen the graph.
-
-The [database-diff skill](../Skills/database-diff/SKILL.md) documents command-line
-snapshot and comparison creation for hooks. Bind generated reviews to immutable
-base/head revisions and run them after the existing code-review rounds. An agent
-passes `--agent` and includes the actual current chat title with `--session`
-whenever its host provides it. That title leads the review header beside the
-tool's mark, with full provenance in the tooltip. If the host cannot supply the
-title, the header falls back to the tool name. Git does
-not run pre-merge-commit on fast-forward merges, so that workflow needs an explicit
-final schema-review step as well.
-
-## Proposed changes before implementation
-
-Use the sibling [database-preview skill](../Skills/database-preview/SKILL.md) to
-explore a design before writing migrations. Capture metadata once, or reuse the
-chosen side of a real `.sgreview`. The agent writes only intended table, field
-and relation operations in a small JSON plan; the CLI builds a `.sgpreview`
-without executing SQL. `inspect --find`, `--table` and `--column` keep the agent's
-context focused instead of loading the entire schema.
-
-Open the preview once. Rebuilding the same file automatically updates the view,
-preserving selection and the overview camera. Invalid updates retain the last
-valid view and show an error. **Proposed · not applied** and **Captured / Proposed**
-labels distinguish this design from a completed-change review. The plan is
-bound to its baseline fingerprint; refresh that baseline explicitly when the
-source schema changes. A preview neither proves migration validity nor satisfies
-the real schema-review hook.
-
 ## Opening a project folder
 
 Choose **Choose file/folder…** from the File menu (⌘O), or click **Choose file/folder** on the welcome screen, then select a project folder. Graph Studio walks it and its subfolders and reports everything it can open: SQLite databases, PostgreSQL custom-format backups, `.postgres`/`.pgstudio` connection documents, folders of versioned SQL migrations, and standalone `schema.sql`/`structure.sql` scripts. A progress panel shows folders and files searched while it runs, and Cancel stops it at any point.
 
-Finding one match opens it. Finding several shows a picker grouped by kind, with each match's location inside the project and a short description (`407 migrations · PostgreSQL · 0001 → 0485`, `6.3 MB`, `db.example.test:5432/catalog`).
+Finding matches shows a picker grouped by kind, with each match's location inside the project and a short description (`407 migrations · PostgreSQL · 0001 → 0485`, `6.3 MB`, `db.example.test:5432/catalog`).
 
 Candidate files are checked by content, not by name: a `.db` file without the SQLite header, a `.dump` that is not a `PGDMP` archive, and a `.postgres` file that is not a connection document are all left out.
 

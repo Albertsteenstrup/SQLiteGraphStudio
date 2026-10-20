@@ -39,7 +39,7 @@ public enum StudioSkillInstallationError: LocalizedError {
 
 public enum StudioSkills {
 
-    public static let all: [StudioSkill] = [graphClusters, schemaDescriptions, databaseExplore, databaseDiff, databasePreview]
+    public static let all: [StudioSkill] = [graphClusters, schemaDescriptions, databaseExplore]
 
     // MARK: Skills
 
@@ -62,18 +62,6 @@ public enum StudioSkills {
         title: "database-explore",
         shortDescription: "Investigates the data model and shows useful live explanations through Graph Studio MCP, without a fixed story format.",
         fullContent: databaseExploreContent
-    )
-
-    public static let databaseDiff = StudioSkill(
-        id: "database-diff", title: "database-diff",
-        shortDescription: "Compares SQLite and PostgreSQL schema versions for PRs and local integrations, highlighting table, field, and relation changes.",
-        fullContent: databaseDiffContent
-    )
-
-    public static let databasePreview = StudioSkill(
-        id: "database-preview", title: "database-preview",
-        shortDescription: "Previews proposed schema changes from a small plan and cached metadata, without running migrations.",
-        fullContent: databasePreviewContent
     )
 
     // MARK: Installation targets
@@ -186,12 +174,20 @@ public enum StudioSkills {
     public static func removeManagedLegacyStorySkill(
         in directory: URL, targetDirectory: String? = nil
     ) throws {
-        let old = StudioSkill(id: "story-flows", title: "", shortDescription: "", fullContent: "")
-        for target in installationTargets(for: old) where targetDirectory == nil || target.guardDirectory == targetDirectory {
-            let url = directory.appendingPathComponent(target.subpath)
-            guard FileManager.default.fileExists(atPath: url.path),
-                  isKnownManaged(try Data(contentsOf: url), skillID: old.id) else { continue }
-            try FileManager.default.removeItem(at: url)
+        for id in ["story-flows", "database-diff", "database-preview"] {
+            let old = StudioSkill(id: id, title: "", shortDescription: "", fullContent: "")
+            for target in installationTargets(for: old) where targetDirectory == nil || target.guardDirectory == targetDirectory {
+                let url = directory.appendingPathComponent(target.subpath)
+                guard FileManager.default.fileExists(atPath: url.path),
+                      isKnownManaged(try Data(contentsOf: url), skillID: old.id) else { continue }
+                try FileManager.default.removeItem(at: url)
+                let parent = url.deletingLastPathComponent()
+                if parent.lastPathComponent == old.id,
+                   let children = try? FileManager.default.contentsOfDirectory(atPath: parent.path),
+                   children.isEmpty {
+                    try? FileManager.default.removeItem(at: parent)
+                }
+            }
         }
     }
 

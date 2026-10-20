@@ -87,7 +87,7 @@ struct StudioSkillsTests {
         try writeInstalledSkill(StudioSkills.graphClusters, targetSubpath: ".agents/skills/graph-clusters/SKILL.md", in: root)
         try writeInstalledSkill(StudioSkills.schemaDescriptions, targetSubpath: ".agents/skills/schema-descriptions/SKILL.md", in: root)
 
-        try StudioSkills.install([StudioSkills.databaseExplore, StudioSkills.databaseDiff, StudioSkills.databasePreview], to: root)
+        try StudioSkills.install([StudioSkills.databaseExplore], to: root)
 
         #expect(StudioSkills.isInstalled(StudioSkills.databaseExplore, in: root))
         #expect(!StudioSkills.hasMissingInstallableSkills(in: root))

@@ -251,6 +251,35 @@ struct ProjectScannerTests {
         #expect(session.hasOpenDatabase == false)
     }
 
+    @MainActor @Test func singleMigrationCandidatePresentsPickerAndRemainsInRecentWithoutAutoOpening() async throws {
+        let fixture = try Fixture()
+        try fixture.write("backend/postgres/migrations/0001_init.sql", "CREATE TABLE users (id INT PRIMARY KEY);")
+        let suiteName = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let session = AppSession(userDefaults: defaults)
+        session.scanProject(at: fixture.root)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while session.projectCandidates == nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.projectCandidates?.candidates.count == 1)
+        #expect(!session.hasOpenDatabase, "Scanning a project with one migration set must present the picker rather than auto-opening")
+
+        let candidate = try #require(session.projectCandidates?.candidates.first)
+        session.chooseProjectCandidate(candidate)
+        while !session.hasOpenDatabase && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.hasOpenDatabase)
+        #expect(session.recentDatabaseURLs.contains(candidate.url.standardizedFileURL))
+
+        let nextLaunchSession = AppSession(userDefaults: defaults)
+        #expect(!nextLaunchSession.hasOpenDatabase)
+        #expect(nextLaunchSession.recentDatabaseURLs.contains(candidate.url.standardizedFileURL))
+    }
+
     // MARK: - Pattern matching
 
     /// A `.gitignore` comes from whatever folder the user points at. Wildcard

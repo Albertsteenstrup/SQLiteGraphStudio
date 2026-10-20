@@ -43,15 +43,14 @@ class MCPInteractiveStdioTests(unittest.TestCase):
             process.stdin.flush()
             discovered = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
             tools = {tool["name"]: tool for tool in discovered["result"]["tools"]}
-            self.assertEqual(len(tools), 66)
-            review = tools["studio_show_review_inline"]
-            self.assertEqual(
-                review["_meta"]["ui"]["resourceUri"],
-                "ui://sqlite-graph-studio/schema-review.html",
+            self.assertEqual(len(tools), 62)
+            workspace = tools["studio_show_workspace_inline"]
+            self.assertTrue(
+                workspace["_meta"]["ui"]["resourceUri"].startswith("ui://sqlite-graph-studio/workspace-"),
             )
             resource = request({
                 "jsonrpc": "2.0", "id": 3, "method": "resources/read",
-                "params": {"uri": "ui://sqlite-graph-studio/schema-review.html"},
+                "params": {"uri": "ui://sqlite-graph-studio/workspace.html"},
             })
             self.assertEqual(
                 resource["result"]["contents"][0]["mimeType"],

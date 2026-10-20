@@ -288,8 +288,7 @@ final class StudioAutomationCoordinator {
         "studio_annotate_view", "studio_open_table", "studio_configure_table", "studio_inspect_value",
         "studio_follow_record", "studio_show_record_graph", "studio_prepare_query",
         "studio_run_query", "studio_show_query_results", "studio_start_presentation", "studio_update_presentation",
-        "studio_control_presentation", "studio_update_preferences", "studio_update_annotations", "studio_capture_schema",
-        "studio_update_preview", "studio_compare_schemas", "studio_show_artifact", "studio_save_explanation",
+        "studio_control_presentation", "studio_update_preferences", "studio_update_annotations", "studio_save_explanation",
         "studio_open_explanation", "studio_prepare_explanation_refresh", "studio_export", "studio_configure_speech",
         "studio_manage_speech_assets", "studio_test_speech", "studio_cancel_job",
     ]
@@ -1106,7 +1105,7 @@ final class StudioAutomationCoordinator {
                workspaceOwners[boundID] == context.id,
                bound.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == url.resolvingSymlinksInPath().standardizedFileURL,
                (!migrationSource || bound.session.selectedMigrationVersion == resolvedMigrationVersion),
-               bound.session.hasOpenDatabase || bound.session.schemaReview != nil {
+               bound.session.hasOpenDatabase {
                 if bool(args, "activate") == true { workspaces.activate(bound.id) }
                 return workspacePayload(bound).merging(["reused": true]) { _, new in new }
             }
@@ -1133,8 +1132,8 @@ final class StudioAutomationCoordinator {
                 await workspaces.closeAndWait(tab.id)
                 throw error
             }
-            guard tab.session.hasOpenDatabase || tab.session.schemaReview != nil else {
-                let message = tab.session.presentedError?.message ?? tab.session.schemaPreviewReloadError ?? "The source did not open."
+            guard tab.session.hasOpenDatabase else {
+                let message = tab.session.presentedError?.message ?? "The source did not open."
                 await workspaces.closeAndWait(tab.id)
                 throw Failure(code: "SOURCE_OPEN_FAILED", detail: message)
             }
@@ -2324,19 +2323,6 @@ final class StudioAutomationCoordinator {
                     "notes_upserted": rawNotes?.map { $0["id"] as? String ?? "" } ?? [],
                     "notes_removed": removedNoteIDs ?? [], "metadata_revision": revision,
                     "metadata_status": "saved"]
-        case "studio_capture_schema":
-            let tab = try sourceWorkspace(args, context: context)
-            guard let document = tab.session.databaseURL else { throw Failure(code: "SOURCE_REQUIRED", detail: "The current source has no capture document.") }
-            let snapshot = try await SchemaReviewCapture.snapshot(document: document)
-            let fingerprint = try SchemaPreview.fingerprint(snapshot)
-            let destination = try artifactDestination(args, ext: "sgsnapshot")
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            try encoder.encode(snapshot).write(to: destination, options: .atomic)
-            let id = try registerArtifact(destination, context: context, fingerprint: fingerprint)
-            return ["artifact_id": id, "path": destination.path, "kind": "captured_schema", "engine": snapshot.engine,
-                    "fingerprint": fingerprint, "table_count": snapshot.tables.count, "relation_count": snapshot.relations.count,
-                    "captured_from_source_id": sourceID(tab), "historical": true]
         case "studio_inspect_artifact":
             let url = try artifactURL(args, context: context)
             if url.pathExtension.lowercased() == "sgexplanation" {
@@ -2403,95 +2389,7 @@ final class StudioAutomationCoordinator {
                         "warnings": draft.warnings,
                         "truncated": tables.count > limit || changes.count > limit]
             }
-            if url.pathExtension.lowercased() == "sgpreview" {
-                let review = try SchemaReviewDocument.load(url)
-                let needle = string(args, "search")?.lowercased()
-                let exact = string(args, "object_id")
-                let matches = review.changes.filter { change in
-                    (exact == nil || change.id == exact) && (needle == nil || change.id.lowercased().contains(needle!))
-                }
-                let limit = bounded(args, "limit", default: 100, maximum: 500)
-                return ["artifact_id": string(args, "artifact_id") ?? url.path, "kind": "proposed_schema",
-                        "base_fingerprint": review.proposal?.baseFingerprint ?? "",
-                        "tables": matches.prefix(limit).map { ["id": $0.id, "change": $0.kind.rawValue,
-                                                                "columns": $0.table.columns.map { ["name": $0.name, "type": $0.type] }] as [String: Any] },
-                        "truncated": matches.count > limit, "historical": false,
-                        "warning": "This is a proposal. No migration was executed."]
-            }
-            let baseline = try SchemaPreview.loadBaseline(url, side: string(args, "side") ?? "after")
-            let detail = string(args, "detail_scope") ?? "summary"
-            let requested = detail == "object" ? [try requiredString(args, "object_id")] : []
-            let inspected = try SchemaPreview.inspect(baseline, tables: requested, find: string(args, "search"),
-                                                      limit: bounded(args, "limit", default: 100, maximum: 500))
-            guard var payload = try JSONSerialization.jsonObject(with: inspected) as? [String: Any] else {
-                throw Failure(code: "ARTIFACT_INVALID", detail: "The artifact could not be inspected.")
-            }
-            payload["artifact_id"] = string(args, "artifact_id") ?? url.path
-            payload["historical"] = true
-            return payload
-        case "studio_update_preview":
-            let fp = try requiredString(args, "baseline_fingerprint")
-            let baselineURL: URL
-            if let id = string(args, "baseline_artifact_id") { baselineURL = try artifactURL(["artifact_id": id], context: context) }
-            else if let match = artifactFingerprints.first(where: { $0.value == fp && artifactOwners[$0.key] == context.id }), let url = artifacts[match.key] { baselineURL = url }
-            else { throw Failure(code: "ARTIFACT_NOT_FOUND", detail: "Provide baseline_artifact_id or first capture a schema with this fingerprint.") }
-            let baseline = try SchemaPreview.loadBaseline(baselineURL)
-            guard try SchemaPreview.fingerprint(baseline.snapshot) == fp else {
-                throw Failure(code: "STALE_SOURCE", detail: "The plan's baseline fingerprint does not match the captured schema.")
-            }
-            guard let plan = args["plan"] as? [String: Any] else { throw Failure(code: "INVALID_ARGUMENT", detail: "Provide a compact plan object.") }
-            let review = try SchemaPreview.project(baseline, planData: JSONSerialization.data(withJSONObject: plan))
-            let destination = try artifactDestination(args, ext: "sgpreview")
-            try review.write(to: destination)
-            let id = try registerArtifact(destination, context: context)
-            return ["artifact_id": id, "path": destination.path, "kind": "proposed_schema", "base_fingerprint": fp,
-                    "changed_table_ids": review.changes.filter { $0.kind != .unchanged }.map(\.id),
-                    "warning": "This is a projected proposal. No migration was executed or validated against live data."]
-        case "studio_compare_schemas":
-            let before = try SchemaPreview.loadBaseline(artifactURL(["artifact_id": try requiredString(args, "before_snapshot")], context: context))
-            let after = try SchemaPreview.loadBaseline(artifactURL(["artifact_id": try requiredString(args, "after_snapshot")], context: context))
-            guard before.snapshot.engine == after.snapshot.engine else {
-                throw Failure(code: "INVALID_ARGUMENT", detail: "A real before/after comparison requires the same database engine.")
-            }
-            let review = SchemaReviewDocument(title: string(args, "title") ?? "Database changes", baseRef: before.label,
-                                              headRef: after.label, before: before.snapshot, after: after.snapshot)
-            let destination = try artifactDestination(args, ext: "sgreview")
-            try review.write(to: destination)
-            let id = try registerArtifact(destination, context: context)
-            return ["artifact_id": id, "path": destination.path, "kind": "captured_schema_comparison",
-                    "changed_table_ids": review.changes.filter { $0.kind != .unchanged }.map(\.id)]
-        case "studio_show_artifact":
-            let url = try artifactURL(args, context: context)
-            guard ["sgreview", "sgpreview"].contains(url.pathExtension.lowercased()) else {
-                throw Failure(code: "UNSUPPORTED_ARTIFACT", detail: "Open a comparison or proposal artifact; a raw snapshot can be inspected or compared first.")
-            }
-            try requireAutomationWorkspaceCapacity(openingDocument: true)
-            let tab = workspaces.createTab(kind: inferredWorkspaceKind(for: url),
-                                           activate: bool(args, "activate") ?? true)
-            try claimWorkspace(tab.id, for: context.id)
-            guard workspaces.reserveDocumentOpening(for: tab.id) else {
-                await workspaces.closeAndWait(tab.id)
-                throw documentLimitFailure()
-            }
-            await openDocument(tab.session, url)
-            workspaces.finishDocumentOpening(for: tab.id)
-            guard workspaces.tabs.contains(where: { $0 === tab }) else {
-                await tab.session.closeAndWait()
-                throw Failure(code: "STALE_VIEW", detail: "The artifact tab closed while its document was opening.")
-            }
-            try requireWorkspaceOwnership(tab.id, contextID: context.id)
-            do { try verifyContextUnchanged(context) } catch {
-                await workspaces.closeAndWait(tab.id)
-                throw error
-            }
-            guard tab.session.schemaReview != nil else {
-                let message = tab.session.presentedError?.message ?? "The schema artifact did not open."
-                await workspaces.closeAndWait(tab.id)
-                throw Failure(code: "ARTIFACT_INVALID", detail: message)
-            }
-            try bind(context.id, workspace: tab.id)
-            return ["workspace_id": tab.id.uuidString, "artifact_id": string(args, "artifact_id") ?? url.path,
-                    "path": url.path, "visual_state": visualState(tab), "historical_or_proposed": true]
+            throw Failure(code: "UNSUPPORTED_ARTIFACT", detail: "Inspect a saved explanation (.sgexplanation) or explanation refresh draft (.sgrefresh).")
         case "studio_save_explanation":
             let state = try presentation(args, context: context)
             if let requestedWorkspace = explicitWorkspace(args), requestedWorkspace != state.workspaceID {
@@ -2624,13 +2522,9 @@ final class StudioAutomationCoordinator {
             guard sourceAtStart == sourceRevision(tab) else {
                 throw Failure(code: "STALE_SOURCE", detail: "The selected source changed while refresh rows were being captured. Read the current view and retry.")
             }
-            let priorFingerprint = try SchemaPreview.fingerprint(oldArtifact.schema)
-            let freshFingerprint = try SchemaPreview.fingerprint(freshSchema)
-            let diff = SchemaReviewDocument(title: oldArtifact.title, baseRef: "Saved historical capture",
-                headRef: "Fresh source capture", before: oldArtifact.schema, after: freshSchema)
-            let changed = diff.changes.filter { $0.kind != .unchanged }.map { change in
-                "\(change.kind.label): \(change.id) (\(change.added.count) fields added, \(change.removed.count) removed, \(change.modified.count) modified)"
-            } + diff.relationChanges.filter { $0.kind != .unchanged }.map { "\($0.kind.label) relation: \($0.relation.source) → \($0.relation.target)" }
+            let priorFingerprint = try oldArtifact.schema.fingerprint()
+            let freshFingerprint = try freshSchema.fingerprint()
+            let changed = oldArtifact.schema.schemaChanges(to: freshSchema)
             let draft = HistoricalExplanationRefreshDraft(
                 id: UUID(), title: oldArtifact.title + " refresh draft", preparedAt: Date(),
                 parentArtifactHash: sha256(try Data(contentsOf: oldURL)), engine: freshSchema.engine,
@@ -3428,8 +3322,6 @@ final class StudioAutomationCoordinator {
 
     private func inferredWorkspaceKind(for url: URL) -> WorkspaceTabKind {
         switch url.pathExtension.lowercased() {
-        case "sgpreview": .preview
-        case "sgreview": .comparison
         case "sgexplanation": .explanation
         default: .workspace
         }
@@ -4044,7 +3936,7 @@ final class StudioAutomationCoordinator {
         return ["artifact_id": string(args, "artifact_id") ?? url.path, "kind": "historical_explanation",
                 "title": artifact.title, "historical": true, "captured_at": artifact.capturedAt.formatted(.iso8601),
                 "engine": artifact.engine, "source_identity_hash": artifact.sourceIdentityHash,
-                "schema_fingerprint": try SchemaPreview.fingerprint(artifact.schema),
+                "schema_fingerprint": try artifact.schema.fingerprint(),
                 "tables": tables.prefix(limit).map(\.id), "table_count": tables.count, "relations": artifact.schema.relations.count,
                 "points": points.prefix(limit).map { ["point_id": $0.id, "caption": $0.caption] },
                 "point_count": points.count, "captured_query_results": artifact.queryResults.map(\.resultID),

@@ -39,7 +39,7 @@ sgs_assert_bundle_not_running() {
     for process_name in SQLiteGraphStudio StudioMCP; do
         while IFS= read -r pid; do
             [[ -n "$pid" ]] || continue
-            executable="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+            executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
             case "$executable" in
                 "$app_bundle"/Contents/MacOS/*)
                     echo "Cannot replace $app_bundle while $process_name (PID $pid) is running from it. Close that copy or MCP session, then retry." >&2
@@ -55,7 +55,7 @@ sgs_open_reusing_running_app() {
     local pid executable running_bundle
     while IFS= read -r pid; do
         [[ -n "$pid" ]] || continue
-        executable="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+        executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
         case "$executable" in
             */Contents/MacOS/SQLiteGraphStudio)
                 running_bundle="${executable%/Contents/MacOS/SQLiteGraphStudio}"

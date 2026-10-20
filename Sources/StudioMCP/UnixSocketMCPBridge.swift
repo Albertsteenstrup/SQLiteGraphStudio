@@ -15,21 +15,12 @@ public extension MCPBridgeTransport {
 
 public final class LocalMCPToolDispatcher: MCPToolDispatcher {
     private let transport: MCPBridgeTransport
-    private let renderer: SchemaReviewRenderer
-    private let openDocuments: ([URL]) throws -> Void
 
-    public convenience init(transport: MCPBridgeTransport = UnixSocketMCPBridge()) {
-        self.init(transport: transport, renderer: .shared, openDocuments: SchemaReviewAppTools.openInGraphStudio)
-    }
-
-    init(transport: MCPBridgeTransport, renderer: SchemaReviewRenderer, openDocuments: @escaping ([URL]) throws -> Void) {
+    public init(transport: MCPBridgeTransport = UnixSocketMCPBridge()) {
         self.transport = transport
-        self.renderer = renderer
-        self.openDocuments = openDocuments
     }
 
     public func clientDisconnected(clientID: String) {
-        renderer.stop()
         transport.disconnect(clientID: clientID)
     }
 
@@ -47,41 +38,10 @@ public final class LocalMCPToolDispatcher: MCPToolDispatcher {
                 timeoutMilliseconds: min(max(wait, 1_000), 30_000),
                 foreground: foreground
             )
-        case SchemaReviewInlineView.contextToolName:
-            return SchemaReviewInlineView.explanationContext(
-                path: call.arguments["path"] as? String ?? "",
-                workingDirectory: call.workingDirectory
-            )
         case DataInlineView.toolName, DataInlineView.pageToolName:
             return DataInlineView.result(call, transport: transport)
         case WorkspaceInlineView.toolName, WorkspaceInlineView.frameToolName:
             return WorkspaceInlineView.result(call, transport: transport)
-        case SchemaReviewInlineView.toolName:
-            // Rendered by the host from the file alone; the app is never contacted.
-            if call.arguments["explanations"] != nil && !(call.arguments["explanations"] is [[String: Any]]) {
-                let message = "Explanations must be an array of change-set paragraphs."
-                return ["content": [["type": "text", "text": message]],
-                        "structuredContent": ["error": ["code": "INVALID_ARGUMENT", "message": message]],
-                        "isError": true]
-            }
-            return SchemaReviewInlineView.result(
-                path: call.arguments["path"] as? String ?? "",
-                workingDirectory: call.workingDirectory,
-                expectedRevision: call.arguments["revision"] as? String,
-                explanations: call.arguments["explanations"] as? [[String: Any]] ?? []
-            )
-        case SchemaReviewAppTools.frameToolName:
-            // Drawn by a hidden renderer process, never by the reader's running app.
-            return SchemaReviewAppTools.frame(arguments: call.arguments, workingDirectory: call.workingDirectory,
-                                              renderer: renderer)
-        case SchemaReviewAppTools.detailToolName:
-            return SchemaReviewInlineView.detail(path: call.arguments["path"] as? String ?? "",
-                                                 workingDirectory: call.workingDirectory,
-                                                 revision: call.arguments["revision"] as? String,
-                                                 fullModel: call.arguments["full_model"] as? Bool ?? false)
-        case SchemaReviewAppTools.openToolName:
-            return SchemaReviewAppTools.openInApp(arguments: call.arguments, workingDirectory: call.workingDirectory,
-                                                  open: openDocuments)
         default:
             var arguments = call.arguments
             if call.name == "studio_connect_context", arguments["project_path"] == nil {

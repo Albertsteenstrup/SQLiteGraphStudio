@@ -56,8 +56,8 @@ struct ProjectScanOverlayView: View {
     }
 }
 
-/// Presented when a search found more than one thing to open. A migration set
-/// can be opened at any of its versions; the newest one is preselected.
+/// Presented when a project folder search finds databases or migration sets to open.
+/// A migration set can be opened at any of its versions; the newest one is preselected.
 struct ProjectCandidatePickerView: View {
     @Bindable var session: AppSession
     let choice: ProjectCandidateChoice

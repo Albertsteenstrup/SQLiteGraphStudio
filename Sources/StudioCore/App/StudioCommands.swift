@@ -33,8 +33,6 @@ public struct StudioCommands: Commands {
             .disabled(workspaceTabs.tabs.count >= WorkspaceTabController.maximumTabs)
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
-            Button("Compare Database Schemas…") { session.presentSchemaComparison() }
-
             Menu("Open Recent") {
                 if session.recentDatabaseURLs.isEmpty {
                     Text("No Recent Databases")

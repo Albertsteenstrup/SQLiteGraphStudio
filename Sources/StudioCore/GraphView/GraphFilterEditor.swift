@@ -33,8 +33,8 @@ struct GraphFilterEditor: View {
             }
             range("Fields", minimum: $minimumFields, maximum: $maximumFields)
             range("Rows", minimum: $minimumRows, maximum: $maximumRows)
-                .disabled(session.schemaReview != nil)
-                .help(session.schemaReview != nil ? "Schema comparisons contain no row data." : "Filter by row count")
+                .disabled(session.historicalExplanationArtifact != nil)
+                .help(session.historicalExplanationArtifact != nil ? "Saved explanations contain no row counts." : "Filter by row count")
             range("Relations", minimum: $minimumRelations, maximum: $maximumRelations)
                 .help("Incoming and outgoing foreign keys in the full schema. Composite and self-referencing keys count once.")
             if let progress = session.graphFilterProgress {

@@ -82,41 +82,29 @@ public struct SchemaGraphView: View {
     /// stop for anyone who asked the system to reduce motion and for windows the user has
     /// left — a background graph has no reader to inform and no reason to hold the display
     /// link awake.
-    ///
-    /// They also stay out of a schema review, which spends colour and symbols directing the
-    /// eye to what changed; ambient motion there competes with the one thing being read.
     private var animatesRelationPulses: Bool {
-        shows(.relationPulses) && session.schemaReview == nil
+        shows(.relationPulses)
             && !reduceMotion && controlActiveState != .inactive
     }
 
     private var isLargeGraph: Bool { renderedGraph.nodes.count > GraphLayoutModel.largeGraphOverviewThreshold }
     private var effectiveDetailZoom: CGFloat {
-        session.schemaReview != nil && !session.isSchemaReviewFullModelView
-            ? GraphExploration.reviewDetailZoom : GraphExploration.detailZoom
+        GraphExploration.detailZoom
     }
     private var usesOverviewMarks: Bool {
-        (isLargeGraph || (!session.isSchemaReviewFullModelView && session.graphNodeSizeMetric != .uniform))
+        (isLargeGraph || session.graphNodeSizeMetric != .uniform)
             && zoom < effectiveDetailZoom
     }
 
     /// Highlights are full table cards; the surrounding catalog keeps its overview scale.
     private var enlargedTableIDs: Set<String> {
         let key = GraphEnlargementKey(graphRevision: session.graphRevision,
-            reviewRevision: session.schemaReviewRevision, fullModel: session.isSchemaReviewFullModelView,
             selection: session.selectedGraphNodeIDs, expanded: session.expandedGraphNodeIDs,
             context: session.graphContextTableIDs)
         if scenePreparation.enlargementKey == key { return scenePreparation.enlargedIDs }
-        let ids: Set<String>
-        if session.schemaReview != nil {
-            let changes = cachedReviewLens().map { Set($0.labelOrder) }
-                ?? Set(session.schemaReviewChanges.compactMap { $0.value.kind == .unchanged ? nil : $0.key })
-            ids = changes.union(session.selectedGraphNodeIDs).union(session.expandedGraphNodeIDs)
-        } else {
-            // Selection controls contrast; expansion controls fields. A selected
-            // card must still be collapsible without clearing its selection.
-            ids = session.graphContextTableIDs.union(session.expandedGraphNodeIDs)
-        }
+        // Selection controls contrast; expansion controls fields. A selected
+        // card must still be collapsible without clearing its selection.
+        let ids = session.graphContextTableIDs.union(session.expandedGraphNodeIDs)
         scenePreparation.enlargementKey = key
         scenePreparation.enlargedIDs = ids
         return ids
@@ -124,7 +112,7 @@ public struct SchemaGraphView: View {
 
     private var overviewAnchors: [GraphOverviewAnchors.Anchor] {
         var ids = enlargedTableIDs
-        if isLargeGraph, !session.isSchemaReviewFullModelView,
+        if isLargeGraph,
            focusedGroupID == nil, effectiveFocusPlan == nil {
             ids.formUnion(session.schemaSidecar.overviewTables)
         }
@@ -143,17 +131,12 @@ public struct SchemaGraphView: View {
     }
 
     private var renderedGraph: SchemaGraph {
-        let afterOnly = session.isSchemaReviewFullModelView
         let scoped = session.automationVisibleTableIDs != nil || session.graphTableFilter.isActive
-        guard afterOnly || scoped else { return session.graph }
-        let afterIDs = session.schemaReviewAfterTableIDs
-        let visibleIDs = afterOnly ? afterIDs : session.graphVisibleTableIDs
-        let scopeIDs = afterOnly ? afterIDs : (scoped ? session.graphVisibleTableIDs : visibleIDs)
-        let nodes = session.graph.nodes.filter { visibleIDs.contains($0.id) && scopeIDs.contains($0.id) }
+        guard scoped else { return session.graph }
+        let visibleIDs = session.graphVisibleTableIDs
+        let nodes = session.graph.nodes.filter { visibleIDs.contains($0.id) }
         let edges = session.graph.edges.filter {
             visibleIDs.contains($0.sourceID) && visibleIDs.contains($0.targetID)
-                && scopeIDs.contains($0.sourceID) && scopeIDs.contains($0.targetID)
-                && (!afterOnly || session.schemaReviewAfterEdgeIDs.contains($0.id))
         }
         return SchemaGraph(nodes: nodes, edges: edges)
     }
@@ -163,12 +146,10 @@ public struct SchemaGraphView: View {
             &+ layoutRevision &* 7
             &+ session.automationViewRevision
             &+ session.graphVisibleTableIDs.hashValue
-            &+ session.schemaReviewViewIndex &* 997
             &+ session.graphNodeSizingLayoutRevision &* 1_009
     }
 
     private var initialViewportDocumentKey: String? {
-        if session.schemaReview != nil, let url = session.databaseURL { return "schema-review:\(url.absoluteString)" }
         guard let target = session.databaseTarget else { return nil }
         return "\(target.stableStorageKey)|\(session.databaseURL?.absoluteString ?? "")"
     }
@@ -189,14 +170,12 @@ public struct SchemaGraphView: View {
     }
 
     private var readableFocusRootID: String? {
-        guard session.schemaReview == nil else { return graphFocusTableRelation?.tableID ?? tableFocusNodeID }
         if let root = graphFocusTableRelation?.tableID ?? tableFocusNodeID { return root }
         if let chosen = session.selectedGraphNodeID, session.expandedGraphNodeIDs.contains(chosen) { return chosen }
         return manuallyExpandedNodeID
     }
 
     private var spotlight: GraphSpotlight {
-        guard session.schemaReview == nil else { return GraphSpotlight(subjects: [], related: [], pointed: nil) }
         var subjects = session.graphContextTableIDs.union(session.selectedGraphNodeIDs)
         if let root = graphFocusTableRelation?.tableID ?? tableFocusNodeID { subjects.insert(root) }
         subjects.formUnion(session.expandedGraphNodeIDs)
@@ -285,8 +264,7 @@ public struct SchemaGraphView: View {
                 .allowsHitTesting(false)
             } else {
                 graphScene(size: size)
-                if !session.isSchemaReviewFullModelView
-                    && (session.graphTableFilter.isActive || session.automationVisibleTableIDs != nil)
+                if (session.graphTableFilter.isActive || session.automationVisibleTableIDs != nil)
                     && session.graphVisibleTableIDs.isEmpty {
                     emptyScopeOverlay(size: size)
                 }
@@ -434,13 +412,6 @@ public struct SchemaGraphView: View {
                 applyAutomationViewport(command, in: size)
             }
             .onChange(of: session.graphRevision) { _, _ in
-                if session.schemaReview?.proposal != nil, initialViewportDocumentKey == session.initializedGraphViewportDocument {
-                    clearGraphFocusSession(animated: false, restoreViewport: false)
-                    relationPreviewCache.isValid = false
-                    invalidateClusterTitleCache()
-                    layoutRevision &+= 1
-                    return
-                }
                 focusedGroupID = nil
                 focusedGroupPage = 0
                 overviewViewport = nil
@@ -544,7 +515,6 @@ public struct SchemaGraphView: View {
     private func graphScene(size: CGSize) -> some View {
         let focusPlan = effectiveFocusPlan
         let spotlight = spotlight
-        let reviewLens = cachedReviewLens()
         let anchors = overviewAnchors
         let geometry = interactionGeometry(in: size, focusPlan: focusPlan, overviewAnchors: anchors)
         let anchorMap = geometry.anchorMap
@@ -556,8 +526,8 @@ public struct SchemaGraphView: View {
             geometry.markerFrames[$0]?.intersects(viewport) == true
         })
         let embeddedNodeFrames = embeddedHitFrames(geometry: geometry, displayedTableIDs: displayedTableIDs, viewport: viewport)
-        let hoverNeighbors = hoverNeighborIDs(reviewLens: reviewLens)
-        let hoverSummaryIDs = shows(.hoverPreviews) && reviewLens == nil && !session.isSchemaReviewFullModelView ? GraphHoverPresentation.summaryIDs(
+        let hoverNeighbors = hoverNeighborIDs()
+        let hoverSummaryIDs = shows(.hoverPreviews) ? GraphHoverPresentation.summaryIDs(
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil, connectedIDs: hoverNeighbors,
             markerFrames: geometry.markerFrames, viewport: viewport
         ).subtracting(geometry.overviewAnchorIDs) : []
@@ -581,14 +551,7 @@ public struct SchemaGraphView: View {
         let tapCanvas: (CGPoint) -> Void = { point in
             if let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup),
                renderPlan.markerIDs.contains(card.tableID) {
-                if session.schemaReview != nil {
-                    // A review is read in place: choosing a table narrows the view
-                    // to its changes and fills the details panel. Pulling its
-                    // neighbours into a ring would rearrange the layout being compared.
-                    chooseReviewTable(card.tableID)
-                } else {
-                    revealTable(card.tableID, in: size)
-                }
+                revealTable(card.tableID, in: size)
                 return
             }
             let changesView = graphFocusTableRelation != nil
@@ -615,11 +578,6 @@ public struct SchemaGraphView: View {
                     guard let request = session.graphTapRequest else { return }
                     let point = request.point
                     let card = graphCard(at: point, geometry: geometry, edgeLookup: edgeLookup)
-                    if request.keepsChosenTable, let card, session.schemaReview != nil,
-                       session.selectedGraphNodeIDs == [card.tableID],
-                       renderPlan.detailIDs.contains(card.tableID) || renderPlan.markerIDs.contains(card.tableID) {
-                        return
-                    }
                     // A drawn card takes its own clicks; marks and empty canvas are the canvas's.
                     if let card, renderPlan.detailIDs.contains(card.tableID), !renderPlan.markerIDs.contains(card.tableID) {
                         selectCard(card.tableID)
@@ -660,11 +618,10 @@ public struct SchemaGraphView: View {
                 GraphRelationHighlight(graph: graph, focusNodeID: $0, edgeLookup: edgeLookup)
             } : nil
             let edgePlan = edgeLayerPlan(isOverviewOnly: isOverviewOnly, focusPlan: focusPlan,
-                                         relationHighlight: relationHighlight, hoverHighlight: hoverHighlight,
-                                         reviewLens: reviewLens)
+                                         relationHighlight: relationHighlight, hoverHighlight: hoverHighlight)
 
             Canvas { context, _ in
-                if isOverviewOnly, session.schemaReview == nil, shows(.overviewGroupLinks) {
+                if isOverviewOnly, shows(.overviewGroupLinks) {
                     var groupContext = context
                     if spotlight.isActive { groupContext.opacity *= 0.24 }
                     drawGroupConnections(in: &groupContext, size: size)
@@ -673,7 +630,7 @@ public struct SchemaGraphView: View {
                     drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan, viewportSize: size, spotlight: spotlight)
                 }
                 drawOverviewMarks(in: &context, frames: geometry.markerFrames,
-                                  connectedIDs: hoverNeighbors, reviewLens: reviewLens, spotlight: spotlight)
+                                  connectedIDs: hoverNeighbors, spotlight: spotlight)
                 for id in hoverSummaryIDs {
                     guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                     let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -702,8 +659,7 @@ public struct SchemaGraphView: View {
                     GraphNodeSummary(
                         title: node.title,
                         fieldCount: session.descriptor(named: node.id)?.columns.count ?? 0,
-                        rowCount: session.graphRowCounts[node.id] ?? session.descriptor(named: node.id)?.rowCount,
-                        schemaChange: session.schemaReviewChanges[node.id]
+                        rowCount: session.graphRowCounts[node.id] ?? session.descriptor(named: node.id)?.rowCount
                     )
                     .padding(.horizontal, GraphCardLayout.horizontalInset)
                     .frame(width: GraphCardLayout.collapsedWidth(title: node.title, hovered: false),
@@ -744,7 +700,7 @@ public struct SchemaGraphView: View {
                 let displayStyle = nodeDisplayStyle(for: node.id, previewColumns: previewColumns)
                 let cardSize = nodeSize(for: node.id)
                 let scrollOffset = cardScrollOffsets[node.id] ?? 0
-                let showsCardShadow = shows(.cardShadows) && session.schemaReview == nil
+                let showsCardShadow = shows(.cardShadows)
 
                 GraphNodeCardView(
                     node: node,
@@ -765,9 +721,7 @@ public struct SchemaGraphView: View {
                     isHovered: hoveredNodeID == node.id,
                     isDragging: draggedNodeID == node.id,
                     highlightState: relationHighlight.highlightState(for: node.id),
-                    keepsTextReadableWhenZoomed: session.schemaReview != nil || isOverviewAnchor || spotlight.subjects.contains(node.id) || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
-                    schemaChange: session.isSchemaReviewFullModelView ? nil : session.schemaReviewChanges[node.id],
-                    colorOnlyChange: session.isSchemaReviewFullModelView ? session.schemaReviewChanges[node.id]?.kind : nil,
+                    keepsTextReadableWhenZoomed: isOverviewAnchor || spotlight.subjects.contains(node.id) || hoveredNodeID == node.id || hoverNeighbors.contains(node.id),
                     selectNode: { selectCard(node.id) },
                     toggleExpanded: {
                         session.notifyManualGraphInteraction()
@@ -801,13 +755,13 @@ public struct SchemaGraphView: View {
                     headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
                 )
                 .frame(width: cardSize.width, height: cardSize.height, alignment: .topLeading)
-                .scaleEffect(displayZoom * (session.isSchemaReviewFullModelView ? 1
-                    : GraphHoverPresentation.cardScale(hovered: hoveredNodeID == node.id && draggedNodeID == nil,
-                                                       connected: hoverNeighbors.contains(node.id))))
+                .scaleEffect(displayZoom * GraphHoverPresentation.cardScale(
+                    hovered: hoveredNodeID == node.id && draggedNodeID == nil,
+                    connected: hoverNeighbors.contains(node.id)
+                ))
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredNodeID)
                 .position(screenCenter(for: node.id, in: size))
                 .opacity(spotlight.tableOpacity(node.id))
-                .opacity(reviewCardOpacity(for: node.id, lens: reviewLens))
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: spotlight)
                 .shadow(
                     color: showsCardShadow
@@ -1051,44 +1005,20 @@ public struct SchemaGraphView: View {
 
     /// A click on a drawn table card.
     private func selectCard(_ nodeID: String) {
-        if session.schemaReview != nil {
-            chooseReviewTable(nodeID)
-            return
-        }
         session.notifyManualGraphInteraction()
         withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.84)) {
             openExpandedNode(nodeID, in: viewportSize)
         }
     }
 
-    /// Choosing a table in a review isolates its changes; choosing it again returns to
-    /// every change, the same as in the review's table list.
-    private func chooseReviewTable(_ nodeID: String, togglesChosenTable: Bool = true) {
-        clearGraphFocusSession()
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.16)) {
-            if togglesChosenTable, session.selectedGraphNodeIDs == [nodeID] {
-                session.clearGraphSelection()
-            } else {
-                session.selectGraphNode(nodeID)
-            }
-        }
-    }
-
-    /// Brings a table chosen outside the canvas — from a review's table list — into view,
-    /// together with the far ends of its changed relations, moving the camera as little as
-    /// possible. The layout itself never moves: the reader is comparing it.
     private func revealChosenTable(_ nodeID: String, in size: CGSize) {
-        guard session.graph.contains(nodeID: nodeID) else { return }
+        guard session.graph.contains(nodeID: nodeID), let bounds = graphFrame(for: nodeID) else { return }
         if graphFocusPlan != nil { clearGraphFocusSession(animated: false, restoreViewport: false) }
-        let ids = [nodeID] + (cachedReviewLens()?.changedNeighbors(of: nodeID).sorted() ?? [])
-        let bounds = ids.compactMap { graphFrame(for: $0) }.reduce(CGRect.null) { $0.union($1) }
         guard let transform = GraphViewportTransform.reveal(contentBounds: bounds, in: size,
                                                             from: GraphViewportTransform(zoom: zoom, pan: pan)) else { return }
         setViewport(transform, animated: !reduceMotion)
     }
 
-    /// Frames a connected set of review changes: its tables fill the view, zooming in
-    /// or out as needed, so one set of related changes is read at a time.
     private func frameTables(_ nodeIDs: [String], in size: CGSize, animated: Bool) {
         if graphFocusPlan != nil { clearGraphFocusSession(animated: false, restoreViewport: false) }
         let bounds = nodeIDs.compactMap { graphFrame(for: $0) }.reduce(CGRect.null) { $0.union($1) }
@@ -1102,7 +1032,7 @@ public struct SchemaGraphView: View {
                 let center = graphNodePoint(for: id)
                 let footprint = GraphSpotlightLayout.footprint(for: id, cardSize: nodeSize(for: id),
                     readableRootID: readableFocusRootID, zoom: proposedZoom,
-                    sizing: session.isSchemaReviewFullModelView ? .uniform : session.graphNodeSizeProfile,
+                    sizing: session.graphNodeSizeProfile,
                     enlargedIDs: enlargedTableIDs)
                 return bounds.union(CGRect(x: center.x - footprint.width / 2, y: center.y - footprint.height / 2,
                                            width: footprint.width, height: footprint.height))
@@ -1132,74 +1062,23 @@ public struct SchemaGraphView: View {
     }
 
     private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect], connectedIDs: Set<String>,
-                                   reviewLens: SchemaReviewLens?, spotlight: GraphSpotlight) {
+                                   spotlight: GraphSpotlight) {
         for (id, mark) in frames {
-            let changedKind = session.isSchemaReviewFullModelView ? session.schemaReviewChanges[id]?.kind : nil
             let groupColor = clusterBorderColor(for: id)
-            let color: Color
-            if let changedKind, changedKind != .unchanged { color = changedKind.tint }
-            else { color = groupColor ?? StudioPalette.accent }
-            let isHovered = !session.isSchemaReviewFullModelView && hoveredNodeID == id
-            let connected = !session.isSchemaReviewFullModelView && connectedIDs.contains(id)
+            let color = groupColor ?? StudioPalette.accent
+            let isHovered = hoveredNodeID == id
+            let connected = connectedIDs.contains(id)
             let isChosen = session.selectedGraphNodeIDs.contains(id)
             let path = Path(roundedRect: mark, cornerRadius: min(4, mark.height / 2))
-            if let reviewLens {
-                drawReviewMark(in: &context, id: id, path: path, color: color,
-                               lens: reviewLens, isPointed: isHovered || connected, isChosen: isChosen)
-            } else {
-                let emphasis = isChosen || isHovered || connected
-                    ? 0.98 : (groupColor != nil ? 0.86 : 0.62)
-                let isUnknown = !session.isSchemaReviewFullModelView && session.graphNodeSizeProfile.unknownIDs.contains(id)
-                let opacity = emphasis * spotlight.tableOpacity(id) * (isUnknown && !isChosen ? 0.45 : 1)
-                context.fill(path, with: .color(color.opacity(opacity)))
-                if isUnknown {
-                    context.stroke(path, with: .color(color.opacity(0.6 * spotlight.tableOpacity(id))),
-                                   style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-                }
+            let emphasis = isChosen || isHovered || connected
+                ? 0.98 : (groupColor != nil ? 0.86 : 0.62)
+            let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
+            let opacity = emphasis * spotlight.tableOpacity(id) * (isUnknown && !isChosen ? 0.45 : 1)
+            context.fill(path, with: .color(color.opacity(opacity)))
+            if isUnknown {
+                context.stroke(path, with: .color(color.opacity(0.6 * spotlight.tableOpacity(id))),
+                               style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             }
-        }
-    }
-
-    /// Unchanged tables recede to a faint group-coloured outline of the catalog so the
-    /// changes read first.
-    ///
-    /// A review never uses the dashed "size unknown" outline: it has no row data, so the
-    /// row metric would dash every table, and dashes already mean "removed" here.
-    private func drawReviewMark(in context: inout GraphicsContext, id: String, path: Path,
-                                color: Color, lens: SchemaReviewLens, isPointed: Bool, isChosen: Bool) {
-        if !lens.isFocused {
-            let fill = isChosen ? contextSubjectTint.opacity(0.94) : color.opacity(isPointed ? 0.5 : 0.28)
-            context.fill(path, with: .color(fill))
-            return
-        }
-        let kind = lens.kind(forTable: id)
-        let emphasis = lens.emphasis(forTable: id)
-        let fill: Double = switch emphasis {
-        case .subject: 0.8
-        case .faded: isPointed ? 0.6 : 0.34
-        case .context: isPointed ? 0.62 : 0.26
-        }
-        let tint = isChosen ? contextSubjectTint : color
-        context.fill(path, with: .color(tint.opacity((isChosen ? 0.94 : fill) * (kind == .removed ? 0.6 : 1))))
-        let dash: [CGFloat] = kind == .removed ? [3, 2] : []
-        switch emphasis {
-        case .subject:
-            context.stroke(path, with: .color(kind.tint), style: StrokeStyle(lineWidth: 2, dash: dash))
-        case .faded:
-            context.stroke(path, with: .color(kind.tint.opacity(0.4)), style: StrokeStyle(lineWidth: 1.25, dash: dash))
-        case .context:
-            break
-        }
-    }
-
-    /// Detail cards follow the same weighting as overview marks, more gently: they are
-    /// on screen because the reader zoomed in to read them.
-    private func reviewCardOpacity(for id: String, lens: SchemaReviewLens?) -> Double {
-        guard let lens, hoveredNodeID != id, !session.selectedGraphNodeIDs.contains(id) else { return 1 }
-        switch lens.emphasis(forTable: id) {
-        case .subject: return 1
-        case .faded: return 0.5
-        case .context: return lens.isFocused ? 0.5 : 0.72
         }
     }
 
@@ -1463,32 +1342,26 @@ public struct SchemaGraphView: View {
         isOverviewOnly: Bool,
         focusPlan: GraphFocusPlan?,
         relationHighlight: GraphRelationHighlight,
-        hoverHighlight: GraphRelationHighlight?,
-        reviewLens: SchemaReviewLens?
+        hoverHighlight: GraphRelationHighlight?
     ) -> GraphEdgeLayerPlan? {
         let mode = GraphEdgeLayerPlan.mode(isOverview: isOverviewOnly && session.graphContextTableIDs.isEmpty,
-                                           isSchemaReview: session.schemaReview != nil,
                                            showsOverviewRelations: shows(.overviewRelations),
                                            hasHover: hoverHighlight != nil)
-        var plan: GraphEdgeLayerPlan
         switch mode {
         case nil:
             return nil
         case .detail:
-            plan = GraphEdgeLayerPlan(highlight: relationHighlight, focusPlan: focusPlan,
+            return GraphEdgeLayerPlan(highlight: relationHighlight, focusPlan: focusPlan,
                                       onlyHighlighted: false, sampleLimit: nil, inkScale: 1)
         case .overviewSample:
-            plan = GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
+            return GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
                                       onlyHighlighted: false,
                                       sampleLimit: GraphEdgeLayerPlan.overviewRelationLimit,
                                       inkScale: GraphEdgeLayerPlan.overviewInkScale)
         case .overviewHoverOnly:
-            plan = GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
+            return GraphEdgeLayerPlan(highlight: hoverHighlight ?? relationHighlight, focusPlan: nil,
                                       onlyHighlighted: true, sampleLimit: nil, inkScale: 1)
         }
-        plan.reviewLens = reviewLens
-        plan.hidesUnchangedRelations = reviewLens != nil && zoom < effectiveDetailZoom
-        return plan
     }
 
     /// Resolves the relations a plan paints: graph order, screen anchors, the curve the
@@ -1508,16 +1381,12 @@ public struct SchemaGraphView: View {
         renders.reserveCapacity(min(candidates.count, 512))
         for edge in candidates {
             if plan.onlyHighlighted && !highlighted.contains(edge.id) { continue }
-            let reviewEmphasis = plan.reviewLens?.emphasis(for: edge)
-            if plan.hidesUnchangedRelations, reviewEmphasis == .context { continue }
             guard let anchors = anchorMap.edgeAnchors(for: edge) else { continue }
 
             let curve = GraphEdgeRouting.curve(anchors: anchors,
                 sourceFrame: anchorMap.card(for: edge.sourceID)?.frame,
                 targetFrame: anchorMap.card(for: edge.targetID)?.frame,
                 laneOffset: laneOffsets[edge.id, default: 0], isSelfLink: edge.sourceID == edge.targetID)
-            // Stable lanes already separate both versions of an edited FK.
-            // Further x shifts could reverse the outward card-side tangent.
             let control1 = curve.control1
             let control2 = curve.control2
             var path = Path()
@@ -1530,32 +1399,20 @@ public struct SchemaGraphView: View {
                 control1: control1,
                 control2: control2,
                 path: path,
-                // A review highlights a table's changes, never its unchanged relations.
-                isHighlighted: (contextIDs.isEmpty ? highlighted.contains(edge.id)
-                    : contextIDs.contains(edge.sourceID) && contextIDs.contains(edge.targetID)) && reviewEmphasis != .context
+                isHighlighted: contextIDs.isEmpty ? highlighted.contains(edge.id)
+                    : contextIDs.contains(edge.sourceID) && contextIDs.contains(edge.targetID)
             ))
         }
         return renders
     }
 
-    private func reviewEmphasis(of render: GraphEdgeRender, lens: SchemaReviewLens) -> SchemaReviewLens.Emphasis {
-        render.isHighlighted ? .subject : lens.emphasis(for: render.edge)
-    }
-
     private func drawEdges(in context: inout GraphicsContext, anchorMap: GraphAnchorMap, plan: GraphEdgeLayerPlan, viewportSize: CGSize, spotlight: GraphSpotlight) {
         let focusedTable = plan.focusPlan?.isActive == true
         let contextIDs = session.graphContextTableIDs
-        let baseOpacity = (focusedTable ? 0.95 : (session.showAllGraphTableCards ? 0.48 : 0.34)) * plan.inkScale * (plan.reviewLens == nil ? 1 : 0.7)
+        let baseOpacity = (focusedTable ? 0.95 : (session.showAllGraphTableCards ? 0.48 : 0.34)) * plan.inkScale
         let baseWidth = (focusedTable ? 1.5 : (session.showAllGraphTableCards ? 1.25 : 1.05)) * plan.inkScale
 
-        var renders = visibleEdgeRenders(anchorMap: anchorMap, plan: plan, viewportSize: viewportSize)
-        if let lens = plan.reviewLens {
-            // Changes paint over context, and the changes being read paint over the rest.
-            let ranked = renders.map { (render: $0, emphasis: reviewEmphasis(of: $0, lens: lens)) }
-            renders = [SchemaReviewLens.Emphasis.context, .faded, .subject].flatMap { tier in
-                ranked.filter { $0.emphasis == tier }.map(\.render)
-            }
-        }
+        let renders = visibleEdgeRenders(anchorMap: anchorMap, plan: plan, viewportSize: viewportSize)
 
         var occupiedCardinalityFrames: [CGRect] = []
         let cardFrames = anchorMap.nodeCards.values.map(\.frame)
@@ -1566,26 +1423,12 @@ public struct SchemaGraphView: View {
             let anchors = render.anchors
             let isHighlighted = render.isHighlighted
             let path = render.path
-            if session.isSchemaReviewFullModelView {
-                let kind = session.schemaReviewEdgeChanges[edge.id] ?? .unchanged
-                let color = (kind == .unchanged ? StudioPalette.edgeNeutral : kind.tint).opacity(0.65)
-                context.stroke(path, with: .color(color),
-                               style: StrokeStyle(lineWidth: baseWidth, lineCap: .round, lineJoin: .round))
-                continue
-            }
-            let change = plan.reviewLens?.kind(forEdge: edge.id) ?? .unchanged
-            if let lens = plan.reviewLens, change != .unchanged, reviewEmphasis(of: render, lens: lens) == .faded {
-                // A change outside the reader's focus stays findable without competing with it.
-                context.stroke(path, with: .color(change.tint.opacity(0.22)),
-                               style: StrokeStyle(lineWidth: 1.25, lineCap: .round, dash: change == .removed ? [6, 4] : []))
-                continue
-            }
             let highlightedInk = StudioPalette.edgeHighlight
-            let strokeColor = change != .unchanged ? change.tint : isHighlighted
+            let strokeColor = isHighlighted
                 ? highlightedInk
                 : StudioPalette.edgeNeutral.opacity(baseOpacity)
 
-            if isHighlighted, change == .unchanged {
+            if isHighlighted {
                 context.stroke(
                     path,
                     with: .color(highlightedInk.opacity(0.12)),
@@ -1593,30 +1436,20 @@ public struct SchemaGraphView: View {
                 )
             }
 
-            if change != .unchanged {
-                context.stroke(path, with: .color(.white.opacity(0.95)), lineWidth: 5)
-            }
             context.stroke(
                 path,
                 with: .color(strokeColor),
                 style: StrokeStyle(
-                    lineWidth: change != .unchanged ? (isHighlighted ? 3 : 2.5) : (isHighlighted ? 1.85 : baseWidth),
+                    lineWidth: isHighlighted ? 1.85 : baseWidth,
                     lineCap: .round,
-                    lineJoin: .round,
-                    dash: change == .removed ? [6, 4] : []
+                    lineJoin: .round
                 )
             )
-            if change != .unchanged {
-                let midpoint = bezierPoint(start: anchors.source, control1: render.control1,
-                                           control2: render.control2, end: anchors.target,
-                                           t: change == .removed ? 0.43 : 0.57)
-                context.draw(Text(change.symbol).font(.system(size: 16, weight: .heavy)).foregroundStyle(change.tint), at: midpoint)
-            }
 
             if isHighlighted {
                 drawDirectionMarker(in: &context, from: anchors.source, control1: render.control1,
                                     control2: render.control2, to: anchors.target,
-                                    color: change != .unchanged ? change.tint : highlightedInk)
+                                    color: highlightedInk)
                 if shows(.relationshipLabels), contextIDs.isEmpty || zoom >= effectiveDetailZoom {
                     let curve = GraphEdgeRouting.Curve(start: anchors.source, control1: render.control1,
                                                        control2: render.control2, end: anchors.target)
@@ -2197,11 +2030,6 @@ public struct SchemaGraphView: View {
     }
 
     private func previewColumns(for nodeID: String) -> [TableColumn] {
-        if session.isSchemaReviewFullModelView { return [] }
-        // In a review, a changed table's card always lists its keys and then what changed.
-        if let reviewRows = session.schemaReviewCardColumns[nodeID], let descriptor = session.descriptor(named: nodeID) {
-            return descriptor.columns.filter { reviewRows.contains($0.name) }
-        }
         guard let descriptor = session.descriptor(named: nodeID),
               let preview = relatedPreviewByNode[nodeID]
         else {
@@ -2214,7 +2042,6 @@ public struct SchemaGraphView: View {
 
     private func nodeDisplayStyle(for nodeID: String, previewColumns: [TableColumn]? = nil) -> GraphNodeCardStyle {
         if enlargedTableIDs.contains(nodeID) { return .expanded }
-        if session.isSchemaReviewFullModelView { return .collapsed }
         if session.showAllGraphTableCards || session.expandedGraphNodeIDs.contains(nodeID) {
             return .expanded
         }
@@ -2235,7 +2062,7 @@ public struct SchemaGraphView: View {
             title: node.title,
             descriptor: session.descriptor(named: nodeID),
             style: nodeDisplayStyle(for: nodeID, previewColumns: previewColumns(for: nodeID)),
-            hovered: !session.isSchemaReviewFullModelView && hoveredNodeID == nodeID && draggedNodeID == nil
+            hovered: hoveredNodeID == nodeID && draggedNodeID == nil
         )
     }
 
@@ -2309,7 +2136,6 @@ public struct SchemaGraphView: View {
     }
 
     private var effectiveFocusPlan: GraphFocusPlan? {
-        if session.isSchemaReviewFullModelView { return nil }
         let plan = graphFocusPlan
         guard session.graphTableFilter.isActive || session.automationVisibleTableIDs != nil else { return plan }
         let allowed = session.graphVisibleTableIDs
@@ -2496,20 +2322,19 @@ public struct SchemaGraphView: View {
             scenePreparation.contentScrollOffsets = cardScrollOffsets
             scenePreparation.contentRevision &+= 1
         }
-        let fullModel = session.isSchemaReviewFullModelView
         let retained = Set([draggedNodeID].compactMap { $0 })
         let primary = enlargedTableIDs.union(session.expandedGraphNodeIDs).union(retained)
             .union(usesOverviewMarks ? [] : [hoveredNodeID].compactMap { $0 })
         return interactionGeometryCache.snapshot(
             frames: frames, viewport: CGRect(origin: .zero, size: size), zoom: zoom,
             detailZoom: effectiveDetailZoom, isLarge: isLargeGraph || usesOverviewMarks,
-            emphasized: fullModel ? [] : session.selectedGraphNodeIDs.union(focusPlan?.visibleTableIDs() ?? []),
+            emphasized: session.selectedGraphNodeIDs.union(focusPlan?.visibleTableIDs() ?? []),
             primary: primary, retained: retained, contentRevision: scenePreparation.contentRevision,
-            hoveredID: fullModel || draggedNodeID != nil ? nil : hoveredNodeID,
-            connectedIDs: fullModel ? [] : hoverNeighborIDs(reviewLens: cachedReviewLens()),
-            nodeSizing: fullModel ? .uniform : session.graphNodeSizeProfile,
+            hoveredID: draggedNodeID != nil ? nil : hoveredNodeID,
+            connectedIDs: hoverNeighborIDs(),
+            nodeSizing: session.graphNodeSizeProfile,
             overviewAnchors: overviewAnchors,
-            focusRootID: fullModel ? nil : readableFocusRootID,
+            focusRootID: readableFocusRootID,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
     }
@@ -2554,27 +2379,10 @@ public struct SchemaGraphView: View {
         return tracks
     }
 
-    /// Tables that answer the pointer alongside the hovered one. In a review that is only
-    /// the far ends of relations that changed: a hub table's unchanged neighbours would
-    /// otherwise light up the whole catalog.
-    private func hoverNeighborIDs(reviewLens: SchemaReviewLens?) -> Set<String> {
-        if session.isSchemaReviewFullModelView { return [] }
+    /// Tables that answer the pointer alongside the hovered one.
+    private func hoverNeighborIDs() -> Set<String> {
         guard draggedNodeID == nil, let hoveredNodeID else { return [] }
-        if let reviewLens { return reviewLens.changedNeighbors(of: hoveredNodeID) }
         return session.graph.neighbors(of: hoveredNodeID)
-    }
-
-    private func cachedReviewLens() -> SchemaReviewLens? {
-        guard session.schemaReview != nil, !session.isSchemaReviewFullModelView else { return nil }
-        let key = GraphReviewLensKey(graphRevision: session.graphRevision, reviewRevision: session.schemaReviewRevision,
-                                     selection: session.selectedGraphNodeIDs)
-        if scenePreparation.reviewLensKey == key, let lens = scenePreparation.reviewLens { return lens }
-        let lens = SchemaReviewLens(tableKinds: session.schemaReviewChanges.mapValues(\.kind),
-                                    edgeKinds: session.schemaReviewEdgeChanges, edges: session.graph.edges,
-                                    selection: session.selectedGraphNodeIDs)
-        scenePreparation.reviewLensKey = key
-        scenePreparation.reviewLens = lens
-        return lens
     }
 
     private func cachedRelationHighlight(focusNodeID: String?, hoverTarget: GraphRelationHoverTarget?,
@@ -2593,7 +2401,7 @@ public struct SchemaGraphView: View {
             let cardSize = nodeSize(for: node.id)
             let size = GraphSpotlightLayout.footprint(for: node.id, cardSize: cardSize,
                 readableRootID: readableFocusRootID, zoom: minimumZoom ?? zoom,
-                sizing: session.isSchemaReviewFullModelView ? .uniform : session.graphNodeSizeProfile,
+                sizing: session.graphNodeSizeProfile,
                 enlargedIDs: enlargedTableIDs)
             let center = pulledGraphPositions[node.id] ?? session.graphLayout.position(for: node.id)
             let frame = CGRect(
@@ -2626,7 +2434,7 @@ public struct SchemaGraphView: View {
         // Context cards keep readable screen footprints and endpoint corridors.
         // Even a small catalog may need overview zoom to fit that extra space
         // inside a short embedded pane, rather than crop a highlighted table.
-        let contextualOverview = !session.graphContextTableIDs.isEmpty || session.isSchemaReviewFullModelView
+        let contextualOverview = !session.graphContextTableIDs.isEmpty
         let fitMinimumZoom: CGFloat = largeOverview || contextualOverview ? 0.005 : 0.45
         let topInset: CGFloat = largeOverview ? min(graphControlsHeight + 20, size.height * 0.25) : 0
         // The minimap and metadata bar occupy the lower edge of a large map.
@@ -2635,7 +2443,7 @@ public struct SchemaGraphView: View {
         let fittingSize = CGSize(width: size.width, height: max(100, size.height - topInset - bottomInset))
         let padding: CGFloat = largeOverview ? 36 : 120
         var transform: GraphViewportTransform
-        if !enlargedTableIDs.isEmpty || (session.graphNodeSizeMetric != .uniform && !session.isSchemaReviewFullModelView) {
+        if !enlargedTableIDs.isEmpty || session.graphNodeSizeMetric != .uniform {
             transform = GraphViewportTransform.fit(contentBoundsAtZoom: { proposedZoom in
                 resizeNodesForCurrentMetric(minimumZoom: proposedZoom)
                 return graphContentBoundsForFit(minimumZoom: proposedZoom)
@@ -2688,10 +2496,6 @@ public struct SchemaGraphView: View {
                 performInitialLayout(in: currentSize)
             }
             initialViewport.didFit(request: request)
-            // A newly opened review frames its first connected set of changes.
-            if let changeSet = session.consumePendingReviewChangeSetReveal() {
-                frameTables(changeSet, in: currentSize, animated: false)
-            }
             session.initializedGraphViewportDocument = initialViewportDocumentKey
             flushViewportSessionSync()
             initialViewportTask = nil
@@ -2826,10 +2630,10 @@ public struct SchemaGraphView: View {
             let sizes = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, nodeSize(for: $0.id)) })
             pulledGraphPositions = GraphSpotlightLayout.positions(positions, cardSizes: sizes,
                 expandedIDs: enlarged, readableRootID: readableFocusRootID, zoom: minimumZoom ?? zoom,
-                sizing: session.isSchemaReviewFullModelView ? .uniform : session.graphNodeSizeProfile,
+                sizing: session.graphNodeSizeProfile,
                 enlargedIDs: enlarged)
             invalidateClusterTitleCache()
-        } else if session.schemaReview == nil, !session.expandedGraphNodeIDs.isEmpty,
+        } else if !session.expandedGraphNodeIDs.isEmpty,
            !session.showAllGraphTableCards, draggedNodeID == nil {
             let nodes = renderedGraph.nodes
             let positions = Dictionary(uniqueKeysWithValues: nodes.map { node in
@@ -2846,7 +2650,7 @@ public struct SchemaGraphView: View {
         ) {
             pulledGraphPositions = resizedFocus
         }
-        guard session.graphNodeSizeMetric != .uniform, !session.isSchemaReviewFullModelView else { return }
+        guard session.graphNodeSizeMetric != .uniform else { return }
         invalidateClusterTitleCache()
     }
 
@@ -3305,9 +3109,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     let isDragging: Bool
     let highlightState: GraphNodeHighlightState
     let keepsTextReadableWhenZoomed: Bool
-    let schemaChange: SchemaTableChange?
-    /// View 0 keeps normal card geometry and marks changes by border colour alone.
-    let colorOnlyChange: SchemaChangeKind?
     let selectNode: () -> Void
     let toggleExpanded: () -> Void
     let openTable: () -> Void
@@ -3350,20 +3151,10 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
                         )
                     )
                 }
-                let strokeWidth = schemaChange == nil ? borderLineWidth : 1
-                let strokeColor: Color = if let colorOnlyChange, colorOnlyChange != .unchanged {
-                    colorOnlyChange.tint
-                } else if let schemaChange, schemaChange.kind != .unchanged {
-                    schemaChange.kind.tint
-                } else {
-                    borderColor
-                }
-                let dash: [CGFloat] = schemaChange?.kind == .removed ? [6, 4] : []
-                backgroundShape.strokeBorder(strokeColor, style: StrokeStyle(lineWidth: strokeWidth, dash: dash))
+                backgroundShape.strokeBorder(borderColor, style: StrokeStyle(lineWidth: borderLineWidth))
             }
         }
         .clipShape(backgroundShape)
-        .opacity(schemaChange?.kind == .removed ? 0.6 : 1)
         .scaleEffect(isDragging ? 1.012 : 1)
         .contentShape(backgroundShape)
         .onTapGesture {
@@ -3379,7 +3170,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .contextMenu {
             Button(isFocusRoot ? "Return to Overview" : (isExpanded ? "Focus Table" : "Expand Card"), action: toggleExpanded)
             Button("Open Table", action: openTable)
-            if schemaChange == nil { Button("Show Top 10", action: showTopRows) }
+            Button("Show Top 10", action: showTopRows)
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.84), value: displayStyle)
         .animation(.easeInOut(duration: 0.18), value: isSelected)
@@ -3390,7 +3181,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             GraphNodeSummary(
                 title: node.title, fieldCount: descriptor?.columns.count ?? 0, rowCount: rowCount,
                 showsDetailRows: showsDetailRows, hasDescription: tableDescription != nil,
-                nameOpacity: nameZoomOpacity, metadataOpacity: metadataZoomOpacity, schemaChange: schemaChange
+                nameOpacity: nameZoomOpacity, metadataOpacity: metadataZoomOpacity
             )
             .help(node.id)
 
@@ -3435,10 +3226,9 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         let rowHoverSource = GraphRelationHoverSource(tableID: node.id, columnName: column.name, area: .row)
 
         return HStack(spacing: 8) {
-            let changeKind = schemaChange?.columnKind(column.name) ?? .unchanged
-            Text(changeKind.symbol + (changeKind == .unchanged ? "" : " ") + column.name)
+            Text(column.name)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(changeKind == .unchanged ? StudioPalette.primaryText : changeKind.tint)
+                .foregroundStyle(StudioPalette.primaryText)
                 .underline(columnNote != nil, color: StudioPalette.primaryText.opacity(0.4))
                 .opacity(columnZoomOpacity)
             Spacer(minLength: 8)
@@ -3477,10 +3267,6 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
             RoundedRectangle(cornerRadius: StudioCornerRadius.row, style: .continuous)
                 .fill(rowHighlightFill(for: relationStyle))
         )
-        .background {
-            let kind = schemaChange?.columnKind(column.name) ?? .unchanged
-            if kind != .unchanged { kind.tint.opacity(0.08) }
-        }
         .contentShape(Rectangle())
         .onTapGesture {
             if let rowHoverTarget {
@@ -3503,9 +3289,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
     private var backgroundFill: AnyShapeStyle {
         return AnyShapeStyle(
             LinearGradient(
-                colors: isSelected && (schemaChange != nil || colorOnlyChange != nil)
-                    ? [StudioPalette.selectionSurfaceTop, StudioPalette.selectionSurfaceBottom]
-                    : [StudioPalette.cardSurfaceTop, StudioPalette.cardSurfaceBottom],
+                colors: [StudioPalette.cardSurfaceTop, StudioPalette.cardSurfaceBottom],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -3859,23 +3643,13 @@ private final class GraphScenePreparationCache {
     var relatedIDs: [String] = []
     var pulseKey: GraphEdgePulseKey?
     var pulseTracks: [GraphEdgePulseTrack] = []
-    var reviewLensKey: GraphReviewLensKey?
-    var reviewLens: SchemaReviewLens?
 }
 
 private struct GraphEnlargementKey: Equatable {
     let graphRevision: Int
-    let reviewRevision: Int
-    let fullModel: Bool
     let selection: Set<String>
     let expanded: Set<String>
     let context: Set<String>
-}
-
-private struct GraphReviewLensKey: Equatable {
-    let graphRevision: Int
-    let reviewRevision: Int
-    let selection: Set<String>
 }
 
 private extension GraphEdge {

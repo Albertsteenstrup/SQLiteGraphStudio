@@ -150,7 +150,7 @@ public final class WorkspaceGraphRenderer {
                         descriptor: self.session.descriptor(named: id), style: expanded ? .expanded : .collapsed)
                 }, maxIterations: 140)
         }
-        if session.graphNodeSizeMetric != .uniform, !session.isSchemaReviewFullModelView {
+        if session.graphNodeSizeMetric != .uniform {
             // Reserve metric footprints once for a generated map, before it
             // becomes the stable baseline. Later inspection restores it exactly.
             let graph = session.graph

@@ -6,12 +6,11 @@ public enum DatabaseDocument {
     public static let sqliteExtensions: Set<String> = ["sqlite", "sqlite3", "db", "sqlite-db", "sqlitedb"]
     public static let archiveExtensions: Set<String> = ["dump", "backup"]
     public static let otherExtensions = archiveExtensions.union(PostgresConnectionDocument.supportedFileExtensions)
-    public static let supportedExtensions = sqliteExtensions.union(otherExtensions).union(["sgreview", "sgpreview", "sql"])
+    public static let supportedExtensions = sqliteExtensions.union(otherExtensions).union(["sql"])
     public static let supportedFormatsDescription = [
         "SQLite: " + sqliteExtensions.sorted().map { "." + $0 }.joined(separator: ", "),
         "PostgreSQL backups: " + archiveExtensions.sorted().map { "." + $0 }.joined(separator: ", "),
         "PostgreSQL connections: " + PostgresConnectionDocument.supportedFileExtensions.sorted().map { "." + $0 }.joined(separator: ", "),
-        "Schema comparisons and previews: .sgreview, .sgpreview",
         "Schema scripts: .sql"
     ].joined(separator: "\n")
 

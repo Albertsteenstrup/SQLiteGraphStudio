@@ -24,8 +24,7 @@ public enum MCPToolCatalog {
         return entries.map { original in
             var entry = original
             let name = entry["name"] as? String ?? ""
-            let resourceURI: String? = name == SchemaReviewInlineView.toolName ? MCPAppResources.schemaReviewURI
-                : name == DataInlineView.toolName ? MCPAppResources.dataURI
+            let resourceURI: String? = name == DataInlineView.toolName ? MCPAppResources.dataURI
                 : name == WorkspaceInlineView.toolName ? MCPAppResources.workspaceURI : nil
             if let resourceURI {
                 var meta = entry["_meta"] as? [String: Any] ?? [:]
@@ -36,9 +35,7 @@ public enum MCPToolCatalog {
                 entry["_meta"] = meta
             }
             // Tools answered by the helper itself need no coding-task context.
-            let helperTools = ["studio_status", "studio_launch", "studio_connect_context",
-                               SchemaReviewInlineView.toolName, SchemaReviewInlineView.contextToolName]
-                + SchemaReviewAppTools.names
+            let helperTools = ["studio_status", "studio_launch", "studio_connect_context"]
             if !helperTools.contains(name) {
                 var schema = entry["inputSchema"] as? [String: Any] ?? [:]
                 var properties = schema["properties"] as? [String: Any] ?? [:]

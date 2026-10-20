@@ -127,7 +127,7 @@ private struct WorkspaceSessionRootView: View {
     /// The minimap stands down once a compact workspace no longer has room for it.
     private var showsMinimap: Bool {
         session.hasOpenDatabase
-            && session.schemaReview == nil
+            && session.historicalExplanationArtifact == nil
             && !session.graphVisibleTableIDs.isEmpty
             && !session.isWorkspaceCompact
             && schemaIsVisible
@@ -141,8 +141,6 @@ private struct WorkspaceSessionRootView: View {
             if session.historicalExplanationArtifact != nil {
                 SchemaGraphView(session: session)
                     .padding(WorkspaceCompactLayout.workspaceInset)
-            } else if let review = session.schemaReview {
-                SchemaReviewWorkspaceView(session: session, review: review)
             } else if session.hasOpenDatabase {
                 WorkspaceLayoutView(session: session)
                     .padding(WorkspaceCompactLayout.workspaceInset)

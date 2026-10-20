@@ -5,9 +5,9 @@ import Foundation
 /// The purpose of a top-level workspace tab. Its contents remain a normal graph/data split.
 public enum WorkspaceTabKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case workspace
+    // Decode legacy restoration snapshots; new native tabs never use these kinds.
     case preview
     case comparison
-    // Decode legacy restoration snapshots; new native tabs never use this kind.
     case explanation
     case artifact
 
@@ -15,9 +15,7 @@ public enum WorkspaceTabKind: String, CaseIterable, Codable, Identifiable, Senda
 
     public var title: String {
         switch self {
-        case .workspace: "Workspace"
-        case .preview: "Schema Preview"
-        case .comparison: "Schema Comparison"
+        case .workspace, .preview, .comparison: "Workspace"
         case .explanation: "Explanation"
         case .artifact: "Artifact"
         }
@@ -25,20 +23,14 @@ public enum WorkspaceTabKind: String, CaseIterable, Codable, Identifiable, Senda
 
     public var systemImage: String {
         switch self {
-        case .workspace: "square.split.2x1"
-        case .preview: "rectangle.dashed.badge.record"
-        case .comparison: "rectangle.split.2x1"
+        case .workspace, .preview, .comparison: "square.split.2x1"
         case .explanation: "text.bubble"
         case .artifact: "doc.text"
         }
     }
 
     static func inferred(for url: URL) -> Self {
-        switch url.pathExtension.lowercased() {
-        case "sgpreview": .preview
-        case "sgreview": .comparison
-        default: .workspace
-        }
+        .workspace
     }
 }
 
@@ -191,9 +183,6 @@ public final class WorkspaceTabController {
     }
 
     /// Opens each incoming document in its own tab. The first new tab remains active.
-    /// A schema review or preview instead replaces the tab showing the same file,
-    /// or the earlier artifact of its kind from the same named agent session, so
-    /// repeated agent runs update one tab rather than piling up new ones.
     @discardableResult
     public func openDocuments(_ urls: [URL], activate shouldActivate: Bool = true) async -> [WorkspaceTab] {
         guard !urls.isEmpty else { return [] }
@@ -207,8 +196,7 @@ public final class WorkspaceTabController {
             }
             let normalized = url.resolvingSymlinksInPath().standardizedFileURL
             let kind = WorkspaceTabKind.inferred(for: url)
-            let replaced = kind == .comparison || kind == .preview ? reviewTab(replacedBy: normalized, kind: kind) : nil
-            if replaced == nil, let existing = tabs.first(where: { tab in
+            if let existing = tabs.first(where: { tab in
                 tab.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == normalized ||
                     tab.session.historicalExplanationURL?.resolvingSymlinksInPath().standardizedFileURL == normalized ||
                     tab.deferredRestoration?.sourceDocumentPath == normalized.path
@@ -217,11 +205,11 @@ public final class WorkspaceTabController {
                 opened.append(existing)
                 continue
             }
-            guard replaced != nil || liveDocumentCount < Self.maximumLiveDocuments else {
+            guard liveDocumentCount < Self.maximumLiveDocuments else {
                 showDocumentLimit()
                 break
             }
-            guard replaced != nil || tabs.count < Self.maximumTabs else {
+            guard tabs.count < Self.maximumTabs else {
                 activeSession?.presentedError = SQLiteUserError(
                     kind: .busy,
                     message: "Graph Studio has too many open tabs.",
@@ -230,15 +218,6 @@ public final class WorkspaceTabController {
                 break
             }
             let tab = createTab(kind: kind, activate: false)
-            if let replaced {
-                // Take the old tab's place before closing it, so closing the last
-                // tab does not leave an empty workspace behind.
-                if let index = tabs.firstIndex(where: { $0.id == replaced.id }) {
-                    tabs.insert(tabs.removeLast(), at: index)
-                }
-                if activeTabID == replaced.id { activeTabID = tab.id }
-                await closeAndWait(replaced.id)
-            }
             guard reserveDocumentOpening(for: tab.id) else {
                 await closeAndWait(tab.id)
                 showDocumentLimit()
@@ -250,23 +229,6 @@ public final class WorkspaceTabController {
             opened.append(tab)
         }
         return opened
-    }
-
-    /// The open review or preview tab that `url` supersedes: the same file, or an
-    /// artifact of the same kind from the same agent and named session. Artifacts
-    /// without a session name only replace their own file, and other sessions
-    /// always get their own tab.
-    private func reviewTab(replacedBy url: URL, kind: WorkspaceTabKind) -> WorkspaceTab? {
-        let author = SchemaReviewDocument.author(at: url)
-        return tabs.first { tab in
-            guard tab.kind == kind else { return false }
-            if tab.session.databaseURL?.resolvingSymlinksInPath().standardizedFileURL == url ||
-                tab.deferredRestoration?.sourceDocumentPath == url.path {
-                return true
-            }
-            guard let author, author.session != nil else { return false }
-            return tab.session.schemaReview?.author == author
-        }
     }
 
     /// Removes a tab and waits for its database and query work to close before returning.
@@ -567,7 +529,7 @@ public final class WorkspaceTabController {
         }
         session.expandedGraphNodeIDs = Set(saved.expandedTableIDs).intersection(validTableIDs)
 
-        if session.hasOpenDatabase || session.schemaReview != nil {
+        if session.hasOpenDatabase {
             for tableState in saved.openTables {
                 guard session.tables.contains(where: { $0.id == tableState.tableName }),
                       let tab = session.openTable(named: tableState.tableName, autoLoad: false) else { continue }

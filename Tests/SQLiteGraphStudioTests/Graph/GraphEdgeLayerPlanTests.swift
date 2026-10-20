@@ -11,7 +11,7 @@ struct GraphEdgeLayerPlanTests {
     func closeUpEveryRelationIsPainted() {
         for showsOverviewRelations in [true, false] {
             for hasHover in [true, false] {
-                #expect(GraphEdgeLayerPlan.mode(isOverview: false, isSchemaReview: false,
+                #expect(GraphEdgeLayerPlan.mode(isOverview: false,
                                                 showsOverviewRelations: showsOverviewRelations,
                                                 hasHover: hasHover) == .detail)
             }
@@ -22,31 +22,18 @@ struct GraphEdgeLayerPlanTests {
     func zoomedOutRelationsArePaintedWithOrWithoutAHover() {
         // The point of the setting: pulses stay visible at overview zoom instead of
         // waiting for the pointer to land on a table.
-        #expect(GraphEdgeLayerPlan.mode(isOverview: true, isSchemaReview: false,
+        #expect(GraphEdgeLayerPlan.mode(isOverview: true,
                                         showsOverviewRelations: true, hasHover: false) == .overviewSample)
-        #expect(GraphEdgeLayerPlan.mode(isOverview: true, isSchemaReview: false,
+        #expect(GraphEdgeLayerPlan.mode(isOverview: true,
                                         showsOverviewRelations: true, hasHover: true) == .overviewSample)
     }
 
     @Test
     func switchingZoomedOutRelationsOffFallsBackToHoverOnly() {
-        #expect(GraphEdgeLayerPlan.mode(isOverview: true, isSchemaReview: false,
+        #expect(GraphEdgeLayerPlan.mode(isOverview: true,
                                         showsOverviewRelations: false, hasHover: true) == .overviewHoverOnly)
-        #expect(GraphEdgeLayerPlan.mode(isOverview: true, isSchemaReview: false,
+        #expect(GraphEdgeLayerPlan.mode(isOverview: true,
                                         showsOverviewRelations: false, hasHover: false) == nil)
-    }
-
-    @Test
-    func aSchemaReviewIsNeverSampledOrReducedToHover() {
-        // A review's whole subject is which relations changed. Bounding it to a sample
-        // could drop a changed relation, and hover-only could hide every one of them.
-        for showsOverviewRelations in [true, false] {
-            for hasHover in [true, false] {
-                #expect(GraphEdgeLayerPlan.mode(isOverview: true, isSchemaReview: true,
-                                                showsOverviewRelations: showsOverviewRelations,
-                                                hasHover: hasHover) == .detail)
-            }
-        }
     }
 
     @Test

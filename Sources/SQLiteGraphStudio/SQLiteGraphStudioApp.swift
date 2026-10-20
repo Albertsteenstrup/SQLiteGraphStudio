@@ -193,14 +193,14 @@ struct StudioLauncher {
     @MainActor private static var instanceLock: StudioApplicationInstanceLock?
 
     @MainActor static func main() {
-        // Offscreen renderer for the MCP helper's inline review: no window, no Dock icon,
-        // and never the single-instance lock, so it cannot stand in for the app.
-        if SchemaReviewRenderSession.isRequested {
-            SchemaReviewRenderSession.run()
+        let cliArguments = Array(CommandLine.arguments.dropFirst())
+        if cliArguments.contains("--schema-review") {
+            FileHandle.standardError.write(Data("error: --schema-review has been removed.\n".utf8))
+            exit(2)
         }
-        if SchemaReviewCommand.isRequested {
-            Task.detached { exit(await SchemaReviewCommand.run()) }
-            dispatchMain()
+        if cliArguments.contains("--help") || cliArguments.contains("-h") {
+            FileHandle.standardOutput.write(Data("Usage: SQLiteGraphStudio [database-or-folder ...]\n".utf8))
+            exit(0)
         }
         // AppKit must own the ordinary synchronous main entrypoint. Nesting its
         // event loop inside an async main-actor job starves later UI tasks.
@@ -328,9 +328,11 @@ private enum LaunchRequestResolver {
 
     static func databaseURLs(fromArguments arguments: [String]) -> [URL] {
         databaseURLs(
-            from: arguments.dropFirst().map { argument in
-                URL(fileURLWithPath: NSString(string: argument).expandingTildeInPath)
-            }
+            from: arguments.dropFirst()
+                .filter { !$0.hasPrefix("-") }
+                .map { argument in
+                    URL(fileURLWithPath: NSString(string: argument).expandingTildeInPath)
+                }
         )
     }
 

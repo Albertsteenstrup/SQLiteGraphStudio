@@ -22,7 +22,7 @@ final class MCPSetupInstallerTests: XCTestCase {
             helperPath: helper.path, workingDirectory: directory
         )
         XCTAssertFalse(result.succeeded)
-        XCTAssertTrue(result.statusSummary.contains("studio_show_review_inline"))
+        XCTAssertTrue(result.statusSummary.contains("studio_show_workspace_inline"))
     }
 
     func testClientCommandsPreserveExecutableArgumentAndSupportProjectScope() {
@@ -108,21 +108,21 @@ final class MCPSetupInstallerTests: XCTestCase {
         )
         let plan = try XCTUnwrap(preview.skills.first)
         XCTAssertEqual(plan.state, .ready)
-        XCTAssertEqual(plan.install.count, 4)
+        XCTAssertEqual(plan.install.count, 2)
         XCTAssertEqual(plan.customizedPreserved.count, 1)
         XCTAssertTrue(plan.rootPath.contains("Developer/project/.agents/skills"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: shared.appendingPathComponent("database-diff").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shared.appendingPathComponent("graph-clusters").path))
 
         let result = MCPSetupInstaller.installUserSkills(in: home)
         XCTAssertTrue(result.succeeded, result.summary)
-        XCTAssertEqual(result.installed.count, 9)
+        XCTAssertEqual(result.installed.count, 5)
         XCTAssertEqual(result.customizedPreserved.count, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: shared.appendingPathComponent("database-diff/SKILL.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shared.appendingPathComponent("graph-clusters/SKILL.md").path))
         XCTAssertEqual(try String(contentsOf: customFile, encoding: .utf8), "My customized skill")
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), target)
         let repeated = MCPSetupInstaller.installUserSkills(in: home)
         XCTAssertTrue(repeated.succeeded, repeated.summary)
-        XCTAssertEqual(repeated.alreadyCurrent.count, 9)
+        XCTAssertEqual(repeated.alreadyCurrent.count, 5)
     }
 
     func testSharedSkillRootStillRejectsUnsafeTargetsAndNestedLinks() throws {
@@ -233,7 +233,7 @@ final class MCPSetupInstallerTests: XCTestCase {
 
         let initial = MCPSetupInstaller.installUserSkills(in: home)
         XCTAssertTrue(initial.succeeded, initial.summary)
-        XCTAssertEqual(initial.installed.count, 10)
+        XCTAssertEqual(initial.installed.count, 6)
 
         let customizedPath = home.appendingPathComponent(".agents/skills/database-explore/SKILL.md")
         try Data("user-edited skill\n".utf8).write(to: customizedPath)
@@ -317,10 +317,10 @@ final class MCPSetupInstallerTests: XCTestCase {
 
         XCTAssertEqual(report.clients.map(\.state), [.installed])
         XCTAssertEqual(report.clients[0].codexApps?.state, .unsupported, "This fake Codex lists no features")
-        XCTAssertEqual(report.skills.installed.count, 5)
+        XCTAssertEqual(report.skills.installed.count, 3)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/skills").path))
         XCTAssertFalse(report.hasFailures)
-        XCTAssertEqual(report.outputLines.last, "skills: installed 5")
+        XCTAssertEqual(report.outputLines.last, "skills: installed 3")
         XCTAssertTrue(report.clients[0].verification?.succeeded == true)
     }
 
@@ -344,7 +344,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         let result = MCPSetupInstaller.installUserSkills(in: home)
         XCTAssertFalse(result.succeeded)
         XCTAssertTrue(result.errors.contains { $0.contains(".agents/skills") })
-        XCTAssertEqual(result.installed.count, 5)
+        XCTAssertEqual(result.installed.count, 3)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: externalSkills.path), [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/skills/database-explore/SKILL.md").path))
     }
@@ -415,7 +415,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         XCTAssertEqual(preview.clients[0].cliVersion, "codex 0.1")
         XCTAssertEqual(preview.clients[1].cliVersion, "claude 1.2")
         XCTAssertTrue(preview.canInstall)
-        XCTAssertEqual(preview.skills.first(where: { $0.client == .codex })?.install.count, 5)
+        XCTAssertEqual(preview.skills.first(where: { $0.client == .codex })?.install.count, 3)
         let claudeSkills = try XCTUnwrap(preview.skills.first(where: { $0.client == .claude }))
         XCTAssertEqual(claudeSkills.state, .blocked)
         XCTAssertTrue(claudeSkills.blockers.contains { $0.contains(".claude/skills") })
@@ -479,7 +479,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         XCTAssertTrue(updated.contains("[mcp_servers.\"sqlite-graph-studio\"]"))
         XCTAssertTrue(updated.contains("command = \"\(helperPath)\""))
         XCTAssertTrue(updated.contains("args = []"))
-        XCTAssertEqual(report.skills.installed.count, 5)
+        XCTAssertEqual(report.skills.installed.count, 3)
         XCTAssertTrue(FileManager.default.fileExists(atPath: project.appendingPathComponent(".agents/skills/database-explore/SKILL.md").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".agents/skills/database-explore/SKILL.md").path))
         XCTAssertTrue(runner.invocations.isEmpty)
@@ -641,7 +641,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         let servers = try XCTUnwrap(root["mcpServers"] as? [String: [String: Any]])
         XCTAssertEqual(servers["review"]?["command"] as? String, "review-tool")
         XCTAssertEqual(servers[MCPSetupInstaller.serverName]?["command"] as? String, helperPath)
-        XCTAssertEqual(report.skills.installed.count, 5)
+        XCTAssertEqual(report.skills.installed.count, 3)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/skills/database-explore/SKILL.md").path))
     }
 
