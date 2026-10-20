@@ -254,104 +254,146 @@ public struct SchemaGraphView: View {
     public var body: some View {
         let automationRevision = session.automationViewRevision
         GeometryReader { geometry in
-            ZStack {
-                graphBackground
+            let size = geometry.size
+            observingPresentationChanges(
+                in: size,
+                on: observingAutomationChanges(
+                    in: size,
+                    on: graphViewportContent(size: size, automationRevision: automationRevision)
+                )
+            )
+        }
+    }
 
-                if session.graph.nodes.isEmpty {
-                    emptyState
-                    Canvas { _, _ in
-                        guard isGraphViewVisible,
-                              session.automationViewportCommand == nil,
-                              pendingAutomationFocusID == nil,
-                              session.automationRenderedViewRevision != automationRevision else { return }
-                        Task { @MainActor in
-                            await Task.yield()
-                            guard isGraphViewVisible else { return }
-                            session.acknowledgeAutomationViewRendered(revision: automationRevision, displayedTableIDs: [])
-                        }
-                    }
-                    .allowsHitTesting(false)
-                } else {
-                    graphScene(size: geometry.size)
-                    if !session.isSchemaReviewFullModelView
-                        && (session.graphTableFilter.isActive || session.automationVisibleTableIDs != nil)
-                        && session.graphVisibleTableIDs.isEmpty {
-                        VStack(spacing: 12) {
-                            Text("No tables are visible in this graph scope")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                            if session.automationVisibleTableIDs != nil {
-                                Button("Return to all") { returnToAllTables(in: geometry.size) }
-                                    .buttonStyle(.studio)
-                            } else {
-                                Button("Clear filters") { session.clearGraphFilter() }
-                                    .buttonStyle(.studio)
-                            }
-                        }
-                        .padding(20)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
-                    }
-                    if !session.rendersOffscreen {
-                        graphOverlayControls(size: geometry.size)
+    private func graphViewportContent(size: CGSize, automationRevision: Int) -> some View {
+        ZStack {
+            graphBackground
+
+            if session.graph.nodes.isEmpty {
+                emptyState
+                Canvas { _, _ in
+                    guard isGraphViewVisible,
+                          session.automationViewportCommand == nil,
+                          pendingAutomationFocusID == nil,
+                          session.automationRenderedViewRevision != automationRevision else { return }
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard isGraphViewVisible else { return }
+                        session.acknowledgeAutomationViewRendered(revision: automationRevision, displayedTableIDs: [])
                     }
                 }
-            }
-            .onAppear {
-                isGraphViewVisible = true
-                viewportSize = geometry.size
-                resizeNodesForCurrentMetric()
-                StudioLog.graph.debug("SchemaGraphView.onAppear settled=\(session.graphLayout.hasSettledLayout, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
-                let hasSessionCamera = initialViewportDocumentKey.map {
-                    session.initializedGraphViewportDocument == $0
-                } ?? false
-                switch initialViewport.appeared(
-                    hasGraph: !session.graph.nodes.isEmpty,
-                    layoutIsSettled: session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout,
-                    hasSessionCamera: hasSessionCamera
-                ) {
-                case .restoreCamera:
-                    setViewport(GraphViewportTransform(zoom: session.graphZoom, pan: session.graphPan), animated: false)
-                case .scheduleFit:
-                    scheduleInitialViewportFit()
-                case .waitForGraph:
-                    break
+                .allowsHitTesting(false)
+            } else {
+                graphScene(size: size)
+                if !session.isSchemaReviewFullModelView
+                    && (session.graphTableFilter.isActive || session.automationVisibleTableIDs != nil)
+                    && session.graphVisibleTableIDs.isEmpty {
+                    emptyScopeOverlay(size: size)
                 }
-                if let expanded = manuallyExpandedNodeID, !session.showAllGraphTableCards,
-                   graphFocusPlan == nil, !session.rendersOffscreen {
-                    focusTableConnections(expanded)
-                }
-                if let command = session.automationFocusCommand {
-                    applyAutomationFocus(command, in: geometry.size)
-                }
-                if let command = session.automationViewportCommand {
-                    applyAutomationViewport(command, in: geometry.size)
+                if !session.rendersOffscreen {
+                    graphOverlayControls(size: size)
                 }
             }
-            .onChange(of: geometry.size) { _, newSize in
-                viewportSize = newSize
-                if let command = session.automationViewportCommand,
-                   newSize.width > 0, newSize.height > 0 {
-                    applyAutomationViewport(command, in: newSize)
-                    return
-                }
-                if pendingAutomationFocusID != nil, let command = session.automationFocusCommand,
-                   newSize.width > 0, newSize.height > 0 {
-                    applyAutomationFocus(command, in: newSize)
-                    return
-                }
-                if graphFocusPlan != nil, !session.graph.nodes.isEmpty,
-                   newSize.width > 0, newSize.height > 0 {
-                    reflowFocusedConnections(in: newSize)
-                }
-                if initialViewport.viewportChanged() {
-                    scheduleInitialViewportFit()
-                    return
-                }
-                guard !session.graph.nodes.isEmpty, newSize.width > 0, newSize.height > 0 else { return }
-                if graphFocusPlan != nil {
-                    fitGraphFocusViewport(in: newSize)
-                }
+        }
+        .onAppear {
+            handleGraphAppear(in: size)
+        }
+        .onChange(of: size) { _, newSize in
+            handleViewportSizeChange(newSize)
+        }
+        .onDisappear {
+            handleGraphDisappear()
+        }
+    }
+
+    private func emptyScopeOverlay(size: CGSize) -> some View {
+        VStack(spacing: 12) {
+            Text("No tables are visible in this graph scope")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            if session.automationVisibleTableIDs != nil {
+                Button("Return to all") { returnToAllTables(in: size) }
+                    .buttonStyle(.studio)
+            } else {
+                Button("Clear filters") { session.clearGraphFilter() }
+                    .buttonStyle(.studio)
             }
+        }
+        .padding(20)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: StudioCornerRadius.surface, style: .continuous))
+    }
+
+    private func handleGraphAppear(in size: CGSize) {
+        isGraphViewVisible = true
+        viewportSize = size
+        resizeNodesForCurrentMetric()
+        StudioLog.graph.debug("SchemaGraphView.onAppear settled=\(session.graphLayout.hasSettledLayout, privacy: .public) maximized=\(String(describing: session.maximizedPaneSide), privacy: .public)")
+        let hasSessionCamera = initialViewportDocumentKey.map {
+            session.initializedGraphViewportDocument == $0
+        } ?? false
+        switch initialViewport.appeared(
+            hasGraph: !session.graph.nodes.isEmpty,
+            layoutIsSettled: session.graphLayout.hasRestoredSnapshot || session.graphLayout.hasSettledLayout,
+            hasSessionCamera: hasSessionCamera
+        ) {
+        case .restoreCamera:
+            setViewport(GraphViewportTransform(zoom: session.graphZoom, pan: session.graphPan), animated: false)
+        case .scheduleFit:
+            scheduleInitialViewportFit()
+        case .waitForGraph:
+            break
+        }
+        if let expanded = manuallyExpandedNodeID, !session.showAllGraphTableCards,
+           graphFocusPlan == nil, !session.rendersOffscreen {
+            focusTableConnections(expanded)
+        }
+        if let command = session.automationFocusCommand {
+            applyAutomationFocus(command, in: size)
+        }
+        if let command = session.automationViewportCommand {
+            applyAutomationViewport(command, in: size)
+        }
+    }
+
+    private func handleViewportSizeChange(_ newSize: CGSize) {
+        viewportSize = newSize
+        if let command = session.automationViewportCommand,
+           newSize.width > 0, newSize.height > 0 {
+            applyAutomationViewport(command, in: newSize)
+            return
+        }
+        if pendingAutomationFocusID != nil, let command = session.automationFocusCommand,
+           newSize.width > 0, newSize.height > 0 {
+            applyAutomationFocus(command, in: newSize)
+            return
+        }
+        if graphFocusPlan != nil, !session.graph.nodes.isEmpty,
+           newSize.width > 0, newSize.height > 0 {
+            reflowFocusedConnections(in: newSize)
+        }
+        if initialViewport.viewportChanged() {
+            scheduleInitialViewportFit()
+            return
+        }
+        guard !session.graph.nodes.isEmpty, newSize.width > 0, newSize.height > 0 else { return }
+        if graphFocusPlan != nil {
+            fitGraphFocusViewport(in: newSize)
+        }
+    }
+
+    private func handleGraphDisappear() {
+        isGraphViewVisible = false
+        pendingAutomationFocusID = nil
+        pendingAutomationFocusTransitionID = nil
+        pendingAutomationViewportTransitionID = nil
+        initialViewportTask?.cancel()
+        initialViewportTask = nil
+        initialViewport.cancel()
+        flushViewportSessionSync()
+    }
+
+    private func observingAutomationChanges<Content: View>(in size: CGSize, on content: Content) -> some View {
+        content
             .onChange(of: session.graphTableFilter) { _, _ in
                 clearGraphFocusSession(animated: false, restoreViewport: false)
                 focusedGroupID = nil
@@ -359,7 +401,7 @@ public struct SchemaGraphView: View {
                 clearRelationHoverState()
                 session.collapseExpandedGraphNodes()
                 layoutRevision &+= 1
-                fitGraph(in: geometry.size)
+                fitGraph(in: size)
             }
             .onChange(of: session.automationVisibleTableIDs) { _, _ in
                 let visible = session.graphVisibleTableIDs
@@ -382,14 +424,14 @@ public struct SchemaGraphView: View {
                     pendingAutomationFocusTransitionID = nil
                     return
                 }
-                applyAutomationFocus(command, in: geometry.size)
+                applyAutomationFocus(command, in: size)
             }
             .onChange(of: session.automationViewportCommand?.id) { _, _ in
                 guard let command = session.automationViewportCommand else {
                     pendingAutomationViewportTransitionID = nil
                     return
                 }
-                applyAutomationViewport(command, in: geometry.size)
+                applyAutomationViewport(command, in: size)
             }
             .onChange(of: session.graphRevision) { _, _ in
                 if session.schemaReview?.proposal != nil, initialViewportDocumentKey == session.initializedGraphViewportDocument {
@@ -415,6 +457,10 @@ public struct SchemaGraphView: View {
                 _ = initialViewport.graphChanged(hasGraph: !session.graph.nodes.isEmpty)
                 scheduleInitialViewportFit()
             }
+    }
+
+    private func observingPresentationChanges<Content: View>(in size: CGSize, on content: Content) -> some View {
+        content
             .onChange(of: session.schemaSidecarRevision) { _, _ in
                 invalidateClusterTitleCache()
             }
@@ -426,7 +472,7 @@ public struct SchemaGraphView: View {
                     self.focusedGroupID = nil
                     focusedGroupPage = 0
                     overviewViewport = nil
-                    fitGraph(in: geometry.size)
+                    fitGraph(in: size)
                 }
             }
             .onChange(of: session.showAllGraphTableCards) { _, isPresented in
@@ -434,7 +480,7 @@ public struct SchemaGraphView: View {
                 pendingExpansionNodeID = nil
                 hoveredNodeID = nil
                 clearRelationHoverState()
-                switchPresentationMode(isShowingAllCards: isPresented, in: geometry.size)
+                switchPresentationMode(isShowingAllCards: isPresented, in: size)
             }
             .onChange(of: session.expandedGraphNodeIDs) { _, _ in
                 // Expansion shares clearance between native and embedded graphs,
@@ -465,22 +511,11 @@ public struct SchemaGraphView: View {
             .onChange(of: session.graphRevealRequest?.id) { _, _ in
                 guard let request = session.graphRevealRequest else { return }
                 if request.fits {
-                    frameTables(request.tableIDs, in: geometry.size, animated: !reduceMotion)
+                    frameTables(request.tableIDs, in: size, animated: !reduceMotion)
                 } else {
-                    revealChosenTable(request.tableID, in: geometry.size)
+                    revealChosenTable(request.tableID, in: size)
                 }
             }
-            .onDisappear {
-                isGraphViewVisible = false
-                pendingAutomationFocusID = nil
-                pendingAutomationFocusTransitionID = nil
-                pendingAutomationViewportTransitionID = nil
-                initialViewportTask?.cancel()
-                initialViewportTask = nil
-                initialViewport.cancel()
-                flushViewportSessionSync()
-            }
-        }
     }
 
     private var graphBackground: some View {

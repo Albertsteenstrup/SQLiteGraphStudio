@@ -4491,28 +4491,48 @@ final class StudioAutomationCoordinator {
                 return "\(id):\(point.x):\(point.y)"
             }.joined(separator: ",")
         }
-        return fingerprint([tab.id.uuidString, sourceID(tab), session.leftPane.kind.rawValue, session.rightPane.kind.rawValue,
-                            String(Double(session.workspaceSplitFraction)), session.maximizedPaneSide?.rawValue ?? "split",
-                            session.activePaneSide.rawValue,
-                            session.selectedGraphNodeIDs.sorted().joined(separator: ","),
-                            session.expandedGraphNodeIDs.sorted().joined(separator: ","),
-                            session.graphContextTableIDs.sorted().joined(separator: ","),
-                            (session.automationVisibleTableIDs ?? []).sorted().joined(separator: ","),
-                            String(Double(session.graphZoom)), String(Double(session.graphPan.width)), String(Double(session.graphPan.height)),
-                            session.graphNodeSizeMetric.rawValue, String(session.automationViewRevision),
-                            session.graphVisuals.disabledVisuals.map(\.rawValue).sorted().joined(separator: ","),
-                            String(session.showAllGraphTableCards), String(session.showClusterHalos),
-                            String(session.graphRevision), String(session.graphGroupingRevision), String(session.schemaSidecarRevision),
-                            String(session.automationFocusResetRevision),
-                            session.automationFocusCommand?.id.uuidString ?? "no-focus",
-                            positions(layout.positions), positions(layout.pinnedPositions),
-                            session.activeTab?.id.uuidString ?? "no-table",
-                            String(tab.session.activeTab?.revision ?? 0), String(tab.session.activeTab?.isLoading ?? false),
-                            session.graphVisibleTableIDs.sorted().map { "\($0):\(session.graphRowCounts[$0] ?? -1)" }.joined(separator: ","),
-                            String(describing: session.activeTab?.queryState),
-                            session.queryWorkspace.activeQueryID?.uuidString ?? "no-query",
-                            session.records.current?.id ?? "no-record",
-                            session.records.isPresented ? "record-visible" : "record-hidden"].joined(separator: "|"))
+        let disabledVisuals = session.graphVisuals.disabledVisuals.map(\.rawValue).sorted().joined(separator: ",")
+        let visibleRowCounts = session.graphVisibleTableIDs.sorted().map { id -> String in
+            let count = session.graphRowCounts[id] ?? -1
+            return "\(id):\(count)"
+        }.joined(separator: ",")
+        let parts: [String] = [
+            tab.id.uuidString,
+            sourceID(tab),
+            session.leftPane.kind.rawValue,
+            session.rightPane.kind.rawValue,
+            String(Double(session.workspaceSplitFraction)),
+            session.maximizedPaneSide?.rawValue ?? "split",
+            session.activePaneSide.rawValue,
+            session.selectedGraphNodeIDs.sorted().joined(separator: ","),
+            session.expandedGraphNodeIDs.sorted().joined(separator: ","),
+            session.graphContextTableIDs.sorted().joined(separator: ","),
+            (session.automationVisibleTableIDs ?? []).sorted().joined(separator: ","),
+            String(Double(session.graphZoom)),
+            String(Double(session.graphPan.width)),
+            String(Double(session.graphPan.height)),
+            session.graphNodeSizeMetric.rawValue,
+            String(session.automationViewRevision),
+            disabledVisuals,
+            String(session.showAllGraphTableCards),
+            String(session.showClusterHalos),
+            String(session.graphRevision),
+            String(session.graphGroupingRevision),
+            String(session.schemaSidecarRevision),
+            String(session.automationFocusResetRevision),
+            session.automationFocusCommand?.id.uuidString ?? "no-focus",
+            positions(layout.positions),
+            positions(layout.pinnedPositions),
+            session.activeTab?.id.uuidString ?? "no-table",
+            String(tab.session.activeTab?.revision ?? 0),
+            String(tab.session.activeTab?.isLoading ?? false),
+            visibleRowCounts,
+            String(describing: session.activeTab?.queryState),
+            session.queryWorkspace.activeQueryID?.uuidString ?? "no-query",
+            session.records.current?.id ?? "no-record",
+            session.records.isPresented ? "record-visible" : "record-hidden",
+        ]
+        return fingerprint(parts.joined(separator: "|"))
     }
 
     private func fingerprint(_ value: String) -> String {

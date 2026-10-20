@@ -20,10 +20,25 @@ public enum StudioSurface: Sendable {
     case light
 }
 
+private struct StudioSurfaceKey: EnvironmentKey {
+    static let defaultValue: StudioSurface = .adaptive
+}
+
+private struct StudioControlActiveKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
 extension EnvironmentValues {
-    @Entry var studioSurface: StudioSurface = .adaptive
+    var studioSurface: StudioSurface {
+        get { self[StudioSurfaceKey.self] }
+        set { self[StudioSurfaceKey.self] = newValue }
+    }
+
     /// True while the control's own dropdown or popover is open, so it stays lit.
-    @Entry var studioControlActive: Bool = false
+    var studioControlActive: Bool {
+        get { self[StudioControlActiveKey.self] }
+        set { self[StudioControlActiveKey.self] = newValue }
+    }
 }
 
 public extension View {
