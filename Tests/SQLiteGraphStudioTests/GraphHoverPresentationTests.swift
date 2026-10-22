@@ -10,17 +10,17 @@ struct GraphHoverPresentationTests {
             primaryKeyColumns: [], rowIdentityStrategy: .readOnly, isWithoutRowID: false, isEditable: false)
     }
 
-    @Test func markerHoverShowsExpandedCardWithMatchingHitTargetsWithoutChangingLayout() throws {
-        let frames = ["root": CGRect(x: 50, y: 50, width: 8, height: 3),
+    @Test func markerHoverShowsOnlyReadableSummaryWithMatchingHitTargetsWithoutChangingLayout() throws {
+        let frames = ["root": CGRect(x: 396.2, y: 299.54, width: 7.6, height: 0.92),
                       "related": CGRect(x: 100, y: 50, width: 8, height: 3),
                       "other": CGRect(x: 150, y: 50, width: 8, height: 3)]
         let cache = GraphInteractionGeometryCache()
         func snapshot(hovered: String?) -> GraphInteractionGeometry {
             cache.snapshot(frames: frames, viewport: CGRect(x: 0, y: 0, width: 800, height: 600),
                            zoom: 0.02, isLarge: true, emphasized: [], contentRevision: 0,
-                           hoveredID: hovered, hoveredCardSize: hovered == nil ? nil : CGSize(width: 440, height: 236),
+                           hoveredID: hovered,
                            connectedIDs: hovered == nil ? [] : ["related"],
-                           roleForNode: { $0 == hovered ? .expandedNode : .collapsedNode },
+                           roleForNode: { _ in .collapsedNode },
                            descriptorForNode: { _ in Self.descriptor })
         }
         let original = snapshot(hovered: nil)
@@ -29,14 +29,14 @@ struct GraphHoverPresentationTests {
         let related = try #require(hover.markerFrames["related"])
         #expect(hover.frames == original.frames)
         #expect(root.midX == frames["root"]!.midX && root.midY == frames["root"]!.midY)
-        #expect(abs(root.width - 396) < 0.000001)
-        #expect(abs(root.height - 212.4) < 0.000001)
+        #expect(abs(root.width - 342) < 0.000001)
+        #expect(abs(root.height - 41.4) < 0.000001)
         #expect(related.width > frames["related"]!.width)
         #expect(hover.renderPlan.detailIDs == ["root"])
         #expect(hover.markerFrames["root"] == nil)
         #expect(hover.markerFrames["other"] == original.markerFrames["other"])
         #expect(hover.anchorMap.nodeCards["root"]?.frame == root)
-        #expect(hover.anchorMap.nodeCards["root"]?.rowFrames.count == 7)
+        #expect(hover.anchorMap.nodeCards["root"]?.rowFrames.isEmpty == true)
         let addedArea = CGPoint(x: (root.minX + frames["root"]!.minX) / 2, y: root.midY)
         #expect(hover.hitCandidates(at: addedArea) == ["root"])
         #expect(original.hitCandidates(at: addedArea).isEmpty)
@@ -64,27 +64,27 @@ struct GraphHoverPresentationTests {
         #expect(snapshot.hitCandidates(at: CGPoint(x: card.frame.minX + 1, y: card.frame.midY)) == ["table"])
     }
 
-    @Test func hoveredCardStaysDetailedWhenExpandedTablesFillTheBudget() {
+    @Test func hoverSummaryStaysReadableWhenExpandedTablesFillTheBudget() {
         var frames = Dictionary(uniqueKeysWithValues: (0..<2_000).map {
-            ("table_\($0)", CGRect(x: 380, y: 280, width: 20, height: 4))
+            ("table_\($0)", CGRect(x: 380, y: 280, width: 35.2, height: 18.88))
         })
-        frames["hovered"] = CGRect(x: 700, y: 500, width: 20, height: 4)
+        frames["hovered"] = CGRect(x: 700, y: 500, width: 30.4, height: 3.68)
         let snapshot = GraphInteractionGeometryCache().snapshot(
             frames: frames, viewport: CGRect(x: 0, y: 0, width: 800, height: 600),
             zoom: 0.08, isLarge: true, emphasized: [], primary: Set(frames.keys), contentRevision: 0,
-            hoveredID: "hovered", hoveredCardSize: CGSize(width: 440, height: 236),
-            roleForNode: { $0 == "hovered" ? .expandedNode : .collapsedNode },
+            hoveredID: "hovered",
+            roleForNode: { $0 == "hovered" ? .collapsedNode : .expandedNode },
             descriptorForNode: { _ in Self.descriptor }
         )
         #expect(snapshot.renderPlan.detailIDs.contains("hovered"))
         #expect(snapshot.renderPlan.detailIDs.count == 160)
-        #expect(snapshot.anchorMap.nodeCards["hovered"]?.rowFrames.count == 7)
+        #expect(snapshot.anchorMap.nodeCards["hovered"]?.rowFrames.isEmpty == true)
         #expect(snapshot.markerFrames["hovered"] == nil)
     }
 
     @Test(arguments: [CGFloat(0.005), 0.1, 0.4, 0.42, 1, 2])
     func hoverMatchesFocusedCardSizeAtEveryZoom(zoom: CGFloat) throws {
-        let frames = ["root": CGRect(x: 50, y: 50, width: 380 * zoom, height: 46 * zoom),
+        let frames = ["root": CGRect(x: 1000 - 190 * zoom, y: 500 - 23 * zoom, width: 380 * zoom, height: 46 * zoom),
                       "related": CGRect(x: 900, y: 50, width: 380 * zoom, height: 46 * zoom),
                       "unrelated": CGRect(x: 900, y: 500, width: 380 * zoom, height: 46 * zoom)]
         let cache = GraphInteractionGeometryCache()
@@ -133,6 +133,30 @@ struct GraphHoverPresentationTests {
         // An already detailed hovered card can still reveal its neighboring markers.
         #expect(GraphHoverPresentation.summaryIDs(hoveredID: "detail", connectedIDs: neighbors,
                                                   markerFrames: frames, viewport: viewport) == ["neighbor"])
+    }
+
+    @Test(arguments: [CGFloat(0.005), 0.1, 0.42, 1, 2.4])
+    func hoverNearViewportCornersKeepsAllSummaryDetailsInsideCanvas(zoom: CGFloat) throws {
+        let viewport = CGRect(x: 0, y: 0, width: 800, height: 600)
+        for center in [CGPoint(x: 2, y: 2), CGPoint(x: 798, y: 2),
+                       CGPoint(x: 2, y: 598), CGPoint(x: 798, y: 598)] {
+            let frame = CGRect(x: center.x - 280 * zoom, y: center.y - 23 * zoom,
+                               width: 560 * zoom, height: 46 * zoom)
+            let snapshot = GraphInteractionGeometryCache().snapshot(
+                frames: ["table": frame], viewport: viewport, zoom: zoom,
+                isLarge: true, emphasized: [], contentRevision: 0, hoveredID: "table",
+                roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil }
+            )
+            let card = try #require(snapshot.anchorMap.nodeCards["table"])
+            #expect(viewport.insetBy(dx: 11.99, dy: 11.99).contains(card.frame))
+            #expect(card.frame.height >= 41.4 - 0.000001)
+            #expect(abs(card.frame.width / card.frame.height - 560 / 46) < 0.000001)
+            #expect(card.rowFrames.isEmpty)
+            #expect(snapshot.hitCandidates(at: CGPoint(x: card.frame.minX + 1, y: card.frame.midY)) == ["table"])
+            #expect(snapshot.hitCandidates(at: center) == ["table"],
+                    "The source marker must retain hover when the summary moves away from an edge")
+            #expect(snapshot.frames["table"] == frame)
+        }
     }
 
     @Test(arguments: [CGSize(width: 3, height: 3), CGSize(width: 18, height: 3),

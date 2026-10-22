@@ -268,7 +268,7 @@ struct ProjectScannerTests {
         #expect(!session.hasOpenDatabase, "Scanning a project with one migration set must present the picker rather than auto-opening")
 
         let candidate = try #require(session.projectCandidates?.candidates.first)
-        session.chooseProjectCandidate(candidate)
+        session.openCandidate(candidate, migrationVersion: "0001")
         while !session.hasOpenDatabase && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

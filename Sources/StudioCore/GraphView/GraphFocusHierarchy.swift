@@ -129,7 +129,7 @@ enum GraphFocusRingLayout {
                                                 interItemGap: CGFloat) -> [String: CGPoint] {
         let columnGap: CGFloat = 24
         let rowGap = min(interItemGap, 24)
-        let edgeLane: CGFloat = 24
+        let edgeLane = GraphCardClearance.inspectionScreenGap
         let rootDisplayWidth = hubSize.width * GraphReadableCardScale.focusedMinimum
         let availableWidth = max(viewportSize.width - 48, 300)
         let availableHeight = max(viewportSize.height - min(100, viewportSize.height * 0.3) - 94, 120)

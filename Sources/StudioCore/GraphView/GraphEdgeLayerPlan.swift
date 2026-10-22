@@ -15,6 +15,11 @@ struct GraphEdgeLayerPlan {
     /// to travel along.
     static let overviewInkScale = 0.62
 
+    /// Dense fans need less ink even when their hub is the selected table.
+    static func densityInkScale(relationCount: Int) -> Double {
+        min(1, max(0.25, sqrt(48 / Double(max(1, relationCount)))))
+    }
+
     /// How the relation layer behaves for the current zoom and preferences.
     enum Mode: Equatable {
         /// Close enough to read individual tables: paint every visible relation.

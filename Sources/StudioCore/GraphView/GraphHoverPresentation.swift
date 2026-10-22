@@ -19,6 +19,20 @@ enum GraphHoverPresentation {
                       dy: -frame.height * (scale - 1) / 2)
     }
 
+    /// A readable hover summary must also fit near the edges of the canvas.
+    /// Its rendered bounds serve both hit testing and relationship anchors.
+    static func visibleFrame(_ frame: CGRect, in viewport: CGRect) -> CGRect {
+        guard frame.width > 0, frame.height > 0, viewport.width > 24, viewport.height > 24 else { return frame }
+        let available = viewport.insetBy(dx: 12, dy: 12)
+        let scale = min(1, available.width / frame.width, available.height / frame.height)
+        let width = frame.width * scale, height = frame.height * scale
+        return CGRect(
+            x: min(max(frame.midX - width / 2, available.minX), available.maxX - width),
+            y: min(max(frame.midY - height / 2, available.minY), available.maxY - height),
+            width: width, height: height
+        )
+    }
+
     static func markerFrame(_ frame: CGRect, hovered: Bool, connected: Bool) -> CGRect {
         // Absolute padding would more than double a tiny overview node.
         enlarged(GraphExploration.markerFrame(for: frame), scale: cardScale(hovered: hovered, connected: connected))

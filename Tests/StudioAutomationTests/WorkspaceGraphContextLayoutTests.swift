@@ -6,6 +6,98 @@ import Testing
 @Suite(.serialized)
 struct WorkspaceGraphContextLayoutTests {
     @Test @MainActor
+    func expansionBringsEveryConnectedTableAroundTheReadableCard() async throws {
+        try await withSource { source in
+            let rootID = "posts"
+            let neighbors = source.graph.neighbors(of: rootID).subtracting([rootID])
+            let visible = neighbors.union([rootID])
+            source.setAutomationVisibleTableIDs(visible)
+            source.graphLayout.pin(nodeID: rootID, at: .zero)
+            for (index, id) in neighbors.sorted().enumerated() {
+                source.graphLayout.pin(nodeID: id, at: CGPoint(x: 4_000 + index * 500, y: 0))
+            }
+            source.graphZoom = 0.08
+            source.graphPan = .zero
+            source.requestAutomationViewport(fitVisibleTables: false, transitionMilliseconds: 0)
+            source.markAutomationViewChanged()
+            let original = source.graphLayout.snapshot(for: source.graph)
+            let renderer = try WorkspaceGraphRenderer()
+            defer { renderer.close() }
+            renderer.synchronize(from: source, revision: "surrounding-tables", width: 1_200, height: 800)
+            _ = try await renderer.render()
+            try renderer.apply(["type": "select", "table_id": rootID])
+            let image = try await renderer.render()
+            #expect(Set(renderer.nodes.compactMap { $0["table_id"] as? String }) == visible)
+            let root = try #require(renderer.nodes.first { $0["table_id"] as? String == rootID })
+            let rootX = try #require(root["x"] as? CGFloat) + #require(root["width"] as? CGFloat) / 2
+            var left = 0, right = 0
+            for node in renderer.nodes {
+                let frame = CGRect(x: try #require(node["x"] as? CGFloat), y: try #require(node["y"] as? CGFloat),
+                                   width: try #require(node["width"] as? CGFloat), height: try #require(node["height"] as? CGFloat))
+                #expect(CGRect(x: 0, y: 0, width: 1_200, height: 800).contains(frame))
+                if frame.midX < rootX - 1 { left += 1 }
+                if frame.midX > rootX + 1 { right += 1 }
+            }
+            #expect(left > 0 && right > 0, "Connected tables must surround the expanded card")
+            #expect(source.graphLayout.snapshot(for: source.graph) == original)
+            if let directory = ProcessInfo.processInfo.environment["SGS_SPOTLIGHT_EVIDENCE_DIR"] {
+                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                try image.image.write(to: URL(fileURLWithPath: directory).appendingPathComponent("surrounding-tables.png"))
+            }
+        }
+    }
+
+    @Test(arguments: [800, 1_200]) @MainActor
+    func denseConnectionFocusKeepsTheExpandedTableInsideTheViewport(width: Int) async throws {
+        try await withSource { source in
+            let root = try #require(source.graph.node(id: "posts"))
+            let leafCount = GraphLayoutModel.largeGraphOverviewThreshold + 1
+            let leaves = (0..<leafCount).map { GraphNode(id: "related_\($0)", title: "related_\($0)", isEditable: false) }
+            source.graph = SchemaGraph(nodes: [root] + leaves, edges: leaves.map {
+                GraphEdge(id: $0.id, sourceID: $0.id, targetID: root.id,
+                          sourceColumn: "post_id", targetColumn: "id")
+            })
+            source.tables = source.tables.filter { $0.id == root.id } + leaves.map {
+                TableSummary(name: $0.id, objectType: .table, isEditable: false, columnCount: 2, rowCount: nil)
+            }
+            var positions = [root.id: CGPoint(x: -3_000, y: 0)]
+            for (index, leaf) in leaves.enumerated() {
+                positions[leaf.id] = CGPoint(x: 1_500 + (index % 8) * 420, y: (index / 8) * 100)
+            }
+            source.graphLayout.restore(.init(positions: positions, pinnedPositions: [:]), for: source.graph,
+                                       presentation: .compact, descriptorLookup: source.descriptor(named:))
+            source.graphZoom = 0.08
+            source.graphPan = .zero
+            source.requestAutomationViewport(fitVisibleTables: false, transitionMilliseconds: 0)
+            source.markAutomationViewChanged()
+            let original = source.graphLayout.snapshot(for: source.graph)
+            let renderer = try WorkspaceGraphRenderer()
+            defer { renderer.close() }
+            renderer.synchronize(from: source, revision: "dense-focus-\(width)", width: width, height: 600)
+            _ = try await renderer.render()
+            try renderer.apply(["type": "select", "table_id": root.id])
+            let image = try await renderer.render()
+            let node = try #require(renderer.nodes.first { $0["table_id"] as? String == root.id })
+            let frame = CGRect(x: try #require(node["x"] as? CGFloat), y: try #require(node["y"] as? CGFloat),
+                               width: try #require(node["width"] as? CGFloat), height: try #require(node["height"] as? CGFloat))
+            #expect(CGRect(x: 0, y: 0, width: width, height: 600).contains(frame),
+                    "The readable table must fit even when most connected nodes lie on one side")
+            #expect(frame.width >= GraphCardLayout.expandedWidth * GraphReadableCardScale.focusedMinimum - 0.01)
+            #expect(renderer.expandedTables == [root.id])
+            #expect(renderer.visibleTables.count == leafCount + 1)
+            #expect(renderer.nodes.count == leafCount + 1, "All surrounding tables must remain in view")
+            let rootX = frame.midX
+            #expect(renderer.nodes.contains { ($0["x"] as? CGFloat ?? rootX) < frame.minX })
+            #expect(renderer.nodes.contains { ($0["x"] as? CGFloat ?? rootX) > frame.maxX })
+            #expect(source.graphLayout.snapshot(for: source.graph) == original)
+            if let directory = ProcessInfo.processInfo.environment["SGS_SPOTLIGHT_EVIDENCE_DIR"] {
+                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                try image.image.write(to: URL(fileURLWithPath: directory).appendingPathComponent("dense-expanded-\(width).png"))
+            }
+        }
+    }
+
+    @Test @MainActor
     func selectingExpandsInPlaceAndPushesInteractiveContextWithoutEditingTheSource() async throws {
         try await withSource { source in
             source.setAutomationVisibleTableIDs(["authors", "posts", "comments", "tags"])
@@ -32,8 +124,8 @@ struct WorkspaceGraphContextLayoutTests {
             #expect(try center("posts", in: renderer) == .zero)
             let expanded = try #require(renderer.nodes.first { $0["table_id"] as? String == "posts" })
             #expect(try #require(expanded["height"] as? CGFloat) > #require(collapsed["height"] as? CGFloat) * 2)
-            #expect(try center("authors", in: renderer).x > positions["authors"]!.x,
-                    "The nearby card must move out of the enlarged footprint")
+            #expect(try center("authors", in: renderer) != positions["authors"]!,
+                    "Connected tables must move into the surrounding focus layout")
             func rect(_ node: [String: Any]) throws -> CGRect {
                 CGRect(x: try #require(node["x"] as? CGFloat), y: try #require(node["y"] as? CGFloat),
                        width: try #require(node["width"] as? CGFloat), height: try #require(node["height"] as? CGFloat))
