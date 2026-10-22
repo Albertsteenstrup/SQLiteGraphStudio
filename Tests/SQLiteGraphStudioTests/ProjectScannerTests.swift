@@ -254,6 +254,7 @@ struct ProjectScannerTests {
     @MainActor @Test func singleMigrationCandidatePresentsPickerAndRemainsInRecentWithoutAutoOpening() async throws {
         let fixture = try Fixture()
         try fixture.write("backend/postgres/migrations/0001_init.sql", "CREATE TABLE users (id INT PRIMARY KEY);")
+        try fixture.write("backend/postgres/migrations/0002_name.sql", "ALTER TABLE users ADD COLUMN name TEXT;")
         let suiteName = UUID().uuidString
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
