@@ -3,10 +3,15 @@ import Foundation
 
 /// Hover changes screen geometry only; it never feeds back into the saved layout.
 enum GraphHoverPresentation {
-    static let detailScale: CGFloat = 1.025
+    static let clearanceScale: CGFloat = 1.025
 
     static func cardScale(hovered: Bool, connected: Bool) -> CGFloat {
-        hovered ? detailScale : (connected ? 1.015 : 1)
+        hovered ? 1 : (connected ? 1.015 : 1)
+    }
+
+    static func displayScale(for zoom: CGFloat, hovered: Bool, focused: Bool, overviewAnchor: Bool) -> CGFloat {
+        if hovered || focused { return GraphReadableCardScale.focusedScale(for: zoom) }
+        return overviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom
     }
 
     static func enlarged(_ frame: CGRect, scale: CGFloat) -> CGRect {

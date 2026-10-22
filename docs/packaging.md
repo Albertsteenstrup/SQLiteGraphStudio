@@ -1,6 +1,6 @@
 # Building and packaging
 
-`Sources/SQLiteGraphStudio/App/Info.plist` is the source of truth for the app's bundle identifier, marketing version, build number, minimum macOS version, and document associations. Both packaging scripts copy that file. Update versions there when preparing a release. The canonical identity remains `com.albertsteenstrup.sqlitegraphstudio`. The next release candidate uses `0.4.0` / build `3`; this metadata does not mean the unsigned local artifact is approved for public distribution.
+`Sources/SQLiteGraphStudio/App/Info.plist` is the source of truth for the app's bundle identifier, marketing version, build number, minimum macOS version, and document associations. Both packaging scripts copy that file. Update versions there when preparing a release. The canonical identity remains `com.albertsteenstrup.sqlitegraphstudio`. The current release uses `0.4.2` / build `5`; this metadata does not establish signing or notarization of an artifact.
 
 ## Local builds
 

@@ -282,7 +282,7 @@ struct GraphNodeSizingTests {
         }
     }
 
-    @Test func renderingHoverAnchorsAndHitTargetsShareSizedMarkerGeometry() throws {
+    @Test func sizedMarkersAndHoveredCardsShareTheirVisibleHitBounds() throws {
         let tables = [table("a", rows: 0), table("b", rows: 1_000)]
         let frames = ["a": CGRect(x: 50, y: 50, width: 76, height: 9.2), "b": CGRect(x: 150, y: 50, width: 76, height: 9.2)]
         let profile = GraphNodeSizeProfile(metric: .rows, tables: tables, rowCounts: [:], relationCounts: [:])
@@ -302,7 +302,11 @@ struct GraphNodeSizingTests {
         #expect(sized.hitCandidates(at: CGPoint(x: 51, y: 51)).isEmpty)
         #expect(snapshot(profile).revision == sized.revision)
         let hovered = snapshot(profile, hovered: "a")
-        let enlarged = try #require(hovered.markerFrames["a"])
+        let enlarged = try #require(hovered.anchorMap.nodeCards["a"]?.frame)
+        #expect(hovered.renderPlan.detailIDs == ["a"])
+        #expect(hovered.markerFrames["a"] == nil)
+        #expect(hovered.markerFrames["b"] == sized.markerFrames["b"])
+        #expect(abs(enlarged.width - 342) < 0.000001)
         #expect(enlarged.width > mark.width)
         #expect(hovered.hitCandidates(at: CGPoint(x: enlarged.minX + 0.1, y: enlarged.midY)) == ["a"])
         let detail = cache.snapshot(frames: frames, viewport: CGRect(x: 0, y: 0, width: 800, height: 600),

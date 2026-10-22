@@ -31,12 +31,12 @@ enum GraphSpotlightLayout {
         var size = sizing.layoutSize(for: id, cardSize: cardSize, minimumZoom: zoom)
         if id == readableRootID {
             let scale = GraphReadableCardScale.focusedScale(for: zoom) / zoom
-            size.width = max(size.width, cardSize.width * scale * GraphHoverPresentation.detailScale)
-            size.height = max(size.height, cardSize.height * scale * GraphHoverPresentation.detailScale)
+            size.width = max(size.width, cardSize.width * scale * GraphHoverPresentation.clearanceScale)
+            size.height = max(size.height, cardSize.height * scale * GraphHoverPresentation.clearanceScale)
         } else if enlargedIDs.contains(id) {
             let scale = GraphOverviewAnchors.displayScale(for: zoom) / zoom
-            size.width = max(size.width, cardSize.width * scale * GraphHoverPresentation.detailScale)
-            size.height = max(size.height, cardSize.height * scale * GraphHoverPresentation.detailScale)
+            size.width = max(size.width, cardSize.width * scale * GraphHoverPresentation.clearanceScale)
+            size.height = max(size.height, cardSize.height * scale * GraphHoverPresentation.clearanceScale)
         }
         return size
     }

@@ -35,6 +35,17 @@ struct GraphExplorationTests {
         #expect(plan.interactiveIDs == Set(frames.keys))
     }
 
+    @Test(arguments: [CGFloat(0.22), 0.3, 0.4])
+    func ordinaryNodeTextRemainsAvailableFurtherOut(zoom: CGFloat) {
+        let plan = GraphExploration.renderPlan(
+            frames: ["table": CGRect(x: 100, y: 100, width: 440 * zoom, height: 236 * zoom)],
+            viewport: CGRect(x: 0, y: 0, width: 800, height: 600),
+            zoom: zoom, isLarge: true, emphasized: []
+        )
+        #expect(plan.detailIDs == ["table"])
+        #expect(plan.markerIDs.isEmpty)
+    }
+
     @Test func boundedFocusScopeRetainsDetailedCardsAtOverviewZoom() {
         let frames = Dictionary(uniqueKeysWithValues: (0..<48).map {
             (String($0), CGRect(x: $0 % 8 * 50, y: $0 / 8 * 50, width: 40, height: 40))

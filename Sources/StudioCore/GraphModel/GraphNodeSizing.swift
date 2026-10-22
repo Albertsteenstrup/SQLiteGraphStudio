@@ -57,6 +57,7 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
     private let maximumArea: CGFloat
 
     static let uniform = GraphNodeSizeProfile(metric: .uniform, areas: [:], unknownIDs: [])
+    private static let sizeTransitionZoom: CGFloat = 0.42
 
     init(metric: GraphNodeSizeMetric, tables: [TableSummary], rowCounts: [String: Int], relationCounts: [String: Int]) {
         self.metric = metric
@@ -110,16 +111,16 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
         let zoom = max(0.005, minimumZoom.isFinite ? minimumZoom : 1)
         let minimum = 3 / zoom
         let readableScale = isFocusRoot ? GraphReadableCardScale.focusedScale(for: zoom) / zoom : 1
-        let hoverScale = GraphHoverPresentation.cardScale(hovered: true, connected: false)
+        let clearanceScale = GraphHoverPresentation.clearanceScale
         return CGSize(
-            width: max(cardSize.width * readableScale, min(cardSize.width, GraphCardLayout.collapsedWidth(title: "", hovered: false)) * factor, minimum) * hoverScale,
-            height: max(cardSize.height * readableScale, min(cardSize.height, GraphCardLayout.collapsedHeight) * factor, minimum) * hoverScale
+            width: max(cardSize.width * readableScale, min(cardSize.width, GraphCardLayout.collapsedWidth(title: "", hovered: false)) * factor, minimum) * clearanceScale,
+            height: max(cardSize.height * readableScale, min(cardSize.height, GraphCardLayout.collapsedHeight) * factor, minimum) * clearanceScale
         )
     }
 
     static func emphasis(at zoom: CGFloat) -> CGFloat {
         guard zoom.isFinite else { return 0 }
-        let t = min(1, max(0, zoom / GraphExploration.detailZoom))
+        let t = min(1, max(0, zoom / sizeTransitionZoom))
         return 1 - t * t * (3 - 2 * t)
     }
 
