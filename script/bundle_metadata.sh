@@ -30,6 +30,33 @@ sgs_swift_scratch_path() {
     printf '%s/Library/Developer/SQLiteGraphStudio/SwiftPM/%s\n' "$HOME" "$project_key"
 }
 
+# Command Line Tools do not include actool or the macOS 27 SwiftUI macros.
+# Keep their builds on the native engine and the compatible SDK when installed.
+sgs_swift_build() {
+    local developer_dir sdk_path
+    local build_args=()
+    developer_dir="$(xcode-select -p)"
+    sdk_path="${SGS_SWIFT_SDK_PATH:-}"
+    if [[ "$developer_dir" == */CommandLineTools ]]; then
+        build_args+=(--build-system native)
+        if [[ -z "$sdk_path" && -d "$developer_dir/SDKs/MacOSX26.5.sdk" ]]; then
+            sdk_path="$developer_dir/SDKs/MacOSX26.5.sdk"
+        fi
+    fi
+    if [[ -n "$sdk_path" ]]; then
+        if [[ "$sdk_path" != /* || ! -d "$sdk_path" ]]; then
+            echo "SGS_SWIFT_SDK_PATH must name an existing absolute SDK directory." >&2
+            return 2
+        fi
+        build_args+=(--sdk "$sdk_path")
+    fi
+    if [[ -n "${build_args[*]:-}" ]]; then
+        swift build "${build_args[@]}" "$@"
+    else
+        swift build "$@"
+    fi
+}
+
 # Replacing a bundle while either its UI or MCP helper is executing can break
 # other coding sessions. Check the exact bundle path; never signal processes by
 # executable name, because that would hit unrelated worktrees and /Applications.

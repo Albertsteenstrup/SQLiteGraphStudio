@@ -12,7 +12,7 @@ public struct MCPToolDefinition: @unchecked Sendable {
 
 public enum MCPToolCatalog {
     public static let tools: [MCPToolDefinition] = {
-        guard let url = Bundle.module.url(
+        guard let url = MCPResourceBundle.bundle.url(
             forResource: "ToolCatalog",
             withExtension: "json",
             subdirectory: "Resources"

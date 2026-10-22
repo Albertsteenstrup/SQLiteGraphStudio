@@ -55,10 +55,10 @@ fi
 sgs_assert_bundle_not_running "$APP_BUNDLE"
 cd "$ROOT_DIR"
 mkdir -p "$SWIFT_SCRATCH_PATH"
-swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" --product "$APP_NAME"
-swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" --product StudioMCP
-BUILD_BINARY="$(swift build --scratch-path "$SWIFT_SCRATCH_PATH" --show-bin-path)/$APP_NAME"
-MCP_BINARY="$(swift build --scratch-path "$SWIFT_SCRATCH_PATH" --show-bin-path)/StudioMCP"
+sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" --product "$APP_NAME"
+sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" --product StudioMCP
+BUILD_BINARY="$(sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" --show-bin-path)/$APP_NAME"
+MCP_BINARY="$(sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" --show-bin-path)/StudioMCP"
 
 sgs_assert_bundle_not_running "$APP_BUNDLE"
 rm -rf "$APP_BUNDLE"

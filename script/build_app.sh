@@ -64,10 +64,10 @@ for arch in "${ARCHS[@]}"; do
     triple="$arch-apple-macosx$MIN_MACOS_VERSION"
 
     echo "    Building $arch ($triple)..."
-    swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" -c release --product "$APP_NAME" --triple "$triple"
-    swift build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" -c release --product StudioMCP --triple "$triple"
+    sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" -c release --product "$APP_NAME" --triple "$triple"
+    sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" -j "$SGS_BUILD_JOBS" -c release --product StudioMCP --triple "$triple"
 
-    build_dir="$(swift build --scratch-path "$SWIFT_SCRATCH_PATH" -c release --triple "$triple" --show-bin-path)"
+    build_dir="$(sgs_swift_build --scratch-path "$SWIFT_SCRATCH_PATH" -c release --triple "$triple" --show-bin-path)"
     binary_path="$build_dir/$APP_NAME"
     mcp_binary_path="$build_dir/StudioMCP"
 

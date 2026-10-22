@@ -284,12 +284,12 @@ struct GraphNodeSizingTests {
 
     @Test func sizedMarkersAndHoveredCardsShareTheirVisibleHitBounds() throws {
         let tables = [table("a", rows: 0), table("b", rows: 1_000)]
-        let frames = ["a": CGRect(x: 50, y: 50, width: 76, height: 9.2), "b": CGRect(x: 150, y: 50, width: 76, height: 9.2)]
+        let frames = ["a": CGRect(x: 50, y: 50, width: 38, height: 4.6), "b": CGRect(x: 150, y: 50, width: 38, height: 4.6)]
         let profile = GraphNodeSizeProfile(metric: .rows, tables: tables, rowCounts: [:], relationCounts: [:])
         let cache = GraphInteractionGeometryCache()
         func snapshot(_ profile: GraphNodeSizeProfile, hovered: String? = nil) -> GraphInteractionGeometry {
             cache.snapshot(frames: frames, viewport: CGRect(x: 0, y: 0, width: 800, height: 600),
-                           zoom: 0.2, isLarge: true, emphasized: [], contentRevision: 0, hoveredID: hovered,
+                           zoom: 0.1, isLarge: true, emphasized: [], contentRevision: 0, hoveredID: hovered,
                            nodeSizing: profile, roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil })
         }
         let original = snapshot(.uniform)

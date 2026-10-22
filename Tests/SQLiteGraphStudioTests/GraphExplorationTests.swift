@@ -35,7 +35,7 @@ struct GraphExplorationTests {
         #expect(plan.interactiveIDs == Set(frames.keys))
     }
 
-    @Test(arguments: [CGFloat(0.22), 0.3, 0.4])
+    @Test(arguments: [CGFloat(0.11), 0.15, 0.22, 0.3, 0.4])
     func ordinaryNodeTextRemainsAvailableFurtherOut(zoom: CGFloat) {
         let plan = GraphExploration.renderPlan(
             frames: ["table": CGRect(x: 100, y: 100, width: 440 * zoom, height: 236 * zoom)],

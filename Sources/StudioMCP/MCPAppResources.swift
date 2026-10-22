@@ -65,11 +65,11 @@ public enum MCPAppResources {
         return revision.count == 24 && revision.allSatisfy { "0123456789abcdef".contains($0) }
     }
 
-    static let dataHTML: String? = Bundle.module
+    static let dataHTML: String? = MCPResourceBundle.bundle
         .url(forResource: "DataApp", withExtension: "html", subdirectory: "Resources")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
 
-    static let workspaceHTML: String? = Bundle.module
+    static let workspaceHTML: String? = MCPResourceBundle.bundle
         .url(forResource: "WorkspaceApp", withExtension: "html", subdirectory: "Resources")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
 }

@@ -41,7 +41,9 @@ name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ["SGS_TEST_LOG"], "a") as log:
     log.write(name + " " + " ".join(args) + "\\n")
-if name == "swift" and "SGS_SWIFT_SCRATCH_PATH" in os.environ:
+if name == "xcode-select":
+    print(os.environ.get("SGS_TEST_DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer"))
+elif name == "swift" and "SGS_SWIFT_SCRATCH_PATH" in os.environ:
     if "--scratch-path" not in args or args[args.index("--scratch-path") + 1] != os.environ["SGS_SWIFT_SCRATCH_PATH"]:
         sys.exit(2)
 if name == "swift" and "--show-bin-path" in args:
@@ -76,7 +78,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
     sys.exit(1)
 ''')
         driver.chmod(0o755)
-        for name in ["swift", "lipo", "otool", "pkill", "pgrep", "ps", "codesign", "hdiutil", "xcrun", "spctl"]:
+        for name in ["swift", "lipo", "otool", "pkill", "pgrep", "ps", "codesign", "hdiutil", "xcrun", "spctl", "xcode-select"]:
             (self.tools / name).symlink_to(driver)
         self.env = dict(os.environ, PATH=f"{self.tools}:{os.environ['PATH']}",
                         SGS_TEST_LOG=str(self.root / "commands.log"), SGS_TEST_BIN=str(self.bin))
@@ -85,7 +87,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.env.pop("NOTARYTOOL_PROFILE", None)
         self.env.pop("SGS_POSTGRES_RUNTIME", None)
         self.env.pop("SGS_POCKET_TTS_RUNTIME", None)
-        for key in ["SGS_TEST_FAIL_TOOL", "SGS_TEST_APP_ARCHS", "SGS_TEST_OTOOL_OUTPUT"]:
+        for key in ["SGS_TEST_FAIL_TOOL", "SGS_TEST_APP_ARCHS", "SGS_TEST_OTOOL_OUTPUT", "SGS_SWIFT_SDK_PATH", "SGS_TEST_DEVELOPER_DIR"]:
             self.env.pop(key, None)
 
     def native(self, path, **metadata):
@@ -171,6 +173,44 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
             self.assertTrue(builds, script)
             self.assertTrue(all(f"--scratch-path {scratch}" in line for line in builds), builds)
             (self.root / "commands.log").unlink()
+
+    def test_command_line_tools_use_native_engine_and_compatible_sdk(self):
+        developer = self.root / "CommandLineTools"
+        sdk = developer / "SDKs/MacOSX26.5.sdk"
+        sdk.mkdir(parents=True)
+        self.env["SGS_TEST_DEVELOPER_DIR"] = str(developer)
+        for script, args in [("build_and_run.sh", ["--build-only"]), ("build_app.sh", [])]:
+            result = self.run_script(script, *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            builds = [line for line in self.log().splitlines() if line.startswith("swift build")]
+            self.assertTrue(builds)
+            self.assertTrue(all("--build-system native" in line and f"--sdk {sdk}" in line for line in builds), builds)
+            (self.root / "commands.log").unlink()
+
+    def test_explicit_sdk_is_used_for_every_swift_command(self):
+        sdk = self.root / "SDK with spaces"
+        sdk.mkdir()
+        self.env["SGS_SWIFT_SDK_PATH"] = str(sdk)
+        for script, args in [("build_and_run.sh", ["--build-only"]), ("build_app.sh", [])]:
+            result = self.run_script(script, *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            builds = [line for line in self.log().splitlines() if line.startswith("swift build")]
+            self.assertTrue(builds)
+            self.assertTrue(all(f"--sdk {sdk}" in line for line in builds), builds)
+            (self.root / "commands.log").unlink()
+
+    def test_invalid_explicit_sdk_stops_before_build_or_bundle_replacement(self):
+        self.env["SGS_SWIFT_SDK_PATH"] = str(self.root / "missing SDK")
+        bundle = self.root / "dist/SQLiteGraphStudio.app"
+        bundle.mkdir(parents=True)
+        marker = bundle / "keep-me"
+        marker.write_text("existing app")
+        for script, args in [("build_and_run.sh", ["--build-only"]), ("build_app.sh", [])]:
+            result = self.run_script(script, *args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SGS_SWIFT_SDK_PATH", result.stderr)
+            self.assertEqual(marker.read_text(), "existing app")
+            self.assertNotIn("swift build", self.log())
 
     def test_build_scripts_default_to_scratch_outside_the_checkout(self):
         with tempfile.TemporaryDirectory(prefix="sgs-packaging-home-") as home:

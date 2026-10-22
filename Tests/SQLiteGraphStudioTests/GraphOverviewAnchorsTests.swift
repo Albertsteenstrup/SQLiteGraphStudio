@@ -31,7 +31,7 @@ struct GraphOverviewAnchorsTests {
                            overviewAnchors: anchors, roleForNode: { _ in .collapsedNode },
                            descriptorForNode: { _ in nil })
         }
-        let ordinary = snapshot(0.2, anchors: [])
+        let ordinary = snapshot(0.1, anchors: [])
         let anchored = snapshot(0.2, anchors: [.init(id: "contract")])
         let card = try #require(anchored.anchorMap.nodeCards["contract"])
         #expect(ordinary.renderPlan.markerIDs.contains("contract"))

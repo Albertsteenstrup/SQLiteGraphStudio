@@ -489,7 +489,7 @@ struct MCPManagedSkillCatalog: Decodable, Equatable, Sendable {
     }
 
     static func bundled() throws -> Self {
-        guard let url = Bundle.module.url(
+        guard let url = MCPResourceBundle.bundle.url(
             forResource: "CanonicalSkills",
             withExtension: "json",
             subdirectory: "Resources"
