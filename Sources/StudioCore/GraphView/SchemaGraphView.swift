@@ -44,6 +44,7 @@ public struct SchemaGraphView: View {
     @State private var scrollTargetCardID: String? = nil
     @State private var scrollTargetCardScale: CGFloat = 1
     @State private var pulledGraphPositions: [String: CGPoint] = [:]
+    @State private var manuallyPlacedFocusNodes: [String: CGPoint] = [:]
     @State private var tappedRelationTarget: GraphRelationHoverTarget? = nil
     @State private var graphFocusTableRelation: GraphRelationHoverTarget?
     @State private var tableFocusNodeID: String?
@@ -1982,6 +1983,7 @@ public struct SchemaGraphView: View {
             }
         } else if draggedNodeUsesFocusPull {
             pulledGraphPositions[nodeID] = moved
+            manuallyPlacedFocusNodes[nodeID] = moved
         } else {
             session.graphLayout.pin(nodeID: nodeID, at: moved)
         }
@@ -2103,6 +2105,7 @@ public struct SchemaGraphView: View {
         let savedViewport = preGraphFocusViewport
         let applyClear = {
             pulledGraphPositions.removeAll()
+            manuallyPlacedFocusNodes.removeAll()
             if collapsesFocusedTable, tableFocusNodeID != nil || graphFocusTableRelation != nil { session.setExpandedGraphNode(nil) }
             graphFocusTableRelation = nil
             tableFocusNodeID = nil
@@ -2158,6 +2161,7 @@ public struct SchemaGraphView: View {
     }
 
     private func enterGraphFocusSession() {
+        manuallyPlacedFocusNodes.removeAll()
         if preGraphFocusViewport == nil {
             preGraphFocusViewport = GraphViewportBookmark(transform: GraphViewportTransform(zoom: zoom, pan: pan), presentation: presentationMode)
         }
@@ -3016,7 +3020,8 @@ public struct SchemaGraphView: View {
         positions.merge(surrounding) { _, surrounding in surrounding }
         return GraphSpotlightLayout.positions(positions, cardSizes: sizes,
             expandedIDs: session.expandedGraphNodeIDs, readableRootID: rootID,
-            zoom: zoom, sizing: session.graphNodeSizeProfile, enlargedIDs: enlargedTableIDs)
+            zoom: zoom, sizing: session.graphNodeSizeProfile, enlargedIDs: enlargedTableIDs,
+            manuallyPlacedNodes: manuallyPlacedFocusNodes)
     }
 
     private func reflowFocusedConnections(in size: CGSize) {

@@ -46,8 +46,12 @@ enum GraphSpotlightLayout {
     static func positions(
         _ positions: [String: CGPoint], cardSizes: [String: CGSize],
         expandedIDs: Set<String>, readableRootID: String?, zoom: CGFloat,
-        sizing: GraphNodeSizeProfile = .uniform, enlargedIDs: Set<String> = []
+        sizing: GraphNodeSizeProfile = .uniform, enlargedIDs: Set<String> = [],
+        manuallyPlacedNodes: [String: CGPoint] = [:]
     ) -> [String: CGPoint] {
+        // Focus arrangements can be regenerated for a new zoom or viewport.
+        // Keep the reader's dragged locations while still resolving collisions.
+        let positions = positions.merging(manuallyPlacedNodes.filter { positions[$0.key] != nil }) { _, manual in manual }
         let zoom = max(0.005, zoom.isFinite ? zoom : 1)
         let inspectedIDs = expandedIDs.union(enlargedIDs).union([readableRootID].compactMap { $0 })
         // Only inspected cards reserve a screen-sized corridor. Giving every
@@ -65,7 +69,7 @@ enum GraphSpotlightLayout {
             return (id, size)
         })
         return LargeGraphLayout.separatingNodes(positions, sizes: footprints,
-                                               preferredAnchors: inspectedIDs,
+                                               preferredAnchors: inspectedIDs.union(manuallyPlacedNodes.keys),
                                                gap: GraphCardClearance.minimumGap)
     }
 }

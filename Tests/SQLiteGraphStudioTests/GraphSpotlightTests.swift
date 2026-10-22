@@ -3,6 +3,28 @@ import Testing
 @testable import StudioCore
 
 struct GraphSpotlightTests {
+    @Test @MainActor
+    func draggingAFocusedNeighbourSurvivesReflowAndZoom() {
+        let original: [String: CGPoint] = ["hub": .zero, "neighbour": .init(x: 600, y: 0)]
+        let sizes: [String: CGSize] = ["hub": .init(width: 440, height: 236),
+                                      "neighbour": .init(width: 200, height: 46)]
+        let dropped = CGPoint(x: -4_000, y: 700)
+        for zoom: CGFloat in [0.2, 0.5, 1] {
+            // Each reflow starts with a fresh generated arrangement, as it does
+            // after native key-focus dragging finishes and the viewport changes.
+            let generated = GraphFocusRingLayout.graphPositions(hubCenter: .zero, hubSize: sizes["hub"]!,
+                items: [.init(id: "neighbour", size: sizes["neighbour"]!)])
+            let reflowed = GraphSpotlightLayout.positions(original.merging(generated) { _, ring in ring },
+                cardSizes: sizes, expandedIDs: ["hub"], readableRootID: "hub", zoom: zoom,
+                manuallyPlacedNodes: ["neighbour": dropped])
+            #expect(reflowed["neighbour"] == dropped)
+            #expect(reflowed["hub"] == .zero)
+        }
+        let nextFocus = GraphSpotlightLayout.positions(original, cardSizes: sizes,
+            expandedIDs: ["hub"], readableRootID: "hub", zoom: 1)
+        #expect(nextFocus["neighbour"] == original["neighbour"], "A new focus can discard temporary drag overrides")
+    }
+
     @Test(arguments: [CGFloat(0.05), 0.2, 0.8]) @MainActor
     func severalEnlargedTablesClearEachOtherAndTheirNeighbours(zoom: CGFloat) {
         let positions: [String: CGPoint] = ["a": .zero, "b": .init(x: 330, y: 40),
