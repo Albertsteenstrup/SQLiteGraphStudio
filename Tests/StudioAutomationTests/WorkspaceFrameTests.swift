@@ -476,7 +476,7 @@ struct WorkspaceFrameTests {
                 "Embedded inspection must preserve the source workspace")
         let beforeMoveImage = try #require(frame["image"] as? String)
         route["after_frame_revision"] = frame["frame_revision"]
-        route["graph_actions"] = [["type": "move", "table_id": "posts", "x": 350, "y": 30]]
+        route["graph_actions"] = [["type": "move", "table_id": "posts", "x": 350, "y": 30], ["type": "fit"]]
         frame = payload(await call(coordinator, "studio_workspace_frame", route))
         let moved = try #require((graph(frame)["nodes"] as? [[String: Any]])?.first { $0["table_id"] as? String == "posts" })
         #expect(abs((moved["center_x"] as? Double ?? 0) - 350) < 1)
