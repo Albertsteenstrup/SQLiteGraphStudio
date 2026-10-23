@@ -10,7 +10,7 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 
 ## Migration Dialect Detection and Supported Databases
 
-- Infer migration and schema-script dialects from SQL content before using the selected file or folder's own name as a fallback. Parent folders containing `sqlite`, `postgres`, or `pgsql` no longer override the source dialect, preserving distinct PostgreSQL schemas and their relationships.
+- Infer migration and schema-script dialects from specific SQL syntax before using the selected file or folder's own name for ambiguous words. Ignore comments, string values, and identifier substrings so SQLite fields such as `SerialNumber` and `UUID` cannot outweigh `AUTOINCREMENT`. Parent folders containing `sqlite`, `postgres`, or `pgsql` no longer override the source dialect, preserving distinct PostgreSQL schemas and their relationships.
 - Add a supported-databases overview to the README with SQLite and PostgreSQL opening instructions and their editing, read-only, and schema-only limits.
 
 ## Surface Corners

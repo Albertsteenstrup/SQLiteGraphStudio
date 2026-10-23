@@ -88,6 +88,7 @@ sgs_open_reusing_running_app() {
                 */Contents/MacOS/SQLGraphStudio|*/Contents/MacOS/SQLiteGraphStudio)
                     running_bundle="${executable%/Contents/MacOS/*}"
                     if [[ -d "$running_bundle" ]]; then
+                        SGS_OPENED_PROCESS_NAME="$process_name"
                         /usr/bin/open -a "$running_bundle"
                         return
                     fi
@@ -95,5 +96,6 @@ sgs_open_reusing_running_app() {
             esac
         done < <(pgrep -x "$process_name" 2>/dev/null || true)
     done
+    SGS_OPENED_PROCESS_NAME="$(sgs_metadata CFBundleExecutable)"
     /usr/bin/open -a "$requested_bundle"
 }
