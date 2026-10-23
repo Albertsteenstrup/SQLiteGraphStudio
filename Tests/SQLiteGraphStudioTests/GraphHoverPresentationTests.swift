@@ -47,6 +47,31 @@ struct GraphHoverPresentationTests {
         #expect(geometry.hitCandidates(at: CGPoint(x: 300, y: 350)).isEmpty)
     }
 
+    @Test(arguments: [CGFloat(0.005), 0.2, 0.8])
+    func hoveredConnectedCardReceivesInputAboveTheExpandedRoot(zoom: CGFloat) {
+        let geometry = GraphInteractionGeometryCache().snapshot(
+            frames: ["root": CGRect(x: 420 - 220 * zoom, y: 350 - 118 * zoom,
+                                     width: 440 * zoom, height: 236 * zoom),
+                     "related": CGRect(x: 100 - 280 * zoom, y: 350 - 23 * zoom,
+                                        width: 560 * zoom, height: 46 * zoom)],
+            viewport: CGRect(x: 0, y: 0, width: 840, height: 700), zoom: zoom,
+            isLarge: true, emphasized: ["root"], primary: ["root"], contentRevision: 0,
+            hoveredID: "related", focusRootID: "root",
+            focusSummarySizes: ["related": CGSize(width: 190, height: CGFloat(46) * 190 / 560)],
+            roleForNode: { $0 == "root" ? .expandedNode : .collapsedNode },
+            descriptorForNode: { _ in Self.descriptor })
+        let overlap = CGPoint(x: 300, y: 350)
+        #expect(geometry.anchorMap.nodeCards["root"]?.frame.contains(overlap) == true)
+        #expect(geometry.markerFrames["related"]?.contains(overlap) == true)
+        let zIndex: (String) -> Double = { $0 == "root" ? 2 : 3 }
+        let order: (String) -> Int? = { $0 == "root" ? 0 : 1 }
+        #expect(geometry.topmostHit(at: overlap, zIndexForNode: zIndex, nodeIndexForNode: order) == "related")
+        #expect(geometry.markerDragNodeID(at: overlap, zIndexForNode: zIndex, nodeIndexForNode: order) == "related")
+        #expect(geometry.topmostHit(at: CGPoint(x: 580, y: 350), zIndexForNode: zIndex,
+                                   nodeIndexForNode: order) == "root")
+        #expect(geometry.anchorMap.nodeCards["related"]?.rowFrames.isEmpty == true)
+    }
+
     @Test func markerHoverShowsOnlyReadableSummaryWithMatchingHitTargetsWithoutChangingLayout() throws {
         let frames = ["root": CGRect(x: 396.2, y: 299.54, width: 7.6, height: 0.92),
                       "related": CGRect(x: 100, y: 50, width: 8, height: 3),

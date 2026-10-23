@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 import SwiftUI
 import Testing
 @testable import StudioCore
@@ -6,6 +7,75 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct WorkspaceInteractionTests {
+    @Test
+    func hoveredConnectedCardOpensItsTableWhenItOverlapsTheRoot() async throws {
+        let url = try TestSupport.createFixture(named: "overlapping-hover")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let relatedID = "posts_with_a_long_related_table_name_that_overlaps_the_expanded_root"
+        let database = try DatabaseQueue(path: url.path)
+        try await database.write { db in
+            try db.execute(sql: "ALTER TABLE posts RENAME TO \(relatedID)")
+        }
+        try database.close()
+        let defaultsName = "OverlappingGraphHover.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let session = AppSession(userDefaults: defaults)
+        await session.openDatabase(url: url)
+        defer { session.closeDatabase() }
+        session.graph = SchemaGraph(nodes: session.graph.nodes.filter { ["authors", relatedID].contains($0.id) },
+            edges: session.graph.edges.filter { $0.sourceID == relatedID && $0.targetID == "authors" })
+        session.graphLayout.pin(nodeID: "authors", at: .zero)
+        session.graphLayout.pin(nodeID: relatedID, at: CGPoint(x: 2_000, y: 0))
+
+        let window = GraphInteractionTestWindow(contentRect: NSRect(x: -2000, y: -2000, width: 840, height: 700),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let root = NSHostingView(rootView: SchemaGraphView(session: session).transaction { $0.disablesAnimations = true })
+        window.contentView = root
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(250))
+        let initial = try #require(session.automationGraphNodeFrames["authors"])
+        session.requestGraphTap(at: CGPoint(x: initial.midX, y: initial.midY))
+        try await Task.sleep(for: .milliseconds(250))
+        session.markAutomationViewChanged()
+        try await Task.sleep(for: .milliseconds(150))
+        let resting = try #require(session.automationGraphNodeFrames[relatedID])
+        let observer = try #require(graphObserver(in: root))
+        func movePointer(to point: CGPoint) throws {
+            window.pointerLocation = root.convert(point, to: nil)
+            let event = try #require(NSEvent.mouseEvent(with: .mouseMoved,
+                location: window.pointerLocation, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+            _ = observer.handleEvent(event)
+        }
+        try movePointer(to: CGPoint(x: resting.midX, y: resting.midY))
+        try await Task.sleep(for: .milliseconds(150))
+        session.markAutomationViewChanged()
+        try await Task.sleep(for: .milliseconds(150))
+        let hovered = try #require(session.automationGraphNodeFrames[relatedID])
+        let expanded = try #require(session.automationGraphNodeFrames["authors"])
+        let overlap = hovered.intersection(expanded)
+        try #require(!overlap.isEmpty, "The long hovered card must cover part of the root in this fixture")
+        let point = CGPoint(x: overlap.midX, y: overlap.midY)
+        try movePointer(to: point)
+        try await Task.sleep(for: .milliseconds(150))
+        session.markAutomationViewChanged()
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(session.automationGraphNodeFrames[relatedID]?.width == hovered.width,
+                "Moving into the overlap must retain the foreground card's hover")
+        let windowPoint = root.convert(point, to: nil)
+        try click(windowPoint, in: window)
+        try await Task.sleep(for: .milliseconds(60))
+        try click(windowPoint, in: window, count: 2)
+        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.15))
+        #expect(session.openTabs.map { $0.descriptor.name } == [relatedID],
+                "The visible foreground card must receive the double-click instead of the root")
+        #expect(session.activePaneSide == .right)
+    }
+
     @Test(arguments: [CGFloat(0.05), 0.8], [1, 2])
     func graphSingleAndDoubleClicksHaveDistinctActions(zoom: CGFloat, clicks: Int) async throws {
         let url = try TestSupport.createFixture(named: "graph-double-click")
@@ -118,4 +188,19 @@ struct WorkspaceInteractionTests {
             window.sendEvent(event)
         }
     }
+
+    private func graphObserver(in view: NSView) -> GraphTrackpadInputView? {
+        if let observer = view as? GraphTrackpadInputView { return observer }
+        for child in view.subviews {
+            if let observer = graphObserver(in: child) { return observer }
+        }
+        return nil
+    }
+}
+
+/// Keep geometry refreshes on the test pointer without moving the user's cursor.
+@MainActor
+private final class GraphInteractionTestWindow: NSWindow {
+    var pointerLocation = NSPoint(x: -10_000, y: -10_000)
+    override var mouseLocationOutsideOfEventStream: NSPoint { pointerLocation }
 }

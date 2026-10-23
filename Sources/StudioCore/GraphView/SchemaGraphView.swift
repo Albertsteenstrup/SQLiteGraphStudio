@@ -787,8 +787,8 @@ public struct SchemaGraphView: View {
                 .zIndex(zIndex(for: node.id))
             }
 
-            // Keep a readable hovered card above the expanded root as well as
-            // its neighbours. Canvas still owns its shared input geometry.
+            // Keep the hovered card and its native input above the expanded root.
+            // Pointer lookup uses the same foreground priority in shared geometry.
             if let hoveredNodeID, focusSummaryIDs.contains(hoveredNodeID),
                let node = graph.node(id: hoveredNodeID), let frame = geometry.markerFrames[hoveredNodeID] {
                 let card = GraphCardLayout.nodeSize(title: node.title, descriptor: nil, style: .collapsed)
@@ -796,7 +796,6 @@ public struct SchemaGraphView: View {
                     highlightState: relationHighlight.highlightState(for: node.id), in: size)
                     .scaleEffect(frame.width / card.width)
                     .position(x: frame.midX, y: frame.midY)
-                    .allowsHitTesting(false)
                     .zIndex(5)
             }
 
@@ -848,8 +847,18 @@ public struct SchemaGraphView: View {
             displayStyle: .collapsed, isFocusRoot: false, scrollOffset: 0,
             isHovered: hoveredNodeID == node.id, isDragging: draggedNodeID == node.id,
             highlightState: highlightState, keepsTextReadableWhenZoomed: true,
-            // The Canvas hit targets handle these actions for both symbols and hover.
-            selectNode: {}, toggleExpanded: {}, openTable: {}, showTopRows: {},
+            // Symbols do not receive input, but the foreground hovered view does.
+            selectNode: { selectCard(node.id) },
+            toggleExpanded: {
+                session.notifyManualGraphInteraction()
+                toggleExpandedState(for: node.id, in: size)
+            },
+            openTable: { openGraphTable(node.id) },
+            showTopRows: {
+                session.notifyManualGraphInteraction()
+                session.selectGraphNode(node.id)
+                session.runTopRowsQuery(for: node.id)
+            },
             usesViewportHoverTracking: true, hoverChanged: { _ in },
             relationHoverChanged: { _, _, _ in }, relationTapped: { _ in },
             headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)

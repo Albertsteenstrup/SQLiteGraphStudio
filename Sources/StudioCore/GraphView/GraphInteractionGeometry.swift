@@ -83,6 +83,7 @@ struct GraphInteractionGeometry {
     let revision: Int
     fileprivate let hitIndex: GraphInteractionHitIndex
     fileprivate let hoverSource: (id: String, frame: CGRect)?
+    fileprivate let foregroundMarkerID: String?
 
     /// The caller resolves overlapping candidates by visual z-index and graph order.
     /// Offscreen, scope-hidden tables are absent; markers use their rendered 3px floor.
@@ -96,18 +97,18 @@ struct GraphInteractionGeometry {
         return (candidates + [hoverSource.id]).sorted()
     }
 
-    /// Detail cards are a layer above Canvas markers. Resolve within that layer
-    /// using the same z-index and original node order as the SwiftUI card views.
+    /// The hovered connected card is above detail cards; other markers remain
+    /// behind them. Match these visual layers before resolving z-index/order.
     func topmostHit(at point: CGPoint, zIndexForNode: (String) -> Double,
                     nodeIndexForNode: (String) -> Int?) -> String? {
-        var best: (id: String, detail: Bool, z: Double, index: Int)?
+        var best: (id: String, layer: Int, z: Double, index: Int)?
         for id in hitCandidates(at: point) {
             guard let index = nodeIndexForNode(id) else { continue }
-            let candidate = (id: id, detail: renderPlan.detailIDs.contains(id),
+            let candidate = (id: id, layer: id == foregroundMarkerID ? 2 : (renderPlan.detailIDs.contains(id) ? 1 : 0),
                              z: zIndexForNode(id), index: index)
             if let current = best {
-                if candidate.detail != current.detail {
-                    if candidate.detail { best = candidate }
+                if candidate.layer != current.layer {
+                    if candidate.layer > current.layer { best = candidate }
                 } else if candidate.z > current.z || (candidate.z == current.z && candidate.index > current.index) {
                     best = candidate
                 }
@@ -279,7 +280,8 @@ final class GraphInteractionGeometryCache {
             hoverSource: hoveredID.flatMap { id in
                 if focusSummarySizes[id] != nil { return displayFrames[id].map { (id, $0) } }
                 return frames[id].map { (id, nodeSizing.markerFrame(for: id, frame: $0, zoom: zoom)) }
-            }
+            },
+            foregroundMarkerID: hoveredID.flatMap { focusSummarySizes[$0] != nil ? $0 : nil }
         )
         key = newKey
         geometry = snapshot
