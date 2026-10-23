@@ -643,10 +643,10 @@ public struct SchemaGraphView: View {
                 if let edgePlan {
                     drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan, viewportSize: size, spotlight: spotlight)
                 }
-                let hoveredSummary = Set([hoveredNodeID].compactMap { $0 }).intersection(focusSummaryIDs)
+                let foregroundSummary = Set([draggedNodeID ?? hoveredNodeID].compactMap { $0 }).intersection(focusSummaryIDs)
                 drawOverviewMarks(in: &context, frames: geometry.markerFrames.filter { !focusSummaryIDs.contains($0.key) },
                                   connectedIDs: hoverNeighbors, spotlight: spotlight)
-                drawFocusSummaries(in: &context, frames: geometry.markerFrames, ids: focusSummaryIDs.subtracting(hoveredSummary))
+                drawFocusSummaries(in: &context, frames: geometry.markerFrames, ids: focusSummaryIDs.subtracting(foregroundSummary))
                 for id in hoverSummaryIDs {
                     guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                     let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -787,10 +787,11 @@ public struct SchemaGraphView: View {
                 .zIndex(zIndex(for: node.id))
             }
 
-            // Keep the hovered card and its native input above the expanded root.
+            // Keep the hovered or dragged card and its native input above the expanded root.
             // Pointer lookup uses the same foreground priority in shared geometry.
-            if let hoveredNodeID, focusSummaryIDs.contains(hoveredNodeID),
-               let node = graph.node(id: hoveredNodeID), let frame = geometry.markerFrames[hoveredNodeID] {
+            // Retain this view through mouse-up: it owns the native drag gesture.
+            if let foregroundID = draggedNodeID ?? hoveredNodeID, focusSummaryIDs.contains(foregroundID),
+               let node = graph.node(id: foregroundID), let frame = geometry.markerFrames[foregroundID] {
                 let card = GraphCardLayout.nodeSize(title: node.title, descriptor: nil, style: .collapsed)
                 focusSummaryCard(for: node, frame: frame,
                     highlightState: relationHighlight.highlightState(for: node.id), in: size)
@@ -2087,9 +2088,11 @@ public struct SchemaGraphView: View {
     }
 
     private func isFocusRelatedTable(_ nodeID: String) -> Bool {
-        guard let target = graphFocusTableRelation else { return false }
-        guard nodeID != target.tableID else { return false }
-        return relatedNodeIDs(for: target).contains(nodeID)
+        if let target = graphFocusTableRelation {
+            return nodeID != target.tableID && relatedNodeIDs(for: target).contains(nodeID)
+        }
+        guard let rootID = tableFocusNodeID, nodeID != rootID else { return false }
+        return tableConnectionIDs(rootID).contains(nodeID)
     }
 
 
@@ -2423,17 +2426,19 @@ public struct SchemaGraphView: View {
         }
         let retained = Set([draggedNodeID].compactMap { $0 })
         let primary = enlargedTableIDs.union(session.expandedGraphNodeIDs).union(retained)
+        let summarySizes = focusedSummarySizes(minimumZoom: zoom)
+        let draggedSummaryID = draggedNodeID.flatMap { summarySizes[$0] != nil ? $0 : nil }
         return interactionGeometryCache.snapshot(
             frames: frames, viewport: CGRect(origin: .zero, size: size), zoom: zoom,
             detailZoom: effectiveDetailZoom, isLarge: isLargeGraph || usesOverviewMarks,
             emphasized: session.selectedGraphNodeIDs.union(focusPlan?.activeTableIDs ?? []),
             primary: primary, retained: retained, contentRevision: scenePreparation.contentRevision,
-            hoveredID: draggedNodeID != nil ? nil : hoveredNodeID,
+            hoveredID: draggedSummaryID ?? (draggedNodeID == nil ? hoveredNodeID : nil),
             connectedIDs: hoverNeighborIDs(),
             nodeSizing: session.graphNodeSizeProfile,
             overviewAnchors: overviewAnchors,
             focusRootID: readableFocusRootID,
-            focusSummarySizes: focusedSummarySizes(minimumZoom: zoom),
+            focusSummarySizes: summarySizes,
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
     }
