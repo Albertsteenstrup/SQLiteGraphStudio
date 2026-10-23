@@ -1,4 +1,4 @@
-# Agent-driven exploration in SQLite Graph Studio
+# Agent-driven exploration in SQLGraphStudio
 
 Historical design from the requirements interview, completed 22 September 2026. The October embedded-only direction supersedes its native narration, timed playback, player controls and saved-story reader requirements. Current explanations use manual Back/Next steps and the coding agent's text or audio; the native app has no explanation player. See the [MCP catalog](agent-exploration-mcp-tools.md) and [implementation status](agent-exploration-implementation-status.md) for current behavior. The remaining sections preserve the earlier design record.
 

@@ -63,7 +63,7 @@ sgs_swift_build() {
 sgs_assert_bundle_not_running() {
     local app_bundle="$1"
     local process_name pid executable
-    for process_name in SQLiteGraphStudio StudioMCP; do
+    for process_name in SQLGraphStudio SQLiteGraphStudio StudioMCP; do
         while IFS= read -r pid; do
             [[ -n "$pid" ]] || continue
             executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
@@ -79,19 +79,23 @@ sgs_assert_bundle_not_running() {
 
 sgs_open_reusing_running_app() {
     local requested_bundle="$1"
-    local pid executable running_bundle
-    while IFS= read -r pid; do
-        [[ -n "$pid" ]] || continue
-        executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
-        case "$executable" in
-            */Contents/MacOS/SQLiteGraphStudio)
-                running_bundle="${executable%/Contents/MacOS/SQLiteGraphStudio}"
-                if [[ -d "$running_bundle" ]]; then
-                    /usr/bin/open -a "$running_bundle"
-                    return
-                fi
-                ;;
-        esac
-    done < <(pgrep -x SQLiteGraphStudio 2>/dev/null || true)
+    local pid executable running_bundle process_name
+    for process_name in SQLGraphStudio SQLiteGraphStudio; do
+        while IFS= read -r pid; do
+            [[ -n "$pid" ]] || continue
+            executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
+            case "$executable" in
+                */Contents/MacOS/SQLGraphStudio|*/Contents/MacOS/SQLiteGraphStudio)
+                    running_bundle="${executable%/Contents/MacOS/*}"
+                    if [[ -d "$running_bundle" ]]; then
+                        SGS_OPENED_PROCESS_NAME="$process_name"
+                        /usr/bin/open -a "$running_bundle"
+                        return
+                    fi
+                    ;;
+            esac
+        done < <(pgrep -x "$process_name" 2>/dev/null || true)
+    done
+    SGS_OPENED_PROCESS_NAME="$(sgs_metadata CFBundleExecutable)"
     /usr/bin/open -a "$requested_bundle"
 }

@@ -18,7 +18,7 @@ struct ProjectScanIntegrationTests {
             to: postgres.appendingPathComponent("0001_contract.sql"), atomically: true, encoding: .utf8)
         try "CREATE TABLE public.vendor (id UUID PRIMARY KEY);".write(
             to: postgres.appendingPathComponent("0002_vendor.sql"), atomically: true, encoding: .utf8)
-        try "CREATE TABLE contract (id INTEGER PRIMARY KEY);".write(to: sqlite, atomically: true, encoding: .utf8)
+        try "CREATE TABLE contract (id INTEGER PRIMARY KEY AUTOINCREMENT);".write(to: sqlite, atomically: true, encoding: .utf8)
 
         let tabs = WorkspaceTabController(initialSession: AppSession())
         let coordinator = StudioAutomationCoordinator(workspaces: tabs)
@@ -46,7 +46,7 @@ struct ProjectScanIntegrationTests {
         let migrations = root.appendingPathComponent("backend/sqlite/migrations", isDirectory: true)
         try FileManager.default.createDirectory(at: migrations, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "CREATE TABLE customer (id INTEGER PRIMARY KEY, name TEXT);".write(
+        try "CREATE TABLE customer (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);".write(
             to: migrations.appendingPathComponent("0001_customer.sql"), atomically: true, encoding: .utf8)
         try "CREATE TABLE purchase (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customer(id));".write(
             to: migrations.appendingPathComponent("0002_purchase.sql"), atomically: true, encoding: .utf8)

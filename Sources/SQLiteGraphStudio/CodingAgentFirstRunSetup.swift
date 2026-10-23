@@ -11,6 +11,7 @@ struct CodingAgentFirstRunSetup {
     }
 
     private static let reviewedClientsKey = "codingAgentSetupFirstRunReviewedClients"
+    private static let renamedAppReviewedClientsKey = "codingAgentSetupRenamedAppReviewedClients"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -18,7 +19,10 @@ struct CodingAgentFirstRunSetup {
     }
 
     private var reviewedClients: Set<String> {
+        // Existing users receive one review for the helper's new bundle path.
+        // Keep the original onboarding key so earlier versions retain it too.
         Set(defaults.stringArray(forKey: Self.reviewedClientsKey) ?? [])
+            .intersection(defaults.stringArray(forKey: Self.renamedAppReviewedClientsKey) ?? [])
     }
 
     var shouldCheck: Bool {
@@ -46,6 +50,8 @@ struct CodingAgentFirstRunSetup {
 
     func markReviewed(for preview: MCPSetupPreview) {
         let available = preview.clients.compactMap { $0.cliPath == nil ? nil : $0.client.rawValue }
-        defaults.set(Array(reviewedClients.union(available)).sorted(), forKey: Self.reviewedClientsKey)
+        let prior = Set(defaults.stringArray(forKey: Self.reviewedClientsKey) ?? [])
+        defaults.set(Array(prior.union(available)).sorted(), forKey: Self.reviewedClientsKey)
+        defaults.set(Array(reviewedClients.union(available)).sorted(), forKey: Self.renamedAppReviewedClientsKey)
     }
 }

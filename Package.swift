@@ -12,7 +12,7 @@ let package = Package(
             targets: ["StudioCore"]
         ),
         .executable(
-            name: "SQLiteGraphStudio",
+            name: "SQLGraphStudio",
             targets: ["SQLiteGraphStudio"]
         ),
         .executable(

@@ -1,7 +1,7 @@
 [project]
 name = "sqlitegraphstudio-pocket-tts-runtime"
 version = "0.0.0"
-description = "Locked Python dependencies for SQLite Graph Studio's Pocket TTS worker"
+description = "Locked Python dependencies for SQLGraphStudio's Pocket TTS worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pocket-tts==3.1.0",

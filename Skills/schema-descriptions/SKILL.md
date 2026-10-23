@@ -1,11 +1,11 @@
 ---
 name: schema-descriptions
-description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
+description: Add table and column descriptions to a SQLGraphStudio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
 ---
 
 # schema-descriptions
 
-You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
+You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLGraphStudio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
 Descriptions are intentionally sidecar metadata so users can edit them directly without changing the database schema. When Graph Studio MCP is available, use `studio_get_annotations` to read the current `metadata_revision`, then pass it as `expected_metadata_revision` to `studio_update_annotations` when saving requested descriptions with immediate refresh. On `METADATA_CONFLICT`, read again, merge the user's intended descriptions, and retry with a new `request_id`. The file workflow below remains available offline.
 

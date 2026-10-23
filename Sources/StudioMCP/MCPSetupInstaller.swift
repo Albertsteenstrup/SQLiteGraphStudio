@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 public enum MCPSetupClient: String, CaseIterable, Equatable, Sendable {
@@ -337,7 +338,7 @@ public struct SystemMCPSetupHelperDiagnoser: MCPSetupHelperDiagnosing {
                     "params": [
                         "protocolVersion": "2025-11-25",
                         "capabilities": [:],
-                        "clientInfo": ["name": "SQLite Graph Studio setup check", "version": "1"],
+                        "clientInfo": ["name": "SQLGraphStudio setup check", "version": "1"],
                     ],
                 ],
                 ["jsonrpc": "2.0", "method": "notifications/initialized"],
@@ -547,8 +548,9 @@ private enum CodexProjectEntryState {
 }
 
 /// Installs the local stdio bridge with the clients' own MCP CLIs and maintains
-/// the canonical skills in their user-wide skill directories. Config files are
-/// never rewritten directly. Existing customized skill files are kept intact.
+/// the canonical skills in their user-wide skill directories. Existing customized
+/// skill files are kept intact. The app rename can update a known helper path
+/// in place, preserving the rest of that client's configuration.
 public enum MCPSetupInstaller {
     public static let serverName = "sqlite-graph-studio"
 
@@ -751,6 +753,14 @@ public enum MCPSetupInstaller {
 
             let versionResult = runner.run(executable: cliPath, arguments: ["--version"])
             let cliVersion = versionResult.status == 0 ? cliVersionLabel(versionResult.stdout, for: client) : nil
+
+            if let update = renamedHelperUpdate(client: client, helperPath: helperPath, scope: scope,
+                                                projectDirectory: projectDirectory, homeDirectory: homeDirectory) {
+                return MCPSetupClientPlan(
+                    client: client, state: .willRegister, cliPath: cliPath, cliVersion: cliVersion,
+                    message: "Will update the existing \(serverName) helper path to \(helperPath) in \(update.url.path). Other settings will be kept."
+                )
+            }
 
             if scope == .project, let projectDirectory {
                 let destinationIssue = projectMCPDestinationIssue(
@@ -1119,6 +1129,24 @@ public enum MCPSetupInstaller {
             )
         }
 
+        if let update = renamedHelperUpdate(client: client, helperPath: executablePath, scope: scope,
+                                            projectDirectory: projectDirectory, homeDirectory: homeDirectory) {
+            do {
+                try writeRenamedHelperUpdate(update)
+                guard try Data(contentsOf: update.url) == update.updated else {
+                    throw MCPSetupError.projectConfigConflict(update.url.path)
+                }
+                return verifiedOutcome(
+                    client: client, state: .installed,
+                    baseMessage: "Updated the existing \(serverName) helper path for SQLGraphStudio. Other settings were kept. Reload the client to use the renamed app.",
+                    helperPath: executablePath, projectDirectory: scope == .project ? projectDirectory : nil,
+                    helperDiagnoser: helperDiagnoser
+                )
+            } catch {
+                return MCPSetupOutcome(client: client, state: .failed, message: "Could not update the renamed app's helper path: \(error.localizedDescription)")
+            }
+        }
+
         if scope == .project, let projectDirectory,
            client == .codex {
             let config = projectDirectory.appendingPathComponent(".codex/config.toml")
@@ -1200,7 +1228,7 @@ public enum MCPSetupInstaller {
                 return MCPSetupOutcome(
                     client: client,
                     state: .failed,
-                    message: "Could not register SQLite Graph Studio in this Claude Code project: \(brief(added.stderr.isEmpty ? added.stdout : added.stderr))."
+                    message: "Could not register SQLGraphStudio in this Claude Code project: \(brief(added.stderr.isEmpty ? added.stdout : added.stderr))."
                 )
             }
             guard case .matching = inspectClaudeProjectEntry(projectDirectory: projectDirectory, helperPath: executablePath) else {
@@ -1213,7 +1241,7 @@ public enum MCPSetupInstaller {
             return verifiedOutcome(
                 client: client,
                 state: .installed,
-                baseMessage: "Registered SQLite Graph Studio in this Claude Code project. Reload the project to pick up the connection.",
+                baseMessage: "Registered SQLGraphStudio in this Claude Code project. Reload the project to pick up the connection.",
                 helperPath: executablePath,
                 projectDirectory: projectDirectory,
                 helperDiagnoser: helperDiagnoser
@@ -1244,7 +1272,7 @@ public enum MCPSetupInstaller {
                 ? verifiedOutcome(
                     client: client,
                     state: .alreadyInstalled,
-                    baseMessage: "\(client.rawValue) already has the SQLite Graph Studio helper configured.",
+                    baseMessage: "\(client.rawValue) already has the SQLGraphStudio helper configured.",
                     helperPath: executablePath,
                     projectDirectory: scope == .project ? projectDirectory : nil,
                     helperDiagnoser: helperDiagnoser
@@ -1270,7 +1298,7 @@ public enum MCPSetupInstaller {
             return MCPSetupOutcome(
                 client: client,
                 state: .failed,
-                message: "Could not register SQLite Graph Studio with \(client.rawValue): \(brief(added.stderr.isEmpty ? added.stdout : added.stderr))."
+                message: "Could not register SQLGraphStudio with \(client.rawValue): \(brief(added.stderr.isEmpty ? added.stdout : added.stderr))."
             )
         }
         let readBack = runner.run(
@@ -1301,7 +1329,7 @@ public enum MCPSetupInstaller {
         return verifiedOutcome(
             client: client,
             state: .installed,
-            baseMessage: "Registered SQLite Graph Studio at \(scope == .project ? "project" : "user") scope with \(client.rawValue). Reload that client to pick up the connection.",
+            baseMessage: "Registered SQLGraphStudio at \(scope == .project ? "project" : "user") scope with \(client.rawValue). Reload that client to pick up the connection.",
             helperPath: executablePath,
             projectDirectory: scope == .project ? projectDirectory : nil,
             helperDiagnoser: helperDiagnoser
@@ -1900,6 +1928,103 @@ public enum MCPSetupInstaller {
               let servers = root["mcpServers"] as? [String: [String: Any]]
         else { return nil }
         return servers[serverName]
+    }
+
+    private typealias RenamedHelperUpdate = (url: URL, original: Data, updated: Data, permissions: NSNumber)
+
+    private static func writeRenamedHelperUpdate(_ update: RenamedHelperUpdate) throws {
+        let temporary = update.url.deletingLastPathComponent().appendingPathComponent(".sgs-rename-\(UUID().uuidString)")
+        let fd = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close(); try? FileManager.default.removeItem(at: temporary) }
+        try handle.write(contentsOf: update.updated)
+        guard fchmod(fd, mode_t(update.permissions.uint16Value)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try handle.synchronize()
+        // Keep a private staging file and check for intervening edits before
+        // atomically replacing only the reviewed configuration file.
+        guard try Data(contentsOf: update.url) == update.original,
+              !isSymbolicLink(update.url, fileManager: .default) else {
+            throw MCPSetupError.projectConfigConflict(update.url.path)
+        }
+        guard Darwin.rename(temporary.path, update.url.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// Only a sibling app-bundle rename is eligible. Arbitrary helper paths,
+    /// arguments, symlinked configs and unrelated server entries stay untouched.
+    private static func renamedHelperUpdate(
+        client: MCPSetupClient, helperPath: String, scope: MCPSetupScope,
+        projectDirectory: URL?, homeDirectory: URL
+    ) -> RenamedHelperUpdate? {
+        let suffix = "/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
+        guard helperPath.hasPrefix("/"), helperPath.hasSuffix(suffix) else { return nil }
+        let oldPath = String(helperPath.dropLast(suffix.count)) + "/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        let root: URL
+        let config: URL
+        if scope == .project {
+            guard let projectDirectory else { return nil }
+            root = projectDirectory.standardizedFileURL
+            config = root.appendingPathComponent(client == .codex ? ".codex/config.toml" : ".mcp.json")
+        } else if client == .codex,
+                  homeDirectory.standardizedFileURL.path == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path,
+                  let configuredHome = ProcessInfo.processInfo.environment["CODEX_HOME"], !configuredHome.isEmpty {
+            guard configuredHome.hasPrefix("/") else { return nil }
+            root = URL(fileURLWithPath: configuredHome, isDirectory: true).standardizedFileURL
+            config = root.appendingPathComponent("config.toml")
+        } else {
+            root = homeDirectory.standardizedFileURL
+            config = root.appendingPathComponent(client == .codex ? ".codex/config.toml" : ".claude.json")
+        }
+        var directory = config.deletingLastPathComponent()
+        while true {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: directory.path),
+                  attributes[.type] as? FileAttributeType == .typeDirectory else { return nil }
+            if directory.path == root.path { break }
+            guard directory.path.hasPrefix(root.path + "/") else { return nil }
+            directory.deleteLastPathComponent()
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: config.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber, size.uint64Value <= maximumProjectConfigBytes,
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              let original = try? Data(contentsOf: config) else { return nil }
+        let updated: Data
+        if client == .codex {
+            guard let text = String(data: original, encoding: .utf8),
+                  !text.contains("\"\"\""), !text.contains("'''"),
+                  case .matching = codexProjectEntryState(in: text, helperPath: oldPath) else { return nil }
+            var section: [String] = []
+            var lines = text.components(separatedBy: "\n")
+            for index in lines.indices {
+                let line = stripTOMLComment(lines[index]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.hasPrefix("["), let header = parseTOMLTableHeader(line) { section = header; continue }
+                if section == ["mcp_servers", serverName],
+                   let (key, value) = parseTOMLAssignment(line), key == "command",
+                   let range = lines[index].range(of: value) {
+                    lines[index].replaceSubrange(range, with: tomlBasicString(helperPath))
+                }
+            }
+            let replacement = lines.joined(separator: "\n")
+            guard case .matching = codexProjectEntryState(in: replacement, helperPath: helperPath) else { return nil }
+            updated = Data(replacement.utf8)
+        } else {
+            guard var document = try? JSONSerialization.jsonObject(with: original) as? [String: Any],
+                  var servers = document["mcpServers"] as? [String: Any],
+                  var entry = servers[serverName] as? [String: Any],
+                  commandEntry(entry, matches: oldPath),
+                  entry["args"] == nil || (entry["args"] as? [String]) == [],
+                  entry["type"] == nil || entry["type"] as? String == "stdio" else { return nil }
+            entry["command"] = helperPath
+            servers[serverName] = entry
+            document["mcpServers"] = servers
+            guard let data = try? JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return nil }
+            updated = data + Data("\n".utf8)
+        }
+        return (config, original, updated, permissions)
     }
 
     private static func commandEntry(_ entry: [String: Any], matches executablePath: String) -> Bool {

@@ -2,6 +2,17 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## SQLGraphStudio Name and Compatibility
+
+- Rename the repository to `sqlgraphstudio` and the app, executable, and DMG to `SQLGraphStudio`. Update visible branding, current documentation, and the bundled coding-agent skills.
+- Preserve the existing bundle identifier, preferences, saved-work folders, MCP server and bridge identifiers, document formats, and internal Swift module/resource bundle names. Launch and packaging guards recognize both executable names.
+- Offer existing users one coding-agent setup review to move known helper paths from the old app bundle to the new one. Preserve unrelated configuration, environment variables, enabled state, custom commands, and file permissions. Keep previous managed skill hashes so unmodified installed skills can update.
+
+## Migration Dialect Detection and Supported Databases
+
+- Infer migration and schema-script dialects from specific SQL syntax before using the selected file or folder's own name for ambiguous words. Ignore comments, string values, and identifier substrings so SQLite fields such as `SerialNumber` and `UUID` cannot outweigh `AUTOINCREMENT`. Parent folders containing `sqlite`, `postgres`, or `pgsql` no longer override the source dialect, preserving distinct PostgreSQL schemas and their relationships.
+- Add a supported-databases overview to the README with SQLite and PostgreSQL opening instructions and their editing, read-only, and schema-only limits.
+
 ## Surface Corners
 
 - Use subtle 8-point corners for workspace panes, graph cards and content panels, with 6-point controls and 4-point row highlights. Keep borders, clipping, hit areas and native workspace captures aligned across the app and embedded MCP views.

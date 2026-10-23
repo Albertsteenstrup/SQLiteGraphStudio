@@ -345,6 +345,111 @@ struct ProjectScannerTests {
         #expect(set.dialect == .sqlite)
     }
 
+    @Test(arguments: ["sqlitegraph/project/schema.sql", "sqlite-test/schema.sql",
+                      "SQLiteGraphStudio/project/structure.sql"])
+    func postgresSchemaUnderASQLiteAncestorKeepsDistinctTables(path: String) throws {
+        let fixture = try Fixture()
+        let url = try fixture.write(path, """
+        CREATE TABLE calendar.event (id INTEGER PRIMARY KEY);
+        CREATE TABLE public.event (
+            id INTEGER PRIMARY KEY,
+            calendar_event_id INTEGER REFERENCES calendar.event(id)
+        );
+        """)
+        let directSet = try ProjectScanner.migrationSet(at: url)
+        let candidate = try #require(try ProjectScanner.scan(root: fixture.root).candidates.first)
+        let discoveredSet = try #require(candidate.migrationSet)
+
+        // Both direct opening and project discovery must keep same-named
+        // tables in different PostgreSQL schemas, including their relation.
+        for set in [directSet, discoveredSet] {
+            #expect(set.dialect == .postgreSQL)
+            let model = try MigrationSchemaReplay.buildModel(files: set.files, dialect: set.dialect)
+            #expect(model.catalog.descriptors.map(\.name).sorted() == ["calendar.event", "public.event"])
+            #expect(model.catalog.graph.edges.count == 1)
+            #expect(model.diagnostics.isEmpty)
+        }
+    }
+
+    @Test func migrationDialectIgnoresAncestorNames() throws {
+        let fixture = try Fixture()
+        try fixture.write("sqlitegraph/migrations/0001_a.sql", "CREATE TABLE public.event (id INT PRIMARY KEY);")
+        try fixture.write("sqlitegraph/migrations/0002_b.sql", "CREATE TABLE calendar.event (id INT PRIMARY KEY);")
+        let directory = fixture.root.appendingPathComponent("sqlitegraph/migrations")
+        let directSet = try ProjectScanner.migrationSet(at: directory)
+        let candidate = try #require(try ProjectScanner.scan(root: fixture.root).candidates.first)
+        let discoveredSet = try #require(candidate.migrationSet)
+
+        for set in [directSet, discoveredSet] {
+            #expect(set.dialect == .postgreSQL)
+            let model = try MigrationSchemaReplay.buildModel(files: set.files, dialect: set.dialect)
+            #expect(model.catalog.descriptors.count == 2)
+        }
+    }
+
+    @Test(arguments: ["sqlite-schema.sql", "sqlite-migrations"])
+    func postgresContentOverridesTheSourceName(path: String) throws {
+        let fixture = try Fixture()
+        let isScript = path.hasSuffix(".sql")
+        try fixture.write(isScript ? path : path + "/0001_a.sql",
+                          "CREATE TABLE public.event (id BIGSERIAL PRIMARY KEY, value INTEGER DEFAULT 1::INTEGER);")
+        let set = try ProjectScanner.migrationSet(at: fixture.root.appendingPathComponent(path))
+        #expect(set.dialect == .postgreSQL)
+    }
+
+    @Test(arguments: ["postgres/schema.sql", "pgsql/migrations", "postgres-schema.sql", "postgres-migrations"])
+    func sqliteContentOverridesPostgresNames(path: String) throws {
+        let fixture = try Fixture()
+        let isScript = path.hasSuffix(".sql")
+        try fixture.write(isScript ? path : path + "/0001_a.sql",
+                          "CREATE TABLE event (id INTEGER PRIMARY KEY AUTOINCREMENT);")
+        let set = try ProjectScanner.migrationSet(at: fixture.root.appendingPathComponent(path))
+        #expect(set.dialect == .sqlite)
+    }
+
+    @Test(arguments: ["sqlite", "postgres", "pgsql", "migrations"])
+    func ambiguousMigrationsUseOnlyTheirOwnDirectoryName(name: String) throws {
+        let fixture = try Fixture()
+        try fixture.write("sqlitegraph/" + name + "/0001_a.sql", "CREATE TABLE event (id INT PRIMARY KEY);")
+        let set = try ProjectScanner.migrationSet(at: fixture.root.appendingPathComponent("sqlitegraph/" + name))
+        #expect(set.dialect == (name == "sqlite" ? .sqlite : .postgreSQL))
+    }
+
+    @Test(arguments: ["sqlite-migrations", "migrations"])
+    func sqliteSyntaxOutweighsPostgresWordsInColumnNames(name: String) throws {
+        let fixture = try Fixture()
+        try fixture.write(name + "/0001_devices.sql", """
+        CREATE TABLE Device (id INTEGER PRIMARY KEY AUTOINCREMENT, SerialNumber TEXT, UUID TEXT);
+        """)
+        let set = try ProjectScanner.migrationSet(at: fixture.root.appendingPathComponent(name))
+        #expect(set.dialect == .sqlite)
+        let model = try MigrationSchemaReplay.buildModel(files: set.files, dialect: set.dialect)
+        #expect(model.catalog.descriptors.map(\.name) == ["Device"])
+        #expect(model.catalog.descriptors.first?.columns.map(\.name) == ["id", "SerialNumber", "UUID"])
+    }
+
+    @Test func ambiguousWordsDoNotOverrideAnExplicitSQLiteSourceName() throws {
+        let fixture = try Fixture()
+        try fixture.write("sqlite-migrations/0001_devices.sql", "CREATE TABLE Device (UUID TEXT, SerialNumber TEXT);")
+        let set = try ProjectScanner.migrationSet(at: fixture.root.appendingPathComponent("sqlite-migrations"))
+        #expect(set.dialect == .sqlite)
+    }
+
+    @Test func dialectSyntaxInsideCommentsAndStringsIsIgnored() throws {
+        let fixture = try Fixture()
+        let url = try fixture.write("schema.sql", """
+        -- PRAGMA foreign_keys = ON; AUTOINCREMENT WITHOUT ROWID
+        CREATE TABLE public.event (id INTEGER, note TEXT DEFAULT 'sqlite_autoincrement pragma uuid serial');
+        CREATE TABLE calendar.event (id INTEGER);
+        """)
+        #expect(try ProjectScanner.migrationSet(at: url).dialect == .postgreSQL)
+        let sqlite = try fixture.write("sqlite-schema.sql", """
+        /* CREATE EXTENSION vector; DEFAULT 1::INTEGER */
+        CREATE TABLE Device (UUID TEXT, note TEXT DEFAULT '$$ :: CREATE EXTENSION');
+        """)
+        #expect(try ProjectScanner.migrationSet(at: sqlite).dialect == .sqlite)
+    }
+
     @Test func resolvingAFolderWithoutVersionedFilesFails() throws {
         let fixture = try Fixture()
         try fixture.write("notes/readme.sql", "select 1;")

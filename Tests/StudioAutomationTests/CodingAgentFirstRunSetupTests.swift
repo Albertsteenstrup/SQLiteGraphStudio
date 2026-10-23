@@ -5,6 +5,24 @@ import Testing
 
 struct CodingAgentFirstRunSetupTests {
     @Test
+    func existingUsersReviewTheRenamedHelperPathOnce() throws {
+        let suite = "CodingAgentFirstRunSetupTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(["codex", "claude"], forKey: "codingAgentSetupFirstRunReviewedClients")
+        let onboarding = CodingAgentFirstRunSetup(defaults: defaults)
+        let preview = MCPSetupPreview(helperPath: helperPath, clients: [
+            plan(.codex, .willRegister, cliPath: "/usr/local/bin/codex"),
+            plan(.claude, .alreadyRegistered, cliPath: "/usr/local/bin/claude"),
+        ], skills: [])
+        #expect(onboarding.shouldCheck)
+        #expect(onboarding.decision(for: preview) == .review)
+        onboarding.markReviewed(for: preview)
+        #expect(!onboarding.shouldCheck)
+        #expect(defaults.stringArray(forKey: "codingAgentSetupFirstRunReviewedClients") == ["claude", "codex"])
+    }
+
+    @Test
     func firstLaunchOffersUserWideRegistrationOnceAndRequiresAnExplicitChoice() throws {
         let suite = "CodingAgentFirstRunSetupTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -96,7 +114,7 @@ struct CodingAgentFirstRunSetupTests {
     }
 
     private var helperPath: String {
-        "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
     }
 
     private func previewWithCodex(_ state: MCPSetupClientPlan.State) -> MCPSetupPreview {

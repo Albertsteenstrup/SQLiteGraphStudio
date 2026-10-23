@@ -199,7 +199,7 @@ struct StudioLauncher {
             exit(2)
         }
         if cliArguments.contains("--help") || cliArguments.contains("-h") {
-            FileHandle.standardOutput.write(Data("Usage: SQLiteGraphStudio [database-or-folder ...]\n".utf8))
+            FileHandle.standardOutput.write(Data("Usage: SQLGraphStudio [database-or-folder ...]\n".utf8))
             exit(0)
         }
         // AppKit must own the ordinary synchronous main entrypoint. Nesting its
@@ -221,7 +221,7 @@ struct StudioLauncher {
                 }
                 instanceLock = lock
             } catch {
-                NSLog("SQLite Graph Studio could not establish its single-instance lock: %@", error.localizedDescription)
+                NSLog("SQLGraphStudio could not establish its single-instance lock: %@", error.localizedDescription)
                 return
             }
             SQLiteGraphStudioApp.main()
@@ -239,7 +239,7 @@ struct SQLiteGraphStudioApp: App {
     @State private var state = StudioApplicationState()
 
     var body: some Scene {
-        Window("SQLite Graph Studio", id: "main") {
+        Window("SQLGraphStudio", id: "main") {
             StudioRootView(session: state.initialSession, workspaceTabs: state.tabs,
                            frameCaptures: state.automation.workspaceFrameCaptures)
                 .frame(

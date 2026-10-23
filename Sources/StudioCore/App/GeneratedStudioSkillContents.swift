@@ -4,12 +4,12 @@ extension StudioSkills {
     static let graphClustersContent = #"""
     ---
     name: graph-clusters
-    description: Generate cluster hints for the SQLite Graph Studio physics engine so related tables group together by a chosen lens. Default to domain areas (auth, billing, content, etc.) unless the user asks to cluster around another concept such as people, artifacts, departments, workflows, or ownership.
+    description: Generate cluster hints for the SQLGraphStudio physics engine so related tables group together by a chosen lens. Default to domain areas (auth, billing, content, etc.) unless the user asks to cluster around another concept such as people, artifacts, departments, workflows, or ownership.
     ---
 
     # graph-clusters
 
-    You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` whose normal table cards remain visible on the full-catalog map.
+    You write a JSON sidecar (`<document>.studio.json`) that tells SQLGraphStudio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` whose normal table cards remain visible on the full-catalog map.
 
     When Graph Studio MCP is available, show temporary groups immediately with `studio_set_groups`. To save a requested durable grouping, read `studio_get_annotations` first and pass its `metadata_revision` as `expected_metadata_revision` to `studio_update_annotations`; the app refreshes it. If the save returns `METADATA_CONFLICT`, read again, merge the intended grouping with the current metadata, and retry with a new `request_id`. The sidecar file remains available for offline work, and the user can edit it by hand.
 
@@ -111,12 +111,12 @@ extension StudioSkills {
     static let schemaDescriptionsContent = #"""
     ---
     name: schema-descriptions
-    description: Add table and column descriptions to a SQLite Graph Studio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
+    description: Add table and column descriptions to a SQLGraphStudio sidecar file so they surface as hover tooltips on schema graph nodes, table grids, and query result headers. Use when the user asks to "document the schema", "annotate the tables", "explain what these columns mean", or hands you an unfamiliar database.
     ---
 
     # schema-descriptions
 
-    You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLite Graph Studio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
+    You write descriptions to `<document>.studio.json`, beside the opened database file or PostgreSQL connection document. SQLGraphStudio reads this sidecar at load time and when the user clicks **Relayout**. The notes appear when hovering schema graph nodes, table names and headers in table grids, and matching query result headers. The database DDL is not modified.
 
     Descriptions are intentionally sidecar metadata so users can edit them directly without changing the database schema. When Graph Studio MCP is available, use `studio_get_annotations` to read the current `metadata_revision`, then pass it as `expected_metadata_revision` to `studio_update_annotations` when saving requested descriptions with immediate refresh. On `METADATA_CONFLICT`, read again, merge the user's intended descriptions, and retry with a new `request_id`. The file workflow below remains available offline.
 
@@ -205,7 +205,7 @@ extension StudioSkills {
     static let databaseExploreContent = #"""
     ---
     name: database-explore
-    description: Investigate a SQLite or PostgreSQL data model and show a live, agent-directed explanation in SQLite Graph Studio through local MCP. Use for model overviews, process tables, keys, records, queries, or a selected graph item.
+    description: Investigate a SQLite or PostgreSQL data model and show a live, agent-directed explanation in SQLGraphStudio through local MCP. Use for model overviews, process tables, keys, records, queries, or a selected graph item.
     ---
 
     # Explore a database with Graph Studio
@@ -270,10 +270,10 @@ extension StudioSkills {
 
     static let knownManagedHashes: [String: Set<String>] = [
         "database-diff": ["4403e9b8402e0dd934f072b27dbe5e9ad54b4a0ccc4951ffa887dd6011067877", "92a1bc97cc3b7e6561a663cc9aa615b1901ceadb88da47c92f38ba9b811b9419", "9076bbe8af3324dafc63ef8456d8d77cc9e3f54b06d3ae5ee1d7549b6096065f", "7a300c6964cdba3336dfb3c59ed59b54c94ee71ec96606aa7f1cb8250149840b", "d38d72d65263992b31b112f3785e52f988e67d31f09130b0106525097f0f2225"],
-        "database-explore": ["b9d635243780070b8083dd1d0b1305a3f474f67e70f537de649f5dd52191935d", "2d3fd74135fd38d8c9442220f0e9afc1061c5f542b41d762be059cc4ab669fb6", "580f50bbb7157869e4f973c2efba2149978e67d43c1b4a3416ac41444a2d845a", "f3d00e24454a36b4c77d19918ebe0dd8cfd6cfdbea7b6fb8aa263a9639b0c89f", "421cbceee6bc59db488d17a3973b7c98baf4701d264e4dbd8d639219b7f35bc6", "35cbf93c3fbd0ae880d95ee3e75b841cddaceb0f18609d32a0cb74a8e9609954", "ba6441b6732a7531e37ad37fcb98991ae2e38a5f3e78994587777e1148ee9a17", "36e4825855997fc8efcbc06d7102ac0daff27311f9d2bf94ee83e73215ac0b27", "c83aea231a373268b1277fa182238b44cec45c2ace99689c0e97af867dce4e99", "34f936212121ed2a8a49479cf922a919612868177a50ee4032ce944a3ab237a1"],
+        "database-explore": ["b9d635243780070b8083dd1d0b1305a3f474f67e70f537de649f5dd52191935d", "2d3fd74135fd38d8c9442220f0e9afc1061c5f542b41d762be059cc4ab669fb6", "580f50bbb7157869e4f973c2efba2149978e67d43c1b4a3416ac41444a2d845a", "f3d00e24454a36b4c77d19918ebe0dd8cfd6cfdbea7b6fb8aa263a9639b0c89f", "421cbceee6bc59db488d17a3973b7c98baf4701d264e4dbd8d639219b7f35bc6", "35cbf93c3fbd0ae880d95ee3e75b841cddaceb0f18609d32a0cb74a8e9609954", "ba6441b6732a7531e37ad37fcb98991ae2e38a5f3e78994587777e1148ee9a17", "36e4825855997fc8efcbc06d7102ac0daff27311f9d2bf94ee83e73215ac0b27", "c83aea231a373268b1277fa182238b44cec45c2ace99689c0e97af867dce4e99", "34f936212121ed2a8a49479cf922a919612868177a50ee4032ce944a3ab237a1", "1bf169ee5b0372b5206113a2b5870af07cac9e8a88a235f39d5fda40f0d1c0c2"],
         "database-preview": ["ea711ff5da8437167138305fc3ee8e11173a6525bcc0ecce4f52254412ed4388", "885b33b70f2f31322a8723ab822e1cb92fc58b8546d05acf8cfb5308ff823063", "a0c5fde5d6016aaa9744f525d39dbd6f35e6ad881a8e855f39f917105021a73b", "2d7482c3795f21a57939d15fb5eb79dffce438ab47752f8c55f85444a2922753", "00b533574cb8db5988d18c8db0e92098259ae6347eb0ed803846cf304507c9e2"],
-        "graph-clusters": ["0a7091b32ae03d1b229e4581ae174404493eaaeaea100ab9fea5513672d0a68c", "ee97e6f72efb08efc52b15dcab494524559b9ed92c9ee6eacca42303fc6db8b1", "a5955fb18a7f27d77b2a926a22a101ee24769ebf8ca20fe2a3b12f50459d5f26", "217cda60b500d45d9430947345f92a9fa7189beb9050e51791cc519f0b95c5c0", "5cac1ae166a7ac30a5b925da54c58ae4b7906648ab4ec0d3e35925a4d3d93f49", "2bdfa52c3b8814367f97031ec89dc71bc1406b9f42ced286211ae50cb75730cb"],
-        "schema-descriptions": ["1b0514eecb66d32e85f34e3c5f7bde441a39971dd2e1499031cd1ec7482c430b", "5597c5dc512b3d28027c15c40ed1aefb5ee6c71175ac4a6531bdca5842594cee"],
+        "graph-clusters": ["0a7091b32ae03d1b229e4581ae174404493eaaeaea100ab9fea5513672d0a68c", "ee97e6f72efb08efc52b15dcab494524559b9ed92c9ee6eacca42303fc6db8b1", "a5955fb18a7f27d77b2a926a22a101ee24769ebf8ca20fe2a3b12f50459d5f26", "217cda60b500d45d9430947345f92a9fa7189beb9050e51791cc519f0b95c5c0", "5cac1ae166a7ac30a5b925da54c58ae4b7906648ab4ec0d3e35925a4d3d93f49", "2bdfa52c3b8814367f97031ec89dc71bc1406b9f42ced286211ae50cb75730cb", "b8b4b82f644340edc113fb6a1d153dae42ccfa8d5cc1482d700909f1ff70de34"],
+        "schema-descriptions": ["1b0514eecb66d32e85f34e3c5f7bde441a39971dd2e1499031cd1ec7482c430b", "5597c5dc512b3d28027c15c40ed1aefb5ee6c71175ac4a6531bdca5842594cee", "0c2614f5b485887f7033450c4988ec6a9e6e65c808a98b8c18884d3179f5cfa5"],
         "story-flows": ["2dec3cc7b479343a6f2b40547bcddc5390f6435762046cf8ccfd08bf4075abe1", "4771c1c0fc2389911a97ed8e99dfd3858b055b8bd2b0d43bed4be2d84f6132db", "98af44e239d2326b74a1b2c94fdfb3912be6b21be6aba413709534f6910b5957"],
     ]
 }

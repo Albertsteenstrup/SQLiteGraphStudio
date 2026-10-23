@@ -292,7 +292,7 @@ pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: a
       default: if (message.id !== undefined) post({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
     }
   });
-  request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "SQLite Graph Studio data", version: "1.0.0" }, appCapabilities: { availableDisplayModes: ["inline"] } })
+  request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "SQLGraphStudio data", version: "1.0.0" }, appCapabilities: { availableDisplayModes: ["inline"] } })
     .then(result => applyHostContext(result && result.hostContext)).catch(() => {}).finally(() => notify("ui/notifications/initialized"));
 })();
 </script>

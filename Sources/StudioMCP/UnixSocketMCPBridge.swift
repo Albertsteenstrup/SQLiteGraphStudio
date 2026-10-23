@@ -157,7 +157,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
         guard let appURL = applicationURLProvider() else {
             return errorResult(
                 code: "APP_NOT_INSTALLED",
-                message: "SQLite Graph Studio could not be found. Install it in /Applications or ~/Applications, then retry."
+                message: "SQLGraphStudio could not be found. Install it in /Applications or ~/Applications, then retry."
             )
         }
 
@@ -184,7 +184,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
             } catch {
                 return errorResult(
                     code: "APP_LAUNCH_FAILED",
-                    message: "SQLite Graph Studio could not be opened: \(error.localizedDescription)"
+                    message: "SQLGraphStudio could not be opened: \(error.localizedDescription)"
                 )
             }
         }
@@ -197,7 +197,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
                     try verifiedHandshake(connection)
                 }
                 return makeToolResult(
-                    summary: "SQLite Graph Studio is open and its local MCP bridge is ready.",
+                    summary: "SQLGraphStudio is open and its local MCP bridge is ready.",
                     structuredContent: [
                         "launched": pairedCopy == nil,
                         "ready": true,
@@ -218,7 +218,7 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
         }
         return errorResult(
             code: "APP_BRIDGE_TIMEOUT",
-            message: "SQLite Graph Studio opened, but its local MCP bridge did not become ready before the timeout.",
+            message: "SQLGraphStudio opened, but its local MCP bridge did not become ready before the timeout.",
             extra: ["diagnostic": lastError?.message ?? "No bridge response was received."]
         )
     }
@@ -431,6 +431,11 @@ public final class UnixSocketMCPBridge: MCPBridgeTransport {
             return registered
         }
         let candidates = [
+            URL(fileURLWithPath: "/Applications/SQLGraphStudio.app", isDirectory: true),
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications/SQLGraphStudio.app", isDirectory: true),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("dist/SQLGraphStudio.app", isDirectory: true),
             URL(fileURLWithPath: "/Applications/SQLiteGraphStudio.app", isDirectory: true),
             FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Applications/SQLiteGraphStudio.app", isDirectory: true),

@@ -245,7 +245,7 @@ public final class MCPServer {
             "capabilities": capabilities,
             "_meta": [
                 "io.modelcontextprotocol/serverInfo": [
-                    "name": "SQLite Graph Studio",
+                    "name": "SQLGraphStudio",
                     "version": serverVersion,
                 ],
             ],
@@ -296,7 +296,7 @@ public final class MCPServer {
         let result: [String: Any] = [
             "protocolVersion": requestedVersion,
             "capabilities": Self.capabilities,
-            "serverInfo": ["name": "SQLite Graph Studio", "version": Self.serverVersion],
+            "serverInfo": ["name": "SQLGraphStudio", "version": Self.serverVersion],
             "instructions": Self.instructions,
         ]
         return responseIfNeeded(isNotification: isNotification, id: id, result: result)

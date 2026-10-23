@@ -164,7 +164,7 @@ struct CodingAgentSetupSheet: View {
     private func chooseProjectDirectory() {
         let panel = NSOpenPanel()
         panel.title = "Choose a project folder"
-        panel.message = "SQLite Graph Studio will add project-scoped MCP configuration and skills here after you review the changes."
+        panel.message = "SQLGraphStudio will add project-scoped MCP configuration and skills here after you review the changes."
         panel.prompt = "Use Project"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false

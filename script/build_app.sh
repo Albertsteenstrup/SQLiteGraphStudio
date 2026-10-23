@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds a universal SQLiteGraphStudio.app and creates a DMG for distribution.
+# Builds a universal SQLGraphStudio.app and creates a DMG for distribution.
 # Usage: ./script/build_app.sh
-# Output: dist/SQLiteGraphStudio.dmg
+# Output: dist/SQLGraphStudio.dmg
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ if [[ -n "$NOTARYTOOL_PROFILE" && "$SIGNING_IDENTITY" != "Developer ID Applicati
     exit 2
 fi
 DIST_DIR="$PROJECT_DIR/dist"
-APP_NAME="SQLiteGraphStudio"
+APP_NAME="SQLGraphStudio"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 ICNS_PATH="$SCRIPT_DIR/AppIcon.icns"

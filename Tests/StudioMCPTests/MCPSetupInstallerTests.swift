@@ -4,6 +4,117 @@ import XCTest
 @testable import StudioMCP
 
 final class MCPSetupInstallerTests: XCTestCase {
+    func testRenamedAppPreviewsAndUpdatesOnlyTheHelperPathAtBothScopes() throws {
+        let oldPath = "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        let newPath = "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
+        XCTAssertEqual(MCPSetupInstaller.serverName, "sqlite-graph-studio")
+        XCTAssertEqual(MCPBridgePaths.appBundleIdentifier, "com.albertsteenstrup.sqlitegraphstudio")
+        for client in MCPSetupClient.allCases {
+            for scope in MCPSetupScope.allCases {
+                let home = try temporaryDirectory()
+                defer { try? FileManager.default.removeItem(at: home) }
+                let project = home.appendingPathComponent("project")
+                try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+                let cli = home.appendingPathComponent(client.rawValue)
+                try Data().write(to: cli)
+                XCTAssertEqual(chmod(cli.path, 0o755), 0)
+                let root = scope == .user ? home : project
+                let config = root.appendingPathComponent(client == .codex ? ".codex/config.toml" : (scope == .user ? ".claude.json" : ".mcp.json"))
+                try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let original: Data
+                if client == .codex {
+                    original = Data("""
+                    unrelated = true
+                    [mcp_servers."sqlite-graph-studio"]
+                    command = "\(oldPath)" # keep this comment
+                    args = []
+                    enabled = false
+                    env = { KEEP = "yes" }
+                    [mcp_servers.other]
+                    command = "\(oldPath)"
+                    args = []
+
+                    """.utf8)
+                } else {
+                    original = try JSONSerialization.data(withJSONObject: [
+                        "unrelated": true,
+                        "mcpServers": [
+                            "sqlite-graph-studio": ["command": oldPath, "args": [], "type": "stdio", "env": ["KEEP": "yes"]],
+                            "other": ["command": oldPath, "args": []],
+                        ],
+                    ])
+                }
+                try original.write(to: config)
+                XCTAssertEqual(chmod(config.path, 0o640), 0)
+                let previewRunner = FakeCommandRunner(responses: [.init(status: 0, stdout: "1.0")])
+                let preview = MCPSetupInstaller.preview(
+                    clients: [client], executablePath: newPath, scope: scope,
+                    projectDirectory: project, homeDirectory: home, searchPath: home.path, runner: previewRunner
+                )
+                XCTAssertEqual(preview.clients.first?.state, .willRegister)
+                XCTAssertTrue(preview.clients.first?.message.contains(newPath) == true)
+                XCTAssertEqual(try Data(contentsOf: config), original, "Preview must be read-only")
+                XCTAssertEqual(previewRunner.invocations.map(\.arguments), [["--version"]])
+
+                let runner = FakeCommandRunner(responses: [])
+                let outcome = MCPSetupInstaller.install(
+                    clients: [client], executablePath: newPath, scope: scope,
+                    projectDirectory: project, searchPath: home.path, homeDirectory: home, runner: runner
+                )
+                XCTAssertEqual(outcome.first?.state, .installed)
+                XCTAssertTrue(runner.invocations.isEmpty, "Moving a known helper must preserve client options in place")
+                let updated = try Data(contentsOf: config)
+                if client == .codex {
+                    let expected = String(decoding: original, as: UTF8.self)
+                        .replacingOccurrences(of: "command = \"\(oldPath)\" # keep this comment", with: "command = \"\(newPath)\" # keep this comment")
+                    XCTAssertEqual(String(decoding: updated, as: UTF8.self), expected)
+                } else {
+                    let document = try XCTUnwrap(JSONSerialization.jsonObject(with: updated) as? [String: Any])
+                    let servers = try XCTUnwrap(document["mcpServers"] as? [String: [String: Any]])
+                    XCTAssertEqual(servers["sqlite-graph-studio"]?["command"] as? String, newPath)
+                    XCTAssertEqual(servers["sqlite-graph-studio"]?["env"] as? [String: String], ["KEEP": "yes"])
+                    XCTAssertEqual(servers["other"]?["command"] as? String, oldPath)
+                    XCTAssertEqual(document["unrelated"] as? Bool, true)
+                }
+                let mode = try FileManager.default.attributesOfItem(atPath: config.path)[.posixPermissions] as? NSNumber
+                XCTAssertEqual(mode?.intValue, 0o640)
+            }
+        }
+    }
+
+    func testRenamedAppPreservesCustomHelperLocationsArgumentsAndLinkedConfigs() throws {
+        for client in MCPSetupClient.allCases {
+            for kind in ["location", "arguments", "symlink"] {
+                let home = try temporaryDirectory()
+                defer { try? FileManager.default.removeItem(at: home) }
+                let cli = home.appendingPathComponent(client.rawValue)
+                try Data().write(to: cli)
+                XCTAssertEqual(chmod(cli.path, 0o755), 0)
+                let config = home.appendingPathComponent(client == .codex ? ".codex/config.toml" : ".mcp.json")
+                try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let oldPath = (kind == "location" ? "/custom" : "/Applications") + "/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+                let args = kind == "arguments" ? ["--custom"] : []
+                let original: Data
+                if client == .codex {
+                    let argsText = args.isEmpty ? "[]" : "[\"--custom\"]"
+                    original = Data("[mcp_servers.\"sqlite-graph-studio\"]\ncommand = \"\(oldPath)\"\nargs = \(argsText)\n".utf8)
+                } else {
+                    original = try JSONSerialization.data(withJSONObject: ["mcpServers": ["sqlite-graph-studio": ["command": oldPath, "args": args]]])
+                }
+                let target = kind == "symlink" ? home.appendingPathComponent("linked-config") : config
+                try original.write(to: target)
+                if kind == "symlink" { try FileManager.default.createSymbolicLink(at: config, withDestinationURL: target) }
+                let outcome = MCPSetupInstaller.install(
+                    clients: [client], executablePath: "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP",
+                    scope: .project, projectDirectory: home, searchPath: home.path, homeDirectory: home,
+                    runner: FakeCommandRunner(responses: [])
+                )
+                XCTAssertEqual(outcome.first?.state, kind == "symlink" ? .failed : .conflict)
+                XCTAssertEqual(try Data(contentsOf: target), original)
+            }
+        }
+    }
+
     func testDiagnoserRejectsAnOlderHelperWithoutInlineReview() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -26,7 +137,7 @@ final class MCPSetupInstallerTests: XCTestCase {
     }
 
     func testClientCommandsPreserveExecutableArgumentAndSupportProjectScope() {
-        let path = "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        let path = "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
         XCTAssertEqual(MCPSetupInstaller.addArguments(for: .codex, executablePath: path), [
             "mcp", "add", "sqlite-graph-studio", "--", path,
         ])
@@ -357,7 +468,7 @@ final class MCPSetupInstallerTests: XCTestCase {
             try? FileManager.default.removeItem(at: external)
         }
 
-        let appBundleURL = home.appendingPathComponent("SQLiteGraphStudio.app", isDirectory: true)
+        let appBundleURL = home.appendingPathComponent("SQLGraphStudio.app", isDirectory: true)
         let macOSDirectory = appBundleURL.appendingPathComponent("Contents/MacOS", isDirectory: true)
         try FileManager.default.createDirectory(at: macOSDirectory, withIntermediateDirectories: true)
         let info: [String: Any] = [
@@ -448,7 +559,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         let config = codexDirectory.appendingPathComponent("config.toml")
         let original = "model = \"gpt-6-luna\"\n\n[mcp_servers.other-tool]\ncommand = \"other\"\nargs = []\n"
         try Data(original.utf8).write(to: config)
-        let helperPath = "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        let helperPath = "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
         let runner = FakeCommandRunner(responses: [])
         let diagnostician = FakeHelperDiagnoser(result: MCPSetupVerification(
             succeeded: true,
@@ -506,7 +617,7 @@ final class MCPSetupInstallerTests: XCTestCase {
         try Data(original.utf8).write(to: config)
         let report = MCPSetupInstaller.setup(
             clients: [.codex],
-            executablePath: "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP",
+            executablePath: "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP",
             scope: .project,
             projectDirectory: project,
             homeDirectory: home,
@@ -535,7 +646,7 @@ final class MCPSetupInstallerTests: XCTestCase {
 
         let preview = MCPSetupInstaller.preview(
             clients: [.codex],
-            executablePath: "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP",
+            executablePath: "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP",
             scope: .project,
             projectDirectory: project,
             homeDirectory: home,
@@ -574,7 +685,7 @@ final class MCPSetupInstallerTests: XCTestCase {
 
         let preview = MCPSetupInstaller.preview(
             clients: [.codex],
-            executablePath: "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP",
+            executablePath: "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP",
             scope: .project,
             projectDirectory: project,
             homeDirectory: home,
@@ -599,7 +710,7 @@ final class MCPSetupInstallerTests: XCTestCase {
             try? FileManager.default.removeItem(at: project)
             try? FileManager.default.removeItem(at: home)
         }
-        let helperPath = "/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        let helperPath = "/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
         let unrelated = ["review": ["command": "review-tool", "args": ["--check"]]]
         let runner = FakeCommandRunner(responses: [MCPSetupCommandResult(status: 0, stdout: "added")]) { invocation in
             guard invocation.arguments.starts(with: ["mcp", "add"]), let directory = invocation.currentDirectory else { return }
