@@ -2,6 +2,11 @@
 
 This file tracks intentional changes made to the codebase that should NOT be reverted.
 
+## Migration Dialect Detection and Supported Databases
+
+- Infer migration and schema-script dialects from SQL content before using the selected file or folder's own name as a fallback. Parent folders containing `sqlite`, `postgres`, or `pgsql` no longer override the source dialect, preserving distinct PostgreSQL schemas and their relationships.
+- Add a supported-databases overview to the README with SQLite and PostgreSQL opening instructions and their editing, read-only, and schema-only limits.
+
 ## Surface Corners
 
 - Use subtle 8-point corners for workspace panes, graph cards and content panels, with 6-point controls and 4-point row highlights. Keep borders, clipping, hit areas and native workspace captures aligned across the app and embedded MCP views.

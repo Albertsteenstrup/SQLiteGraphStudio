@@ -2,11 +2,22 @@
 
 ![SQLite Graph Studio in use](docs/demo-20261405.gif)
 
-A native macOS app to explore SQLite and PostgreSQL databases as interactive graphs. Browse rows, follow relationships, run queries, and export results. PostgreSQL browsing is read-only.
+A native macOS database explorer for **SQLite and PostgreSQL**. Explore schemas as interactive graphs, browse rows, follow relationships, run queries, and export results.
 
 [**Download the latest release**](../../releases/latest) · **macOS 15+**
 
 Open the DMG, drag SQLite Graph Studio to Applications, and launch. No Xcode or Swift required.
+
+## Supported databases
+
+Choose **File → Choose file/folder…** (⌘O) or **Choose file/folder** on the welcome screen.
+
+| Database | How to open it | Available operations |
+| --- | --- | --- |
+| **SQLite** | Select a local SQLite database file. | Browse, query, export, edit rows, and change schema. |
+| **PostgreSQL** | Select a `.postgres` or `.pgstudio` JSON connection document, or a custom-format PostgreSQL backup. See [connection setup and backup requirements](docs/user-guide.md#postgresql-connections). | Read-only schema and row browsing, queries, relationship exploration, and exports. Backup opening requires a compatible local PostgreSQL runtime. |
+
+For either engine, open versioned SQL migrations or a `schema.sql`/`structure.sql` file to explore a schema without a running database. These [migration models](docs/user-guide.md#migration-data-models) contain structure only, with no row browsing or query execution. Select a project folder to discover supported sources within it.
 
 ## Features
 
