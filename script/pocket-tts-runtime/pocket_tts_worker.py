@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private JSON-lines worker for SQLite Graph Studio's pinned Pocket TTS preset.
+"""Private JSON-lines worker for SQLGraphStudio's pinned Pocket TTS preset.
 
 The parent app owns all model downloads and verifies each pinned file before starting this
 process. This worker runs offline, checks the same manifest again, loads the official 3.1.0

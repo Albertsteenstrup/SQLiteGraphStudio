@@ -1,11 +1,11 @@
 ---
 name: graph-clusters
-description: Generate cluster hints for the SQLite Graph Studio physics engine so related tables group together by a chosen lens. Default to domain areas (auth, billing, content, etc.) unless the user asks to cluster around another concept such as people, artifacts, departments, workflows, or ownership.
+description: Generate cluster hints for the SQLGraphStudio physics engine so related tables group together by a chosen lens. Default to domain areas (auth, billing, content, etc.) unless the user asks to cluster around another concept such as people, artifacts, departments, workflows, or ownership.
 ---
 
 # graph-clusters
 
-You write a JSON sidecar (`<document>.studio.json`) that tells SQLite Graph Studio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` whose normal table cards remain visible on the full-catalog map.
+You write a JSON sidecar (`<document>.studio.json`) that tells SQLGraphStudio's force-directed layout which tables belong together. The physics engine already attracts tables in the same cluster to each other — your job is to decide what the clusters should be, using the database schema and whatever task context the user has shared. For a broad model overview, you may also choose a few `overviewTables` whose normal table cards remain visible on the full-catalog map.
 
 When Graph Studio MCP is available, show temporary groups immediately with `studio_set_groups`. To save a requested durable grouping, read `studio_get_annotations` first and pass its `metadata_revision` as `expected_metadata_revision` to `studio_update_annotations`; the app refreshes it. If the save returns `METADATA_CONFLICT`, read again, merge the intended grouping with the current metadata, and retry with a new `request_id`. The sidecar file remains available for offline work, and the user can edit it by hand.
 

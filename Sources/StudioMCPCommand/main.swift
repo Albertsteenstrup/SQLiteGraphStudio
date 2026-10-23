@@ -12,7 +12,7 @@ enum StudioMCPCommand {
         }
 
         if arguments == ["--version"] || arguments == ["-v"] {
-            print("SQLite Graph Studio MCP \(MCPServer.serverVersion)")
+            print("SQLGraphStudio MCP \(MCPServer.serverVersion)")
             return
         }
 
@@ -20,7 +20,7 @@ enum StudioMCPCommand {
         do {
             try MCPStdioRunner(server: server).run()
         } catch {
-            writeStandardError("SQLite Graph Studio MCP stopped: \(error.localizedDescription)\n")
+            writeStandardError("SQLGraphStudio MCP stopped: \(error.localizedDescription)\n")
             exit(EXIT_FAILURE)
         }
     }

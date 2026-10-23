@@ -2,13 +2,17 @@
 
 `Sources/SQLiteGraphStudio/App/Info.plist` is the source of truth for the app's bundle identifier, marketing version, build number, minimum macOS version, and document associations. Both packaging scripts copy that file. Update versions there when preparing a release. The canonical identity remains `com.albertsteenstrup.sqlitegraphstudio`. The current release uses `0.4.4` / build `7`; this metadata does not establish signing or notarization of an artifact.
 
+The app and executable are named `SQLGraphStudio`; the repository is `Albertsteenstrup/sqlgraphstudio`. The Swift package and internal module names remain `SQLiteGraphStudio`, retaining the packaged resource bundle names. The bundle identifier, preference domains and keys, Application Support folders, MCP server name (`sqlite-graph-studio`), bridge paths, resource URIs, and document formats keep their existing identifiers.
+
+On first launch after the rename, existing users receive a coding-agent setup review. It can move a helper entry from `SQLiteGraphStudio.app/Contents/MacOS/StudioMCP` to the sibling `SQLGraphStudio.app/Contents/MacOS/StudioMCP` while preserving environment variables, enabled state, unrelated servers, and other client settings. Only the corresponding old bundle path with no custom arguments is eligible; customized or linked configuration stays unchanged. The review is read-only until the user installs the change. Users can also open **Coding Agents → Install local MCP and skills…** or rerun the new packaged helper's `setup all` command below.
+
 ## Local builds
 
 ```bash
 bash script/build_and_run.sh --build-only
 ```
 
-This builds a debug app in `dist/SQLiteGraphStudio.app`, including SwiftPM resources and the `StudioMCP` local helper at `Contents/MacOS/StudioMCP`, without stopping or launching an app. Omit `--build-only` to build and launch during normal development. Both build scripts keep SwiftPM's generated files in a per-checkout directory under `~/Library/Developer/SQLiteGraphStudio/SwiftPM`; this avoids macOS file providers adding Finder metadata to resource bundles before SwiftPM signs them. Set `SGS_SWIFT_SCRATCH_PATH` to another absolute, nonsynced directory if needed.
+This builds a debug app in `dist/SQLGraphStudio.app`, including SwiftPM resources and the `StudioMCP` local helper at `Contents/MacOS/StudioMCP`, without stopping or launching an app. Omit `--build-only` to build and launch during normal development. Both build scripts keep SwiftPM's generated files in a per-checkout directory under `~/Library/Developer/SQLiteGraphStudio/SwiftPM`; this avoids macOS file providers adding Finder metadata to resource bundles before SwiftPM signs them. Set `SGS_SWIFT_SCRATCH_PATH` to another absolute, nonsynced directory if needed.
 
 With Command Line Tools selected, the build scripts use SwiftPM's native build engine and select the installed macOS 26.5 SDK when available. This avoids the missing asset compiler and macOS 27 SwiftUI macro plugin in the Command Line Tools distribution. Set `SGS_SWIFT_SDK_PATH` to an existing absolute SDK directory to override that selection. Full Xcode builds keep the selected Xcode SDK and default build engine. Direct `swift build` or `swift run` commands on Command Line Tools need the same `--build-system native --sdk /absolute/path/to/MacOSX26.5.sdk` options.
 
@@ -17,7 +21,7 @@ Packaged MCP resources are resolved from `Contents/Resources` for both the app a
 `swift run` remains available but does not have a packaged bundle identity. For a checkout in iCloud Drive or another file-provider-managed folder, give direct SwiftPM commands an external scratch directory too:
 
 ```bash
-swift run --scratch-path "$HOME/Library/Developer/SQLiteGraphStudio/cli-scratch" SQLiteGraphStudio
+swift run --scratch-path "$HOME/Library/Developer/SQLiteGraphStudio/cli-scratch" SQLGraphStudio
 ```
 
 ```bash
@@ -40,7 +44,7 @@ SGS_POSTGRES_RUNTIME='/absolute/path/to/universal-relocatable-postgresql' \
 bash script/build_app.sh
 ```
 
-The whole supplied directory is copied to `SQLiteGraphStudio.app/Contents/Resources/PostgreSQL`, including license and copyright notices, extension SQL, and relative internal symlinks. Supply the notices for PostgreSQL, pgvector, and every bundled dependency in the runtime tree; the packager preserves them but does not determine license completeness. The source runtime is not modified or executed. Source paths overlapping the output app are rejected before building; copy a runtime from a previous app to a separate directory first. There are no downloads or binary relocation fixes.
+The whole supplied directory is copied to `SQLGraphStudio.app/Contents/Resources/PostgreSQL`, including license and copyright notices, extension SQL, and relative internal symlinks. Supply the notices for PostgreSQL, pgvector, and every bundled dependency in the runtime tree; the packager preserves them but does not determine license completeness. The source runtime is not modified or executed. Source paths overlapping the output app are rejected before building; copy a runtime from a previous app to a separate directory first. There are no downloads or binary relocation fixes.
 
 The required layout is:
 
@@ -110,7 +114,7 @@ This command builds both architectures, signs the app with hardened runtime and 
 To repackage an already prepared app, run:
 
 ```bash
-bash script/create_dmg.sh /path/to/SQLiteGraphStudio.app /path/to/output.dmg
+bash script/create_dmg.sh /path/to/SQLGraphStudio.app /path/to/output.dmg
 ```
 
 This only creates a new container. It does not sign or notarize the new DMG, and a previous DMG's stapled ticket does not transfer. Complete signing, notarization, and assessment again for the exact artifact intended for distribution. Before publication, verify the final downloaded artifact through the normal Gatekeeper path on a separate Mac; a local script success alone is not that end-user check. Do not remove quarantine attributes as a substitute for distribution signing and notarization.

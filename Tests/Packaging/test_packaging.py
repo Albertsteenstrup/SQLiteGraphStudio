@@ -29,7 +29,7 @@ class PackagingTests(unittest.TestCase):
         self.tools.mkdir()
         self.bin = self.root / "build"
         self.bin.mkdir()
-        (self.bin / "SQLiteGraphStudio").write_text("fixture executable")
+        (self.bin / "SQLGraphStudio").write_text("fixture executable")
         (self.bin / "StudioMCP").write_text("fixture MCP helper")
         resources = self.bin / "SQLiteGraphStudio_SQLiteGraphStudio.bundle"
         resources.mkdir()
@@ -120,7 +120,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         return runtime
 
     def packaged_runtime(self):
-        return self.root / "dist/SQLiteGraphStudio.app/Contents/Resources/PostgreSQL"
+        return self.root / "dist/SQLGraphStudio.app/Contents/Resources/PostgreSQL"
 
     def assert_runtime_failure(self, message, script="build_app.sh"):
         args = ["--build-only"] if script == "build_and_run.sh" else []
@@ -136,7 +136,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
                               cwd=self.root, env=self.env, capture_output=True, text=True)
 
     def info(self):
-        return plistlib.loads((self.root / "dist/SQLiteGraphStudio.app/Contents/Info.plist").read_bytes())
+        return plistlib.loads((self.root / "dist/SQLGraphStudio.app/Contents/Info.plist").read_bytes())
 
     def log(self):
         path = self.root / "commands.log"
@@ -150,16 +150,20 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.assertEqual(release_result.returncode, 0, release_result.stderr)
         release = self.info()
         canonical = plistlib.loads((self.root / "Sources/SQLiteGraphStudio/App/Info.plist").read_bytes())
-        for key in ["CFBundleIdentifier", "CFBundleShortVersionString", "CFBundleVersion"]:
+        for key in ["CFBundleIdentifier", "CFBundleShortVersionString", "CFBundleVersion",
+                    "CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"]:
             self.assertEqual(launcher[key], release[key], key)
             self.assertEqual(release[key], canonical[key], key)
+        self.assertEqual(release["CFBundleIdentifier"], "com.albertsteenstrup.sqlitegraphstudio")
+        for key in ["CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"]:
+            self.assertEqual(release[key], "SQLGraphStudio")
 
     def test_build_only_packages_resources_without_stopping_or_launching_app(self):
         result = self.run_script("build_and_run.sh", "--build-only")
         self.assertEqual(result.returncode, 0, result.stderr)
-        resource = self.root / "dist/SQLiteGraphStudio.app/Contents/Resources/SQLiteGraphStudio_SQLiteGraphStudio.bundle/asset.txt"
+        resource = self.root / "dist/SQLGraphStudio.app/Contents/Resources/SQLiteGraphStudio_SQLiteGraphStudio.bundle/asset.txt"
         self.assertEqual(resource.read_text(), "fixture resource")
-        helper = self.root / "dist/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        helper = self.root / "dist/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
         self.assertEqual(helper.read_text(), "fixture MCP helper")
         self.assertNotIn("pkill", self.log())
         self.assertNotIn("hdiutil", self.log())
@@ -201,7 +205,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
 
     def test_invalid_explicit_sdk_stops_before_build_or_bundle_replacement(self):
         self.env["SGS_SWIFT_SDK_PATH"] = str(self.root / "missing SDK")
-        bundle = self.root / "dist/SQLiteGraphStudio.app"
+        bundle = self.root / "dist/SQLGraphStudio.app"
         bundle.mkdir(parents=True)
         marker = bundle / "keep-me"
         marker.write_text("existing app")
@@ -224,11 +228,11 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
             self.assertTrue(all(expected_prefix in line for line in builds), builds)
 
     def test_build_refuses_to_replace_a_bundle_used_by_another_session(self):
-        bundle = self.root / "dist/SQLiteGraphStudio.app"
+        bundle = self.root / "dist/SQLGraphStudio.app"
         bundle.mkdir(parents=True)
         marker = bundle / "keep-me"
         marker.write_text("running session")
-        self.env["SGS_TEST_RUNNING_EXE"] = str(bundle / "Contents/MacOS/SQLiteGraphStudio")
+        self.env["SGS_TEST_RUNNING_EXE"] = str(bundle / "Contents/MacOS/SQLGraphStudio")
 
         for script, args in [("build_and_run.sh", ["--build-only"]), ("build_app.sh", [])]:
             result = self.run_script(script, *args)
@@ -240,7 +244,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
     def test_release_bundles_mcp_helper(self):
         result = self.run_script("build_app.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
-        helper = self.root / "dist/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP"
+        helper = self.root / "dist/SQLGraphStudio.app/Contents/MacOS/StudioMCP"
         self.assertEqual(helper.read_text(), "universal fixture")
 
     def test_signed_release_signs_before_dmg_then_notarizes_and_validates(self):
@@ -261,13 +265,13 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         result = self.run_script("build_app.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
         commands = self.log().splitlines()
-        dmg_signature = next((i for i, line in enumerate(commands) if line.startswith("codesign --force") and line.endswith("SQLiteGraphStudio.dmg")), None)
+        dmg_signature = next((i for i, line in enumerate(commands) if line.startswith("codesign --force") and line.endswith("SQLGraphStudio.dmg")), None)
         self.assertIsNotNone(dmg_signature, "distribution disk image must be signed")
         submission = next(i for i, line in enumerate(commands) if "notarytool submit" in line)
         self.assertLess(dmg_signature, submission)
 
     def test_standalone_dmg_packager_accepts_explicit_output_from_other_directory(self):
-        app = self.root / "fixture/SQLiteGraphStudio.app"
+        app = self.root / "fixture/SQLGraphStudio.app"
         app.mkdir(parents=True)
         output = self.root / "output with spaces/test.dmg"
         result = subprocess.run(["bash", str(self.root / "script/create_dmg.sh"), str(app), str(output)],
@@ -465,11 +469,11 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         result = self.run_script("build_app.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
         commands = self.log().splitlines()
-        app_signature = next(i for i, line in enumerate(commands) if line.startswith("codesign --force") and line.endswith("SQLiteGraphStudio.app"))
+        app_signature = next(i for i, line in enumerate(commands) if line.startswith("codesign --force") and line.endswith("SQLGraphStudio.app"))
         nested = [line for line in commands[:app_signature] if line.startswith("codesign --force")]
         native_files = [p.relative_to(source) for p in source.rglob("*") if p.is_file() and not p.is_symlink() and p.read_bytes().startswith(bytes.fromhex("cffaedfe"))]
         self.assertEqual(len(nested), len(native_files) + 1)
-        self.assertTrue(any(line.endswith("SQLiteGraphStudio.app/Contents/MacOS/StudioMCP") for line in nested))
+        self.assertTrue(any(line.endswith("SQLGraphStudio.app/Contents/MacOS/StudioMCP") for line in nested))
         for relative in native_files:
             self.assertTrue(any(line.endswith(str(self.packaged_runtime() / relative)) for line in nested), relative)
         self.assertTrue(all("--options runtime --timestamp --sign" in line for line in nested))
@@ -482,7 +486,7 @@ if os.environ.get("SGS_TEST_FAIL_TOOL") == name:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("/Resources/PostgreSQL/", self.log())
         self.assertNotIn("hdiutil", self.log())
-        self.assertFalse(any(line.startswith("codesign --force") and line.endswith("SQLiteGraphStudio.app") for line in self.log().splitlines()))
+        self.assertFalse(any(line.startswith("codesign --force") and line.endswith("SQLGraphStudio.app") for line in self.log().splitlines()))
 
 
 class PocketTTSPackagingTests(unittest.TestCase):

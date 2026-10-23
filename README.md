@@ -1,12 +1,14 @@
-# SQLite Graph Studio
+# SQLGraphStudio
 
-![SQLite Graph Studio in use](docs/demo-20261405.gif)
+![SQLGraphStudio in use](docs/demo-20261405.gif)
 
 A native macOS database explorer for **SQLite and PostgreSQL**. Explore schemas as interactive graphs, browse rows, follow relationships, run queries, and export results.
 
 [**Download the latest release**](../../releases/latest) · **macOS 15+**
 
-Open the DMG, drag SQLite Graph Studio to Applications, and launch. No Xcode or Swift required.
+Open the DMG, drag SQLGraphStudio to Applications, and launch. No Xcode or Swift required.
+
+Upgrading from SQLite Graph Studio keeps your settings and saved work. On the first launch, review **Coding Agents** setup to update existing MCP helper paths to `SQLGraphStudio.app`; the MCP server name stays `sqlite-graph-studio`.
 
 ## Supported databases
 
@@ -34,7 +36,7 @@ Connect Codex or Claude Code through **Coding Agents → Install local MCP and s
 Or register both clients from Terminal after installing the app in `/Applications`:
 
 ```bash
-"/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP" setup all
+"/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP" setup all
 ```
 
 Three included skills: [explore](Skills/database-explore/SKILL.md), [group tables](Skills/graph-clusters/SKILL.md), and [add descriptions](Skills/schema-descriptions/SKILL.md).
@@ -44,8 +46,8 @@ Three included skills: [explore](Skills/database-explore/SKILL.md), [group table
 Requires Swift 6.3 and compatible Xcode.
 
 ```bash
-git clone https://github.com/Albertsteenstrup/SQLiteGraphStudio.git
-cd SQLiteGraphStudio
+git clone https://github.com/Albertsteenstrup/sqlgraphstudio.git
+cd sqlgraphstudio
 bash script/build_and_run.sh
 ```
 

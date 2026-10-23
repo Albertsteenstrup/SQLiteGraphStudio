@@ -11,7 +11,7 @@ final class DataEmbeddedViewTests: XCTestCase {
         let parameters = try await browser.evaluateJavaScript("window.initializeParams") as? [String: Any]
         XCTAssertEqual(parameters?["protocolVersion"] as? String, "2026-01-26")
         let appInfo = parameters?["appInfo"] as? [String: Any]
-        XCTAssertEqual(appInfo?["name"] as? String, "SQLite Graph Studio data")
+        XCTAssertEqual(appInfo?["name"] as? String, "SQLGraphStudio data")
         XCTAssertEqual(appInfo?["version"] as? String, "1.0.0")
         XCTAssertNil(parameters?["clientInfo"], "MCP Apps initialization identifies an app, rather than an MCP client")
         XCTAssertEqual((parameters?["appCapabilities"] as? [String: Any])?["availableDisplayModes"] as? [String], ["inline"])

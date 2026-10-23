@@ -1,6 +1,6 @@
 ---
 name: database-explore
-description: Investigate a SQLite or PostgreSQL data model and show a live, agent-directed explanation in SQLite Graph Studio through local MCP. Use for model overviews, process tables, keys, records, queries, or a selected graph item.
+description: Investigate a SQLite or PostgreSQL data model and show a live, agent-directed explanation in SQLGraphStudio through local MCP. Use for model overviews, process tables, keys, records, queries, or a selected graph item.
 ---
 
 # Explore a database with Graph Studio

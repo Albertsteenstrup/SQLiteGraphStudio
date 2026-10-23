@@ -3,7 +3,7 @@ import Testing
 @testable import StudioMCP
 
 struct MCPResourceBundleTests {
-    @Test(arguments: ["SQLiteGraphStudio", "StudioMCP"])
+    @Test(arguments: ["SQLGraphStudio", "SQLiteGraphStudio", "StudioMCP"])
     func installedResourcesAreFoundForTheAppAndHelper(executableName: String) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

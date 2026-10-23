@@ -30,7 +30,7 @@ public enum MCPAppResources {
         ], [
             "uri": workspaceURI,
             "name": "workspace",
-            "title": "SQLite Graph Studio",
+            "title": "SQLGraphStudio",
             "description": "Live frames of Graph Studio's native workspace for visual explanations.",
             "mimeType": mimeType,
         ]]

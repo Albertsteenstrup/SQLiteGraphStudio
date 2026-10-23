@@ -4,8 +4,8 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_PATH="${1:-$PROJECT_DIR/dist/SQLiteGraphStudio.app}"
-DMG_PATH="${2:-$PROJECT_DIR/dist/SQLiteGraphStudio.dmg}"
+APP_PATH="${1:-$PROJECT_DIR/dist/SQLGraphStudio.app}"
+DMG_PATH="${2:-$PROJECT_DIR/dist/SQLGraphStudio.dmg}"
 
 if [ ! -d "$APP_PATH" ]; then
     echo "Error: App not found at $APP_PATH" >&2
@@ -19,7 +19,7 @@ cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
 
 hdiutil create \
-    -volname "SQLiteGraphStudio" \
+    -volname "SQLGraphStudio" \
     -srcfolder "$STAGING_DIR" \
     -ov \
     -format UDZO \

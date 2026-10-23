@@ -41,7 +41,7 @@ public enum WorkspaceInlineView {
         }
         let image = data.removeValue(forKey: "image") as? String
         let mime = data.removeValue(forKey: "mimeType") as? String ?? "image/jpeg"
-        let title = call.arguments["title"] as? String ?? data["title"] as? String ?? "SQLite Graph Studio"
+        let title = call.arguments["title"] as? String ?? data["title"] as? String ?? "SQLGraphStudio"
         data["title"] = title
         // Some hosts omit result _meta in the initial UI notification. These
         // opaque IDs are already known to the caller; authorization still uses
@@ -49,7 +49,7 @@ public enum WorkspaceInlineView {
         data["viewer"] = ["context_id": contextID, "viewer_id": args["viewer_id"] ?? "legacy:\(contextID)",
                           "width": args["width"] as? Int ?? 960, "render_surface": args["render_surface"] ?? "workspace"]
         result["structuredContent"] = data
-        var content: [[String: Any]] = [["type": "text", "text": "SQLite Graph Studio · \(title). Live native graph; data appears when an explanation point requests it."]]
+        var content: [[String: Any]] = [["type": "text", "text": "SQLGraphStudio · \(title). Live native graph; data appears when an explanation point requests it."]]
         if let image { content.append(["type": "image", "mimeType": mime, "data": image]) }
         result["content"] = content
         if call.name == toolName {

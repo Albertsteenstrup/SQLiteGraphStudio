@@ -12,7 +12,8 @@ public enum PostgresRuntimeSupervisor {
            FileManager.default.isExecutableFile(atPath: explicit) {
             return URL(fileURLWithPath: explicit)
         }
-        if let executable = Bundle.main.executableURL, executable.lastPathComponent == "SQLiteGraphStudio" {
+        if let executable = Bundle.main.executableURL,
+           ["SQLGraphStudio", "SQLiteGraphStudio"].contains(executable.lastPathComponent) {
             return executable
         }
         throw DatabaseUserError(kind: .notFound, message: "The PostgreSQL lifecycle helper is unavailable.",

@@ -19,7 +19,7 @@ public enum MCPToolCatalog {
         ), let data = try? Data(contentsOf: url),
            let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else {
-            preconditionFailure("The bundled SQLite Graph Studio MCP tool catalog is missing or invalid.")
+            preconditionFailure("The bundled SQLGraphStudio MCP tool catalog is missing or invalid.")
         }
         return entries.map { original in
             var entry = original

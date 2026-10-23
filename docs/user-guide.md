@@ -38,7 +38,7 @@ For Codex, create `.agents/skills` in your repo first; the app installs all thre
 The `StudioMCP` executable provides a newline-framed JSON-RPC stdio server for Codex and Claude Code. For a normal installation, place the app in `/Applications` and register both user-level clients with the helper shipped inside the app:
 
 ```bash
-"/Applications/SQLiteGraphStudio.app/Contents/MacOS/StudioMCP" setup all
+"/Applications/SQLGraphStudio.app/Contents/MacOS/StudioMCP" setup all
 ```
 
 This packaged helper path is the stable setup route: it does not depend on a repository checkout or a SwiftPM build directory. On first normal launch after installation, Graph Studio checks for available coding-agent clients and opens a read-only setup review when registration, managed skills, or an existing name conflict needs attention. The review selects user-wide setup by default; nothing is installed until you choose **Install reviewed changes**. Dismissing the review does not repeat the prompt for that client on every launch. If a coding-agent CLI is installed later, Graph Studio offers its setup review on a subsequent launch. You can reopen the review any time with **Coding Agents → Install local MCP and skills…**.
