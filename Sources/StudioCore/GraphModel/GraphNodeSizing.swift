@@ -9,10 +9,10 @@ public enum GraphNodeSizeMetric: String, CaseIterable, Identifiable, Sendable {
 
     public var explanation: String {
         switch self {
-        case .uniform: return "All overview nodes have the same size."
-        case .fields: return "Larger overview nodes have more fields."
-        case .rows: return "Larger overview nodes have more available rows; counts may be estimates."
-        case .relations: return "Larger overview nodes have more declared database relationships."
+        case .uniform: return "All nodes use the default size."
+        case .fields: return "Larger nodes have more fields."
+        case .rows: return "Larger nodes have more available rows; counts may be estimates."
+        case .relations: return "Larger nodes have more declared database relationships."
         }
     }
 }
@@ -57,7 +57,6 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
     private let maximumArea: CGFloat
 
     static let uniform = GraphNodeSizeProfile(metric: .uniform, areas: [:], unknownIDs: [])
-    private static let sizeTransitionZoom: CGFloat = 0.42
 
     init(metric: GraphNodeSizeMetric, tables: [TableSummary], rowCounts: [String: Int], relationCounts: [String: Int]) {
         self.metric = metric
@@ -103,7 +102,7 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
         return 0.55 + 2.45 * (area - minimumArea) / (maximumArea - minimumArea)
     }
 
-    /// Reserve the largest footprint through the zoom transition, including the
+    /// Reserve the largest footprint at every zoom, including the
     /// three-pixel marker minimum, hover emphasis, and a readable focus root.
     func layoutSize(for id: String, cardSize: CGSize, minimumZoom: CGFloat, isFocusRoot: Bool = false) -> CGSize {
         guard metric != .uniform else { return cardSize }
@@ -113,30 +112,18 @@ struct GraphNodeSizeProfile: Equatable, Sendable {
         let readableScale = isFocusRoot ? GraphReadableCardScale.focusedScale(for: zoom) / zoom : 1
         let clearanceScale = GraphHoverPresentation.clearanceScale
         return CGSize(
-            width: max(cardSize.width * readableScale, min(cardSize.width, GraphCardLayout.collapsedWidth(title: "", hovered: false)) * factor, minimum) * clearanceScale,
-            height: max(cardSize.height * readableScale, min(cardSize.height, GraphCardLayout.collapsedHeight) * factor, minimum) * clearanceScale
+            width: max(cardSize.width * readableScale, cardSize.width * factor, minimum) * clearanceScale,
+            height: max(cardSize.height * readableScale, cardSize.height * factor, minimum) * clearanceScale
         )
     }
 
-    static func emphasis(at zoom: CGFloat) -> CGFloat {
-        guard zoom.isFinite else { return 0 }
-        let t = min(1, max(0, zoom / sizeTransitionZoom))
-        return 1 - t * t * (3 - 2 * t)
+    /// Keep the metric's proportions as markers become labeled cards. Scaling
+    /// both dimensions together also preserves the card's text and row geometry.
+    func frame(for id: String, frame: CGRect) -> CGRect {
+        GraphHoverPresentation.enlarged(frame, scale: dimensionScale(for: id))
     }
 
-    func markerFrame(for id: String, frame: CGRect, zoom: CGFloat) -> CGRect {
-        guard metric != .uniform else { return GraphExploration.markerFrame(for: frame) }
-        let emphasis = Self.emphasis(at: zoom)
-        let factor = dimensionScale(for: id)
-        // All metrics converge toward one common marker footprint, independent of
-        // title length and expanded column count. The layout reserves this larger
-        // footprint and pushes neighbouring nodes away when the metric changes.
-        let safeZoom = zoom.isFinite ? max(0, zoom) : 0
-        let baseWidth = GraphCardLayout.collapsedWidth(title: "", hovered: false) * safeZoom
-        let baseHeight = GraphCardLayout.collapsedHeight * safeZoom
-        let width = frame.width + (min(frame.width, baseWidth) * factor - frame.width) * emphasis
-        let height = frame.height + (min(frame.height, baseHeight) * factor - frame.height) * emphasis
-        return GraphExploration.markerFrame(for: CGRect(x: frame.midX - width / 2, y: frame.midY - height / 2,
-                                                        width: width, height: height))
+    func markerFrame(for id: String, frame: CGRect) -> CGRect {
+        GraphExploration.markerFrame(for: self.frame(for: id, frame: frame))
     }
 }

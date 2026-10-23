@@ -65,7 +65,7 @@ The agent can temporarily move any selected tables closer together, including di
 
 Expand tables to show relevant fields and necessary primary/foreign keys, indicate that fields are hidden, and offer Show all. Selecting a key can focus its declared connections and bring the relevant tables closer. Handle composite keys as complete keys, distinguish multiple foreign keys between the same tables, and allow direction and selected-relation control.
 
-Node sizing supports fields, rows, relationships, or uniform sizing. Save the user's choice per database. Zooming out increases the chosen emphasis while maintaining a usable overview. Agent overrides are temporary unless persistence was requested. Unknown row counts are marked unknown and do not trigger a full count of every table.
+Node sizing supports fields, rows, relationships, or uniform sizing. Save the user's choice per database. Keep the chosen size differences at every zoom, including when markers become labeled cards; explicit table inspection retains a readable card presentation. Agent overrides are temporary unless persistence was requested. Unknown row counts are marked unknown and do not trigger a full count of every table.
 
 ### Tables, values, and records
 

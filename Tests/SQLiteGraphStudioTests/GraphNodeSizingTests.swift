@@ -54,27 +54,66 @@ struct GraphNodeSizingTests {
         #expect(empty.areas.isEmpty && empty.unknownIDs.isEmpty)
     }
 
-    @Test func zoomInRestoresOriginalSizesAndZoomOutStrengthensDifferences() {
+    @Test func zoomingPreservesMetricSizes() {
         let tables = [table("small", fields: 1), table("large", fields: 100)]
         let profile = GraphNodeSizeProfile(metric: .fields, tables: tables, rowCounts: [:], relationCounts: [:])
-        var previousRatio: CGFloat = 1
-        for zoom: CGFloat in [0.42, 0.38, 0.3, 0.2, 0.1, 0.08] {
+        for zoom: CGFloat in [0.08, 0.1, 0.2, 0.3, 0.38, 0.42, 1, 2] {
             let frame = CGRect(x: 200, y: 200, width: 380 * zoom, height: 46 * zoom)
-            let small = profile.markerFrame(for: "small", frame: frame, zoom: zoom)
-            let large = profile.markerFrame(for: "large", frame: frame, zoom: zoom)
+            let small = profile.markerFrame(for: "small", frame: frame)
+            let large = profile.markerFrame(for: "large", frame: frame)
             #expect(abs(small.midX - frame.midX) < 0.000001 && abs(small.midY - frame.midY) < 0.000001)
             #expect(abs(large.midX - frame.midX) < 0.000001 && abs(large.midY - frame.midY) < 0.000001)
             #expect(frame.contains(small))
-            if zoom < GraphExploration.detailZoom { #expect(large.width > frame.width) }
-            let ratio = large.width / small.width
-            #expect(ratio >= previousRatio)
-            previousRatio = ratio
+            #expect(abs(small.width / zoom - 380 * 0.55) < 0.000001)
+            #expect(abs(large.width / zoom - 380 * 3) < 0.000001)
+            #expect(abs(small.height - max(3, 46 * zoom * 0.55)) < 0.000001)
+            #expect(abs(large.height - 46 * zoom * 3) < 0.000001)
         }
         let frame = CGRect(x: 20, y: 20, width: 150, height: 30)
-        #expect(profile.markerFrame(for: "small", frame: frame, zoom: 0.42) == frame)
-        #expect(profile.markerFrame(for: "small", frame: frame, zoom: 1) == frame)
-        #expect(GraphNodeSizeProfile.uniform.markerFrame(for: "small", frame: frame, zoom: 0.1) == frame)
-        #expect(GraphNodeSizeProfile.emphasis(at: .nan) == 0)
+        #expect(GraphNodeSizeProfile.uniform.markerFrame(for: "small", frame: frame) == frame)
+    }
+
+    @Test(arguments: [GraphNodeSizeMetric.fields, .rows, .relations], [false, true])
+    func labeledCardsKeepMetricSizesAndMatchingHitBounds(metric: GraphNodeSizeMetric, isLarge: Bool) throws {
+        let tables = [table("small", fields: 1, rows: 1), table("large", fields: 100, rows: 100)]
+        let profile = GraphNodeSizeProfile(metric: metric, tables: tables, rowCounts: [:],
+                                          relationCounts: ["small": 1, "large": 100])
+        let viewport = CGRect(x: 0, y: 0, width: 4_000, height: 2_000)
+        let cache = GraphInteractionGeometryCache()
+        for zoom: CGFloat in [0.1, GraphExploration.detailZoom, 0.42, 1, 2] {
+            let frames = ["small": CGRect(x: 500, y: 500, width: 226 * zoom, height: 46 * zoom),
+                          "large": CGRect(x: 2_000, y: 500, width: 380 * zoom, height: 46 * zoom)]
+            let geometry = cache.snapshot(frames: frames, viewport: viewport, zoom: zoom, isLarge: isLarge,
+                emphasized: [], contentRevision: 0, nodeSizing: profile,
+                roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil })
+            for id in ["small", "large"] {
+                let frame = try #require(geometry.anchorMap.nodeCards[id]?.frame)
+                let normal = frames[id]!
+                #expect(abs(frame.midX - normal.midX) < 0.000001)
+                #expect(abs(frame.midY - normal.midY) < 0.000001)
+                #expect(abs(frame.width / normal.width - profile.dimensionScale(for: id)) < 0.000001)
+                if zoom >= GraphExploration.detailZoom {
+                    #expect(geometry.renderPlan.detailIDs.contains(id))
+                    #expect(abs(frame.height / normal.height - profile.dimensionScale(for: id)) < 0.000001)
+                }
+                #expect(geometry.hitCandidates(at: CGPoint(x: frame.minX + 0.1, y: frame.midY)) == [id])
+                #expect(geometry.hitCandidates(at: CGPoint(x: frame.maxX + 1, y: frame.midY)).isEmpty)
+                let reserved = profile.layoutSize(for: id, cardSize: CGSize(width: normal.width / zoom, height: normal.height / zoom), minimumZoom: zoom)
+                #expect(reserved.width * zoom >= frame.width && reserved.height * zoom >= frame.height)
+            }
+        }
+    }
+
+    @Test func enlargedLabeledCardsRemainVisibleWhenTheirDefaultBoundsAreOffscreen() {
+        let tables = [table("small", fields: 1), table("large", fields: 100)]
+        let profile = GraphNodeSizeProfile(metric: .fields, tables: tables, rowCounts: [:], relationCounts: [:])
+        let geometry = GraphInteractionGeometryCache().snapshot(
+            frames: ["large": CGRect(x: -400, y: 100, width: 226, height: 46)],
+            viewport: CGRect(x: 0, y: 0, width: 800, height: 600), zoom: 1, isLarge: true,
+            emphasized: [], contentRevision: 0, nodeSizing: profile,
+            roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil })
+        #expect(geometry.renderPlan.detailIDs == ["large"])
+        #expect(geometry.hitCandidates(at: CGPoint(x: 10, y: 123)) == ["large"])
     }
 
     @Test(arguments: [GraphNodeSizeMetric.fields, .rows, .relations])
@@ -84,8 +123,8 @@ struct GraphNodeSizingTests {
                                           relationCounts: ["small": 18, "large": 20])
         let zoom: CGFloat = 0.05
         let uniform = CGRect(x: 0, y: 0, width: 226 * zoom, height: 46 * zoom)
-        let small = profile.markerFrame(for: "small", frame: uniform, zoom: zoom)
-        let large = profile.markerFrame(for: "large", frame: uniform, zoom: zoom)
+        let small = profile.markerFrame(for: "small", frame: uniform)
+        let large = profile.markerFrame(for: "large", frame: uniform)
         #expect(large.width > uniform.width * 2.8)
         #expect(small.width < uniform.width * 0.6)
         #expect(large.width / small.width > 4.5)
@@ -96,8 +135,8 @@ struct GraphNodeSizingTests {
         let profile = GraphNodeSizeProfile(metric: .fields, tables: [table("a"), table("b")],
                                           rowCounts: [:], relationCounts: [:])
         let frame = CGRect(x: 0, y: 0, width: 226 * 0.1, height: 46 * 0.1)
-        #expect(profile.markerFrame(for: "a", frame: frame, zoom: 0.1) == frame)
-        #expect(profile.markerFrame(for: "b", frame: frame, zoom: 0.1) == frame)
+        #expect(profile.markerFrame(for: "a", frame: frame) == frame)
+        #expect(profile.markerFrame(for: "b", frame: frame) == frame)
     }
 
     @Test func changingMetricMovesNeighboursAndKeepsRenderedMarkersApart() {
@@ -132,7 +171,7 @@ struct GraphNodeSizingTests {
                                    y: (center.y - card.height / 2) * zoom,
                                    width: card.width * zoom, height: card.height * zoom)
                 return GraphHoverPresentation.markerFrame(
-                    session.graphNodeSizeProfile.markerFrame(for: table.id, frame: frame, zoom: zoom),
+                    session.graphNodeSizeProfile.markerFrame(for: table.id, frame: frame),
                     hovered: true, connected: false
                 )
             }
@@ -182,7 +221,7 @@ struct GraphNodeSizingTests {
             let size = GraphCardLayout.nodeSize(title: table.name, descriptor: nil, style: .collapsed)
             let frame = camera.rect(for: CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
                                                 width: size.width, height: size.height), in: viewport)
-            let marker = session.graphNodeSizeProfile.markerFrame(for: table.id, frame: frame, zoom: camera.zoom)
+            let marker = session.graphNodeSizeProfile.markerFrame(for: table.id, frame: frame)
             #expect(visible.contains(GraphHoverPresentation.markerFrame(marker, hovered: true, connected: false)))
         }
     }
@@ -313,7 +352,7 @@ struct GraphNodeSizingTests {
                                     zoom: 1, isLarge: false, emphasized: [], contentRevision: 0, nodeSizing: profile,
                                     roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil })
         #expect(detail.markerFrames.isEmpty)
-        #expect(detail.anchorMap.nodeCards["a"]?.frame == frames["a"])
+        #expect(detail.anchorMap.nodeCards["a"]?.frame == profile.frame(for: "a", frame: frames["a"]!))
     }
 
     @Test func temporarySizingDoesNotPersistWithoutSourceAndInvalidLegacyValueFallsBackToUniform() throws {
