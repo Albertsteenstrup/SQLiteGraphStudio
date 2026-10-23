@@ -209,7 +209,15 @@ final class GraphInteractionGeometryCache {
 
         let overviewAnchorIDs = Set(overviewAnchors.map(\.id))
         let hoveredIDs = Set([hoveredID].compactMap { $0 })
+        // Inspected cards keep their readable presentation; ordinary nodes carry
+        // the selected metric through the marker-to-card transition.
+        let inspectionIDs = overviewAnchorIDs.union([focusRootID].compactMap { $0 })
         var displayFrames = frames
+        if nodeSizing.metric != .uniform {
+            for (id, frame) in frames where !inspectionIDs.contains(id) {
+                displayFrames[id] = nodeSizing.frame(for: id, frame: frame)
+            }
+        }
         for (id, size) in focusSummarySizes {
             guard let frame = frames[id] else { continue }
             displayFrames[id] = CGRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
@@ -237,16 +245,18 @@ final class GraphInteractionGeometryCache {
                     }
                     return (id, summary)
                 }
-                let sized = nodeSizing.markerFrame(for: id, frame: frame, zoom: zoom)
+                let sized = inspectionIDs.contains(id) ? GraphExploration.markerFrame(for: frame)
+                    : nodeSizing.markerFrame(for: id, frame: frame)
                 return (id, GraphHoverPresentation.markerFrame(sized, hovered: id == hoveredID, connected: connectedIDs.contains(id)))
             }
         })
         var nodeCards: [String: GraphCardGeometry] = [:]
         nodeCards.reserveCapacity(frames.count)
-        for (id, frame) in frames {
+        for (id, frame) in displayFrames {
+            let displayZoom = zoom * (inspectionIDs.contains(id) ? 1 : nodeSizing.dimensionScale(for: id))
             let cardFrame = renderPlan.detailIDs.contains(id) ? GraphReadableCardScale.frame(
-                for: frame, zoom: zoom,
-                displayScale: GraphHoverPresentation.displayScale(for: zoom, hovered: id == hoveredID,
+                for: frame, zoom: displayZoom,
+                displayScale: GraphHoverPresentation.displayScale(for: displayZoom, hovered: id == hoveredID,
                     focused: id == focusRootID, overviewAnchor: overviewAnchorIDs.contains(id), viewportWidth: viewport.width)
             ) : frame
             var displayFrame = markerFrames[id] ?? GraphHoverPresentation.enlarged(
@@ -279,7 +289,7 @@ final class GraphInteractionGeometryCache {
             revision: revision, hitIndex: GraphInteractionHitIndex(frames: interactiveFrames),
             hoverSource: hoveredID.flatMap { id in
                 if focusSummarySizes[id] != nil { return displayFrames[id].map { (id, $0) } }
-                return frames[id].map { (id, nodeSizing.markerFrame(for: id, frame: $0, zoom: zoom)) }
+                return displayFrames[id].map { (id, GraphExploration.markerFrame(for: $0)) }
             },
             foregroundMarkerID: hoveredID.flatMap { focusSummarySizes[$0] != nil ? $0 : nil }
         )

@@ -8,6 +8,7 @@ This file tracks intentional changes made to the codebase that should NOT be rev
 
 ## Graph Selection Appearance
 
+- Keep field, row and relationship size differences when zooming into labeled nodes. Share metric-scaled bounds between markers, cards, hit targets and layout clearance; explicit table inspection retains its readable card presentation.
 - Spotlight focused tables through contrast: keep their normal surface and clear text, subdue direct neighbours, and dim the wider graph without removing its nodes or hit targets. Selection and context highlighting add no coloured fill or extra outline. Keep ordinary card, group and schema-change borders.
 - Render highlighted context and schema-review subjects as expanded table cards rather than floating name badges. Enlarge them at overview zoom, reserve their displayed footprints, and keep clicks, field scrolling and relationship anchors on the same geometry.
 - Preserve the authored overview while inspecting a table. Single-table focus centres a bounded, readable expanded card with its connected tables around it; context inspection reserves the enlarged cards' actual footprints and pushes nearby cards outward. Share layout and hit geometry between native and embedded inspection, with motion reduced when requested.
