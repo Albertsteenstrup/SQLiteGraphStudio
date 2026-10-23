@@ -3,6 +3,44 @@ import Testing
 @testable import StudioCore
 
 struct GraphSpotlightTests {
+    @Test(arguments: [21, 50, 60, 100, 129]) @MainActor
+    func denseSummaryColumnsSurviveCollisionResolution(count: Int) {
+        let zoom: CGFloat = 0.76
+        let rootSize = CGSize(width: 440, height: 236)
+        let ids = (0..<count).map { "related_\($0)" }
+        let plan = GraphFocusSummaryLayout.plan(rootSize: CGSize(width: 336, height: 236 * zoom),
+            relatedIDs: ids, viewport: CGSize(width: 840, height: 552))
+        var positions = plan.offsets.mapValues { CGPoint(x: $0.x / zoom, y: $0.y / zoom) }
+        positions["root"] = .zero
+        var sizes = Dictionary(uniqueKeysWithValues: ids.map { ($0, CGSize(width: 560, height: 46)) })
+        sizes["root"] = rootSize
+        let placed = GraphSpotlightLayout.focusedPositions(positions, cardSizes: sizes, rootID: "root",
+            summarySizes: Dictionary(uniqueKeysWithValues: ids.map { ($0, plan.summarySize) }),
+            zoom: zoom, viewportWidth: 840, sizing: .uniform, manuallyPlacedNodes: [:])
+        for id in ids {
+            #expect(abs(placed[id]!.x - positions[id]!.x) < 0.00001)
+            #expect(abs(placed[id]!.y - positions[id]!.y) < 0.00001)
+        }
+    }
+
+    @Test @MainActor
+    func focusedCardsStayFixedWhileTheCatalogMovesAndManualDropsSurviveZoom() {
+        let positions: [String: CGPoint] = ["root": .zero, "related": .init(x: -600, y: 0),
+                                            "background": .zero]
+        let sizes: [String: CGSize] = ["root": .init(width: 440, height: 236),
+                                      "related": .init(width: 280, height: 80),
+                                      "background": .init(width: 560, height: 200)]
+        let dropped = CGPoint(x: -4_000, y: 700)
+        for zoom in [CGFloat(0.2), 0.76, 1] {
+            let placed = GraphSpotlightLayout.focusedPositions(positions, cardSizes: sizes, rootID: "root",
+                summarySizes: ["related": CGSize(width: 190, height: 38)], zoom: zoom, viewportWidth: 840,
+                sizing: .uniform, manuallyPlacedNodes: ["related": dropped])
+            #expect(placed["root"] == .zero)
+            #expect(placed["related"] == dropped)
+            #expect(placed["background"] != .zero)
+        }
+    }
+
     @Test @MainActor
     func draggingAFocusedNeighbourSurvivesReflowAndZoom() {
         let original: [String: CGPoint] = ["hub": .zero, "neighbour": .init(x: 600, y: 0)]

@@ -165,8 +165,10 @@ struct GraphViewportTransform: Sendable, Equatable {
 enum GraphReadableCardScale {
     static let focusedMinimum: CGFloat = 0.90
 
-    static func focusedScale(for zoom: CGFloat) -> CGFloat {
-        max(zoom, focusedMinimum)
+    static func focusedScale(for zoom: CGFloat, viewportWidth: CGFloat? = nil) -> CGFloat {
+        let minimum = viewportWidth.map { min(focusedMinimum, max(0.72, $0 * 0.4 / GraphCardLayout.expandedWidth)) }
+            ?? focusedMinimum
+        return max(zoom, minimum)
     }
 
     static func frame(for normalCardFrame: CGRect, zoom: CGFloat, displayScale: CGFloat) -> CGRect {

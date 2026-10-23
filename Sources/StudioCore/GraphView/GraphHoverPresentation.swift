@@ -9,8 +9,10 @@ enum GraphHoverPresentation {
         hovered ? 1 : (connected ? 1.015 : 1)
     }
 
-    static func displayScale(for zoom: CGFloat, hovered: Bool, focused: Bool, overviewAnchor: Bool) -> CGFloat {
-        if hovered || focused { return GraphReadableCardScale.focusedScale(for: zoom) }
+    static func displayScale(for zoom: CGFloat, hovered: Bool, focused: Bool, overviewAnchor: Bool,
+                             viewportWidth: CGFloat? = nil) -> CGFloat {
+        if focused { return GraphReadableCardScale.focusedScale(for: zoom, viewportWidth: viewportWidth) }
+        if hovered { return GraphReadableCardScale.focusedScale(for: zoom) }
         return overviewAnchor ? GraphOverviewAnchors.displayScale(for: zoom) : zoom
     }
 

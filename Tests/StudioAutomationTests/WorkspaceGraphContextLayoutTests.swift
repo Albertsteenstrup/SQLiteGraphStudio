@@ -82,7 +82,7 @@ struct WorkspaceGraphContextLayoutTests {
                                width: try #require(node["width"] as? CGFloat), height: try #require(node["height"] as? CGFloat))
             #expect(CGRect(x: 0, y: 0, width: width, height: 600).contains(frame),
                     "The readable table must fit even when most connected nodes lie on one side")
-            #expect(frame.width >= GraphCardLayout.expandedWidth * GraphReadableCardScale.focusedMinimum - 0.01)
+            #expect(frame.width >= 316, "A narrow pane must keep the expanded fields readable")
             #expect(renderer.expandedTables == [root.id])
             #expect(renderer.visibleTables.count == leafCount + 1)
             #expect(renderer.nodes.count == leafCount + 1, "All surrounding tables must remain in view")

@@ -4,10 +4,47 @@ import Testing
 
 @MainActor
 struct GraphHoverPresentationTests {
+    @Test(arguments: [CGFloat(0.005), 0.2, 0.8])
+    func focusedNeighboursKeepSummaryHitTargetsAndHoverNeverRevealsFields(zoom: CGFloat) throws {
+        let frames = ["root": CGRect(x: 420 - 220 * zoom, y: 350 - 118 * zoom, width: 440 * zoom, height: 236 * zoom),
+                      "related": CGRect(x: 100 - 140 * zoom, y: 350 - 23 * zoom, width: 280 * zoom, height: 46 * zoom)]
+        let cache = GraphInteractionGeometryCache()
+        let summarySize = CGSize(width: 66, height: CGFloat(46) * 66 / 280)
+        func snapshot(hovered: String?) -> GraphInteractionGeometry {
+            cache.snapshot(frames: frames, viewport: CGRect(x: 0, y: 0, width: 840, height: 700), zoom: zoom,
+                isLarge: true, emphasized: ["root"], primary: ["root"], contentRevision: 0,
+                hoveredID: hovered, focusRootID: "root", focusSummarySizes: ["related": summarySize],
+                roleForNode: { _ in .expandedNode }, descriptorForNode: { _ in Self.descriptor })
+        }
+        let resting = snapshot(hovered: nil)
+        let hover = snapshot(hovered: "related")
+        #expect(resting.markerFrames["related"]?.size == summarySize)
+        let card = try #require(hover.anchorMap.nodeCards["related"])
+        #expect(abs(card.frame.width - 252) < 0.000001)
+        #expect(abs(card.frame.height - 41.4) < 0.000001)
+        #expect(abs(card.frame.width / card.frame.height - 280 / 46) < 0.000001,
+                "Connected cards must retain the normal one-row card proportions on hover")
+        #expect(card.rowFrames.isEmpty)
+        #expect(!hover.renderPlan.detailIDs.contains("related"))
+        #expect(hover.hitCandidates(at: CGPoint(x: card.frame.minX + 2, y: card.frame.midY)).contains("related"))
+        #expect(resting.frames == hover.frames, "Hover must leave saved/world geometry alone")
+    }
+
     private static var descriptor: EditableTableDescriptor {
         EditableTableDescriptor(name: "sample", objectType: .table,
             columns: (0..<10).map { TableColumn(name: "column_\($0)", declaredType: "TEXT", notNull: false, defaultValueSQL: nil, primaryKeyOrdinal: 0, hiddenValue: 0) },
             primaryKeyColumns: [], rowIdentityStrategy: .readOnly, isWithoutRowID: false, isEditable: false)
+    }
+
+    @Test func focusedSummaryHoverDoesNotCaptureTheLargerWorldCardBounds() {
+        let geometry = GraphInteractionGeometryCache().snapshot(
+            frames: ["related": CGRect(x: -180, y: 327, width: 560, height: 46)],
+            viewport: CGRect(x: 0, y: 0, width: 840, height: 700), zoom: 1,
+            isLarge: true, emphasized: [], contentRevision: 0, hoveredID: "related",
+            focusSummarySizes: ["related": CGSize(width: 66, height: CGFloat(46) * 66 / 280)],
+            roleForNode: { _ in .collapsedNode }, descriptorForNode: { _ in nil })
+        #expect(geometry.hitCandidates(at: CGPoint(x: 100, y: 350)) == ["related"])
+        #expect(geometry.hitCandidates(at: CGPoint(x: 300, y: 350)).isEmpty)
     }
 
     @Test func markerHoverShowsOnlyReadableSummaryWithMatchingHitTargetsWithoutChangingLayout() throws {

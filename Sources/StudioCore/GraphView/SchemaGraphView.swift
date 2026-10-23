@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 public struct SchemaGraphView: View {
+    private struct FocusSummarySymbolID: Hashable { let tableID: String }
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.colorScheme) private var colorScheme
     /// Offscreen renders skip every transition so a snapshot shows the settled view.
@@ -529,8 +530,9 @@ public struct SchemaGraphView: View {
         let hoverSummaryIDs = (shows(.hoverPreviews) ? GraphHoverPresentation.summaryIDs(
             hoveredID: draggedNodeID == nil ? hoveredNodeID : nil, connectedIDs: hoverNeighbors,
             markerFrames: geometry.markerFrames, viewport: viewport
-        ).subtracting(geometry.overviewAnchorIDs) : []).union(focusSummaryIDs)
+        ).subtracting(geometry.overviewAnchorIDs).subtracting(focusSummaryIDs) : [])
         let hoverSummaryNodes = graph.nodes.filter { hoverSummaryIDs.contains($0.id) }
+        let focusSummaryNodes = graph.nodes.filter { focusSummaryIDs.contains($0.id) }
         let renderPlan = geometry.renderPlan
         let edgeLookup = topologyCache.index(for: graph, graphRevision: renderedGraphRevision)
         let focusedHubID = graphFocusTableRelation?.tableID ?? tableFocusNodeID
@@ -572,7 +574,20 @@ public struct SchemaGraphView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(backgroundPanGesture(in: size, geometry: geometry, edgeLookup: edgeLookup))
-                .onTapGesture(perform: tapCanvas)
+                // Wait for the double-click decision before moving a compact card
+                // into focus. Otherwise its first click removes the second target.
+                .simultaneousGesture(
+                    SpatialTapGesture(count: 2).exclusively(before: SpatialTapGesture())
+                        .onEnded { result in
+                            switch result {
+                            case .first(let tap):
+                                guard let card = graphCard(at: tap.location, geometry: geometry, edgeLookup: edgeLookup) else { return }
+                                openGraphTable(card.tableID)
+                            case .second(let tap):
+                                tapCanvas(tap.location)
+                            }
+                        }
+                )
                 .onChange(of: session.graphTapRequest?.id) { _, _ in
                     guard let request = session.graphTapRequest else { return }
                     let point = request.point
@@ -628,8 +643,10 @@ public struct SchemaGraphView: View {
                 if let edgePlan {
                     drawEdges(in: &context, anchorMap: anchorMap, plan: edgePlan, viewportSize: size, spotlight: spotlight)
                 }
-                drawOverviewMarks(in: &context, frames: geometry.markerFrames,
-                                  connectedIDs: hoverNeighbors, summaryIDs: focusSummaryIDs, spotlight: spotlight)
+                let hoveredSummary = Set([hoveredNodeID].compactMap { $0 }).intersection(focusSummaryIDs)
+                drawOverviewMarks(in: &context, frames: geometry.markerFrames.filter { !focusSummaryIDs.contains($0.key) },
+                                  connectedIDs: hoverNeighbors, spotlight: spotlight)
+                drawFocusSummaries(in: &context, frames: geometry.markerFrames, ids: focusSummaryIDs.subtracting(hoveredSummary))
                 for id in hoverSummaryIDs {
                     guard let mark = geometry.markerFrames[id], let summary = context.resolveSymbol(id: id) else { continue }
                     let frame = GraphHoverPresentation.summaryFrame(in: mark, referenceSize: summary.size)
@@ -654,6 +671,11 @@ public struct SchemaGraphView: View {
                     }
                 }
             } symbols: {
+                ForEach(focusSummaryNodes) { node in
+                    focusSummaryCard(for: node, frame: geometry.markerFrames[node.id] ?? .zero,
+                        highlightState: relationHighlight.highlightState(for: node.id), in: size)
+                        .tag(FocusSummarySymbolID(tableID: node.id))
+                }
                 ForEach(hoverSummaryNodes) { node in
                     GraphNodeSummary(
                         title: node.title,
@@ -727,11 +749,7 @@ public struct SchemaGraphView: View {
                         toggleExpandedState(for: node.id, in: size)
                     },
                     openTable: {
-                        session.notifyManualGraphInteraction()
-                        withAnimation(.snappy(duration: 0.16)) {
-                            session.selectGraphNode(node.id)
-                        }
-                        _ = session.openTable(named: node.id)
+                        openGraphTable(node.id)
                     },
                     showTopRows: {
                         session.notifyManualGraphInteraction()
@@ -769,6 +787,19 @@ public struct SchemaGraphView: View {
                 .zIndex(zIndex(for: node.id))
             }
 
+            // Keep a readable hovered card above the expanded root as well as
+            // its neighbours. Canvas still owns its shared input geometry.
+            if let hoveredNodeID, focusSummaryIDs.contains(hoveredNodeID),
+               let node = graph.node(id: hoveredNodeID), let frame = geometry.markerFrames[hoveredNodeID] {
+                let card = GraphCardLayout.nodeSize(title: node.title, descriptor: nil, style: .collapsed)
+                focusSummaryCard(for: node, frame: frame,
+                    highlightState: relationHighlight.highlightState(for: node.id), in: size)
+                    .scaleEffect(frame.width / card.width)
+                    .position(x: frame.midX, y: frame.midY)
+                    .allowsHitTesting(false)
+                    .zIndex(5)
+            }
+
             // Floating description tooltip
             if let hover = descriptionHover {
                 descriptionTooltip(hover, in: size, anchorMap: anchorMap)
@@ -801,6 +832,28 @@ public struct SchemaGraphView: View {
         .coordinateSpace(name: "graphViewport")
         .animation(reduceMotion || session.showAllGraphTableCards ? nil : .snappy(duration: 0.18), value: session.expandedGraphNodeIDs)
         .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: session.showAllGraphTableCards)
+    }
+
+    private func focusSummaryCard(for node: GraphNode, frame: CGRect,
+                                  highlightState: GraphNodeHighlightState, in size: CGSize) -> some View {
+        let descriptor = session.descriptor(named: node.id)
+        let card = GraphCardLayout.nodeSize(title: node.title, descriptor: descriptor, style: .collapsed)
+        return GraphNodeCardView(
+            node: node, descriptor: descriptor,
+            rowCount: session.graphRowCounts[node.id] ?? descriptor?.rowCount,
+            tableDescription: session.tableDescription(for: node.id),
+            clusterLabel: session.clusterLabel(for: node.id), clusterColor: clusterBorderColor(for: node.id),
+            columnDescription: { _ in nil }, previewColumns: [], outgoingEdges: [], incomingEdges: [],
+            isSelected: session.selectedGraphNodeIDs.contains(node.id), viewportZoom: frame.width / card.width,
+            displayStyle: .collapsed, isFocusRoot: false, scrollOffset: 0,
+            isHovered: hoveredNodeID == node.id, isDragging: draggedNodeID == node.id,
+            highlightState: highlightState, keepsTextReadableWhenZoomed: true,
+            // The Canvas hit targets handle these actions for both symbols and hover.
+            selectNode: {}, toggleExpanded: {}, openTable: {}, showTopRows: {},
+            usesViewportHoverTracking: true, hoverChanged: { _ in },
+            relationHoverChanged: { _, _, _ in }, relationTapped: { _ in },
+            headerDragGesture: nodeDragGesture(nodeID: node.id, in: size)
+        ).frame(width: card.width, height: card.height)
     }
 
     @ViewBuilder
@@ -999,7 +1052,16 @@ public struct SchemaGraphView: View {
         openExpandedNode(nodeID, in: size)
     }
 
-    /// A click on a drawn table card.
+    /// Open both compact marks and detailed cards in the table pane.
+    private func openGraphTable(_ nodeID: String) {
+        session.notifyManualGraphInteraction()
+        withAnimation(.snappy(duration: 0.16)) {
+            session.selectGraphNode(nodeID)
+        }
+        _ = session.openTable(named: nodeID)
+    }
+
+    /// A single click on a drawn table card.
     private func selectCard(_ nodeID: String) {
         session.notifyManualGraphInteraction()
         withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.84)) {
@@ -1058,7 +1120,6 @@ public struct SchemaGraphView: View {
     }
 
     private func drawOverviewMarks(in context: inout GraphicsContext, frames: [String: CGRect], connectedIDs: Set<String>,
-                                   summaryIDs: Set<String>,
                                    spotlight: GraphSpotlight) {
         for (id, mark) in frames {
             let groupColor = clusterBorderColor(for: id)
@@ -1071,16 +1132,21 @@ public struct SchemaGraphView: View {
                 ? 0.98 : (groupColor != nil ? 0.86 : 0.62)
             let isUnknown = session.graphNodeSizeProfile.unknownIDs.contains(id)
             let opacity = emphasis * spotlight.tableOpacity(id) * (isUnknown && !isChosen ? 0.45 : 1)
-            if summaryIDs.contains(id) {
-                context.fill(path, with: .color(StudioPalette.cardSurfaceTop))
-                context.stroke(path, with: .color(color.opacity(opacity * 0.6)), lineWidth: 0.8)
-            } else {
-                context.fill(path, with: .color(color.opacity(opacity)))
-            }
+            context.fill(path, with: .color(color.opacity(opacity)))
             if isUnknown {
                 context.stroke(path, with: .color(color.opacity(0.6 * spotlight.tableOpacity(id))),
                                style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             }
+        }
+    }
+
+    private func drawFocusSummaries(in context: inout GraphicsContext, frames: [String: CGRect], ids: Set<String>) {
+        for id in ids {
+            guard let frame = frames[id], let summary = context.resolveSymbol(id: FocusSummarySymbolID(tableID: id)) else { continue }
+            var cardContext = context
+            cardContext.translateBy(x: frame.minX, y: frame.minY)
+            cardContext.scaleBy(x: frame.width / summary.size.width, y: frame.height / summary.size.height)
+            cardContext.draw(summary, at: .zero, anchor: .topLeading)
         }
     }
 
@@ -2180,6 +2246,16 @@ public struct SchemaGraphView: View {
     private func fitGraphFocusViewport(in size: CGSize, animated: Bool = true,
                                        animation: Animation? = nil, completion: (() -> Void)? = nil) {
         guard let plan = effectiveFocusPlan, size != .zero else { return }
+        if let rootID = graphFocusTableRelation?.tableID ?? tableFocusNodeID, manuallyPlacedFocusNodes.isEmpty {
+            let focusZoom = GraphReadableCardScale.focusedScale(for: 0, viewportWidth: size.width)
+            pulledGraphPositions = spotlightPositions(rootID: rootID, minimumZoom: focusZoom)
+            let center = graphNodePoint(for: rootID)
+            let topInset = min(graphControlsHeight + 30, size.height * 0.4)
+            let transform = GraphViewportTransform(zoom: focusZoom,
+                pan: CGSize(width: -center.x * focusZoom, height: -center.y * focusZoom + (topInset - 70) / 2))
+            setViewport(transform, animated: animated, animation: animation, completion: completion)
+            return
+        }
         let bounds = graphFocusContentBounds(for: plan, minimumZoom: zoom)
         guard !bounds.isNull else {
             completion?()
@@ -2200,7 +2276,7 @@ public struct SchemaGraphView: View {
             transform = GraphViewportTransform.fit(contentBoundsAtZoom: { proposedZoom in
                 resizeNodesForCurrentMetric(minimumZoom: proposedZoom)
                 return graphFocusContentBounds(for: plan, minimumZoom: proposedZoom)
-            }, initialZoom: zoom, in: fittingSize, padding: fitPadding,
+            }, initialZoom: connectionFocus ? maximumZoom : zoom, in: fittingSize, padding: fitPadding,
                minZoom: minimumZoom, maxZoom: maximumZoom)
         } else {
             transform = GraphViewportTransform.fit(contentBounds: bounds, in: fittingSize,
@@ -2219,7 +2295,7 @@ public struct SchemaGraphView: View {
         if let rootID = readableFocusRootID, let rootFrame = graphFrame(for: rootID) {
             let frame = GraphReadableCardScale.frame(
                 for: transform.rect(for: rootFrame, in: size), zoom: transform.zoom,
-                displayScale: GraphReadableCardScale.focusedScale(for: transform.zoom)
+                displayScale: GraphReadableCardScale.focusedScale(for: transform.zoom, viewportWidth: size.width)
             )
             let safeViewport = CGRect(x: 0, y: topInset, width: size.width,
                                       height: max(100, size.height - topInset - bottomInset))
@@ -2231,11 +2307,13 @@ public struct SchemaGraphView: View {
     }
 
     private func graphFocusContentBounds(for plan: GraphFocusPlan, minimumZoom: CGFloat) -> CGRect {
-        plan.visibleTableIDs().reduce(CGRect.null) { bounds, tableID in
+        let summaries = focusedSummarySizes(minimumZoom: minimumZoom)
+        return plan.visibleTableIDs().reduce(CGRect.null) { bounds, tableID in
             let center = pulledGraphPositions[tableID] ?? session.graphLayout.position(for: tableID)
-            let size = GraphSpotlightLayout.footprint(for: tableID, cardSize: nodeSize(for: tableID),
+            let size = summaries[tableID].map { CGSize(width: $0.width / minimumZoom, height: $0.height / minimumZoom) }
+                ?? GraphSpotlightLayout.footprint(for: tableID, cardSize: nodeSize(for: tableID),
                 readableRootID: readableFocusRootID, zoom: minimumZoom, sizing: session.graphNodeSizeProfile,
-                enlargedIDs: enlargedTableIDs)
+                enlargedIDs: enlargedTableIDs, viewportWidth: viewportSize.width)
             let frame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
                                width: size.width, height: size.height)
             return bounds.union(frame)
@@ -2346,6 +2424,7 @@ public struct SchemaGraphView: View {
             nodeSizing: session.graphNodeSizeProfile,
             overviewAnchors: overviewAnchors,
             focusRootID: readableFocusRootID,
+            focusSummarySizes: focusedSummarySizes(minimumZoom: zoom),
             roleForNode: cardRole, descriptorForNode: session.descriptor(named:), displayedColumnsForNode: visibleColumnNames
         )
     }
@@ -3007,21 +3086,36 @@ public struct SchemaGraphView: View {
         let sizes = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, nodeSize(for: $0.id)) })
         let zoom = max(0.01, minimumZoom ?? self.zoom)
         let relatedIDs = graphFocusTableRelation.map { visibleRelatedNodeIDs(for: $0) } ?? tableConnectionIDs(rootID)
-        let rootSize = sizes[rootID] ?? .zero
-        let reservedRoot = GraphSpotlightLayout.footprint(for: rootID, cardSize: rootSize,
-            readableRootID: rootID, zoom: zoom, sizing: session.graphNodeSizeProfile)
-        let surrounding = GraphFocusRingLayout.graphPositions(
-            hubCenter: positions[rootID] ?? .zero,
-            hubSize: relatedIDs.count > 16 ? rootSize : reservedRoot,
-            items: relatedIDs.compactMap { id in sizes[id].map { GraphFocusRingLayout.Item(id: id, size: $0) } },
-            gap: max(84, GraphCardClearance.inspectionScreenGap / zoom),
-            viewportSize: viewportSize
-        )
-        positions.merge(surrounding) { _, surrounding in surrounding }
-        return GraphSpotlightLayout.positions(positions, cardSizes: sizes,
-            expandedIDs: session.expandedGraphNodeIDs, readableRootID: rootID,
-            zoom: zoom, sizing: session.graphNodeSizeProfile, enlargedIDs: enlargedTableIDs,
+        let layout = focusSummaryLayout(rootID: rootID, relatedIDs: relatedIDs, zoom: zoom)
+        let center = positions[rootID] ?? .zero
+        for (id, offset) in layout.offsets {
+            positions[id] = CGPoint(x: center.x + offset.x / zoom, y: center.y + offset.y / zoom)
+        }
+        return GraphSpotlightLayout.focusedPositions(positions, cardSizes: sizes, rootID: rootID,
+            summarySizes: Dictionary(uniqueKeysWithValues: relatedIDs.map { ($0, layout.summarySize) }),
+            zoom: zoom, viewportWidth: viewportSize.width, sizing: session.graphNodeSizeProfile,
             manuallyPlacedNodes: manuallyPlacedFocusNodes)
+    }
+
+    private func focusSummaryLayout(rootID: String, relatedIDs: [String], zoom: CGFloat) -> GraphFocusSummaryLayout.Plan {
+        let scale = GraphReadableCardScale.focusedScale(for: zoom, viewportWidth: viewportSize.width)
+        let root = nodeSize(for: rootID)
+        let topInset = min(graphControlsHeight + 30, viewportSize.height * 0.4)
+        return GraphFocusSummaryLayout.plan(rootSize: CGSize(width: root.width * scale, height: root.height * scale),
+            relatedIDs: relatedIDs, viewport: CGSize(width: viewportSize.width,
+                height: max(100, viewportSize.height - topInset - 70)))
+    }
+
+    private func focusedSummarySizes(minimumZoom: CGFloat) -> [String: CGSize] {
+        guard let rootID = graphFocusTableRelation?.tableID ?? tableFocusNodeID else { return [:] }
+        let ids = graphFocusTableRelation.map { visibleRelatedNodeIDs(for: $0) } ?? tableConnectionIDs(rootID)
+        let layout = focusSummaryLayout(rootID: rootID, relatedIDs: ids, zoom: minimumZoom)
+        return Dictionary(uniqueKeysWithValues: ids.compactMap { id in
+            guard let node = session.graph.node(id: id) else { return nil }
+            let card = GraphCardLayout.nodeSize(title: node.title, descriptor: nil, style: .collapsed)
+            let scale = min(layout.summarySize.width / card.width, layout.summarySize.height / card.height)
+            return (id, CGSize(width: card.width * scale, height: card.height * scale))
+        })
     }
 
     private func reflowFocusedConnections(in size: CGSize) {
@@ -3193,9 +3287,7 @@ private struct GraphNodeCardView<HeaderGesture: Gesture>: View {
         .onTapGesture {
             selectNode()
         }
-        .onTapGesture(count: 2) {
-            openTable()
-        }
+        .highPriorityGesture(TapGesture(count: 2).onEnded { openTable() })
         .onHover { isHovered in
             guard !usesViewportHoverTracking else { return }
             hoverChanged(isHovered)

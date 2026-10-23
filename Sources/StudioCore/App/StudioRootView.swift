@@ -124,12 +124,15 @@ private struct WorkspaceSessionRootView: View {
         return session.side(containing: .schema) != nil
     }
 
-    /// The minimap stands down once a compact workspace no longer has room for it.
+    /// Inspection already frames the connected tables; the overview inset must
+    /// not cover their cards along the lower edge of the pane.
     private var showsMinimap: Bool {
         session.hasOpenDatabase
             && session.historicalExplanationArtifact == nil
             && !session.graphVisibleTableIDs.isEmpty
             && !session.isWorkspaceCompact
+            && !(session.expandedGraphNodeIDs.count == 1
+                 && !session.expandedGraphNodeIDs.isDisjoint(with: session.selectedGraphNodeIDs))
             && schemaIsVisible
             && session.graphVisuals.isEnabled(.minimap)
     }
